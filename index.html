@@ -1,0 +1,113 @@
+---
+layout: default
+title: Home
+---
+
+<div class="landing">
+  <div id="filter-bar" class="filter-bar">
+    <input type="text" id="search" class="filter-input" placeholder="Search...">
+    <span id="count" class="filter-count"></span>
+    <div id="active-filters"></div>
+  </div>
+
+  <div class="category-grid" id="grid">
+    {% assign collections = "lxc|addon|pve|vm" | split: "|" %}
+    {% assign labels = "LXC|Addons|PVE Tools|VMs" | split: "|" %}
+    {% for col in collections %}
+    <div class="category-column">
+      <h2>{{ labels[forloop.index0] }} | <a href="/{{ col }}/">All</a> <span class="count-meta">5/{{ site[col].size }}</span></h2>
+      {% for item in site[col] limit:5 %}
+        {% include script_card.html item=item %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+const TYPES = ["lxc","addon","pve","vm"];
+const LABELS = {"lxc":"LXC","addon":"Addons","pve":"PVE Tools","vm":"VMs"};
+
+let scripts = [];
+let filterTag = new URLSearchParams(location.search).get("tag");
+let sortModes = JSON.parse(localStorage.getItem("sortModes") || '{"lxc":"date","addon":"date","pve":"date","vm":"date"}');
+
+function cs(i) {
+  let d = document.documentElement.classList.contains("dark");
+  return { bg: d ? DPAL[i%8] : PAL[i%8], tc: d ? DTC[i%8] : TC[i%8] };
+}
+
+function fb(inits, w, h, i) {
+  let c = cs(i);
+  return "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><rect x="2" y="2" width="' + (w-4) + '" height="' + (h-4) + '" rx="6" fill="' + c.bg + '"/><text x="' + (w/2) + '" y="' + (h/2) + '" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="' + Math.round(w*0.4) + '" font-weight="700" fill="' + c.tc + '">' + inits + '</text></svg>');
+}
+
+function fmtDate(d) {
+  if (!d) return "";
+  let p = d.slice(0,10).split("-");
+  return p[0] + "/" + p[1] + "/" + p[2];
+}
+
+function card(s, idx) {
+  let inits = init(s);
+  let i = idx % 8;
+  let date = fmtDate(s.updated_at);
+  let res = date ? '<span>' + date + '</span>' : "";
+  let tags = (s.tags || []).slice(0, 4).map(function(t) { return '<a href="/?tag=' + encodeURIComponent(t) + '" class="tag" onclick="event.stopPropagation();setF(\'' + t + '\');return false">' + t + '</a>'; }).join("");
+  let d = (s.description || "").length > 120 ? s.description.slice(0, 120) + "…" : (s.description || "");
+  let logo = '<img src="' + (s.logo || "") + '" alt="' + inits + '" class="script-card-logo" width="40" height="40" loading="lazy" onerror="this.src=\'' + fb(inits, 40, 40, i) + '\';this.onerror=null">';
+  let top = logo + (res ? '<div class="script-card-resources">' + res + '</div>' : "");
+  let titleLink = '<a href="' + s.page + '">' + s.title + '</a>';
+  return '<div class="script-card" onclick="location.href=\'' + s.page + '\'"><div class="script-card-top">' + top + '</div><div class="script-card-info"><div class="script-card-title">' + titleLink + '</div>' + (d ? '<div class="script-card-desc">' + d + '</div>' : "") + (tags ? '<div class="script-card-tags">' + tags + '</div>' : "") + '</div></div>';
+}
+
+function setF(t) {
+  filterTag = filterTag === t ? null : t;
+  history.replaceState(null, "", filterTag ? "?tag=" + encodeURIComponent(t) : "/");
+  render();
+}
+
+function toggleSort(t) {
+  sortModes[t] = sortModes[t] === "date" ? "name" : "date";
+  localStorage.setItem("sortModes", JSON.stringify(sortModes));
+  render();
+}
+
+function render() {
+  if (scripts.length === 0) return;
+  var q = (document.getElementById("search").value || "").toLowerCase();
+  var grid = document.getElementById("grid");
+  var fl = document.getElementById("active-filters");
+  var f = scripts.filter(function(s) {
+    if (filterTag && (s.tags || []).indexOf(filterTag) < 0) return false;
+    if (q && s.title.toLowerCase().indexOf(q) < 0 && s.slug.indexOf(q) < 0 && (s.tags || []).every(function(t) { return t.toLowerCase().indexOf(q.replace(/^#/, '')) < 0; })) return false;
+    return true;
+  });
+  var cnt = {}; f.forEach(function(s) { cnt[s.type] = (cnt[s.type] || 0) + 1; });
+  document.getElementById("count").textContent = f.length + " / " + scripts.length;
+  fl.innerHTML = filterTag ? '<span class="active-filter" onclick="setF(\'' + filterTag + '\')">#' + filterTag + ' <span class="active-filter-close">×</span></span>' : "";
+  grid.innerHTML = TYPES.map(function(t) {
+    var items = f.filter(function(s) { return s.type === t; });
+    var sm = sortModes[t];
+    items.sort(function(a, b) {
+      if (sm === "date") {
+        var d = (b.updated_at || "").localeCompare(a.updated_at || "");
+        return d !== 0 ? d : a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+      }
+      var n = a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+      return n !== 0 ? n : (b.updated_at || "").localeCompare(a.updated_at || "");
+    });
+    var sortBtns = window.sortBtns(sm, t);
+    var total = scripts.filter(function(s) { return s.type === t; }).length;
+    return '<div class="category-column"><h2>' + LABELS[t] + ' | <a href="/' + t + '/">All</a> <span class="count-meta">' + (cnt[t] || 0) + "/" + total + '</span>' + sortBtns + "</h2>" + items.map(function(s) { return cardHTML(s, scripts.indexOf(s)); }).join("") + "</div>";
+  }).join("");
+}
+
+document.getElementById("search").addEventListener("input", render);
+
+fetch("/scripts.json").then(function(r) { return r.json(); }).then(function(d) {
+  scripts = d.scripts;
+  document.getElementById("filter-bar").style.display = "flex";
+  render();
+});
+</script>
