@@ -16,7 +16,11 @@ Every script in the project was ported from the upstream JSON-pair metadata form
 
 Syntax highlighting was replaced with a custom AST-driven rendering pipeline. The Go-based tool (`tools/ast/main.go`) uses mvdan/sh to parse bash scripts into typed token spans (16 token kinds) and emits schema-v2 JSON under `_ast/`. The Jekyll layout renders source code using these tokens directly, eliminating highlight.js (1253 lines of vendored JS and CSS removed). The tool also classifies scripts for safety (host-bound logic, external sources, eval, tool flags) — data consumed by the Jekyll plugin for per-page safety warnings.
 
-- Replace highlight.js with AST-driven token rendering [<HEAD>]
+- Replace highlight.js with AST-driven token rendering [6af051c]
+
+A complete documentation suite was added: architecture (`docs/architecture.md`), script-AST reference (`docs/script-ast.md`), contributor guide (`docs/contributor-guide.md`), function reference (`docs/function-reference.md`), and migration guide (`docs/migration.md`). `AGENTS.md` was updated with contributor conventions, and `TODO.md` was added to track pre-release framework tasks.
+
+- Add fork documentation suite [<HEAD>]
 
 ### Fix
 

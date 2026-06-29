@@ -9,11 +9,10 @@ Every script is **single-file** — the container template, install logic, and u
 ```bash
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-source <(curl -fsSL "$REPO_BASE/misc/build.func")
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: YourName (GitHubUsername)
-# License: MIT | https://github.com/scripts-underground/proxmox/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://application-url.com
 
 APP="AppName"
@@ -26,13 +25,6 @@ var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
-  color
-  verb_ip6
-  catch_errors
-  setting_up_container
-  network_check
-  update_os
-
   msg_info "Installing Dependencies"
   $STD apt install -y dep1 dep2
   msg_ok "Installed Dependencies"
@@ -40,70 +32,104 @@ function install_script() {
   fetch_and_deploy_gh_release "appname" "owner/repo" "tarball"
 
   msg_info "Creating Service"
-  cat <<'SVCEOF' >/etc/systemd/system/appname.service
+  cat <<EOF >/etc/systemd/system/appname.service
 [Unit]
 Description=AppName Service
 After=network.target
+
 [Service]
 Type=simple
 User=root
 ExecStart=/opt/appname/bin/server
 Restart=on-failure
+
 [Install]
 WantedBy=multi-user.target
-SVCEOF
+EOF
   systemctl enable -q --now appname
   msg_ok "Created Service"
+}
+
+function post_install_script() {
+  msg_ok "Completed successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW}Access it using the following URL:${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}:3000${CL}"
 }
 
 function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -d /opt/appname ]]; then
-    msg_error "No ${APP} Installation Found!"
-    exit
-  fi
-  if check_for_gh_release "appname" "owner/repo"; then
-    msg_info "Stopping Service"
-    systemctl stop appname
-    msg_ok "Stopped Service"
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "appname" "owner/repo" "tarball"
-    msg_info "Starting Service"
-    systemctl start appname
-    msg_ok "Started Service"
-    msg_ok "Updated successfully!"
-  fi
+  ...
   exit
-}
-
-function post_install_script() {
-  msg_ok "Completed Successfully!\n"
-  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}"
 }
 
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
 ```
 
-### Required Functions
+### Function Order (Required)
 
-| Function | Where | Purpose |
-|---|---|---|
-| `install_script()` | Container | App installation (apt, git, systemd) |
-| `update_script()` | Container | App update logic |
+Functions must appear in **bootstrap execution order** within the file:
 
-### Optional Hooks
+```
+install_script()       → runs inside container, app-specific install logic
+post_build_script()    → (optional) runs on host after container creation, for pct set / volume mounting
+post_install_script()  → runs on host, success message with access URLs
+update_script()        → runs inside container on update invocation
+uninstall_script()     → (optional) runs inside container on uninstall
+```
+
+Utility/helper functions (header_info, msg_*, setup_*, etc.) go before the hook functions.
+
+## Bootstrap Execution Flow
+
+The `misc/bootstrap/lxc` orchestrates execution in this order on the HOST:
+
+```
+1. source build.func       → load framework (core.func, tools.func, etc.)
+2. variables               → setup prompt variables
+3. color                   → define color/formatting vars (GN, CL, INFO, etc.)
+4. catch_errors            → error traps
+5. start                   → initialize container creation
+6. build_container         → create LXC, run install_script() inside container
+7. post_build_script()     → optional hook: host-side tweaks (volume mounting, pct commands)
+8. description             → set Proxmox GUI description, get container IP
+9. post_install_script()   → success messages with access URLs
+```
+
+Inside the container, `build_container` runs this order automatically (no need to call these in install_script):
+
+```
+setting_up_container → network_check → update_os → install_script() → motd_ssh → customize → cleanup_lxc
+```
+
+## Optional Hooks
 
 | Hook | Where | Purpose |
 |---|---|---|
-| `pre_build_script()` | Host | Pre-flight validation |
-| `post_build_script()` | Host | Post-creation tweaks (`pct set`, etc.) |
+| `pre_build_script()` | Host | Pre-flight validation before container creation |
+| `post_build_script()` | Host | Post-creation tweaks (`pct set`, volume mounting, etc.) |
 | `post_install_script()` | Host | Success messages with access URLs |
+| `uninstall_script()` | Container | Uninstall/cleanup logic |
 
-All hooks run on the **host** except `install_script()` and `update_script()` which run inside the container. The bootstrap (`misc/bootstrap/lxc`) validates, initializes, and orchestrates the pipeline — the contributor only supplies data and functions.
+## Copyright Header
 
-### Metadata (`_lxc/appname.md`)
+Every script must include a copyright header after the REPO_BASE line:
+
+```bash
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: OriginalAuthor (GitHubUsername)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://application-url.com
+```
+
+- `Copyright` — keep original upstream attribution
+- `Author` — original author from upstream. If the script header has `| Co-Author:`, use the `co_author` field in metadata
+- `License` — must point to **our** repo's LICENSE file, not upstream
+- `Source` — application/project URL
+
+## Metadata (`_lxc/appname.md`)
 
 ```yaml
 ---
@@ -111,87 +137,80 @@ slug: appname
 title: AppName
 tags: [tag1, tag2]
 logo: /assets/logos/appname.webp
-by: YourGitHubUsername
+by: GitHubUsername
+co_author: [CoAuthor1, CoAuthor2]   # optional
 repo: https://github.com/owner/repo
 site: https://appname.com
+port: 3000
 cpu: 2
 ram: 2048
 disk: 8
-port: 3000
-maintainer: YourGitHubUsername
+maintainer: GitHubUsername
 ---
-
-Short description.
-
-## Notes
-
-- Setup notes
-- Compatibility info
-
-## Links
-
-- [Website](https://appname.com)
 ```
 
----
+- **tags** — must match upstream `var_tags` values (semicolon-separated in script, converted to YAML array in metadata)
+- **by** — primary author (first `# Author:` in upstream)
+- **co_author** — optional array of co-authors
+- **repo** — upstream repo URL
+- **site** — project website (prefer the JSON `website` field over the `# Source:` line when they differ)
+- **port**, **cpu**, **ram**, **disk** — must match the `var_*` defaults in the script
 
-## Adding a New LXC Script
+## OS Template Scripts
 
-1. Run `cp scripts/lxc/_template.sh scripts/lxc/yourapp.sh`  
-   (If no template exists, copy an existing simple script like `kiwix.sh`)
+For OS template scripts (Alpine, Debian, Ubuntu, CentOS, Arch, etc.) that have no app-specific install logic, the `install_script()` must include a comment:
 
-2. Fill in the metadata at the top: `APP`, `var_tags`, `var_cpu`, `var_ram`, `var_disk`, `var_os`, `var_version`
+```bash
+function install_script() {
+  # This space intentionally left blank — build_container handles setup/teardown
+}
+```
 
-3. Write `install_script()` — this is the app install logic that runs inside the container. Start with the standard init block (`color; verb_ip6; catch_errors; setting_up_container; network_check; update_os`). Do NOT include `motd_ssh`, `customize`, or `cleanup_lxc` — the bootstrap handles them.
-
-4. Write `update_script()` — this is the app update logic. Must start with `header_info; check_container_storage; check_container_resources` and end with `exit`.
-
-5. Write `post_install_script()` — success message with access URL.
-
-6. Create `_lxc/yourapp.md` with YAML front matter (see template above).
-
-7. Add a logo to `assets/logos/` or reference a URL/base64 SVG in the metadata.
-
-8. Source the bootstrap at the very bottom: `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")`
-
-9. Never call `start`, `build_container`, or `description` — the bootstrap handles the flow.
-
-10. Test with `REPO_BASE=... bash scripts/lxc/yourapp.sh`
-
----
-
-## Other Script Types
-
-### VM Scripts (`scripts/vm/appname.sh`)
-
-Self-contained scripts that create VMs. Source `api.func`, handle `qm create`, and source `bootstrap/vm` at the bottom.
-
-### Addon Scripts (`scripts/addon/appname.sh`)
-
-Run inside existing LXC containers. Source `core.func` + `tools.func`, install additional tools, source `bootstrap/addon` at the bottom.
-
-### PVE Scripts (`scripts/pve/toolname.sh`)
-
-Run on the Proxmox host. Source `core.func` + `api.func`, perform host-level operations, source `bootstrap/pve` at the bottom.
-
----
+The bootstrap requires `install_script()` to be defined, but `build_container` handles all OS template creation. The comment makes it clear this is intentional, not an oversight.
 
 ## Conventions
 
-- **No `start`/`build_container`/`description` calls** in LXC scripts — the bootstrap runs them
-- **No `motd_ssh`/`customize`/`cleanup_lxc`** in `install_script()` — the wrapper handles them
-- **No host-level execution** — all install commands go inside `install_script()` (container-side)
-- **Credentials stay inside container** — write to files, reference paths in `post_install_script()`
+- **No `start`/`build_container`/`description` calls** — the bootstrap handles the flow
+- **No `motd_ssh`/`customize`/`cleanup_lxc`** in `install_script()` — `build_container` handles them
+- **All `var_*` must use `${var:-default}` pattern** — enables env var overrides
 - **Use `$STD`** before all apt/npm/build commands
-- **Use `fetch_and_deploy_gh_release`** instead of curl/wget
 - **Use `setup_*` functions** for runtimes (nodejs, postgresql, go, rust, python/uv)
-- **Never use Docker** — bare-metal installation only
+- **Use `fetch_and_deploy_gh_release`** instead of curl/wget for GitHub releases
+- **Never use Docker** in LXC scripts — bare-metal installation only
 - **Never use `sudo`** — scripts run as root inside containers
 - **Use `apt`** not `apt-get`
+- **Credentials stay inside container** — write to files, reference paths in `post_install_script()`
+- **Run `shfmt -i 2 -ci -sr -w`** before committing shell scripts
+- **Run `shellcheck --severity=warning`** to catch issues before committing
 
-## Site
+## Addon / PVE / VM Scripts
 
-- **Jekyll** site in `assets/`, `_layouts/`, `_includes/`
-- Semantic colors: `--cta` (orange, clickable), `--accent` (green, decorative), `--text-muted` (pills)
-- `_plugins/external_links.rb` sanitizes markdown and adds `rel="noopener noreferrer"` to links
-- `fetch-logos.rb` converts remote logos to WebP 512x512
+Addon, PVE, and VM scripts follow the same function ordering convention as LXC scripts:
+
+```
+install_script → post_install_script → update_script → uninstall_script
+```
+
+All other conventions (REPO_BASE, copyright header, shfmt formatting, variable patterns) apply to all script types.
+
+## Formatting & Linting
+
+All shell scripts must pass:
+
+```bash
+shfmt -i 2 -ci -sr -d scripts/**/*.sh    # check formatting
+shfmt -i 2 -ci -sr -w scripts/**/*.sh    # fix formatting
+shellcheck --severity=warning scripts/**/*.sh  # lint
+```
+
+These checks run in CI (`.github/workflows/deploy.yml`) and as pre-commit hooks (`.pre-commit-config.yaml`).
+
+## Regenerating AST files
+
+`_ast/` is gitignored. Generate it locally with:
+
+    go run ./tools/ast/.
+
+CI regenerates on every build. If `go run ./tools/ast/.` exits non-zero,
+it's reporting a REPO_BASE policy violation. Read the stderr report and
+fix the offending script before committing.
