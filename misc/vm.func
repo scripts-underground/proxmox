@@ -1,0 +1,121 @@
+GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//') 2>/dev/null || true
+
+vm_init_colors() {
+  YW="\033[33m"; BL="\033[36m"; RD="\033[01;31m"
+  BGN="\033[4;92m"; GN="\033[1;92m"; DGN="\033[32m"; CL="\033[m"
+  BOLD="\033[1m"; BFR="\\r\\033[K"; HOLD=" "; TAB="  "
+  CM="${TAB}✔️${TAB}${CL}"; CROSS="${TAB}✖️${TAB}${CL}"
+  INFO="${TAB}💡${TAB}${CL}"
+}
+
+vm_validate() {
+  if ! command -v pveversion >/dev/null 2>&1; then
+    echo "Error: must run on Proxmox VE host"; exit 1
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: must run as root"; exit 1
+  fi
+  if [ "$(dpkg --print-architecture)" != "amd64" ]; then
+    echo "Error: amd64 architecture required"; exit 1
+  fi
+}
+
+vm_select_storage() {
+  STORAGE_MENU=(); MSG_MAX_LENGTH=0
+  while read -r line; do
+    TAG=$(echo "$line" | awk '{print $1}')
+    TYPE=$(echo "$line" | awk '{printf "%-10s", $2}')
+    FREE=$(echo "$line" | numfmt --field 4-6 --from-unit=K --to=iec --format %.2f | awk '{printf( "%9sB", $6)}')
+    STORAGE_MENU+=("$TAG" "  Type: $TYPE Free: $FREE " "OFF")
+  done < <(pvesm status -content images | awk 'NR>1')
+  VALID=$(pvesm status -content images | awk 'NR>1')
+  if [ -z "$VALID" ]; then
+    echo "Error: no valid storage found"; exit 1
+  elif [ $((${#STORAGE_MENU[@]} / 3)) -eq 1 ]; then
+    STORAGE=${STORAGE_MENU[0]}
+  else
+    while [ -z "${STORAGE:+x}" ]; do
+      STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
+        "Which storage pool?\n" 16 $((MSG_MAX_LENGTH + 23)) 6 "${STORAGE_MENU[@]}" 3>&1 1>&2 2>&3)
+    done
+  fi
+}
+
+vm_download_image() {
+  local url="${VM_URL:-}"
+  [ -z "$url" ] && { echo "Error: VM_URL not set"; exit 1; }
+  msg_info "Downloading VM image"
+  curl -f#SL -o "$(basename "$url")" "$url"
+  VM_FILE="$(basename "$url")"
+  msg_ok "Downloaded $VM_FILE"
+}
+
+vm_create() {
+  local vm_ostype="${VM_OSTYPE:-l26}"
+  local vm_bios="${VM_BIOS:-ovmf}"
+  local vm_machine="${VM_MACHINE:-}"
+  local vm_disk_format="${VM_DISK_FORMAT:-qcow2}"
+  local vm_disk_cache="${VM_DISK_CACHE:-}"
+  local vm_cpu="${VM_CPU:-}"
+  local vm_ci="${VM_CLOUD_INIT:-yes}"
+
+  msg_info "Creating VM $VMID"
+  qm create "$VMID" -agent 1${vm_machine:+ $vm_machine} -tablet 0 -localtime 1 \
+    -bios "$vm_bios"${vm_cpu:+ $vm_cpu} -cores "${CORE_COUNT:-2}" -memory "${RAM_SIZE:-2048}" \
+    -name "${HN:-vm}" -net0 "virtio,bridge=${BRG:-vmbr0},macaddr=${MAC:-$GEN_MAC}" \
+    -onboot 1 -ostype "$vm_ostype" -scsihw virtio-scsi-pci
+
+  pvesm alloc "$STORAGE" "$VMID" "vm-${VMID}-disk-0" 4M 1>&/dev/null
+
+  local import_fmt=""
+  [ "$vm_disk_format" = "raw" ] && import_fmt="-format raw"
+
+  qm importdisk "$VMID" "$VM_FILE" "$STORAGE" $import_fmt 1>&/dev/null
+
+  local disk0_ref="${STORAGE}:vm-${VMID}-disk-0"
+  local disk1_ref="${STORAGE}:vm-${VMID}-disk-1"
+
+  local efi=",efitype=4m"
+  [ "$vm_bios" != "ovmf" ] && efi=""
+
+  qm set "$VMID" \
+    -efidisk0 "${disk0_ref}${efi}" \
+    -scsi0 "${disk1_ref},${vm_disk_cache:+$vm_disk_cache,}size=${DISK_SIZE:-10G}" \
+    ${vm_ci:+-ide2 "${STORAGE}:cloudinit"} \
+    -boot order=scsi0 \
+    -serial0 socket >/dev/null
+
+  qm resize "$VMID" scsi0 "${DISK_SIZE:-10G}" >/dev/null
+  msg_ok "Created VM $VMID"
+}
+
+vm_start() {
+  VM_PASSWORD="${VM_PASSWORD:-$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c13)}"
+  qm set "$VMID" --ciuser root --cipassword "$VM_PASSWORD" >/dev/null 2>&1 || true
+  qm start "$VMID" >/dev/null
+  msg_ok "Started VM $VMID"
+}
+
+vm_wait_for_ssh() {
+  local ip="${1:-}"
+  local timeout="${2:-180}"
+  local waited=0
+  [ -z "$ip" ] && { echo "Warning: no IP, skipping SSH wait"; return 1; }
+  while [ $waited -lt $timeout ]; do
+    if sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@"$ip" exit 2>/dev/null; then
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  echo "Warning: SSH timeout after ${timeout}s"
+  return 1
+}
+
+vm_inject_install() {
+  local ip="${1:-}"
+  [ -z "$ip" ] && return 1
+  if declare -F install_script >/dev/null 2>&1; then
+    sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no root@"$ip" bash <<< "$(declare -f install_script); install_script"
+  fi
+}

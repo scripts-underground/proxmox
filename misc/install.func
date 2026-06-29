@@ -213,35 +213,7 @@ _bootstrap() {
 _bootstrap
 detect_os
 
-# Persist diagnostics setting inside container (exported from build.func)
-# so addon scripts running later can find the user's choice
-if [[ ! -f /usr/local/community-scripts/diagnostics ]]; then
-  mkdir -p /usr/local/community-scripts
-  echo "DIAGNOSTICS=${DIAGNOSTICS:-no}" >/usr/local/community-scripts/diagnostics
-fi
 
-# ------------------------------------------------------------------------------
-# post_progress_to_api()
-#
-# - Lightweight progress ping from inside the container
-# - Updates the existing telemetry record status
-# - Arguments:
-#   * $1: status (optional, default: "configuring")
-# - Signals that the installation is actively progressing (not stuck)
-# - Fire-and-forget: never blocks or fails the script
-# - Only executes if DIAGNOSTICS=yes and RANDOM_UUID is set
-# ------------------------------------------------------------------------------
-post_progress_to_api() {
-  command -v curl &>/dev/null || return 0
-  [[ "${DIAGNOSTICS:-no}" == "no" ]] && return 0
-  [[ -z "${RANDOM_UUID:-}" ]] && return 0
-
-  local progress_status="${1:-configuring}"
-
-  curl -fsS -m 5 -X POST "https://telemetry.community-scripts.org/telemetry" \
-    -H "Content-Type: application/json" \
-    -d "{\"random_id\":\"${RANDOM_UUID}\",\"execution_id\":\"${EXECUTION_ID:-${RANDOM_UUID}}\",\"type\":\"lxc\",\"nsapp\":\"${app:-unknown}\",\"status\":\"${progress_status}\"}" &>/dev/null || true
-}
 
 # ==============================================================================
 # SECTION 2: PACKAGE MANAGER ABSTRACTION
@@ -996,7 +968,6 @@ setting_up_container() {
 
   msg_ok "Set up Container OS"
   msg_ok "Network Connected: ${BL}$(get_ip)"
-  post_progress_to_api
 }
 
 # ------------------------------------------------------------------------------
@@ -1133,7 +1104,6 @@ EOF
   rm -rf /usr/lib/python3.*/EXTERNALLY-MANAGED 2>/dev/null || true
 
   msg_ok "Updated Container OS"
-  post_progress_to_api
 
   # Source appropriate tools.func based on OS
   local tools_content
@@ -1293,7 +1263,6 @@ EOF
       esac
     fi
   fi
-  post_progress_to_api
 }
 
 # ==============================================================================
@@ -1301,11 +1270,11 @@ EOF
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# customize()
+# setup_lxc()
 #
-# Customizes container for passwordless login and creates update script
+# Configures LXC container: autologin, terminal fixes, CLI scripts, SSH keys
 # ------------------------------------------------------------------------------
-customize() {
+setup_lxc() {
   if [[ "${PASSWORD:-}" == "" ]]; then
     msg_info "Customizing Container"
 
@@ -1421,11 +1390,15 @@ EOF
     msg_ok "Customized Container"
   fi
 
-  # Create update script
-  # Use var_os for OS-based containers, otherwise use app name
-  local update_script_name="${var_os:-$app}"
-  echo "bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/ct/${update_script_name}.sh)\"" >/usr/bin/update
-  chmod +x /usr/bin/update
+  # Install baked update and uninstall scripts
+  if [[ -f "/tmp/_update.sh" ]]; then
+    mv "/tmp/_update.sh" "/usr/local/bin/update"
+    chmod +x "/usr/local/bin/update"
+  fi
+  if [[ -f "/tmp/_uninstall.sh" ]]; then
+    mv "/tmp/_uninstall.sh" "/usr/local/bin/uninstall"
+    chmod +x "/usr/local/bin/uninstall"
+  fi
 
   # Inject SSH authorized keys if provided
   if [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
@@ -1434,7 +1407,6 @@ EOF
     chmod 700 /root/.ssh
     chmod 600 /root/.ssh/authorized_keys
   fi
-  post_progress_to_api
 }
 
 # ==============================================================================
