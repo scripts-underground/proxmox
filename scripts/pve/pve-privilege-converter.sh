@@ -3,12 +3,12 @@
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
 # Adapted from onethree7 (https://github.com/onethree7/proxmox-lxc-privilege-converter)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
-if ! command -v curl >/dev/null 2>&1; then
+if ! command -v curl > /dev/null 2>&1; then
   printf "\r\e[2K%b" '\033[93m Setup Source \033[m' >&2
-  apt-get update >/dev/null 2>&1
-  apt-get install -y curl >/dev/null 2>&1
+  apt-get update > /dev/null 2>&1
+  apt-get install -y curl > /dev/null 2>&1
 fi
 source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
 load_functions
@@ -44,7 +44,7 @@ select_target_storage_and_container_id() {
     fi
   done
 
-  next_free_id=$(pvesh get /cluster/nextid 2>/dev/null || echo 999)
+  next_free_id=$(pvesh get /cluster/nextid 2> /dev/null || echo 999)
   [[ "$next_free_id" =~ ^[0-9]+$ ]] || next_free_id=999
 
   echo ""
@@ -67,7 +67,7 @@ select_container() {
   PS3="Enter number of container to convert: "
   select opt in "${lxc_list[@]}"; do
     if [[ -n "$opt" ]]; then
-      read -r CONTAINER_ID CONTAINER_NAME <<<"$opt"
+      read -r CONTAINER_ID CONTAINER_NAME <<< "$opt"
       CONTAINER_NAME="${CONTAINER_NAME:-}"
       break
     else
@@ -218,7 +218,7 @@ main() {
   summary
 }
 
-main
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null
+main

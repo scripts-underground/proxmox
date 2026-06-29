@@ -4,6 +4,7 @@ title: Nginx Proxy Manager
 tags: [webservers-proxies]
 logo: /assets/logos/nginxproxymanager.webp
 by: tteck
+co_author: [CrazyWolf13, MickLesk]
 repo: https://github.com/NginxProxyManager/nginx-proxy-manager
 site: https://nginxproxymanager.com/
 port: 81

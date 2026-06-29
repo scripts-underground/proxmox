@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/api.func)
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/error_handler.func)
-load_functions
-catch_errors
+APP="TurnKey VM"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-2048}"
+var_disk="${var_disk:-8}"
+VM_URL="${VM_URL:-}"
+VM_OSTYPE="${VM_OSTYPE:-l26}"
+VM_BIOS="${VM_BIOS:-seabios}"
+VM_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
 
-APP="TurnKey LXC"
-NSAPP="turnkey"
-DIAGNOSTICS="no"
-METHOD="default"
-RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)"
-EXECUTION_ID="${RANDOM_UUID}"
-
-header_info() {
+function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
  ______              __ __           __   _  _______
 /_  __/_ _________  / //_/__ __ __  / /  | |/_/ ___/
  / / / // / __/ _ \/ ,< / -_) // / / /___>  </ /__
@@ -27,314 +25,251 @@ header_info() {
 EOF
 }
 
-validate_container_id() {
-  local ctid="$1"
-  [[ "$ctid" =~ ^[0-9]+$ ]] || return 1
+function default_settings() {
+  VMID=$(get_valid_nextid)
+  FORMAT=",efitype=4m"
+  MACHINE=""
+  DISK_SIZE="${var_disk:-8}G"
+  DISK_CACHE=""
+  HN="turnkey"
+  CPU_TYPE=""
+  CORE_COUNT="${var_cpu:-2}"
+  RAM_SIZE="${var_ram:-2048}"
+  BRG="vmbr0"
+  MAC=""
+  VLAN=""
+  MTU=""
+  START_VM="no"
+  METHOD="default"
+  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID}${CL}"
+  echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}i440fx${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}None${CL}"
+  echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${HN}${CL}"
+  echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}KVM64${CL}"
+  echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
+  echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE}${CL}"
+  echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${BRG}${CL}"
+  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
+  echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}Default${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}Default${CL}"
+  echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}no${CL}"
+  echo -e "${CREATING}${BOLD}${DGN}Creating a TurnKey VM using the above default settings${CL}"
+}
 
-  if command -v pvesh &>/dev/null; then
-    local cluster_ids
-    cluster_ids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null |
-      grep -oP '"vmid":\s*\K[0-9]+' 2>/dev/null || true)
-    if [[ -n "$cluster_ids" ]] && echo "$cluster_ids" | grep -qw "$ctid"; then
-      return 1
-    fi
-  fi
-
-  if [[ -f "/etc/pve/qemu-server/${ctid}.conf" ]] || [[ -f "/etc/pve/lxc/${ctid}.conf" ]]; then
-    return 1
-  fi
-
-  if [[ -d "/etc/pve/nodes" ]]; then
-    for node_dir in /etc/pve/nodes/*/; do
-      if [[ -f "${node_dir}qemu-server/${ctid}.conf" ]] || [[ -f "${node_dir}lxc/${ctid}.conf" ]]; then
-        return 1
+function advanced_settings() {
+  METHOD="advanced"
+  [ -z "${VMID:-}" ] && VMID=$(get_valid_nextid)
+  while true; do
+    if VMID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Virtual Machine ID" 8 58 $VMID --title "VIRTUAL MACHINE ID" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [ -z "$VMID" ]; then
+        VMID=$(get_valid_nextid)
       fi
-    done
-  fi
-
-  if lvs --noheadings -o lv_name 2>/dev/null | grep -qE "(^|[-_])${ctid}($|[-_])"; then
-    return 1
-  fi
-  return 0
-}
-
-get_valid_container_id() {
-  local suggested_id="${1:-$(pvesh get /cluster/nextid 2>/dev/null || echo 100)}"
-  while ! validate_container_id "$suggested_id"; do
-    suggested_id=$((suggested_id + 1))
+      if pct status "$VMID" &> /dev/null || qm status "$VMID" &> /dev/null; then
+        echo -e "${CROSS}${RD} ID $VMID is already in use${CL}"
+        sleep 2
+        continue
+      fi
+      echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}$VMID${CL}"
+      break
+    else
+      exit_script
+    fi
   done
-  echo "$suggested_id"
-}
 
-cleanup_ctid() {
-  if pct status "$CTID" &>/dev/null; then
-    if [[ "$(pct status "$CTID" | awk '{print $2}')" == "running" ]]; then
-      pct stop "$CTID"
+  if MACH=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "MACHINE TYPE" --radiolist --cancel-button Exit-Script "Choose Type" 10 58 2 \
+    "i440fx" "Machine i440fx" ON \
+    "q35" "Machine q35" OFF \
+    3>&1 1>&2 2>&3); then
+    if [ $MACH = q35 ]; then
+      echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$MACH${CL}"
+      FORMAT=""
+      MACHINE=" -machine q35"
+    else
+      echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}$MACH${CL}"
+      FORMAT=",efitype=4m"
+      MACHINE=""
     fi
-    pct destroy "$CTID"
-  fi
-}
-
-select_storage() {
-  local class="$1" content content_label
-  case "$class" in
-  container)
-    content='rootdir'
-    content_label='Container'
-    ;;
-  template)
-    content='vztmpl'
-    content_label='Container template'
-    ;;
-  *)
-    msg_error "Invalid storage class '$class'"
-    return 1
-    ;;
-  esac
-
-  local -a MENU=()
-  local MSG_MAX_LENGTH=0
-
-  while read -r line; do
-    local TAG TYPE FREE ITEM OFFSET=2
-    TAG=$(echo "$line" | awk '{print $1}')
-    TYPE=$(echo "$line" | awk '{printf "%-10s", $2}')
-    FREE=$(echo "$line" | numfmt --field 4-6 --from-unit=K --to=iec --format %.2f | awk '{printf( "%9sB", $6)}')
-    ITEM="  Type: $TYPE Free: $FREE "
-    ((${#ITEM} + OFFSET > MSG_MAX_LENGTH)) && MSG_MAX_LENGTH=$((${#ITEM} + OFFSET))
-    MENU+=("$TAG" "$ITEM" "OFF")
-  done < <(pvesm status -content "$content" | awk 'NR>1')
-
-  if [[ $((${#MENU[@]} / 3)) -eq 0 ]]; then
-    msg_error "'$content_label' needs to be selected for at least one storage location."
-    return 1
-  elif [[ $((${#MENU[@]} / 3)) -eq 1 ]]; then
-    printf '%s' "${MENU[0]}"
   else
-    local STORAGE
-    while [[ -z "${STORAGE:+x}" ]]; do
-      STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
-        "Which storage pool for the ${content_label,,}?\n\n" \
-        16 $((MSG_MAX_LENGTH + 23)) 6 \
-        "${MENU[@]}" 3>&1 1>&2 2>&3) || exit_script
-    done
-    printf '%s' "$STORAGE"
-  fi
-}
-
-turnkey_cleanup() {
-  local exit_code=$?
-  if [[ $exit_code -ne 0 ]]; then
-    if [[ "${POST_TO_API_DONE:-}" == "true" && "${POST_UPDATE_DONE:-}" != "true" ]]; then
-      post_update_to_api "failed" "$exit_code" 2>/dev/null || true
-    fi
-    if [[ -n "${CTID:-}" ]]; then
-      cleanup_ctid 2>/dev/null || true
-    fi
-  fi
-  if [[ -f /etc/systemd/system/ping-instances.service ]]; then
-    systemctl start ping-instances.service 2>/dev/null || true
-  fi
-}
-trap turnkey_cleanup EXIT
-
-if systemctl is-active -q ping-instances.service; then
-  systemctl stop ping-instances.service
-fi
-
-pve_check
-shell_check
-root_check
-
-DIAG_CONFIG="/usr/local/community-scripts/diagnostics"
-if [[ -f "$DIAG_CONFIG" ]]; then
-  DIAGNOSTICS=$(awk -F '=' '/^DIAGNOSTICS/ {print $2}' "$DIAG_CONFIG") || true
-  DIAGNOSTICS="${DIAGNOSTICS:-no}"
-fi
-
-header_info
-whiptail --backtitle "Proxmox VE Helper Scripts" --title "TurnKey LXCs" --yesno \
-  "This will allow for the creation of one of the many TurnKey LXC Containers. Proceed?" 10 68 || exit_script
-
-msg_info "Updating LXC template list"
-pveam update >/dev/null
-msg_ok "Updated LXC template list"
-
-command -v gawk &>/dev/null || apt-get install -y gawk &>/dev/null
-declare -A TURNKEY_TEMPLATES
-TURNKEY_MENU=()
-MSG_MAX_LENGTH=0
-while IFS=$'\t' read -r TEMPLATE_FILE TAG ITEM; do
-  TURNKEY_TEMPLATES["$TAG"]="$TEMPLATE_FILE"
-  OFFSET=2
-  ((${#ITEM} + OFFSET > MSG_MAX_LENGTH)) && MSG_MAX_LENGTH=$((${#ITEM} + OFFSET))
-  TURNKEY_MENU+=("$TAG" "$ITEM " "OFF")
-done < <(pveam available -section turnkeylinux | gawk '{
-  tpl = $2
-  if (match(tpl, /debian-([0-9]+)-turnkey-([^_]+)_([^_]+)_/, m)) {
-    app = m[2]; deb = m[1]; ver = m[3]
-    display = app
-    gsub(/-/, " ", display)
-    n = split(display, words, " ")
-    display = ""
-    for (i = 1; i <= n; i++) {
-      words[i] = toupper(substr(words[i], 1, 1)) substr(words[i], 2)
-      display = display (i > 1 ? " " : "") words[i]
-    }
-    tag = app "-" deb
-    printf "%s\t%s\t%s | Debian %s | %s\n", tpl, tag, display, deb, ver
-  }
-}' | sort -t$'\t' -k2,2)
-
-if [[ ${#TURNKEY_MENU[@]} -eq 0 ]]; then
-  msg_error "No TurnKey templates found. Check your internet connection or template repository."
-  exit 1
-fi
-
-selected=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "TurnKey LXCs" --radiolist \
-  "\nSelect a TurnKey LXC to create:\n" 20 $((MSG_MAX_LENGTH + 58)) 12 \
-  "${TURNKEY_MENU[@]}" 3>&1 1>&2 2>&3 | tr -d '"') || exit_script
-
-if [[ -z "$selected" ]]; then
-  whiptail --backtitle "Proxmox VE Helper Scripts" --title "No TurnKey LXC Selected" \
-    --msgbox "It appears that no TurnKey LXC container was selected" 10 68
-  exit_script
-fi
-
-TEMPLATE="${TURNKEY_TEMPLATES[$selected]}"
-turnkey="${selected%-*}"
-
-PASS="$(openssl rand -base64 8)"
-
-NEXT_ID=$(pvesh get /cluster/nextid 2>/dev/null || echo 100)
-while true; do
-  CTID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Container ID" \
-    --inputbox "Enter the container ID..." 8 40 "$NEXT_ID" 3>&1 1>&2 2>&3) || exit_script
-
-  if [[ -z "$CTID" ]]; then
-    msg_error "No Container ID selected"
     exit_script
   fi
 
-  if ! validate_container_id "$CTID"; then
-    SUGGESTED_ID=$(get_valid_container_id "$CTID")
-    if whiptail --backtitle "Proxmox VE Helper Scripts" --title "ID Already In Use" --yesno \
-      "Container/VM ID $CTID is already in use.\n\nWould you like to use the next available ID ($SUGGESTED_ID)?" 10 58; then
-      CTID="$SUGGESTED_ID"
-      break
+  if DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Disk Size in GiB" 8 58 "$DISK_SIZE" --title "DISK SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    DISK_SIZE=$(echo "$DISK_SIZE" | tr -d ' ')
+    if [[ "$DISK_SIZE" =~ ^[0-9]+$ ]]; then
+      DISK_SIZE="${DISK_SIZE}G"
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$DISK_SIZE${CL}"
+    elif [[ "$DISK_SIZE" =~ ^[0-9]+G$ ]]; then
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$DISK_SIZE${CL}"
+    else
+      echo -e "${DISKSIZE}${BOLD}${RD}Invalid Disk Size.${CL}"
+      exit_script
     fi
   else
-    break
+    exit_script
   fi
-done
 
-HOST_NAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Hostname" \
-  --inputbox "Enter the container hostname..." 8 40 "turnkey-${turnkey}" 3>&1 1>&2 2>&3) || exit_script
-
-PCT_OPTIONS=(
-  -features keyctl=1,nesting=1
-  -hostname "$HOST_NAME"
-  -tags community-script
-  -onboot 1
-  -cores 2
-  -memory 2048
-  -password "$PASS"
-  -net0 name=eth0,bridge=vmbr0,ip=dhcp
-  -unprivileged 1
-  -arch "$(dpkg --print-architecture)"
-)
-
-TEMPLATE_STORAGE=$(select_storage template) || {
-  msg_error "Failed to select template storage"
-  exit 1
-}
-msg_ok "Using '${BL}${TEMPLATE_STORAGE}${CL}' for template storage"
-
-CONTAINER_STORAGE=$(select_storage container) || {
-  msg_error "Failed to select container storage"
-  exit 1
-}
-msg_ok "Using '${BL}${CONTAINER_STORAGE}${CL}' for container storage"
-
-if ! pveam list "$TEMPLATE_STORAGE" | grep -q "$TEMPLATE"; then
-  msg_info "Downloading LXC template"
-  pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null || {
-    msg_error "Failed to download LXC template '${TEMPLATE}'"
-    exit 1
-  }
-  msg_ok "Downloaded LXC template"
-fi
-
-[[ " ${PCT_OPTIONS[*]} " =~ " -rootfs " ]] || PCT_OPTIONS+=(-rootfs "${CONTAINER_STORAGE}:${PCT_DISK_SIZE:-8}")
-
-TELEMETRY_TYPE="turnkey"
-NSAPP="turnkey-${turnkey}"
-CT_TYPE=1
-DISK_SIZE="${PCT_DISK_SIZE:-8}"
-CORE_COUNT=2
-RAM_SIZE=2048
-var_os="turnkey"
-var_version="${turnkey}"
-
-post_to_api
-
-msg_info "Creating LXC container"
-pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" "${PCT_OPTIONS[@]}" >/dev/null || {
-  msg_error "Failed to create container"
-  exit 1
-}
-msg_ok "Created LXC container (ID: ${BL}${CTID}${CL})"
-
-CREDS_FILE=~/turnkey-${turnkey}.creds
-echo "TurnKey ${turnkey} password: ${PASS}" >>"$CREDS_FILE"
-chmod 600 "$CREDS_FILE"
-
-TUN_DEVICE_REQUIRED=("openvpn")
-if printf '%s\n' "${TUN_DEVICE_REQUIRED[@]}" | grep -qw "${turnkey}"; then
-  msg_info "Configuring TUN device access for ${turnkey}"
-  {
-    echo "lxc.cgroup2.devices.allow: c 10:200 rwm"
-    echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file 0 0"
-  } >>"/etc/pve/lxc/${CTID}.conf"
-  msg_ok "TUN device access configured"
-  sleep 5
-fi
-
-msg_info "Starting LXC container"
-pct start "$CTID"
-msg_ok "Started LXC container"
-sleep 10
-
-msg_info "Detecting IP address"
-IP=""
-for attempt in $(seq 1 5); do
-  IP=$(pct exec "$CTID" -- ip -4 a show dev eth0 2>/dev/null | grep -oP 'inet \K[^/]+' || true)
-  if [[ -n "$IP" ]]; then
-    break
+  if DISK_CACHE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "DISK CACHE" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
+    "0" "None (Default)" ON \
+    "1" "Write Through" OFF \
+    3>&1 1>&2 2>&3); then
+    if [ $DISK_CACHE = "1" ]; then
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}Write Through${CL}"
+      DISK_CACHE="cache=writethrough,"
+    else
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}None${CL}"
+      DISK_CACHE=""
+    fi
+  else
+    exit_script
   fi
-  [[ $attempt -lt 5 ]] && sleep 5
-done
 
-if [[ -z "$IP" ]]; then
-  msg_warn "IP address not found after 5 attempts"
-  IP="NOT FOUND"
-else
-  msg_ok "IP address: ${BL}${IP}${CL}"
-fi
+  if VM_NAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Hostname" 8 58 turnkey --title "HOSTNAME" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $VM_NAME ]; then
+      HN="turnkey"
+      echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}$HN${CL}"
+    else
+      HN=$(echo ${VM_NAME,,} | tr -d ' ')
+      echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}$HN${CL}"
+    fi
+  else
+    exit_script
+  fi
 
-post_update_to_api "done" "none"
+  if CPU_TYPE1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "CPU MODEL" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
+    "0" "KVM64 (Default)" ON \
+    "1" "Host" OFF \
+    3>&1 1>&2 2>&3); then
+    if [ $CPU_TYPE1 = "1" ]; then
+      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
+      CPU_TYPE=" -cpu host"
+    else
+      echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}KVM64${CL}"
+      CPU_TYPE=""
+    fi
+  else
+    exit_script
+  fi
 
-header_info
-echo
-msg_ok "TurnKey ${BL}${turnkey}${CL} LXC container '${BL}${CTID}${CL}' was successfully created."
-echo
-echo -e "  ${TAB}${YW}IP Address:${CL}  ${BL}${IP}${CL}"
-echo -e "  ${TAB}${YW}Login:${CL}       ${GN}root${CL}"
-echo -e "  ${TAB}${YW}Password:${CL}    ${GN}${PASS}${CL}"
-echo
-echo -e "  ${TAB}Proceed to the LXC console to complete the TurnKey setup."
-echo -e "  ${TAB}Credentials stored in: ${BL}~/turnkey-${turnkey}.creds${CL}"
-echo
+  if CORE_COUNT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate CPU Cores" 8 58 2 --title "CORE COUNT" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $CORE_COUNT ]; then
+      CORE_COUNT="2"
+      echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
+    else
+      echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
+    fi
+  else
+    exit_script
+  fi
 
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/vm") 2>/dev/null
+  if RAM_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate RAM in MiB" 8 58 2048 --title "RAM" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $RAM_SIZE ]; then
+      RAM_SIZE="2048"
+      echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}$RAM_SIZE${CL}"
+    else
+      echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}$RAM_SIZE${CL}"
+    fi
+  else
+    exit_script
+  fi
+
+  if BRG=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Bridge" 8 58 vmbr0 --title "BRIDGE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $BRG ]; then
+      BRG="vmbr0"
+      echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
+    else
+      echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
+    fi
+  else
+    exit_script
+  fi
+
+  if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address" 8 58 --title "MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $MAC1 ]; then
+      MAC=""
+      echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
+    else
+      MAC="$MAC1"
+      echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC1${CL}"
+    fi
+  else
+    exit_script
+  fi
+
+  if VLAN1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Vlan(leave blank for default)" 8 58 --title "VLAN" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $VLAN1 ]; then
+      VLAN1="Default"
+      VLAN=""
+      echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$VLAN1${CL}"
+    else
+      VLAN=",tag=$VLAN1"
+      echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$VLAN1${CL}"
+    fi
+  else
+    exit_script
+  fi
+
+  if MTU1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Interface MTU Size (leave blank for default)" 8 58 --title "MTU SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $MTU1 ]; then
+      MTU1="Default"
+      MTU=""
+      echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$MTU1${CL}"
+    else
+      MTU=",mtu=$MTU1"
+      echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$MTU1${CL}"
+    fi
+  else
+    exit_script
+  fi
+
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "START VIRTUAL MACHINE" --yesno "Start VM when completed?" 10 58); then
+    echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}yes${CL}"
+    START_VM="yes"
+  else
+    echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}no${CL}"
+    START_VM="no"
+  fi
+
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "ADVANCED SETTINGS COMPLETE" --yesno "Ready to create a TurnKey VM?" --no-button Do-Over 10 58); then
+    echo -e "${CREATING}${BOLD}${DGN}Creating a TurnKey VM using the above advanced settings${CL}"
+  else
+    header_info
+    echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    advanced_settings
+  fi
+}
+
+function start_script() {
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "Use Default Settings?" --no-button Advanced 10 58); then
+    header_info
+    echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
+    default_settings
+  else
+    header_info
+    echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
+    advanced_settings
+  fi
+}
+
+function pre_build_script() {
+  header_info
+  echo -e "\n Loading..."
+
+  if whiptail --backtitle "Proxmox VE Helper Scripts" --title "TurnKey VM" --yesno "This will create a New TurnKey VM. Proceed?" 10 58; then
+    :
+  else
+    header_info && exit_script
+  fi
+
+  start_script
+
+  VM_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
+}
+
+function post_install_script() {
+  msg_ok "Created a TurnKey VM ${CL}${BL}(${HN})"
+  msg_ok "Completed successfully!\n"
+}
+
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")

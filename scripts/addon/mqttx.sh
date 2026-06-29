@@ -5,17 +5,7 @@
 # License: MIT
 # Source: https://github.com/emqx/MQTTX
 
-if command -v curl >/dev/null 2>&1; then
-  source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
-  load_functions
-elif command -v wget >/dev/null 2>&1; then
-  source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
-  load_functions
-fi
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/tools.func)
-
-color
-catch_errors
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 APP="MQTTX Web"
 APP_TYPE="tools"
@@ -23,8 +13,6 @@ APP_DIR="/opt/mqttx"
 SERVICE="mqttx-web"
 REPO="emqx/MQTTX"
 DEFAULT_PORT=8095
-
-header_info "$APP"
 
 if ! grep -q -Ei 'debian|ubuntu' /etc/os-release; then
   msg_error "Unsupported OS. This addon supports only Debian or Ubuntu."
@@ -37,8 +25,15 @@ function is_installed() {
   [[ -d "$APP_DIR/web/dist" ]] && systemctl is-active --quiet "$SERVICE"
 }
 
-function install_mqttx() {
-  local port="${1:-$DEFAULT_PORT}"
+function install_script() {
+  read -r -p "Enter port number (default: ${DEFAULT_PORT}): " PORT_INPUT
+  PORT="${PORT_INPUT:-$DEFAULT_PORT}"
+  read -r -p "Install ${APP}? (y/n): " answer
+  answer="${answer//[[:space:]]/}"
+  if [[ ! "${answer,,}" =~ ^(y|yes)$ ]]; then
+    msg_info "Installation skipped"
+    exit 0
+  fi
 
   NODE_VERSION="22" NODE_MODULE="yarn" setup_nodejs
 
@@ -50,16 +45,16 @@ function install_mqttx() {
   $STD yarn build
   msg_ok "Built ${APP}"
 
-  if ! dpkg -l nginx &>/dev/null; then
+  if ! dpkg -l nginx &> /dev/null; then
     msg_info "Installing Nginx"
     $STD apt install -y nginx
     msg_ok "Installed Nginx"
   fi
 
   msg_info "Configuring ${APP}"
-  cat <<EOF >/etc/nginx/sites-available/mqttx-web
+  cat << EOF > /etc/nginx/sites-available/mqttx-web
 server {
-    listen ${port};
+    listen ${PORT};
 
     root ${APP_DIR}/web/dist;
     index index.html;
@@ -73,9 +68,9 @@ EOF
   $STD nginx -t
   systemctl reload nginx
 
-  cat <<EOF >/etc/systemd/system/${SERVICE}.service
+  cat << EOF > /etc/systemd/system/${SERVICE}.service
 [Unit]
-Description=${APP} (Nginx on port ${port})
+Description=${APP} (Nginx on port ${PORT})
 After=network.target
 BindsTo=nginx.service
 
@@ -89,21 +84,9 @@ ExecReload=/usr/sbin/nginx -s reload
 WantedBy=multi-user.target
 EOF
   systemctl enable -q --now "$SERVICE"
-  msg_ok "${APP} installed at http://${IP}:${port}"
 }
 
-function uninstall_mqttx() {
-  msg_info "Removing ${APP}"
-  systemctl disable -q --now "$SERVICE" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${SERVICE}.service"
-  rm -f /etc/nginx/sites-enabled/mqttx-web
-  rm -f /etc/nginx/sites-available/mqttx-web
-  $STD nginx -t && systemctl reload nginx
-  rm -rf "$APP_DIR"
-  msg_ok "${APP} uninstalled"
-}
-
-function update_mqttx() {
+function update_script() {
   if check_for_gh_release "mqttx" "$REPO"; then
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "mqttx" "$REPO" "tarball" "latest" "$APP_DIR"
 
@@ -118,22 +101,20 @@ function update_mqttx() {
   fi
 }
 
-if is_installed; then
-  read -r -p "Update (1), Uninstall (2), Cancel (3)? [1/2/3]: " action
-  action="${action//[[:space:]]/}"
-  case "$action" in
-  1) update_mqttx ;;
-  2) uninstall_mqttx ;;
-  3) msg_info "Cancelled" ;;
-  *) msg_error "Invalid input" ;;
-  esac
-else
-  read -r -p "Enter port number (default: ${DEFAULT_PORT}): " PORT_INPUT
-  PORT="${PORT_INPUT:-$DEFAULT_PORT}"
-  read -r -p "Install ${APP}? (y/n): " answer
-  answer="${answer//[[:space:]]/}"
-  [[ "${answer,,}" =~ ^(y|yes)$ ]] && install_mqttx "$PORT" || msg_info "Installation skipped"
-fi
+function uninstall_script() {
+  msg_info "Removing ${APP}"
+  systemctl disable -q --now "$SERVICE" 2> /dev/null || true
+  rm -f "/etc/systemd/system/${SERVICE}.service"
+  rm -f /etc/nginx/sites-enabled/mqttx-web
+  rm -f /etc/nginx/sites-available/mqttx-web
+  $STD nginx -t && systemctl reload nginx
+  rm -rf "$APP_DIR"
+  msg_ok "${APP} uninstalled"
+}
 
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/addon") 2>/dev/null
+function post_install_script() {
+  msg_ok "${APP} installed at http://${IP}:${PORT}"
+}
+
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

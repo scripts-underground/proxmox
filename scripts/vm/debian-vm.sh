@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
-SCRIPTS_URL="${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-source /dev/stdin <<<$(curl -fsSL "$SCRIPTS_URL/misc/api.func")
-source <(curl -fsSL "$SCRIPTS_URL/misc/vm-core.func")
-load_functions
+VM_URL="${VM_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-nocloud-amd64.qcow2}"
+VM_OSTYPE="l26"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-2048}"
+var_disk="${var_disk:-8}"
+var_bridge="${var_bridge:-vmbr0}"
+var_hostname="${var_hostname:-debian}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-12}"
+NSAPP="${NSAPP:-Debian 12 VM}"
+METHOD=""
 
 function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
     ____       __    _                ______
    / __ \___  / /_  (_)___ _____     <  /__ \
   / / / / _ \/ __ \/ / __ `/ __ \    / /__/ /
@@ -20,61 +28,19 @@ function header_info {
 
 EOF
 }
-header_info
-echo -e "\n Loading..."
-GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//')
-RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)"
-METHOD=""
-NSAPP="Debian 12 VM"
-var_os="debian"
-var_version="12"
-
-THIN="discard=on,ssd=1,"
-set -e
-trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
-trap cleanup EXIT
-trap 'post_update_to_api "failed" "INTERRUPTED"' SIGINT
-trap 'post_update_to_api "failed" "TERMINATED"' SIGTERM
-function error_handler() {
-  local exit_code="$?"
-  local line_number="$1"
-  local command="$2"
-  local error_message="${RD}[ERROR]${CL} in line ${RD}$line_number${CL}: exit code ${RD}$exit_code${CL}: while executing command ${YW}$command${CL}"
-  post_update_to_api "failed" "${command}"
-  echo -e "\n$error_message\n"
-  cleanup_vmid
-}
-
-get_valid_nextid
-cleanup_vmid
-cleanup
-post_update_to_api "done" "none"
-[[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
-check_root
-pve_check
-arch_check
-ssh_check
-
-TEMP_DIR=$(mktemp -d)
-pushd $TEMP_DIR >/dev/null
-if whiptail --backtitle "Proxmox VE Helper Scripts" --title "Debian 12 VM" --yesno "This will create a New Debian 12 VM. Proceed?" 10 58; then
-  :
-else
-  header_info && exit_script
-fi
 
 function default_settings() {
   VMID=$(get_valid_nextid)
   FORMAT=",efitype=4m"
   MACHINE=""
-  DISK_SIZE="8G"
+  DISK_SIZE="${var_disk:-8}G"
   DISK_CACHE=""
-  HN="debian"
+  HN="${var_hostname:-debian}"
   CPU_TYPE=""
-  CORE_COUNT="2"
-  RAM_SIZE="2048"
-  BRG="vmbr0"
-  MAC="$GEN_MAC"
+  CORE_COUNT="${var_cpu:-2}"
+  RAM_SIZE="${var_ram:-2048}"
+  BRG="${var_bridge:-vmbr0}"
+  MAC=""
   VLAN=""
   MTU=""
   START_VM="yes"
@@ -88,7 +54,7 @@ function default_settings() {
   echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
   echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE}${CL}"
   echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${BRG}${CL}"
-  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}${MAC}${CL}"
+  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
   echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}Default${CL}"
   echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}Default${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}yes${CL}"
@@ -103,7 +69,7 @@ function advanced_settings() {
       if [ -z "$VMID" ]; then
         VMID=$(get_valid_nextid)
       fi
-      if pct status "$VMID" &>/dev/null || qm status "$VMID" &>/dev/null; then
+      if pct status "$VMID" &> /dev/null || qm status "$VMID" &> /dev/null; then
         echo -e "${CROSS}${RD} ID $VMID is already in use${CL}"
         sleep 2
         continue
@@ -222,10 +188,10 @@ function advanced_settings() {
     exit_script
   fi
 
-  if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address" 8 58 $GEN_MAC --title "MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+  if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address" 8 58 --title "MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
     if [ -z $MAC1 ]; then
-      MAC="$GEN_MAC"
-      echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
+      MAC=""
+      echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
     else
       MAC="$MAC1"
       echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC1${CL}"
@@ -289,96 +255,27 @@ function start_script() {
   fi
 }
 
-start_script
-post_to_api_vm
+function pre_build_script() {
+  header_info
+  echo -e "\n Loading..."
 
-msg_info "Validating Storage"
-while read -r line; do
-  TAG=$(echo $line | awk '{print $1}')
-  TYPE=$(echo $line | awk '{printf "%-10s", $2}')
-  FREE=$(echo $line | numfmt --field 4-6 --from-unit=K --to=iec --format %.2f | awk '{printf( "%9sB", $6)}')
-  ITEM="  Type: $TYPE Free: $FREE "
-  OFFSET=2
-  if [[ $((${#ITEM} + $OFFSET)) -gt ${MSG_MAX_LENGTH:-} ]]; then
-    MSG_MAX_LENGTH=$((${#ITEM} + $OFFSET))
+  if whiptail --backtitle "Proxmox VE Helper Scripts" --title "Debian 12 VM" --yesno "This will create a New Debian 12 VM. Proceed?" 10 58; then
+    :
+  else
+    header_info && exit_script
   fi
-  STORAGE_MENU+=("$TAG" "$ITEM" "OFF")
-done < <(pvesm status -content images | awk 'NR>1')
-VALID=$(pvesm status -content images | awk 'NR>1')
-if [ -z "$VALID" ]; then
-  msg_error "Unable to detect a valid storage location."
-  exit
-elif [ $((${#STORAGE_MENU[@]} / 3)) -eq 1 ]; then
-  STORAGE=${STORAGE_MENU[0]}
-else
-  while [ -z "${STORAGE:+x}" ]; do
-    STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
-      "Which storage pool you would like to use for ${HN}?\nTo make a selection, use the Spacebar.\n" \
-      16 $(($MSG_MAX_LENGTH + 23)) 6 \
-      "${STORAGE_MENU[@]}" 3>&1 1>&2 2>&3) || exit
-  done
-fi
-msg_ok "Using ${CL}${BL}$STORAGE${CL} ${GN}for Storage Location."
-msg_ok "Virtual Machine ID is ${CL}${BL}$VMID${CL}."
-msg_info "Retrieving the URL for the Debian 12 Qcow2 Disk Image"
-URL=https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-nocloud-amd64.qcow2
-sleep 2
-msg_ok "${CL}${BL}${URL}${CL}"
-curl -f#SL "$URL" -O
-echo -en "\e[1A\e[0K"
-FILE=$(basename $URL)
-msg_ok "Downloaded ${CL}${BL}${FILE}${CL}"
 
-STORAGE_TYPE=$(pvesm status -storage $STORAGE | awk 'NR>1 {print $2}')
-case $STORAGE_TYPE in
-nfs | dir)
-  DISK_EXT=".qcow2"
-  DISK_REF="$VMID/"
-  DISK_IMPORT="-format qcow2"
-  THIN=""
-  ;;
-btrfs)
-  DISK_EXT=".raw"
-  DISK_REF="$VMID/"
-  DISK_IMPORT="-format raw"
-  FORMAT=",efitype=4m"
-  THIN=""
-  ;;
-esac
-for i in {0,1}; do
-  disk="DISK$i"
-  eval DISK${i}=vm-${VMID}-disk-${i}${DISK_EXT:-}
-  eval DISK${i}_REF=${STORAGE}:${DISK_REF:-}${!disk}
-done
+  start_script
 
-msg_info "Creating a Debian 12 VM"
-qm create $VMID -agent 1${MACHINE} -tablet 0 -localtime 1 -bios ovmf${CPU_TYPE} -cores $CORE_COUNT -memory $RAM_SIZE \
-  -name $HN -tags community-script -net0 virtio,bridge=$BRG,macaddr=$MAC$VLAN$MTU -onboot 1 -ostype l26 -scsihw virtio-scsi-pci
-pvesm alloc $STORAGE $VMID $DISK0 4M 1>&/dev/null
-qm importdisk $VMID ${FILE} $STORAGE ${DISK_IMPORT:-} 1>&/dev/null
-qm set $VMID \
-  -efidisk0 ${DISK0_REF}${FORMAT} \
-  -scsi0 ${DISK1_REF},${DISK_CACHE}${THIN}size=${DISK_SIZE} \
-  -boot order=scsi0 \
-  -serial0 socket >/dev/null
+  VM_URL="${VM_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-nocloud-amd64.qcow2}"
+  DISK_SIZE="${DISK_SIZE:-8G}"
+}
 
-if [ -n "$DISK_SIZE" ]; then
-  msg_info "Resizing disk to $DISK_SIZE GB"
-  qm resize $VMID scsi0 ${DISK_SIZE} >/dev/null
-else
-  msg_info "Using default disk size of $DEFAULT_DISK_SIZE GB"
-  qm resize $VMID scsi0 ${DEFAULT_DISK_SIZE} >/dev/null
-fi
+function post_install_script() {
+  msg_ok "Created a Debian 12 VM ${CL}${BL}(${HN})"
+  msg_ok "Completed successfully!\n"
+  msg_custom "More Info at https://github.com/community-scripts/ProxmoxVED/discussions/836"
+}
 
-msg_ok "Created a Debian 12 VM ${CL}${BL}(${HN})"
-if [ "$START_VM" == "yes" ]; then
-  msg_info "Starting Debian 12 VM"
-  qm start $VMID
-  msg_ok "Started Debian 12 VM"
-fi
-
-msg_ok "Completed successfully!\n"
-msg_custom "More Info at https://github.com/community-scripts/ProxmoxVED/discussions/836"
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/vm") 2>/dev/null
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")

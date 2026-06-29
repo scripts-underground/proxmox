@@ -2,25 +2,23 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 #
 # This script manages a local cron job for automatic LXC container OS updates.
 # The update script is downloaded once, displayed for review, and installed
 # locally. Cron runs the local copy — no remote code execution at runtime.
-#
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmoxD/main/tools/pve/cron-update-lxcs.sh)"
 
 set -euo pipefail
 
-REPO_URL="https://raw.githubusercontent.com/scripts-underground/proxmoxD/main"
-SCRIPT_URL="${REPO_URL}/tools/pve/update-lxcs-cron.sh"
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+SCRIPT_URL="${REPO_BASE}/tools/pve/update-lxcs-cron.sh"
 LOCAL_SCRIPT="/usr/local/bin/update-lxcs.sh"
 CONF_FILE="/etc/update-lxcs.conf"
 LOG_FILE="/var/log/update-lxcs-cron.log"
 CRON_ENTRY="0 0 * * 0 ${LOCAL_SCRIPT} >>${LOG_FILE} 2>&1"
 
 clear
-cat <<"EOF"
+cat << "EOF"
    ______                    __  __          __      __          __   _  ________
   / ____/________  ____     / / / /___  ____/ /___ _/ /____     / /  | |/ / ____/____
  / /   / ___/ __ \/ __ \   / / / / __ \/ __  / __ `/ __/ _ \   / /   |   / /   / ___/
@@ -38,9 +36,9 @@ confirm() {
   while true; do
     read -rp " ${prompt} (y/n): " yn
     case $yn in
-    [Yy]*) return 0 ;;
-    [Nn]*) return 1 ;;
-    *) echo "  Please answer yes or no." ;;
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+      *) echo "  Please answer yes or no." ;;
     esac
   done
 }
@@ -70,8 +68,8 @@ review_script() {
 }
 
 remove_legacy_cron() {
-  if crontab -l -u root 2>/dev/null | grep -q "update-lxcs-cron.sh"; then
-    (crontab -l -u root 2>/dev/null | grep -v "update-lxcs-cron.sh" || true) | crontab -u root -
+  if crontab -l -u root 2> /dev/null | grep -q "update-lxcs-cron.sh"; then
+    (crontab -l -u root 2> /dev/null | grep -v "update-lxcs-cron.sh" || true) | crontab -u root -
     ok "Removed legacy curl-based cron entry"
   fi
 }
@@ -111,7 +109,7 @@ add() {
   ok "Installed script to ${LOCAL_SCRIPT}"
 
   if [[ ! -f "$CONF_FILE" ]]; then
-    cat >"$CONF_FILE" <<'CONF'
+    cat > "$CONF_FILE" << 'CONF'
 # Configuration for automatic LXC container OS updates.
 # Add container IDs to exclude from updates (comma-separated):
 # EXCLUDE=100,101,102
@@ -121,7 +119,7 @@ CONF
   fi
 
   (
-    crontab -l -u root 2>/dev/null | grep -v "${LOCAL_SCRIPT}" || true
+    crontab -l -u root 2> /dev/null | grep -v "${LOCAL_SCRIPT}" || true
     echo "${CRON_ENTRY}"
   ) | crontab -u root -
   ok "Added cron schedule: Every Sunday at midnight"
@@ -133,8 +131,8 @@ CONF
 }
 
 remove() {
-  if crontab -l -u root 2>/dev/null | grep -q "${LOCAL_SCRIPT}"; then
-    (crontab -l -u root 2>/dev/null | grep -v "${LOCAL_SCRIPT}" || true) | crontab -u root -
+  if crontab -l -u root 2> /dev/null | grep -q "${LOCAL_SCRIPT}"; then
+    (crontab -l -u root 2> /dev/null | grep -v "${LOCAL_SCRIPT}" || true) | crontab -u root -
     ok "Removed cron schedule"
   fi
   remove_legacy_cron
@@ -154,9 +152,9 @@ update_script() {
   local tmp
   tmp=$(download_script) || exit 1
 
-  if command -v diff &>/dev/null; then
+  if command -v diff &> /dev/null; then
     local changes
-    changes=$(diff --color=auto "$LOCAL_SCRIPT" "$tmp" 2>/dev/null || true)
+    changes=$(diff --color=auto "$LOCAL_SCRIPT" "$tmp" 2> /dev/null || true)
     if [[ -z "$changes" ]]; then
       ok "Script is already up-to-date (no changes)."
       rm -f "$tmp"
@@ -202,9 +200,9 @@ view_script() {
     3>&1 1>&2 2>&3) || return 0
 
   case "$view_choice" in
-  "Worker") view_worker_script ;;
-  "Cron") view_cron_config ;;
-  "Both") view_cron_config && echo "" && view_worker_script ;;
+    "Worker") view_worker_script ;;
+    "Cron") view_cron_config ;;
+    "Both") view_cron_config && echo "" && view_worker_script ;;
   esac
 }
 
@@ -216,16 +214,16 @@ view_worker_script() {
   cat "$LOCAL_SCRIPT"
   echo -e " \e[1;33m──────────────────────────────────────────────────────────────\e[0m"
   echo -e " \e[36mSHA256:\e[0m    ${hash}"
-  echo -e " \e[36mInstalled:\e[0m $(stat -c '%y' "$LOCAL_SCRIPT" 2>/dev/null | cut -d. -f1)"
+  echo -e " \e[36mInstalled:\e[0m $(stat -c '%y' "$LOCAL_SCRIPT" 2> /dev/null | cut -d. -f1)"
   echo ""
 }
 
 view_cron_config() {
   echo ""
   echo -e " \e[1;33m─── Cron Configuration ───────────────────────────────────────\e[0m"
-  if crontab -l -u root 2>/dev/null | grep -q "${LOCAL_SCRIPT}"; then
+  if crontab -l -u root 2> /dev/null | grep -q "${LOCAL_SCRIPT}"; then
     local entry
-    entry=$(crontab -l -u root 2>/dev/null | grep "${LOCAL_SCRIPT}")
+    entry=$(crontab -l -u root 2> /dev/null | grep "${LOCAL_SCRIPT}")
     echo -e " \e[36mCron entry:\e[0m  ${entry}"
     local schedule
     schedule=$(echo "$entry" | awk '{print $1,$2,$3,$4,$5}')
@@ -236,7 +234,7 @@ view_cron_config() {
   if [[ -f "$CONF_FILE" ]]; then
     echo -e " \e[36mConfig file:\e[0m ${CONF_FILE}"
     local excludes
-    excludes=$(grep -oP '^\s*EXCLUDE\s*=\s*\K.*' "$CONF_FILE" 2>/dev/null || true)
+    excludes=$(grep -oP '^\s*EXCLUDE\s*=\s*\K.*' "$CONF_FILE" 2> /dev/null || true)
     echo -e " \e[36mExcluded:\e[0m    ${excludes:-(none)}"
     echo ""
     echo -e " \e[90m--- ${CONF_FILE} ---\e[0m"
@@ -256,10 +254,10 @@ view_cron_config() {
 cron_to_human() {
   local schedule="$1"
   case "$schedule" in
-  "0 0 * * 0") echo "Every Sunday at midnight" ;;
-  "0 0 * * *") echo "Daily at midnight" ;;
-  "0 * * * *") echo "Every hour" ;;
-  *) echo "Custom schedule" ;;
+    "0 0 * * 0") echo "Every Sunday at midnight" ;;
+    "0 0 * * *") echo "Daily at midnight" ;;
+    "0 * * * *") echo "Every hour" ;;
+    *) echo "Custom schedule" ;;
   esac
 }
 
@@ -270,14 +268,14 @@ show_status() {
     hash=$(sha256sum "$LOCAL_SCRIPT" | awk '{print $1}')
     ok "Script installed: ${LOCAL_SCRIPT}"
     echo -e "   \e[36mSHA256:\e[0m    ${hash}"
-    echo -e "   \e[36mInstalled:\e[0m $(stat -c '%y' "$LOCAL_SCRIPT" 2>/dev/null | cut -d. -f1)"
+    echo -e "   \e[36mInstalled:\e[0m $(stat -c '%y' "$LOCAL_SCRIPT" 2> /dev/null | cut -d. -f1)"
   else
     err "Script not installed"
   fi
 
-  if crontab -l -u root 2>/dev/null | grep -q "${LOCAL_SCRIPT}"; then
+  if crontab -l -u root 2> /dev/null | grep -q "${LOCAL_SCRIPT}"; then
     local schedule
-    schedule=$(crontab -l -u root 2>/dev/null | grep "${LOCAL_SCRIPT}" | awk '{print $1,$2,$3,$4,$5}')
+    schedule=$(crontab -l -u root 2> /dev/null | grep "${LOCAL_SCRIPT}" | awk '{print $1,$2,$3,$4,$5}')
     ok "Cron active: ${schedule}"
   else
     err "Cron not configured"
@@ -285,7 +283,7 @@ show_status() {
 
   if [[ -f "$CONF_FILE" ]]; then
     local excludes
-    excludes=$(grep -oP '^\s*EXCLUDE\s*=\s*\K.*' "$CONF_FILE" 2>/dev/null || echo "(none)")
+    excludes=$(grep -oP '^\s*EXCLUDE\s*=\s*\K.*' "$CONF_FILE" 2> /dev/null || echo "(none)")
     echo -e "   \e[36mExcluded:\e[0m  ${excludes:-"(none)"}"
   fi
 
@@ -317,7 +315,7 @@ rotate_log() {
     return
   fi
   local log_size
-  log_size=$(stat -c '%s' "$LOG_FILE" 2>/dev/null || echo 0)
+  log_size=$(stat -c '%s' "$LOG_FILE" 2> /dev/null || echo 0)
   local log_size_h
   log_size_h=$(du -h "$LOG_FILE" | awk '{print $1}')
   if confirm "Rotate log file? (current size: ${log_size_h})"; then
@@ -325,6 +323,9 @@ rotate_log() {
     ok "Rotated: ${LOG_FILE} → ${LOG_FILE}.old"
   fi
 }
+
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 OPTIONS=(
   Add "Download, review & install cron schedule"
@@ -340,14 +341,11 @@ CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Cron Update L
   "${OPTIONS[@]}" 3>&1 1>&2 2>&3) || exit 0
 
 case $CHOICE in
-"Add") add ;;
-"Remove") remove ;;
-"Update") update_script ;;
-"Status") show_status ;;
-"Run") run_now ;;
-"View") view_script ;;
-"Rotate") rotate_log ;;
+  "Add") add ;;
+  "Remove") remove ;;
+  "Update") update_script ;;
+  "Status") show_status ;;
+  "Run") run_now ;;
+  "View") view_script ;;
+  "Rotate") rotate_log ;;
 esac
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null

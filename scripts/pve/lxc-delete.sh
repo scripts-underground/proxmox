@@ -2,11 +2,11 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
     ____                                          __   _  ________   ____       __     __
    / __ \_________  _  ______ ___  ____  _  __   / /  | |/ / ____/  / __ \___  / /__  / /____
   / /_/ / ___/ __ \| |/_/ __ `__ \/ __ \| |/_/  / /   |   / /      / / / / _ \/ / _ \/ __/ _ \
@@ -20,7 +20,7 @@ spinner() {
   local pid=$1
   local delay=0.1
   local spinstr='|/-\'
-  while ps -p $pid >/dev/null; do
+  while ps -p $pid > /dev/null; do
     printf " [%c]  " "$spinstr"
     spinstr=${spinstr#?}${spinstr%"${spinstr#?}"}
     sleep $delay
@@ -28,6 +28,9 @@ spinner() {
   done
   printf "    \r"
 }
+
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 set -eEuo pipefail
 YW=$(echo "\033[33m")
@@ -146,6 +149,3 @@ done
 
 header_info
 echo -e "${GN}Deletion process completed.${CL}\n"
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null

@@ -3,11 +3,11 @@
 # Copyright (c) 2021-2026 tteck
 # Author: tteckster | MickLesk (CanbiZ)
 # License: MIT
-# https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 header_info() {
   clear
-  cat <<"EOF"
+  cat << "EOF"
     ____ _    ________   ____             __     ____           __        ____
    / __ \ |  / / ____/  / __ \____  _____/ /_   /  _/___  _____/ /_____ _/ / /
   / /_/ / | / / __/    / /_/ / __ \/ ___/ __/   / // __ \/ ___/ __/ __ `/ / /
@@ -53,13 +53,13 @@ get_pve_version() {
 get_pve_major_minor() {
   local ver="$1"
   local major minor
-  IFS='.' read -r major minor _ <<<"$ver"
+  IFS='.' read -r major minor _ <<< "$ver"
   echo "$major $minor"
 }
 
 component_exists_in_sources() {
   local component="$1"
-  grep -h -E "^[^#]*Components:[^#]*\b${component}\b" /etc/apt/sources.list.d/*.sources 2>/dev/null | grep -q .
+  grep -h -E "^[^#]*Components:[^#]*\b${component}\b" /etc/apt/sources.list.d/*.sources 2> /dev/null | grep -q .
 }
 
 main() {
@@ -68,18 +68,18 @@ main() {
   while true; do
     read -p "Start the Proxmox VE Post Install Script (y/n)? " yn
     case $yn in
-    [Yy]*) break ;;
-    [Nn]*)
-      clear
-      exit
-      ;;
-    *) echo "Please answer yes or no." ;;
+      [Yy]*) break ;;
+      [Nn]*)
+        clear
+        exit
+        ;;
+      *) echo "Please answer yes or no." ;;
     esac
   done
 
   local PVE_VERSION PVE_MAJOR PVE_MINOR
   PVE_VERSION="$(get_pve_version)"
-  read -r PVE_MAJOR PVE_MINOR <<<"$(get_pve_major_minor "$PVE_VERSION")"
+  read -r PVE_MAJOR PVE_MINOR <<< "$(get_pve_major_minor "$PVE_VERSION")"
 
   if [[ "$PVE_MAJOR" == "8" ]]; then
     if ((PVE_MINOR < 0 || PVE_MINOR > 9)); then
@@ -108,76 +108,76 @@ start_routines_8() {
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Correcting Proxmox VE Sources"
-    cat <<EOF >/etc/apt/sources.list
+    yes)
+      msg_info "Correcting Proxmox VE Sources"
+      cat << EOF > /etc/apt/sources.list
 deb http://deb.debian.org/debian bookworm main contrib
 deb http://deb.debian.org/debian bookworm-updates main contrib
 deb http://security.debian.org/debian-security bookworm-security main contrib
 EOF
-    echo 'APT::Get::Update::SourceListWarnings::NonFreeFirmware "false";' >/etc/apt/apt.conf.d/no-bookworm-firmware.conf
-    msg_ok "Corrected Proxmox VE Sources"
-    ;;
-  no) msg_error "Selected no to Correcting Proxmox VE Sources" ;;
+      echo 'APT::Get::Update::SourceListWarnings::NonFreeFirmware "false";' > /etc/apt/apt.conf.d/no-bookworm-firmware.conf
+      msg_ok "Corrected Proxmox VE Sources"
+      ;;
+    no) msg_error "Selected no to Correcting Proxmox VE Sources" ;;
   esac
 
   CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "PVE-ENTERPRISE" --menu "The 'pve-enterprise' repository is only available to users who have purchased a Proxmox VE subscription.\n \nDisable 'pve-enterprise' repository?" 14 58 2 \
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Disabling 'pve-enterprise' repository"
-    cat <<EOF >/etc/apt/sources.list.d/pve-enterprise.list
+    yes)
+      msg_info "Disabling 'pve-enterprise' repository"
+      cat << EOF > /etc/apt/sources.list.d/pve-enterprise.list
 # deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise
 EOF
-    msg_ok "Disabled 'pve-enterprise' repository"
-    ;;
-  no) msg_error "Selected no to Disabling 'pve-enterprise' repository" ;;
+      msg_ok "Disabled 'pve-enterprise' repository"
+      ;;
+    no) msg_error "Selected no to Disabling 'pve-enterprise' repository" ;;
   esac
 
   CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "PVE-NO-SUBSCRIPTION" --menu "The 'pve-no-subscription' repository provides access to all of the open-source components of Proxmox VE.\n \nEnable 'pve-no-subscription' repository?" 14 58 2 \
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Enabling 'pve-no-subscription' repository"
-    cat <<EOF >/etc/apt/sources.list.d/pve-install-repo.list
+    yes)
+      msg_info "Enabling 'pve-no-subscription' repository"
+      cat << EOF > /etc/apt/sources.list.d/pve-install-repo.list
 deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription
 EOF
-    msg_ok "Enabled 'pve-no-subscription' repository"
-    ;;
-  no) msg_error "Selected no to Enabling 'pve-no-subscription' repository" ;;
+      msg_ok "Enabled 'pve-no-subscription' repository"
+      ;;
+    no) msg_error "Selected no to Enabling 'pve-no-subscription' repository" ;;
   esac
 
   CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "CEPH PACKAGE REPOSITORIES" --menu "The 'Ceph Package Repositories' provides access to both the 'no-subscription' and 'enterprise' repositories (initially disabled).\n \nCorrect 'ceph package sources?" 14 58 2 \
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Correcting 'ceph package repositories'"
-    cat <<EOF >/etc/apt/sources.list.d/ceph.list
+    yes)
+      msg_info "Correcting 'ceph package repositories'"
+      cat << EOF > /etc/apt/sources.list.d/ceph.list
 # deb https://enterprise.proxmox.com/debian/ceph-quincy bookworm enterprise
 # deb http://download.proxmox.com/debian/ceph-quincy bookworm no-subscription
 # deb https://enterprise.proxmox.com/debian/ceph-reef bookworm enterprise
 # deb http://download.proxmox.com/debian/ceph-reef bookworm no-subscription
 EOF
-    msg_ok "Corrected 'ceph package repositories'"
-    ;;
-  no) msg_error "Selected no to Correcting 'ceph package repositories'" ;;
+      msg_ok "Corrected 'ceph package repositories'"
+      ;;
+    no) msg_error "Selected no to Correcting 'ceph package repositories'" ;;
   esac
 
   CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "PVETEST" --menu "The 'pvetest' repository can give advanced users access to new features and updates before they are officially released.\n \nAdd (Disabled) 'pvetest' repository?" 14 58 2 \
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Adding 'pvetest' repository and set disabled"
-    cat <<EOF >/etc/apt/sources.list.d/pvetest-for-beta.list
+    yes)
+      msg_info "Adding 'pvetest' repository and set disabled"
+      cat << EOF > /etc/apt/sources.list.d/pvetest-for-beta.list
 # deb http://download.proxmox.com/debian/pve bookworm pvetest
 EOF
-    msg_ok "Added 'pvetest' repository"
-    ;;
-  no) msg_error "Selected no to Adding 'pvetest' repository" ;;
+      msg_ok "Added 'pvetest' repository"
+      ;;
+    no) msg_error "Selected no to Adding 'pvetest' repository" ;;
   esac
 
   post_routines_common
@@ -197,12 +197,12 @@ start_routines_9() {
 
       # Check sources.list
       if [[ -f "$listfile" ]] && grep -qE '^\s*deb ' "$listfile"; then
-        (( ++LEGACY_COUNT ))
+        ((++LEGACY_COUNT))
       fi
 
       # Check .list files
       local list_files
-      list_files=$(find /etc/apt/sources.list.d/ -type f -name "*.list" 2>/dev/null)
+      list_files=$(find /etc/apt/sources.list.d/ -type f -name "*.list" 2> /dev/null)
       if [[ -n "$list_files" ]]; then
         LEGACY_COUNT=$((LEGACY_COUNT + $(echo "$list_files" | wc -l)))
       fi
@@ -227,7 +227,7 @@ start_routines_9() {
           if [[ -n "$list_files" ]]; then
             while IFS= read -r f; do
               mv "$f" "$f.bak"
-            done <<<"$list_files"
+            done <<< "$list_files"
             msg_ok "Renamed legacy .list files to .bak"
           fi
         else
@@ -243,14 +243,14 @@ start_routines_9() {
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Correcting Proxmox VE Sources (deb822)"
-      # remove all existing .list files
-      rm -f /etc/apt/sources.list.d/*.list
-      # remove bookworm and proxmox entries from sources.list
-      sed -i '/proxmox/d;/bookworm/d' /etc/apt/sources.list || true
-      # Create new deb822 sources
-      cat >/etc/apt/sources.list.d/debian.sources <<EOF
+      yes)
+        msg_info "Correcting Proxmox VE Sources (deb822)"
+        # remove all existing .list files
+        rm -f /etc/apt/sources.list.d/*.list
+        # remove bookworm and proxmox entries from sources.list
+        sed -i '/proxmox/d;/bookworm/d' /etc/apt/sources.list || true
+        # Create new deb822 sources
+        cat > /etc/apt/sources.list.d/debian.sources << EOF
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie
@@ -269,9 +269,9 @@ Suites: trixie-updates
 Components: main contrib
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
-      msg_ok "Corrected Proxmox VE 9 (Trixie) Sources"
-      ;;
-    no) msg_error "Selected no to Correcting Proxmox VE Sources" ;;
+        msg_ok "Corrected Proxmox VE 9 (Trixie) Sources"
+        ;;
+      no) msg_error "Selected no to Correcting Proxmox VE Sources" ;;
     esac
   fi
 
@@ -285,28 +285,28 @@ EOF
       "delete" "Delete this repo file" \
       3>&2 2>&1 1>&3)
     case $CHOICE in
-    keep)
-      msg_ok "Kept 'pve-enterprise' repository"
-      ;;
-    disable)
-      msg_info "Disabling (commenting) 'pve-enterprise' repository"
-      # Comment out every non-comment line in the file that has 'pve-enterprise' in Components
-      for file in /etc/apt/sources.list.d/*.sources; do
-        if grep -q "Components:.*pve-enterprise" "$file"; then
-          sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$file"
-        fi
-      done
-      msg_ok "Disabled 'pve-enterprise' repository"
-      ;;
-    delete)
-      msg_info "Deleting 'pve-enterprise' repository file"
-      for file in /etc/apt/sources.list.d/*.sources; do
-        if grep -q "Components:.*pve-enterprise" "$file"; then
-          rm -f "$file"
-        fi
-      done
-      msg_ok "Deleted 'pve-enterprise' repository file"
-      ;;
+      keep)
+        msg_ok "Kept 'pve-enterprise' repository"
+        ;;
+      disable)
+        msg_info "Disabling (commenting) 'pve-enterprise' repository"
+        # Comment out every non-comment line in the file that has 'pve-enterprise' in Components
+        for file in /etc/apt/sources.list.d/*.sources; do
+          if grep -q "Components:.*pve-enterprise" "$file"; then
+            sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$file"
+          fi
+        done
+        msg_ok "Disabled 'pve-enterprise' repository"
+        ;;
+      delete)
+        msg_info "Deleting 'pve-enterprise' repository file"
+        for file in /etc/apt/sources.list.d/*.sources; do
+          if grep -q "Components:.*pve-enterprise" "$file"; then
+            rm -f "$file"
+          fi
+        done
+        msg_ok "Deleted 'pve-enterprise' repository file"
+        ;;
     esac
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
@@ -317,23 +317,23 @@ EOF
       --default-item "no" \
       3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Adding 'pve-enterprise' repository (deb822)"
-      cat >/etc/apt/sources.list.d/pve-enterprise.sources <<EOF
+      yes)
+        msg_info "Adding 'pve-enterprise' repository (deb822)"
+        cat > /etc/apt/sources.list.d/pve-enterprise.sources << EOF
 Types: deb
 URIs: https://enterprise.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-enterprise
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
-      msg_ok "Added 'pve-enterprise' repository"
-      ;;
-    no) msg_error "Selected no to Adding 'pve-enterprise' repository" ;;
+        msg_ok "Added 'pve-enterprise' repository"
+        ;;
+      no) msg_error "Selected no to Adding 'pve-enterprise' repository" ;;
     esac
   fi
 
   # ---- CEPH-ENTERPRISE ----
-  if grep -q "enterprise.proxmox.com.*ceph" /etc/apt/sources.list.d/*.sources 2>/dev/null; then
+  if grep -q "enterprise.proxmox.com.*ceph" /etc/apt/sources.list.d/*.sources 2> /dev/null; then
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
       --title "CEPH-ENTERPRISE" \
       --menu "'ceph enterprise' repository already exists.\n\nWhat do you want to do?" 14 58 2 \
@@ -342,27 +342,27 @@ EOF
       "delete" "Delete this repo file" \
       3>&2 2>&1 1>&3)
     case $CHOICE in
-    keep)
-      msg_ok "Kept 'ceph enterprise' repository"
-      ;;
-    disable)
-      msg_info "Disabling (commenting) 'ceph enterprise' repository"
-      for file in /etc/apt/sources.list.d/*.sources; do
-        if grep -q "enterprise.proxmox.com.*ceph" "$file"; then
-          sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$file"
-        fi
-      done
-      msg_ok "Disabled 'ceph enterprise' repository"
-      ;;
-    delete)
-      msg_info "Deleting 'ceph enterprise' repository file"
-      for file in /etc/apt/sources.list.d/*.sources; do
-        if grep -q "enterprise.proxmox.com.*ceph" "$file"; then
-          rm -f "$file"
-        fi
-      done
-      msg_ok "Deleted 'ceph enterprise' repository file"
-      ;;
+      keep)
+        msg_ok "Kept 'ceph enterprise' repository"
+        ;;
+      disable)
+        msg_info "Disabling (commenting) 'ceph enterprise' repository"
+        for file in /etc/apt/sources.list.d/*.sources; do
+          if grep -q "enterprise.proxmox.com.*ceph" "$file"; then
+            sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$file"
+          fi
+        done
+        msg_ok "Disabled 'ceph enterprise' repository"
+        ;;
+      delete)
+        msg_info "Deleting 'ceph enterprise' repository file"
+        for file in /etc/apt/sources.list.d/*.sources; do
+          if grep -q "enterprise.proxmox.com.*ceph" "$file"; then
+            rm -f "$file"
+          fi
+        done
+        msg_ok "Deleted 'ceph enterprise' repository file"
+        ;;
     esac
   fi
 
@@ -373,9 +373,9 @@ EOF
   for file in /etc/apt/sources.list.d/*.sources; do
     if grep -q "Components:.*pve-no-subscription" "$file"; then
       REPO_FILE="$file"
-      if grep -E '^[^#]*Components:.*pve-no-subscription' "$file" >/dev/null; then
+      if grep -E '^[^#]*Components:.*pve-no-subscription' "$file" > /dev/null; then
         REPO_ACTIVE=1
-      elif grep -E '^#.*Components:.*pve-no-subscription' "$file" >/dev/null; then
+      elif grep -E '^#.*Components:.*pve-no-subscription' "$file" > /dev/null; then
         REPO_COMMENTED=1
       fi
       break
@@ -391,19 +391,19 @@ EOF
       "delete" "Delete repo file" \
       3>&2 2>&1 1>&3)
     case $CHOICE in
-    keep)
-      msg_ok "Kept 'pve-no-subscription' repository"
-      ;;
-    disable)
-      msg_info "Disabling (commenting) 'pve-no-subscription' repository"
-      sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$REPO_FILE"
-      msg_ok "Disabled 'pve-no-subscription' repository"
-      ;;
-    delete)
-      msg_info "Deleting 'pve-no-subscription' repository file"
-      rm -f "$REPO_FILE"
-      msg_ok "Deleted 'pve-no-subscription' repository file"
-      ;;
+      keep)
+        msg_ok "Kept 'pve-no-subscription' repository"
+        ;;
+      disable)
+        msg_info "Disabling (commenting) 'pve-no-subscription' repository"
+        sed -i '/^\s*Types:/,/^$/s/^\([^#].*\)$/# \1/' "$REPO_FILE"
+        msg_ok "Disabled 'pve-no-subscription' repository"
+        ;;
+      delete)
+        msg_info "Deleting 'pve-no-subscription' repository file"
+        rm -f "$REPO_FILE"
+        msg_ok "Deleted 'pve-no-subscription' repository file"
+        ;;
     esac
 
   elif [[ "$REPO_COMMENTED" -eq 1 ]]; then
@@ -415,19 +415,19 @@ EOF
       "delete" "Delete repo file" \
       3>&2 2>&1 1>&3)
     case $CHOICE in
-    enable)
-      msg_info "Enabling (uncommenting) 'pve-no-subscription' repository"
-      sed -i '/^#\s*Types:/,/^$/s/^#\s*//' "$REPO_FILE"
-      msg_ok "Enabled 'pve-no-subscription' repository"
-      ;;
-    keep)
-      msg_ok "Kept 'pve-no-subscription' repository disabled"
-      ;;
-    delete)
-      msg_info "Deleting 'pve-no-subscription' repository file"
-      rm -f "$REPO_FILE"
-      msg_ok "Deleted 'pve-no-subscription' repository file"
-      ;;
+      enable)
+        msg_info "Enabling (uncommenting) 'pve-no-subscription' repository"
+        sed -i '/^#\s*Types:/,/^$/s/^#\s*//' "$REPO_FILE"
+        msg_ok "Enabled 'pve-no-subscription' repository"
+        ;;
+      keep)
+        msg_ok "Kept 'pve-no-subscription' repository disabled"
+        ;;
+      delete)
+        msg_info "Deleting 'pve-no-subscription' repository file"
+        rm -f "$REPO_FILE"
+        msg_ok "Deleted 'pve-no-subscription' repository file"
+        ;;
     esac
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "PVE-NO-SUBSCRIPTION" \
@@ -435,18 +435,18 @@ EOF
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Adding 'pve-no-subscription' repository (deb822)"
-      cat >/etc/apt/sources.list.d/proxmox.sources <<EOF
+      yes)
+        msg_info "Adding 'pve-no-subscription' repository (deb822)"
+        cat > /etc/apt/sources.list.d/proxmox.sources << EOF
 Types: deb
 URIs: http://download.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
-      msg_ok "Added 'pve-no-subscription' repository"
-      ;;
-    no) msg_error "Selected no to Adding 'pve-no-subscription' repository" ;;
+        msg_ok "Added 'pve-no-subscription' repository"
+        ;;
+      no) msg_error "Selected no to Adding 'pve-no-subscription' repository" ;;
     esac
   fi
 
@@ -459,23 +459,23 @@ EOF
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Adding 'ceph package repositories' (deb822)"
-      cat >/etc/apt/sources.list.d/ceph.sources <<EOF
+      yes)
+        msg_info "Adding 'ceph package repositories' (deb822)"
+        cat > /etc/apt/sources.list.d/ceph.sources << EOF
 Types: deb
 URIs: http://download.proxmox.com/debian/ceph-squid
 Suites: trixie
 Components: no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
-      msg_ok "Added 'ceph package repositories'"
-      ;;
-    no)
-      msg_error "Selected no to Adding 'ceph package repositories'"
-      find /etc/apt/sources.list.d/ -type f \( -name "*.sources" -o -name "*.list" \) \
-        -exec sed -i '/enterprise.proxmox.com.*ceph/s/^/# /' {} \;
-      msg_ok "Disabled all Ceph Enterprise repositories"
-      ;;
+        msg_ok "Added 'ceph package repositories'"
+        ;;
+      no)
+        msg_error "Selected no to Adding 'ceph package repositories'"
+        find /etc/apt/sources.list.d/ -type f \( -name "*.sources" -o -name "*.list" \) \
+          -exec sed -i '/enterprise.proxmox.com.*ceph/s/^/# /' {} \;
+        msg_ok "Disabled all Ceph Enterprise repositories"
+        ;;
     esac
   fi
 
@@ -488,18 +488,18 @@ EOF
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Adding 'pve-test' repository (deb822, disabled)"
-      cat >/etc/apt/sources.list.d/pve-test.sources <<EOF
+      yes)
+        msg_info "Adding 'pve-test' repository (deb822, disabled)"
+        cat > /etc/apt/sources.list.d/pve-test.sources << EOF
 # Types: deb
 # URIs: http://download.proxmox.com/debian/pve
 # Suites: trixie
 # Components: pve-test
 # Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
-      msg_ok "Added 'pve-test' repository"
-      ;;
-    no) msg_error "Selected no to Adding 'pvetest' repository" ;;
+        msg_ok "Added 'pve-test' repository"
+        ;;
+      no) msg_error "Selected no to Adding 'pvetest' repository" ;;
     esac
   fi
 
@@ -511,12 +511,12 @@ post_routines_common() {
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
-    msg_info "Disabling subscription nag"
-    # Create external script, this is needed because DPkg::Post-Invoke is fidly with quote interpretation
-    mkdir -p /usr/local/bin
-    cat >/usr/local/bin/pve-remove-nag.sh <<'EOF'
+    yes)
+      whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
+      msg_info "Disabling subscription nag"
+      # Create external script, this is needed because DPkg::Post-Invoke is fidly with quote interpretation
+      mkdir -p /usr/local/bin
+      cat > /usr/local/bin/pve-remove-nag.sh << 'EOF'
 #!/bin/sh
 WEB_JS=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
 if [ -s "$WEB_JS" ] && ! grep -q NoMoreNagging "$WEB_JS"; then
@@ -563,35 +563,35 @@ if [ -f "$MOBILE_TPL" ] && ! grep -q "$MARKER" "$MOBILE_TPL"; then
       "" >> "$MOBILE_TPL"
 fi
 EOF
-    chmod 755 /usr/local/bin/pve-remove-nag.sh
+      chmod 755 /usr/local/bin/pve-remove-nag.sh
 
-    cat >/etc/apt/apt.conf.d/no-nag-script <<'EOF'
+      cat > /etc/apt/apt.conf.d/no-nag-script << 'EOF'
 DPkg::Post-Invoke { "/usr/local/bin/pve-remove-nag.sh"; };
 EOF
-    chmod 644 /etc/apt/apt.conf.d/no-nag-script
+      chmod 644 /etc/apt/apt.conf.d/no-nag-script
 
-    msg_ok "Disabled subscription nag (Delete browser cache)"
-    ;;
-  no)
-    whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
-    msg_error "Selected no to Disabling subscription nag"
-    rm /etc/apt/apt.conf.d/no-nag-script 2>/dev/null
-    ;;
+      msg_ok "Disabled subscription nag (Delete browser cache)"
+      ;;
+    no)
+      whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
+      msg_error "Selected no to Disabling subscription nag"
+      rm /etc/apt/apt.conf.d/no-nag-script 2> /dev/null
+      ;;
   esac
-  apt --reinstall install proxmox-widget-toolkit &>/dev/null || msg_error "Widget toolkit reinstall failed"
+  apt --reinstall install proxmox-widget-toolkit &> /dev/null || msg_error "Widget toolkit reinstall failed"
   if ! systemctl is-active --quiet pve-ha-lrm; then
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "HIGH AVAILABILITY" --menu "Enable high availability?" 10 58 2 \
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Enabling high availability"
-      systemctl enable -q --now pve-ha-lrm
-      systemctl enable -q --now pve-ha-crm
-      systemctl enable -q --now corosync
-      msg_ok "Enabled high availability"
-      ;;
-    no) msg_error "Selected no to Enabling high availability" ;;
+      yes)
+        msg_info "Enabling high availability"
+        systemctl enable -q --now pve-ha-lrm
+        systemctl enable -q --now pve-ha-crm
+        systemctl enable -q --now corosync
+        msg_ok "Enabled high availability"
+        ;;
+      no) msg_error "Selected no to Enabling high availability" ;;
     esac
   fi
 
@@ -600,24 +600,24 @@ EOF
       "yes" " " \
       "no" " " 3>&2 2>&1 1>&3)
     case $CHOICE in
-    yes)
-      msg_info "Disabling high availability"
-      systemctl disable -q --now pve-ha-lrm
-      systemctl disable -q --now pve-ha-crm
-      msg_ok "Disabled high availability"
-      CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "COROSYNC" --menu "Disable Corosync for a Proxmox VE Cluster?" 10 58 2 \
-        "yes" " " \
-        "no" " " 3>&2 2>&1 1>&3)
-      case $CHOICE in
       yes)
-        msg_info "Disabling Corosync"
-        systemctl disable -q --now corosync
-        msg_ok "Disabled Corosync"
+        msg_info "Disabling high availability"
+        systemctl disable -q --now pve-ha-lrm
+        systemctl disable -q --now pve-ha-crm
+        msg_ok "Disabled high availability"
+        CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "COROSYNC" --menu "Disable Corosync for a Proxmox VE Cluster?" 10 58 2 \
+          "yes" " " \
+          "no" " " 3>&2 2>&1 1>&3)
+        case $CHOICE in
+          yes)
+            msg_info "Disabling Corosync"
+            systemctl disable -q --now corosync
+            msg_ok "Disabled Corosync"
+            ;;
+          no) msg_error "Selected no to Disabling Corosync" ;;
+        esac
         ;;
-      no) msg_error "Selected no to Disabling Corosync" ;;
-      esac
-      ;;
-    no) msg_error "Selected no to Disabling high availability" ;;
+      no) msg_error "Selected no to Disabling high availability" ;;
     esac
   fi
 
@@ -625,13 +625,13 @@ EOF
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Updating Proxmox VE (Patience)"
-    apt update &>/dev/null || msg_error "apt update failed"
-    apt -y dist-upgrade &>/dev/null || msg_error "apt dist-upgrade failed"
-    msg_ok "Updated Proxmox VE"
-    ;;
-  no) msg_error "Selected no to Updating Proxmox VE" ;;
+    yes)
+      msg_info "Updating Proxmox VE (Patience)"
+      apt update &> /dev/null || msg_error "apt update failed"
+      apt -y dist-upgrade &> /dev/null || msg_error "apt dist-upgrade failed"
+      msg_ok "Updated Proxmox VE"
+      ;;
+    no) msg_error "Selected no to Updating Proxmox VE" ;;
   esac
 
   # Final message for all hosts in cluster and browser cache
@@ -649,20 +649,20 @@ After the upgrade or post-install routines, always clear your browser cache or p
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
   case $CHOICE in
-  yes)
-    msg_info "Rebooting Proxmox VE"
-    sleep 2
-    msg_ok "Completed Post Install Routines"
-    reboot
-    ;;
-  no)
-    msg_error "Selected no to Rebooting Proxmox VE (Reboot recommended)"
-    msg_ok "Completed Post Install Routines"
-    ;;
+    yes)
+      msg_info "Rebooting Proxmox VE"
+      sleep 2
+      msg_ok "Completed Post Install Routines"
+      reboot
+      ;;
+    no)
+      msg_error "Selected no to Rebooting Proxmox VE (Reboot recommended)"
+      msg_ok "Completed Post Install Routines"
+      ;;
   esac
 }
 
-main
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null
+main

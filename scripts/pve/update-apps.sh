@@ -2,9 +2,10 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: BvdBerg01 | Co-Author: remz1337
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmoxD/refs/heads/main/misc/core.func)
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+source <(curl -fsSL "$REPO_BASE/misc/core.func")
 
 # =============================================================================
 # CONFIGURATION VARIABLES
@@ -46,7 +47,7 @@ var_auto_reboot="${var_auto_reboot:-}"
 # =============================================================================
 
 function export_config_json() {
-  cat <<EOF
+  cat << EOF
 {
   "var_backup": "${var_backup}",
   "var_backup_storage": "${var_backup_storage}",
@@ -59,7 +60,7 @@ EOF
 }
 
 function print_usage() {
-  cat <<EOF
+  cat << EOF
 Usage: $(basename "$0") [OPTIONS]
 
 Update LXC containers created with community-scripts.
@@ -93,7 +94,7 @@ EOF
 
 # Handle command line arguments
 case "${1:-}" in
-  --help|-h)
+  --help | -h)
     print_usage
     exit 0
     ;;
@@ -107,7 +108,7 @@ esac
 
 function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
     __   _  ________   __  __          __      __
    / /  | |/ / ____/  / / / /___  ____/ /___ _/ /____
   / /   |   / /      / / / / __ \/ __  / __ `/ __/ _ \
@@ -118,15 +119,15 @@ EOF
 }
 
 function detect_service() {
-  pushd $(mktemp -d) >/dev/null
-  pct pull "$1" /usr/bin/update update 2>/dev/null
+  pushd $(mktemp -d) > /dev/null
+  pct pull "$1" /usr/bin/update update 2> /dev/null
   service=$(cat update | sed 's|.*/ct/||g' | sed 's|\.sh).*||g')
-  popd >/dev/null
+  popd > /dev/null
 }
 
 function backup_container() {
   msg_info "Creating backup for container $1"
-  vzdump $1 --compress zstd --storage $STORAGE_CHOICE -notes-template "community-scripts backup updater" >/dev/null 2>&1
+  vzdump $1 --compress zstd --storage $STORAGE_CHOICE -notes-template "community-scripts backup updater" > /dev/null 2>&1
   status=$?
 
   if [ $status -eq 0 ]; then
@@ -162,6 +163,9 @@ END {
 ' /etc/pve/storage.cfg)
 }
 
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+
 header_info
 
 if [[ "$var_skip_confirm" != "yes" ]]; then
@@ -189,23 +193,23 @@ while read -r container; do
   if pct config "$container_id" | grep -qE "^tags:.*(${TAGS}).*"; then
     menu_items+=("$container_id" "$formatted_line" "OFF")
   fi
-done <<<"$containers"
+done <<< "$containers"
 msg_ok "Loaded ${#menu_items[@]} containers"
 
 if [[ -n "$var_container" ]]; then
   case "$var_container" in
     all)
       CHOICE=""
-      for ((i=0; i<${#menu_items[@]}; i+=3)); do
+      for ((i = 0; i < ${#menu_items[@]}; i += 3)); do
         CHOICE="$CHOICE ${menu_items[$i]}"
       done
       CHOICE=$(echo "$CHOICE" | xargs)
       ;;
     all_running)
       CHOICE=""
-      for ((i=0; i<${#menu_items[@]}; i+=3)); do
+      for ((i = 0; i < ${#menu_items[@]}; i += 3)); do
         cid="${menu_items[$i]}"
-        if pct status "$cid" 2>/dev/null | grep -q "running"; then
+        if pct status "$cid" 2> /dev/null | grep -q "running"; then
           CHOICE="$CHOICE $cid"
         fi
       done
@@ -213,9 +217,9 @@ if [[ -n "$var_container" ]]; then
       ;;
     all_stopped)
       CHOICE=""
-      for ((i=0; i<${#menu_items[@]}; i+=3)); do
+      for ((i = 0; i < ${#menu_items[@]}; i += 3)); do
         cid="${menu_items[$i]}"
-        if pct status "$cid" 2>/dev/null | grep -q "stopped"; then
+        if pct status "$cid" 2> /dev/null | grep -q "stopped"; then
           CHOICE="$CHOICE $cid"
         fi
       done
@@ -368,11 +372,11 @@ for container in $CHOICE; do
   fi
 
   case "$os" in
-  alpine) pct exec "$container" -- ash -c "$UPDATE_CMD" ;;
-  archlinux) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
-  fedora | rocky | centos | alma) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
-  ubuntu | debian | devuan) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
-  opensuse) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
+    alpine) pct exec "$container" -- ash -c "$UPDATE_CMD" ;;
+    archlinux) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
+    fedora | rocky | centos | alma) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
+    ubuntu | debian | devuan) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
+    opensuse) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
   esac
   exit_code=$?
 
@@ -396,7 +400,7 @@ for container in $CHOICE; do
     msg_info "Restoring LXC from backup"
     pct stop $container
     LXC_STORAGE=$(pct config $container | awk -F '[:,]' '/rootfs/ {print $2}')
-    pct restore $container /var/lib/vz/dump/vzdump-lxc-${container}-*.tar.zst --storage $LXC_STORAGE --force >/dev/null 2>&1
+    pct restore $container /var/lib/vz/dump/vzdump-lxc-${container}-*.tar.zst --storage $LXC_STORAGE --force > /dev/null 2>&1
     pct start $container
     restorestatus=$?
     if [ $restorestatus -eq 0 ]; then
@@ -439,6 +443,3 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
     done
   fi
 fi
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null

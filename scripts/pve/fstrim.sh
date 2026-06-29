@@ -4,7 +4,7 @@ set -eEuo pipefail
 
 function header_info() {
   clear
-  cat <<"EOF"
+  cat << "EOF"
     _______ __                     __                    ______     _
    / ____(_) /__  _______  _______/ /____  ____ ___     /_  __/____(_)___ ___
   / /_  / / / _ \/ ___/ / / / ___/ __/ _ \/ __ `__ \     / / / ___/ / __ `__ \
@@ -22,7 +22,7 @@ CL="\033[m"
 LOGFILE="/var/log/fstrim.log"
 touch "$LOGFILE"
 chmod 600 "$LOGFILE"
-echo -e "\n----- $(date '+%Y-%m-%d %H:%M:%S') | fstrim Run by $(whoami) on $(hostname) -----" >>"$LOGFILE"
+echo -e "\n----- $(date '+%Y-%m-%d %H:%M:%S') | fstrim Run by $(whoami) on $(hostname) -----" >> "$LOGFILE"
 
 header_info
 echo "Loading..."
@@ -48,9 +48,9 @@ MAX_STAT_LEN=0
 mapfile -t CTLINES < <(pct list | awk 'NR>1')
 
 for LINE in "${CTLINES[@]}"; do
-  CTID=$(awk '{print $1}' <<<"$LINE")
-  STATUS=$(awk '{print $2}' <<<"$LINE")
-  NAME=$(awk '{print $3}' <<<"$LINE")
+  CTID=$(awk '{print $1}' <<< "$LINE")
+  STATUS=$(awk '{print $2}' <<< "$LINE")
+  NAME=$(awk '{print $3}' <<< "$LINE")
   ((${#NAME} > MAX_NAME_LEN)) && MAX_NAME_LEN=${#NAME}
   ((${#STATUS} > MAX_STAT_LEN)) && MAX_STAT_LEN=${#STATUS}
 done
@@ -58,9 +58,9 @@ done
 FMT="%-${MAX_NAME_LEN}s | %-${MAX_STAT_LEN}s"
 
 for LINE in "${CTLINES[@]}"; do
-  CTID=$(awk '{print $1}' <<<"$LINE")
-  STATUS=$(awk '{print $2}' <<<"$LINE")
-  NAME=$(awk '{print $3}' <<<"$LINE")
+  CTID=$(awk '{print $1}' <<< "$LINE")
+  STATUS=$(awk '{print $2}' <<< "$LINE")
+  NAME=$(awk '{print $3}' <<< "$LINE")
   DESC=$(printf "$FMT" "$NAME" "$STATUS")
   EXCLUDE_MENU+=("$CTID" "$DESC" "OFF")
   if [[ "$STATUS" == "stopped" ]]; then
@@ -73,7 +73,7 @@ excluded_containers_raw=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
   --checklist "\nSelect containers to skip from trimming:\n" \
   20 $((MAX_NAME_LEN + MAX_STAT_LEN + 20)) 12 "${EXCLUDE_MENU[@]}" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit
-read -ra EXCLUDED <<<$(echo "$excluded_containers_raw" | tr -d '"')
+read -ra EXCLUDED <<< $(echo "$excluded_containers_raw" | tr -d '"')
 
 TO_START=()
 if [ ${#STOPPED_MENU[@]} -gt 0 ]; then
@@ -105,8 +105,8 @@ function trim_container() {
 
   local before_trim after_trim
   local lv_name="vm-${container}-disk-0"
-  if lvs --noheadings -o lv_name 2>/dev/null | grep -qw "$lv_name"; then
-    before_trim=$(lvs --noheadings -o lv_name,data_percent 2>/dev/null | awk -v ctid="$lv_name" '$1 == ctid {gsub(/%/, "", $2); print $2}')
+  if lvs --noheadings -o lv_name 2> /dev/null | grep -qw "$lv_name"; then
+    before_trim=$(lvs --noheadings -o lv_name,data_percent 2> /dev/null | awk -v ctid="$lv_name" '$1 == ctid {gsub(/%/, "", $2); print $2}')
     [[ -n "$before_trim" ]] && echo -e "${RD}Data before trim $before_trim%${CL}" || echo -e "${RD}Data before trim: not available${CL}"
   else
     before_trim=""
@@ -123,8 +123,8 @@ function trim_container() {
     echo -e "${RD}fstrim result: $fstrim_output${CL}"
   fi
 
-  if lvs --noheadings -o lv_name 2>/dev/null | grep -qw "$lv_name"; then
-    after_trim=$(lvs --noheadings -o lv_name,data_percent 2>/dev/null | awk -v ctid="$lv_name" '$1 == ctid {gsub(/%/, "", $2); print $2}')
+  if lvs --noheadings -o lv_name 2> /dev/null | grep -qw "$lv_name"; then
+    after_trim=$(lvs --noheadings -o lv_name,data_percent 2> /dev/null | awk -v ctid="$lv_name" '$1 == ctid {gsub(/%/, "", $2); print $2}')
     [[ -n "$after_trim" ]] && echo -e "${GN}Data after trim $after_trim%${CL}" || echo -e "${GN}Data after trim: not available${CL}"
   else
     after_trim=""
@@ -132,14 +132,17 @@ function trim_container() {
   fi
 
   # Logging
-  echo "$(date '+%Y-%m-%d %H:%M:%S') | CTID=$container | Name=$name | Before=${before_trim:-N/A}% | After=${after_trim:-N/A}% | fstrim: $fstrim_output" >>"$LOGFILE"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | CTID=$container | Name=$name | Before=${before_trim:-N/A}% | After=${after_trim:-N/A}% | fstrim: $fstrim_output" >> "$LOGFILE"
   sleep 0.5
 }
 
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+
 for LINE in "${CTLINES[@]}"; do
-  CTID=$(awk '{print $1}' <<<"$LINE")
-  STATUS=$(awk '{print $2}' <<<"$LINE")
-  NAME=$(awk '{print $3}' <<<"$LINE")
+  CTID=$(awk '{print $1}' <<< "$LINE")
+  STATUS=$(awk '{print $2}' <<< "$LINE")
+  NAME=$(awk '{print $3}' <<< "$LINE")
   if [[ " ${EXCLUDED[*]} " =~ " $CTID " ]]; then
     header_info
     echo -e "${BL}[Info]${GN} Skipping $CTID ($NAME, excluded)${CL}"
@@ -187,6 +190,3 @@ header_info
 echo -e "${GN}Finished, LXC Containers Trimmed.${CL} \n"
 echo -e "${BL}If you want to see the complete log: cat $LOGFILE${CL}"
 exit 0
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null

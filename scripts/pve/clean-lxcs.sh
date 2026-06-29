@@ -3,11 +3,11 @@
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster) | MickLesk (CanbiZ)
 # License: MIT
-# https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info() {
   clear
-  cat <<"EOF"
+  cat << "EOF"
    ________                    __   _  ________
   / ____/ /__  ____ _____     / /  | |/ / ____/
  / /   / / _ \/ __ `/ __ \   / /   |   / /
@@ -72,6 +72,9 @@ function run_lxc_clean() {
   '
 }
 
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+
 for container in $(pct list | awk '{if(NR>1) print $1}'); do
   if [[ " ${excluded_containers[@]} " =~ " $container " ]]; then
     header_info
@@ -107,6 +110,3 @@ done
 wait
 header_info
 echo -e "${GN} Finished, Selected Containers Cleaned. ${CL} \n"
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-source <(curl -fsSL "$REPO_BASE/misc/build.func")
 
 # Sourced by lxc.bootstrap — never executed directly
 # Copyright (c) 2021-2026 community-scripts ORG
@@ -18,6 +17,66 @@ var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
 
+function install_script() {
+  msg_info "Installing Dependencies"
+  $STD apt install -y \
+    git \
+    tmux
+  msg_ok "Installed Dependencies"
+
+  PYTHON_VERSION="3.12" setup_uv
+
+  msg_info "Cloning Odysseus"
+  $STD git clone https://github.com/pewdiepie-archdaemon/odysseus.git /opt/odysseus
+  $STD git -C /opt/odysseus checkout main
+  msg_ok "Cloned Odysseus"
+
+  msg_info "Setting up Python Environment"
+  cd /opt/odysseus
+  $STD uv venv /opt/odysseus/venv
+  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python
+  msg_ok "Set up Python Environment"
+
+  msg_info "Running Setup"
+  cd /opt/odysseus
+  ADMIN_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+  export ODYSSEUS_ADMIN_USER="admin"
+  export ODYSSEUS_ADMIN_PASSWORD="$ADMIN_PASS"
+  /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
+  msg_ok "Setup Complete"
+  echo -e "${INFO}${YW} Admin Username: admin${CL}"
+  echo -e "${INFO}${YW} Admin Password: ${ADMIN_PASS}${CL}"
+
+  msg_info "Creating Service"
+  cat << EOF > /etc/systemd/system/odysseus.service
+[Unit]
+Description=Odysseus AI Workspace
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/odysseus
+Environment=PATH=/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/odysseus/venv/bin/uvicorn app:app --host 0.0.0.0 --port 80
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now odysseus
+  msg_ok "Created Service"
+
+}
+
+function post_install_script() {
+  msg_ok "Completed Successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
+}
+
 function update_script() {
   header_info
   check_container_storage
@@ -32,7 +91,7 @@ function update_script() {
   cd /opt/odysseus
   $STD git fetch origin main
   LOCAL=$(git rev-parse HEAD)
-  REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "")
+  REMOTE=$(git rev-parse origin/main 2> /dev/null || echo "")
   if [[ "$LOCAL" != "$REMOTE" && -n "$REMOTE" ]]; then
     PYTHON_VERSION="3.12" setup_uv
     msg_info "Stopping Service"
@@ -64,70 +123,5 @@ function update_script() {
   exit
 }
 
-function install_script() {
-  color
-  verb_ip6
-  catch_errors
-  setting_up_container
-  network_check
-  update_os
-
-  msg_info "Installing Dependencies"
-  $STD apt install -y \
-    git \
-    tmux
-  msg_ok "Installed Dependencies"
-
-  PYTHON_VERSION="3.12" setup_uv
-
-  msg_info "Cloning Odysseus"
-  $STD git clone https://github.com/pewdiepie-archdaemon/odysseus.git /opt/odysseus
-  $STD git -C /opt/odysseus checkout main
-  msg_ok "Cloned Odysseus"
-
-  msg_info "Setting up Python Environment"
-  cd /opt/odysseus
-  $STD uv venv /opt/odysseus/venv
-  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python
-  msg_ok "Set up Python Environment"
-
-  msg_info "Running Setup"
-  cd /opt/odysseus
-  ADMIN_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
-  export ODYSSEUS_ADMIN_USER="admin"
-  export ODYSSEUS_ADMIN_PASSWORD="$ADMIN_PASS"
-  /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
-  msg_ok "Setup Complete"
-  echo -e "${INFO}${YW} Admin Username: admin${CL}"
-  echo -e "${INFO}${YW} Admin Password: ${ADMIN_PASS}${CL}"
-
-  msg_info "Creating Service"
-  cat <<EOF >/etc/systemd/system/odysseus.service
-[Unit]
-Description=Odysseus AI Workspace
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/odysseus
-Environment=PATH=/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/opt/odysseus/venv/bin/uvicorn app:app --host 0.0.0.0 --port 80
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl enable -q --now odysseus
-  msg_ok "Created Service"
-}
-
-function post_install_script() {
-  msg_ok "Completed Successfully!\n"
-  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
-  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
-}
-
+# framework bootstrap
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

@@ -2,20 +2,10 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/CyferShepard/Jellystat
 
-if ! command -v curl &>/dev/null; then
-  printf "\r\e[2K%b" '\033[93m Setup Source \033[m' >&2
-  apt-get update >/dev/null 2>&1
-  apt-get install -y curl >/dev/null 2>&1
-fi
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/tools.func)
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/error_handler.func)
-
-set -Eeuo pipefail
-trap 'error_handler' ERR
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 APP="Jellystat"
 APP_TYPE="addon"
@@ -23,11 +13,9 @@ INSTALL_PATH="/opt/jellystat"
 CONFIG_PATH="/opt/jellystat/.env"
 DEFAULT_PORT=3000
 
-load_functions
-
 function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
        __     ____           __        __
       / /__  / / /_  _______/ /_____ _/ /_
  __  / / _ \/ / / / / / ___/ __/ __ `/ __/
@@ -48,76 +36,14 @@ else
   exit 1
 fi
 
-function uninstall() {
-  msg_info "Uninstalling ${APP}"
-  systemctl disable --now jellystat.service &>/dev/null || true
-  rm -f "$SERVICE_PATH"
-  rm -rf "$INSTALL_PATH"
-  rm -f "/usr/local/bin/update_jellystat"
-  rm -f "$HOME/.jellystat"
-  msg_ok "${APP} has been uninstalled"
-
-  echo ""
-  echo -n "${TAB}Also remove PostgreSQL database 'jellystat'? (y/N): "
-  read -r db_prompt
-  if [[ "${db_prompt,,}" =~ ^(y|yes)$ ]]; then
-    if command -v psql &>/dev/null; then
-      msg_info "Removing PostgreSQL database and user"
-      $STD sudo -u postgres psql -c "DROP DATABASE IF EXISTS jellystat;" &>/dev/null || true
-      $STD sudo -u postgres psql -c "DROP USER IF EXISTS jellystat;" &>/dev/null || true
-      msg_ok "Removed PostgreSQL database 'jellystat' and user 'jellystat'"
-    else
-      msg_warn "PostgreSQL not found - database may have been removed already"
-    fi
-  else
-    msg_warn "PostgreSQL database was NOT removed. Remove manually if needed:"
-    echo -e "${TAB}  sudo -u postgres psql -c \"DROP DATABASE jellystat;\""
-    echo -e "${TAB}  sudo -u postgres psql -c \"DROP USER jellystat;\""
-  fi
-}
-
-function update() {
-  if check_for_gh_release "jellystat" "CyferShepard/Jellystat"; then
-    msg_info "Stopping service"
-    systemctl stop jellystat.service &>/dev/null || true
-    msg_ok "Stopped service"
-
-    msg_info "Backing up configuration"
-    cp "$CONFIG_PATH" /tmp/jellystat.env.bak 2>/dev/null || true
-    msg_ok "Backed up configuration"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$INSTALL_PATH"
-
-    msg_info "Restoring configuration"
-    cp /tmp/jellystat.env.bak "$CONFIG_PATH" 2>/dev/null || true
-    rm -f /tmp/jellystat.env.bak
-    msg_ok "Restored configuration"
-
-    msg_info "Installing dependencies"
-    cd "$INSTALL_PATH"
-    $STD npm install
-    msg_ok "Installed dependencies"
-
-    msg_info "Building ${APP}"
-    $STD npm run build
-    msg_ok "Built ${APP}"
-
-    msg_info "Starting service"
-    systemctl start jellystat
-    msg_ok "Started service"
-    msg_ok "Updated successfully"
-    exit
-  fi
-}
-
-function install() {
-  if command -v node &>/dev/null; then
+function install_script() {
+  if command -v node &> /dev/null; then
     msg_ok "Node.js already installed ($(node -v))"
   else
     NODE_VERSION="22" setup_nodejs
   fi
 
-  if command -v psql &>/dev/null; then
+  if command -v psql &> /dev/null; then
     msg_ok "PostgreSQL already installed"
   else
     PG_VERSION="17" setup_postgresql
@@ -129,7 +55,7 @@ function install() {
 
   msg_info "Setting up PostgreSQL database"
 
-  if sudo -u postgres psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+  if sudo -u postgres psql -lqt 2> /dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
     msg_warn "Database '${DB_NAME}' already exists - skipping creation"
     echo -n "${TAB}Enter existing database password for '${DB_USER}': "
     read -rs DB_PASS
@@ -137,7 +63,7 @@ function install() {
   else
     DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c16)
 
-    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>/dev/null | grep -q 1; then
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2> /dev/null | grep -q 1; then
       msg_info "User '${DB_USER}' exists, updating password"
       $STD sudo -u postgres psql -c "ALTER USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" || {
         msg_error "Failed to update PostgreSQL user"
@@ -162,7 +88,7 @@ function install() {
     $STD sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" || true
 
     local PG_HBA
-    PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file;" 2>/dev/null | tr -d ' ')
+    PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file;" 2> /dev/null | tr -d ' ')
     if [[ -n "$PG_HBA" && -f "$PG_HBA" ]]; then
       if ! grep -qE "^host\s+${DB_NAME}\s+${DB_USER}\s+127.0.0.1" "$PG_HBA"; then
         msg_info "Configuring PostgreSQL authentication"
@@ -192,7 +118,7 @@ function install() {
   msg_ok "Built ${APP}"
 
   msg_info "Creating configuration"
-  cat <<EOF >"$CONFIG_PATH"
+  cat << EOF > "$CONFIG_PATH"
 # Jellystat Configuration
 # Database
 POSTGRES_USER=${DB_USER}
@@ -207,7 +133,7 @@ JWT_SECRET=${JWT_SECRET}
 # Server
 JS_LISTEN_IP=0.0.0.0
 JS_BASE_URL=/
-TZ=$(cat /etc/timezone 2>/dev/null || echo "UTC")
+TZ=$(cat /etc/timezone 2> /dev/null || echo "UTC")
 
 # Optional: GeoLite for IP Geolocation
 # JS_GEOLITE_ACCOUNT_ID=
@@ -227,7 +153,7 @@ EOF
   msg_ok "Created configuration"
 
   msg_info "Creating service"
-  cat <<EOF >"$SERVICE_PATH"
+  cat << EOF > "$SERVICE_PATH"
 [Unit]
 Description=Jellystat - Statistics for Jellyfin
 After=network.target postgresql.service
@@ -244,20 +170,83 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable --now jellystat &>/dev/null
+  systemctl enable --now jellystat &> /dev/null
   msg_ok "Created and started service"
 
   msg_info "Creating update script"
-  cat <<'UPDATEEOF' >/usr/local/bin/update_jellystat
+  cat << 'UPDATEEOF' > /usr/local/bin/update_jellystat
 #!/usr/bin/env bash
 # Jellystat Update Script
 type=update bash -c "$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/jellystat.sh)"
 UPDATEEOF
   chmod +x /usr/local/bin/update_jellystat
   msg_ok "Created update script (/usr/local/bin/update_jellystat)"
+}
 
+function update_script() {
+  if check_for_gh_release "jellystat" "CyferShepard/Jellystat"; then
+    msg_info "Stopping service"
+    systemctl stop jellystat.service &> /dev/null || true
+    msg_ok "Stopped service"
+
+    msg_info "Backing up configuration"
+    cp "$CONFIG_PATH" /tmp/jellystat.env.bak 2> /dev/null || true
+    msg_ok "Backed up configuration"
+
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$INSTALL_PATH"
+
+    msg_info "Restoring configuration"
+    cp /tmp/jellystat.env.bak "$CONFIG_PATH" 2> /dev/null || true
+    rm -f /tmp/jellystat.env.bak
+    msg_ok "Restored configuration"
+
+    msg_info "Installing dependencies"
+    cd "$INSTALL_PATH"
+    $STD npm install
+    msg_ok "Installed dependencies"
+
+    msg_info "Building ${APP}"
+    $STD npm run build
+    msg_ok "Built ${APP}"
+
+    msg_info "Starting service"
+    systemctl start jellystat
+    msg_ok "Started service"
+    msg_ok "Updated successfully"
+  fi
+}
+
+function uninstall_script() {
+  msg_info "Uninstalling ${APP}"
+  systemctl disable --now jellystat.service &> /dev/null || true
+  rm -f "$SERVICE_PATH"
+  rm -rf "$INSTALL_PATH"
+  rm -f "/usr/local/bin/update_jellystat"
+  rm -f "$HOME/.jellystat"
+  msg_ok "${APP} has been uninstalled"
+
+  echo ""
+  echo -n "${TAB}Also remove PostgreSQL database 'jellystat'? (y/N): "
+  read -r db_prompt
+  if [[ "${db_prompt,,}" =~ ^(y|yes)$ ]]; then
+    if command -v psql &> /dev/null; then
+      msg_info "Removing PostgreSQL database and user"
+      $STD sudo -u postgres psql -c "DROP DATABASE IF EXISTS jellystat;" &> /dev/null || true
+      $STD sudo -u postgres psql -c "DROP USER IF EXISTS jellystat;" &> /dev/null || true
+      msg_ok "Removed PostgreSQL database 'jellystat' and user 'jellystat'"
+    else
+      msg_warn "PostgreSQL not found - database may have been removed already"
+    fi
+  else
+    msg_warn "PostgreSQL database was NOT removed. Remove manually if needed:"
+    echo -e "${TAB}  sudo -u postgres psql -c \"DROP DATABASE jellystat;\""
+    echo -e "${TAB}  sudo -u postgres psql -c \"DROP USER jellystat;\""
+  fi
+}
+
+function post_install_script() {
   local CREDS_FILE="/root/jellystat.creds"
-  cat <<EOF >"$CREDS_FILE"
+  cat << EOF > "$CREDS_FILE"
 Jellystat Credentials
 =====================
 Database User: ${DB_USER}
@@ -276,58 +265,5 @@ EOF
   msg_warn "On first access, you'll need to configure your Jellyfin server connection."
 }
 
-if [[ "${type:-}" == "update" ]]; then
-  header_info
-  if [[ -d "$INSTALL_PATH" && -f "$INSTALL_PATH/package.json" ]]; then
-    update
-  else
-    msg_error "${APP} is not installed. Nothing to update."
-    exit 1
-  fi
-  exit 0
-fi
-
-header_info
-get_lxc_ip
-
-if [[ -d "$INSTALL_PATH" && -f "$INSTALL_PATH/package.json" ]]; then
-  msg_warn "${APP} is already installed."
-  echo ""
-
-  echo -n "${TAB}Uninstall ${APP}? (y/N): "
-  read -r uninstall_prompt
-  if [[ "${uninstall_prompt,,}" =~ ^(y|yes)$ ]]; then
-    uninstall
-    exit 0
-  fi
-
-  echo -n "${TAB}Update ${APP}? (y/N): "
-  read -r update_prompt
-  if [[ "${update_prompt,,}" =~ ^(y|yes)$ ]]; then
-    update
-    exit 0
-  fi
-
-  msg_warn "No action selected. Exiting."
-  exit 0
-fi
-
-msg_warn "${APP} is not installed."
-echo ""
-echo -e "${TAB}${INFO} This will install:"
-echo -e "${TAB}  - Node.js 22"
-echo -e "${TAB}  - PostgreSQL 17"
-echo -e "${TAB}  - Jellystat"
-echo ""
-
-echo -n "${TAB}Install ${APP}? (y/N): "
-read -r install_prompt
-if [[ "${install_prompt,,}" =~ ^(y|yes)$ ]]; then
-  install
-else
-  msg_warn "Installation cancelled. Exiting."
-  exit 0
-fi
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/addon") 2>/dev/null
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

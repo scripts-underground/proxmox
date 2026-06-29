@@ -3,11 +3,11 @@
 # Copyright (c) 2021-2026 tteck
 # Author: tteck (tteckster)
 # License: MIT
-# https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
   clear
-  cat <<"EOF"
+  cat << "EOF"
    __ __         __    ___           __
   / // /__  ___ / /_  / _ )___ _____/ /____ _____
  / _  / _ \(_-</ __/ / _  / _ `/ __/  '_/ // / _ \
@@ -69,6 +69,9 @@ function perform_backup {
   sleep 2
 }
 
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+
 # Main script execution loop
 while true; do
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "Proxmox VE Host Backup" --yesno "This will create backups for particular files and directories located within a designated directory. Proceed?" 10 88); then
@@ -77,6 +80,3 @@ while true; do
     break
   fi
 done
-
-URL="${REPO_BASE:-${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}}"
-source <(curl -fsSL "$URL/misc/bootstrap/pve") 2>/dev/null
