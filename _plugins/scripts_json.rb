@@ -1,5 +1,6 @@
 require 'json'
 require 'yaml'
+require 'fileutils'
 
 COLLECTIONS = {
   'lxc' => '_lxc',
@@ -53,7 +54,50 @@ Jekyll::Hooks.register :site, :post_write do |site|
       script_url = "/scripts/#{type}/#{slug}.sh"
 
       script_file = File.join(root, "scripts/#{type}/#{slug}.sh")
-      updatable = File.exist?(script_file) && File.read(script_file).match?(/^\s*function\s+update_script|^\s*update_script\s*\(\)/)
+      hooks = {}
+      has_docker = false
+      has_podman = false
+      has_external = false
+      has_host = false
+      has_git = false
+      has_npm = false
+      has_yarn = false
+      has_pnpm = false
+      has_pip = false
+      has_cargo = false
+      has_go = false
+      has_sudo = false
+      has_eval = false
+      hook_order = []
+      overrides = []
+
+      if File.exist?(script_file)
+        ast_file = File.join(root, "_ast/#{type}/#{slug}.json")
+        unless File.exist?(ast_file)
+          raise "Missing AST file #{ast_file}. Run `go run ./tools/ast/.` to generate."
+        end
+        ast = JSON.parse(File.read(ast_file))
+        hooks = ast['hooks'] || {}
+        hook_order = ast['hook_order'] || []
+        flags = ast['flags'] || {}
+        has_docker = flags['docker'] == true
+        has_podman = flags['podman'] == true
+        has_external = ast['has_external'] == true
+        has_host = ast['has_host'] == true && type != 'addon'
+        has_git = flags['git'] == true
+        has_npm = flags['npm'] == true
+        has_yarn = flags['yarn'] == true
+        has_pnpm = flags['pnpm'] == true
+        has_pip = flags['pip'] == true
+        has_cargo = flags['cargo'] == true
+        has_go = flags['go'] == true
+        has_sudo = flags['sudo'] == true
+        has_eval = flags['eval'] == true
+        overrides = (ast['assigns'] || []).select { |a|
+          a['name'].start_with?('var_') && a['value_is_param_default']
+        }.map { |a| a['name'] }.uniq.sort
+      end
+
       created = begin
         t1 = File.ctime(file) rescue Time.at(0)
         t2 = File.exist?(script_file) ? (File.ctime(script_file) rescue Time.at(0)) : Time.at(0)
@@ -77,6 +121,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
         type: type,
         tags: frontmatter['tags'] || [],
         by: frontmatter['by'],
+        co_author: frontmatter['co_author'],
         repo: frontmatter['repo'],
         site: frontmatter['site'],
         port: frontmatter['port'],
@@ -91,7 +136,22 @@ Jekyll::Hooks.register :site, :post_write do |site|
         install: installs,
         created_at: created,
         updated_at: updated,
-        updatable: updatable
+        hooks: hooks,
+        hook_order: hook_order.any? ? hook_order : nil,
+        has_docker: has_docker,
+        has_podman: has_podman,
+        has_external: has_external,
+        has_host: has_host,
+        has_sudo: has_sudo,
+        has_eval: has_eval,
+        has_git: has_git,
+        has_npm: has_npm,
+        has_yarn: has_yarn,
+        has_pnpm: has_pnpm,
+        has_pip: has_pip,
+        has_cargo: has_cargo,
+        has_go: has_go,
+        overrides: overrides
       }
     end
   end
@@ -103,4 +163,12 @@ Jekyll::Hooks.register :site, :post_write do |site|
   })
 
   File.write(File.join(site.dest, 'scripts.json'), output)
+
+  # Copy AST files for client-side consumption
+  ast_src = File.join(root, '_ast')
+  ast_dst = File.join(site.dest, 'ast')
+  if File.exist?(ast_src)
+    FileUtils.rm_rf(ast_dst) if File.exist?(ast_dst)
+    FileUtils.cp_r(ast_src, ast_dst)
+  end
 end
