@@ -20,7 +20,13 @@ Syntax highlighting was replaced with a custom AST-driven rendering pipeline. Th
 
 A complete documentation suite was added: architecture (`docs/architecture.md`), script-AST reference (`docs/script-ast.md`), contributor guide (`docs/contributor-guide.md`), function reference (`docs/function-reference.md`), and migration guide (`docs/migration.md`). `AGENTS.md` was updated with contributor conventions, and `TODO.md` was added to track pre-release framework tasks.
 
-- Add fork documentation suite [<HEAD>]
+- Add fork documentation suite [d80ba16]
+
+### Chore
+
+Development tooling was added to enforce shell script quality via pre-commit hooks (shellcheck, shfmt, trailing-whitespace, end-of-file-fixer, check-yaml, check-added-large-files).
+
+- Add pre-commit hooks for shell script quality [<HEAD>]
 
 ### Fix
 
