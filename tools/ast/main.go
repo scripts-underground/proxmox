@@ -269,13 +269,25 @@ func assignOp(a *syntax.Assign) string {
 }
 
 // callExprCommandName returns the first-word literal of a CallExpr, or "".
+// For path-qualified commands ("/opt/venv/bin/pip" → "pip") it extracts
+// the basename.
 func callExprCommandName(c *syntax.CallExpr) string {
-	if len(c.Args) > 0 {
-		if lit, ok := c.Args[0].Parts[0].(*syntax.Lit); ok {
-			return lit.Value
-		}
+	parts := c.Args
+	if len(parts) == 0 || len(parts[0].Parts) == 0 {
+		return ""
+	}
+	if lit, ok := parts[0].Parts[0].(*syntax.Lit); ok {
+		return basename(lit.Value)
 	}
 	return ""
+}
+
+// basename returns the last component of a file path.
+func basename(p string) string {
+	if idx := strings.LastIndexByte(p, '/'); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
 }
 
 // --- Token emission dispatch (per mvdan node type) --------------------------
@@ -388,6 +400,15 @@ func (w *walker) visitNode(n syntax.Node) {
 						w.removeFuncName(lit.Value)
 					}
 				}
+			}
+		}
+
+		// Handle $STD-like prefix (variable as command prefix)
+		if cmdName == "" && len(x.Args) > 1 {
+			if _, ok := x.Args[0].Parts[0].(*syntax.ParamExp); ok {
+				inner := &syntax.CallExpr{Args: x.Args[1:]}
+				w.visitNode(inner)
+				return
 			}
 		}
 
