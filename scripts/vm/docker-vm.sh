@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
@@ -85,7 +86,8 @@ function select_cloud_init() {
 }
 
 function get_image_url() {
-  local arch=$(dpkg --print-architecture)
+  local arch
+  arch=$(dpkg --print-architecture)
   case $OS_TYPE in
     debian)
       if [ "$USE_CLOUD_INIT" = "yes" ]; then
@@ -385,4 +387,5 @@ function post_install_script() {
 }
 
 # framework bootstrap
+# shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
