@@ -104,34 +104,33 @@ function default_settings() {
   select_os
   select_cloud_init
 
-  VMID=$(get_valid_nextid)
-  FORMAT=""
-  MACHINE=" -machine q35"
-  DISK_CACHE=""
-  DISK_SIZE="${var_disk:-10}G"
-  HN="docker"
-  CPU_TYPE=" -cpu host"
-  CORE_COUNT="${var_cpu:-2}"
-  RAM_SIZE="${var_ram:-4096}"
-  BRG="vmbr0"
-  MAC=""
-  VLAN=""
-  MTU=""
-  START_VM="yes"
-  METHOD="default"
+  VM_VMID=$(get_valid_nextid)
+  VM_DISK_FORMAT=""
+  VM_MACHINE=" -machine q35"
+  VM_DISK_CACHE=""
+  VM_DISK_SIZE="${var_disk:-10}G"
+  VM_HN="docker"
+  VM_CPU=" -cpu host"
+  VM_CORE_COUNT="${var_cpu:-2}"
+  VM_RAM_SIZE="${var_ram:-4096}"
+  VM_BRG="vmbr0"
+  VM_MAC=""
+  VM_VLAN=""
+  VM_MTU=""
+  VM_START="yes"
 
-  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VMID}${CL}"
+  echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}${VM_VMID}${CL}"
   echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}Q35 (Modern)${CL}"
-  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${DISK_SIZE}${CL}"
+  echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}${VM_DISK_SIZE}${CL}"
   echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}None${CL}"
-  echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${HN}${CL}"
+  echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}${VM_HN}${CL}"
   echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
-  echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${CORE_COUNT}${CL}"
-  echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${RAM_SIZE}${CL}"
-  echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${BRG}${CL}"
-  echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
-  echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}Default${CL}"
-  echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}Default${CL}"
+  echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}${VM_CORE_COUNT}${CL}"
+  echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}${VM_RAM_SIZE}${CL}"
+  echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}${VM_BRG}${CL}"
+  echo -e "${MACADDRESS}${BOLD}${DGN}VM_MAC Address: ${BGN}Auto-generated${CL}"
+  echo -e "${VLANTAG}${BOLD}${DGN}VM_VLAN: ${BGN}Default${CL}"
+  echo -e "${DEFAULT}${BOLD}${DGN}Interface VM_MTU Size: ${BGN}Default${CL}"
   echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}yes${CL}"
   echo -e "${CREATING}${BOLD}${DGN}Creating a Docker VM using the above settings${CL}"
 }
@@ -140,50 +139,49 @@ function advanced_settings() {
   select_os
   select_cloud_init
 
-  METHOD="advanced"
-  [ -z "${VMID:-}" ] && VMID=$(get_valid_nextid)
+  [ -z "${VM_VMID:-}" ] && VM_VMID=$(get_valid_nextid)
 
   while true; do
-    if VMID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Virtual Machine ID" 8 58 $VMID --title "VIRTUAL MACHINE ID" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
-      if [ -z "$VMID" ]; then
-        VMID=$(get_valid_nextid)
+    if VM_VMID=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Virtual Machine ID" 8 58 $VM_VMID --title "VIRTUAL VM_MACHINE ID" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [ -z "$VM_VMID" ]; then
+        VM_VMID=$(get_valid_nextid)
       fi
-      if pct status "$VMID" &> /dev/null || qm status "$VMID" &> /dev/null; then
-        echo -e "${CROSS}${RD} ID $VMID is already in use${CL}"
+      if pct status "$VM_VMID" &> /dev/null || qm status "$VM_VMID" &> /dev/null; then
+        echo -e "${CROSS}${RD} ID $VM_VMID is already in use${CL}"
         sleep 2
         continue
       fi
-      echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}$VMID${CL}"
+      echo -e "${CONTAINERID}${BOLD}${DGN}Virtual Machine ID: ${BGN}$VM_VMID${CL}"
       break
     else
       exit_script
     fi
   done
 
-  if MACH=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "MACHINE TYPE" --radiolist --cancel-button Exit-Script "Choose Type" 10 58 2 \
+  if MACH=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "VM_MACHINE TYPE" --radiolist --cancel-button Exit-Script "Choose Type" 10 58 2 \
     "q35" "Q35 (Modern, PCIe)" ON \
     "i440fx" "i440fx (Legacy, PCI)" OFF \
     3>&1 1>&2 2>&3); then
     if [ $MACH = q35 ]; then
       echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}Q35 (Modern)${CL}"
-      FORMAT=""
-      MACHINE=" -machine q35"
+      VM_DISK_FORMAT=""
+      VM_MACHINE=" -machine q35"
     else
       echo -e "${CONTAINERTYPE}${BOLD}${DGN}Machine Type: ${BGN}i440fx (Legacy)${CL}"
-      FORMAT=",efitype=4m"
-      MACHINE=""
+      VM_DISK_FORMAT=",efitype=4m"
+      VM_MACHINE=""
     fi
   else
     exit_script
   fi
 
-  if DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Disk Size in GiB (e.g., 10, 20)" 8 58 "$DISK_SIZE" --title "DISK SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
-    DISK_SIZE=$(echo "$DISK_SIZE" | tr -d ' ')
-    if [[ "$DISK_SIZE" =~ ^[0-9]+$ ]]; then
-      DISK_SIZE="${DISK_SIZE}G"
-      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$DISK_SIZE${CL}"
-    elif [[ "$DISK_SIZE" =~ ^[0-9]+G$ ]]; then
-      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$DISK_SIZE${CL}"
+  if VM_DISK_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Disk Size in GiB (e.g., 10, 20)" 8 58 "$VM_DISK_SIZE" --title "DISK SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    VM_DISK_SIZE=$(echo "$VM_DISK_SIZE" | tr -d ' ')
+    if [[ "$VM_DISK_SIZE" =~ ^[0-9]+$ ]]; then
+      VM_DISK_SIZE="${VM_DISK_SIZE}G"
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$VM_DISK_SIZE${CL}"
+    elif [[ "$VM_DISK_SIZE" =~ ^[0-9]+G$ ]]; then
+      echo -e "${DISKSIZE}${BOLD}${DGN}Disk Size: ${BGN}$VM_DISK_SIZE${CL}"
     else
       echo -e "${DISKSIZE}${BOLD}${RD}Invalid Disk Size. Please use a number (e.g., 10 or 10G).${CL}"
       exit_script
@@ -192,16 +190,16 @@ function advanced_settings() {
     exit_script
   fi
 
-  if DISK_CACHE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "DISK CACHE" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
+  if VM_DISK_CACHE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "DISK CACHE" --radiolist "Choose" --cancel-button Exit-Script 10 58 2 \
     "0" "None (Default)" ON \
     "1" "Write Through" OFF \
     3>&1 1>&2 2>&3); then
-    if [ $DISK_CACHE = "1" ]; then
+    if [ $VM_DISK_CACHE = "1" ]; then
       echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}Write Through${CL}"
-      DISK_CACHE="cache=writethrough,"
+      VM_DISK_CACHE="cache=writethrough,"
     else
       echo -e "${DISKSIZE}${BOLD}${DGN}Disk Cache: ${BGN}None${CL}"
-      DISK_CACHE=""
+      VM_DISK_CACHE=""
     fi
   else
     exit_script
@@ -209,14 +207,14 @@ function advanced_settings() {
 
   if VM_NAME=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Hostname" 8 58 docker --title "HOSTNAME" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
     if [ -z $VM_NAME ]; then
-      HN="docker"
+      VM_HN="docker"
     else
-      HN=$(echo "${VM_NAME,,}" | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//')
-      if [ "$HN" != "${VM_NAME,,}" ]; then
-        whiptail --backtitle "Proxmox VE Helper Scripts" --title "HOSTNAME ADJUSTED" --msgbox "Invalid characters detected. Hostname has been adjusted to:\n\n  $HN" 10 58
+      VM_HN=$(echo "${VM_NAME,,}" | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//')
+      if [ "$VM_HN" != "${VM_NAME,,}" ]; then
+        whiptail --backtitle "Proxmox VE Helper Scripts" --title "HOSTNAME ADJUSTED" --msgbox "Invalid characters detected. Hostname has been adjusted to:\n\n  $VM_HN" 10 58
       fi
     fi
-    echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}$HN${CL}"
+    echo -e "${HOSTNAME}${BOLD}${DGN}Hostname: ${BGN}$VM_HN${CL}"
   else
     exit_script
   fi
@@ -227,20 +225,20 @@ function advanced_settings() {
     3>&1 1>&2 2>&3); then
     if [ $CPU_TYPE1 = "1" ]; then
       echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}Host${CL}"
-      CPU_TYPE=" -cpu host"
+      VM_CPU=" -cpu host"
     else
       echo -e "${OS}${BOLD}${DGN}CPU Model: ${BGN}KVM64${CL}"
-      CPU_TYPE=""
+      VM_CPU=""
     fi
   else
     exit_script
   fi
 
   while true; do
-    if CORE_COUNT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate CPU Cores" 8 58 2 --title "CORE COUNT" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
-      if [ -z "$CORE_COUNT" ]; then CORE_COUNT="2"; fi
-      if [[ "$CORE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
-        echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$CORE_COUNT${CL}"
+    if VM_CORE_COUNT=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate CPU Cores" 8 58 2 --title "CORE COUNT" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [ -z "$VM_CORE_COUNT" ]; then VM_CORE_COUNT="2"; fi
+      if [[ "$VM_CORE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+        echo -e "${CPUCORE}${BOLD}${DGN}CPU Cores: ${BGN}$VM_CORE_COUNT${CL}"
         break
       fi
       whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "CPU Cores must be a positive integer (e.g., 2)." 8 58
@@ -250,10 +248,10 @@ function advanced_settings() {
   done
 
   while true; do
-    if RAM_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate RAM in MiB" 8 58 4096 --title "RAM" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
-      if [ -z "$RAM_SIZE" ]; then RAM_SIZE="4096"; fi
-      if [[ "$RAM_SIZE" =~ ^[1-9][0-9]*$ ]]; then
-        echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}$RAM_SIZE${CL}"
+    if VM_RAM_SIZE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Allocate RAM in MiB" 8 58 4096 --title "RAM" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [ -z "$VM_RAM_SIZE" ]; then VM_RAM_SIZE="4096"; fi
+      if [[ "$VM_RAM_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+        echo -e "${RAMSIZE}${BOLD}${DGN}RAM Size: ${BGN}$VM_RAM_SIZE${CL}"
         break
       fi
       whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "RAM Size must be a positive integer in MiB (e.g., 4096)." 8 58
@@ -262,77 +260,77 @@ function advanced_settings() {
     fi
   done
 
-  if BRG=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Bridge" 8 58 vmbr0 --title "BRIDGE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
-    if [ -z $BRG ]; then
-      BRG="vmbr0"
+  if VM_BRG=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Bridge" 8 58 vmbr0 --title "BRIDGE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if [ -z $VM_BRG ]; then
+      VM_BRG="vmbr0"
     fi
-    echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$BRG${CL}"
+    echo -e "${BRIDGE}${BOLD}${DGN}Bridge: ${BGN}$VM_BRG${CL}"
   else
     exit_script
   fi
 
   while true; do
-    if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a MAC Address" 8 58 --title "MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if MAC1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a VM_MAC Address" 8 58 --title "VM_MAC ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
       if [ -z "$MAC1" ]; then
-        MAC=""
-        echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}Auto-generated${CL}"
+        VM_MAC=""
+        echo -e "${MACADDRESS}${BOLD}${DGN}VM_MAC Address: ${BGN}Auto-generated${CL}"
         break
       fi
       if [[ "$MAC1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
-        MAC="$MAC1"
-        echo -e "${MACADDRESS}${BOLD}${DGN}MAC Address: ${BGN}$MAC${CL}"
+        VM_MAC="$MAC1"
+        echo -e "${MACADDRESS}${BOLD}${DGN}VM_MAC Address: ${BGN}$VM_MAC${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "Invalid MAC address format. Use XX:XX:XX:XX:XX:XX (e.g., AA:BB:CC:DD:EE:FF)." 8 58
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "Invalid VM_MAC address format. Use XX:XX:XX:XX:XX:XX (e.g., AA:BB:CC:DD:EE:FF)." 8 58
     else
       exit_script
     fi
   done
 
   while true; do
-    if VLAN1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Vlan (leave blank for default)" 8 58 --title "VLAN" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if VLAN1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set a Vlan (leave blank for default)" 8 58 --title "VM_VLAN" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
       if [ -z "$VLAN1" ]; then
         VLAN1="Default"
-        VLAN=""
-        echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$VLAN1${CL}"
+        VM_VLAN=""
+        echo -e "${VLANTAG}${BOLD}${DGN}VM_VLAN: ${BGN}$VLAN1${CL}"
         break
       fi
       if [[ "$VLAN1" =~ ^[0-9]+$ ]] && [ "$VLAN1" -ge 1 ] && [ "$VLAN1" -le 4094 ]; then
-        VLAN=",tag=$VLAN1"
-        echo -e "${VLANTAG}${BOLD}${DGN}VLAN: ${BGN}$VLAN1${CL}"
+        VM_VLAN=",tag=$VLAN1"
+        echo -e "${VLANTAG}${BOLD}${DGN}VM_VLAN: ${BGN}$VLAN1${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "VLAN must be a number between 1 and 4094, or leave blank for default." 8 58
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "VM_VLAN must be a number between 1 and 4094, or leave blank for default." 8 58
     else
       exit_script
     fi
   done
 
   while true; do
-    if MTU1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Interface MTU Size (leave blank for default)" 8 58 --title "MTU SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    if MTU1=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox "Set Interface VM_MTU Size (leave blank for default)" 8 58 --title "VM_MTU SIZE" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
       if [ -z "$MTU1" ]; then
         MTU1="Default"
-        MTU=""
-        echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$MTU1${CL}"
+        VM_MTU=""
+        echo -e "${DEFAULT}${BOLD}${DGN}Interface VM_MTU Size: ${BGN}$MTU1${CL}"
         break
       fi
       if [[ "$MTU1" =~ ^[0-9]+$ ]] && [ "$MTU1" -ge 576 ] && [ "$MTU1" -le 65520 ]; then
-        MTU=",mtu=$MTU1"
-        echo -e "${DEFAULT}${BOLD}${DGN}Interface MTU Size: ${BGN}$MTU1${CL}"
+        VM_MTU=",mtu=$MTU1"
+        echo -e "${DEFAULT}${BOLD}${DGN}Interface VM_MTU Size: ${BGN}$MTU1${CL}"
         break
       fi
-      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "MTU Size must be a number between 576 and 65520, or leave blank for default." 8 58
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" --msgbox "VM_MTU Size must be a number between 576 and 65520, or leave blank for default." 8 58
     else
       exit_script
     fi
   done
 
-  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "START VIRTUAL MACHINE" --yesno "Start VM when completed?" 10 58); then
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "START VIRTUAL VM_MACHINE" --yesno "Start VM when completed?" 10 58); then
     echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}yes${CL}"
-    START_VM="yes"
+    VM_START="yes"
   else
     echo -e "${GATEWAY}${BOLD}${DGN}Start VM when completed: ${BGN}no${CL}"
-    START_VM="no"
+    VM_START="no"
   fi
 
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "ADVANCED SETTINGS COMPLETE" --yesno "Ready to create a Docker VM?" --no-button Do-Over 10 58); then
@@ -370,11 +368,11 @@ function pre_build_script() {
 
   VM_URL="$(get_image_url)"
   VM_CLOUD_INIT="${USE_CLOUD_INIT:-no}"
-  DISK_SIZE="${DISK_SIZE:-10G}"
+  VM_DISK_SIZE="${VM_DISK_SIZE:-10G}"
 }
 
 function post_install_script() {
-  msg_ok "Created a Docker VM ${CL}${BL}(${HN})"
+  msg_ok "Created a Docker VM ${CL}${BL}(${VM_HN})"
   msg_ok "OS: ${OS_DISPLAY:-Debian 13}"
   if [ "${USE_CLOUD_INIT:-no}" = "yes" ]; then
     msg_ok "Cloud-Init: enabled"
