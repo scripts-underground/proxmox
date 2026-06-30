@@ -472,8 +472,413 @@ taken from the upstream JSON's `description` field or the script's
 - [ ] No `motd_ssh`, `customize`, `cleanup_lxc` calls remain in
       `install_script()` body (these are in the wrapper postamble)
 
-## Stubs for other script types
+## VM script migration
 
-Addon, PVE, and VM migration patterns are TBD — they will be documented
-here once the architecture doc stubs (§3.2-3.4, §4.2-4.4, §5.2-5.4,
-§6.2-6.4) are filled.
+> VM scripts come from the `community-scripts/ProxmoxVE` repository (the
+> `vm/` directory). The migration follows the same pattern as LXC: strip
+> upstream boilerplate, wrap install logic in `install_script()`, and
+> append the bootstrap source line.
+
+### Upstream VM architecture
+
+The upstream VM script is **single-file but monolithic** — all logic runs
+inline in the script body. The structure is:
+
+1. Shebang, then `source /dev/stdin … api.func` (telemetry helper).
+2. `header_info` function with ASCII art, called immediately.
+3. Safety checks (`check_root`, `arch_check`, `pve_check`, `ssh_check`).
+4. `default_settings()` / `advanced_settings()` whiptail menus that set
+   globals (`MACHINE`, `CPU_TYPE`, `FORMAT`, `START_VM`, `CORE_COUNT`,
+   `RAM_SIZE`, `DISK_SIZE`, `HN`, `BRG`, `MAC`, `VLAN`, `MTU`).
+5. `start_script()` that presents the default-vs-advanced choice.
+6. `pre_build_script()` with user confirmation, calls `start_script()`.
+7. `post_to_api_vm` (telemetry).
+8. Storage selection loop (inline, not a function).
+9. Image download via `curl` (inline).
+10. Storage-type detection case block (inline).
+11. `qm create` — reads globals directly (`${MACHINE}`, `${CPU_TYPE}`,
+    `${CORE_COUNT}`, `${RAM_SIZE}`, `${HN}`, `${BRG}`, `${MAC}`).
+12. `pvesm alloc`, `qm importdisk`, `qm set`, `qm resize`.
+13. `if [ "$START_VM" == "yes" ]; then qm start; fi`.
+14. `post_update_to_api "done"` (telemetry).
+15. `msg_ok "Completed successfully!\n"` + access message.
+
+### Fork VM architecture
+
+The fork replaces the **inline qm commands** with lifecycle functions
+in `misc/vm.func`. The VM bootstrap shim (`misc/bootstrap/vm`) sources
+framework files and calls lifecycle functions in order:
+
+```
+source build.func + vm.func
+  → guard (check install_script defined)
+  → vm_validate
+  → vm_init_colors
+  → render_header
+  → catch_errors
+  → vm_setup
+  → vm_create
+  → vm_start
+  → complete_install
+```
+
+The VM script supplies:
+
+- **`header_info()`** (optional) — custom ASCII art. If defined,
+  `render_header()` dispatches to it; otherwise a generic fallback
+  displays `$APP`.
+- **`install_script()`** — app install logic (executed via SSH into
+  the running VM, injected by `vm_inject_install()`).
+- **`update_script()`** — update logic (same pattern as LXC).
+- **`post_install_script()`** — final message and access URL.
+- **`default_settings()` / `advanced_settings()`** (or just
+  `pre_build_script` hook) — set VM globals.
+
+### Conversion map
+
+| Upstream piece | Fork piece |
+|---|---|
+| `source /dev/stdin … api.func` | `REPO_BASE="${REPO_BASE:-…}"` |
+| `header_info()` with ASCII art | ✅ Copy — `render_header()` dispatches to it |
+| `header_info` invocation at start | 🔄 Replaced by `render_header` call in bootstrap |
+| `echo -e "\n Loading..."` | ✅ Copy |
+| `GEN_MAC=02:$(openssl rand …)` | 🏭 In `vm.func` (line 1) |
+| `RANDOM_UUID`, `METHOD`, `NSAPP` | ❌ Removed (telemetry) |
+| `var_os`, `var_version` | ✅ Copy |
+| ANSI color variables (YW, BL, etc.) | 🏭 `vm_init_colors()` in `vm.func` |
+| Emoji prefix variables (CM, CROSS, etc.) | 🏭 `vm_init_colors()` in `vm.func` |
+| `set -e` | 🏭 `catch_errors()` in `error_handler.func` |
+| `trap 'error_handler …' ERR` | 🏭 `catch_errors()` |
+| `trap cleanup EXIT` | 🏭 `catch_errors()` |
+| `trap 'post_update_to_api …' SIGINT/SIGTERM/SIGHUP` | ❌ Removed (telemetry) |
+| `header_info()` function | ✅ Copy (custom ASCII art) |
+| `error_handler()` function | 🏭 `error_handler` in `error_handler.func` |
+| `get_valid_nextid()` function | 🏭 `pvesh get /cluster/nextid` (inline if needed) |
+| `cleanup_vmid()` function | 🏭 `vm_create` handles cleanup |
+| `cleanup()` function | 🏭 `on_exit` in `error_handler.func` |
+| `msg_info()`, `msg_ok()`, `msg_error()` functions | 🏭 `core.func` |
+| `check_root()` function | 🏭 `vm_validate()` in `vm.func` |
+| `arch_check()` function | 🏭 `vm_validate()` in `vm.func` |
+| `pve_check()` function | 🏭 `vm_validate()` in `vm.func` |
+| `ssh_check()` function | 🏭 `vm_validate()` in `vm.func` |
+| `exit-script()` function | 🏭 `exit_script` in `build.func` |
+| `start_script()` function | ✅ Copy — called by `pre_build_script` hook |
+| `default_settings()` function | ✅ Copy — sets `VM_` globals |
+| `advanced_settings()` function | ✅ Copy — sets `VM_` globals (remove `METHOD=` line) |
+| `whiptail --title "This will create …"` confirmation | 📝 Move into `pre_build_script()` hook |
+| `check_root; arch_check; pve_check; ssh_check` inline | ❌ Remove (handled by `vm_validate()`) |
+| `start_script` inline call | 📝 Move into `pre_build_script()` hook |
+| `post_to_api_vm` inline call | ❌ Remove (telemetry) |
+| Storage selection loop (inline) | 🏭 `vm_select_storage()` in `vm.func` |
+| `URL=…`, `curl …` image download (inline) | 🏭 `vm_download_image()` in `vm.func` |
+| `FILE=$(basename $URL)` | 🏭 `vm.func` sets `VM_FILE` |
+| Storage-type case block (DISK_EXT, DISK_IMPORT, THIN) | 🏭 `vm_create()` in `vm.func` |
+| `qm create $VMID … ${MACHINE} ${CPU_TYPE} …` (inline) | 🏭 `vm_create()` in `vm.func` |
+| `pvesm alloc …` (inline) | 🏭 `vm_create()` in `vm.func` |
+| `qm importdisk …` (inline) | 🏭 `vm_create()` in `vm.func` |
+| `qm set … -efidisk0 … -scsi0 …` (inline) | 🏭 `vm_create()` in `vm.func` |
+| `qm set -description` (HTML block, inline) | 🏭 `vm_create()` in `vm.func` |
+| `qm resize …` (inline) | 🏭 `vm_create()` in `vm.func` |
+| `if [ "$START_VM" == "yes" ]; then qm start; fi` | 🏭 `vm_start()` reads `VM_START` |
+| `post_update_to_api "done"` | ❌ Removed (telemetry) |
+| `msg_ok "Completed successfully!\n"` + access message | 📝 Move into `post_install_script()` |
+| (no final bootstrap) | `source <(curl … "$REPO_BASE/misc/bootstrap/vm")` |
+
+### Variable contract
+
+Every global the VM script sets for `vm.func` to read must use the
+`VM_` prefix. This prevents accidental namespace collisions with LXC
+globals set by `build.func`.
+
+| Script sets | `vm.func` reads | Purpose | Example value |
+|---|---|---|---|
+| `VM_VMID` | `${VM_VMID}` | VM ID | `100` |
+| `VM_STORAGE` | `${VM_STORAGE}` | Storage pool | `local-lvm` (set by `vm_select_storage()`) |
+| `VM_MACHINE` | `${VM_MACHINE:-}` | Machine type | `""` or `" -machine q35"` |
+| `VM_CPU` | `${VM_CPU:-}` | CPU model | `""` or `" -cpu host"` |
+| `VM_DISK_FORMAT` | `${VM_DISK_FORMAT:-qcow2}` | EFI disk format | `""` or `",efitype=4m"` |
+| `VM_START` | `${VM_START:-yes}` | Auto-start after creation | `"yes"` or `"no"` |
+| `VM_OSTYPE` | `${VM_OSTYPE:-l26}` | OS type for qm | `"l26"` |
+| `VM_BIOS` | `${VM_BIOS:-ovmf}` | BIOS type | `"ovmf"` or `"seabios"` |
+| `VM_URL` | `${VM_URL:-}` | Image download URL | `https://cloud-images.ubuntu.com/…` |
+| `VM_CLOUD_INIT` | `${VM_CLOUD_INIT:-yes}` | Enable cloud-init | `"yes"` or `"no"` |
+| `VM_DISK_CACHE` | `${VM_DISK_CACHE:-}` | Disk cache | `""` or `"cache=writethrough,"` |
+| `VM_CORE_COUNT` | `${VM_CORE_COUNT:-2}` | CPU cores | `2` |
+| `VM_RAM_SIZE` | `${VM_RAM_SIZE:-2048}` | RAM in MB | `2048` |
+| `VM_DISK_SIZE` | `${VM_DISK_SIZE:-10G}` | Disk size | `"10G"` |
+| `VM_HN` | `${VM_HN:-vm}` | Hostname | `"ubuntu"` |
+| `VM_BRG` | `${VM_BRG:-vmbr0}` | Bridge | `"vmbr0"` |
+| `VM_MAC` | `${VM_MAC:-$GEN_MAC}` | MAC address | `"02:AA:BB:CC:DD:EE"` |
+| `VM_VLAN` | `${VM_VLAN:-}` | VLAN tag | `""` or `",tag=100"` |
+| `VM_MTU` | `${VM_MTU:-}` | MTU size | `""` or `",mtu=1500"` |
+
+### Migration checklist
+
+Copy or strip each upstream element below. Check off as you go. Any
+item left unchecked must be explained in a comment or commit message.
+
+#### Sourcing
+
+- [ ] Shebang (`#!/usr/bin/env bash`) added
+- [ ] `REPO_BASE="${REPO_BASE:-…}"` at top (replaces `source … api.func`)
+- [ ] Copyright header kept, License URL updated to fork repo
+- [ ] `source <(curl … "$REPO_BASE/misc/bootstrap/vm")` at last line
+- [ ] `# shellcheck disable=SC1090` added above bootstrap source line
+
+#### Signals and safety
+
+- [ ] `set -e` removed (handled by `catch_errors`)
+- [ ] `trap 'error_handler …' ERR` removed (handled by `catch_errors`)
+- [ ] `trap cleanup EXIT` removed (handled by `on_exit`)
+- [ ] `trap 'post_update_to_api …' SIGINT/SIGTERM/SIGHUP` removed (telemetry)
+
+#### Functions — copy from upstream
+
+- [ ] `header_info()` — custom ASCII art (copy; must NOT be named `header_info_fallback`)
+- [ ] `start_script()` — default-vs-advanced choice
+- [ ] `default_settings()` — VM globals (rename to new `VM_` names)
+- [ ] `advanced_settings()` — whiptail menus (rename to new `VM_` names; remove `METHOD=`)
+
+#### Functions — remove (handled by framework)
+
+- [ ] `error_handler()` — handled by `error_handler.func`
+- [ ] `get_valid_nextid()` — handled by `pvesh get /cluster/nextid`
+- [ ] `cleanup_vmid()` — handled by `vm_create`
+- [ ] `cleanup()` — handled by `on_exit`
+- [ ] `msg_info()` / `msg_ok()` / `msg_error()` — handled by `core.func`
+- [ ] `check_root()` — handled by `vm_validate`
+- [ ] `arch_check()` — handled by `vm_validate`
+- [ ] `pve_check()` — handled by `vm_validate`
+- [ ] `ssh_check()` — handled by `vm_validate`
+- [ ] `exit-script()` — handled by `exit_script`
+
+#### Variables — copy with rename
+
+For each, rename from the upstream name to the `VM_`-prefixed fork name
+in both `default_settings()` and `advanced_settings()`:
+
+- [ ] `MACHINE` → `VM_MACHINE`
+- [ ] `CPU_TYPE` → `VM_CPU`
+- [ ] `FORMAT` → `VM_DISK_FORMAT`
+- [ ] `START_VM` → `VM_START`
+- [ ] `CORE_COUNT` → `VM_CORE_COUNT`
+- [ ] `RAM_SIZE` → `VM_RAM_SIZE`
+- [ ] `DISK_SIZE` → `VM_DISK_SIZE`
+- [ ] `DISK_CACHE` → `VM_DISK_CACHE`
+- [ ] `HN` → `VM_HN`
+- [ ] `BRG` → `VM_BRG`
+- [ ] `MAC` → `VM_MAC`
+- [ ] `VLAN` → `VM_VLAN`
+- [ ] `MTU` → `VM_MTU`
+
+#### Variables — remove
+
+- [ ] `RANDOM_UUID` removed (telemetry)
+- [ ] `METHOD` removed (telemetry)
+- [ ] `NSAPP` removed (telemetry)
+- [ ] `THIN` removed (`vm.func` determines internally)
+- [ ] `DISK0`, `DISK1`, `DISK0_REF`, `DISK1_REF` removed (`vm.func` computes)
+- [ ] `DISK_EXT`, `DISK_REF`, `DISK_IMPORT` removed (`vm.func` determines from storage type)
+- [ ] `GEN_MAC` removed (defined in `vm.func`)
+
+#### Inline commands — remove (handled by `vm.func`)
+
+- [ ] Storage selection loop (replaced by `vm_select_storage()`)
+- [ ] Image download (`URL=…`, `curl …`, `FILE=…`) (replaced by `vm_download_image()`)
+- [ ] Storage-type case block (DISK_EXT, DISK_IMPORT, THIN)
+- [ ] `qm create $VMID … ${MACHINE} ${CPU_TYPE} …`
+- [ ] `pvesm alloc …`
+- [ ] `qm importdisk …`
+- [ ] `qm set … -efidisk0 … -scsi0 …`
+- [ ] `qm set -description` (HTML payload)
+- [ ] `qm resize …`
+- [ ] `if [ "$START_VM" == "yes" ]; then qm start; fi`
+
+#### Inline calls — remove
+
+- [ ] `header_info` at top of script (replaced by `render_header` in bootstrap)
+- [ ] `check_root; arch_check; pve_check; ssh_check` (handled by `vm_validate`)
+- [ ] `start_script` (moved into `pre_build_script`)
+- [ ] `post_to_api_vm` (telemetry)
+- [ ] `post_update_to_api "done"` (telemetry)
+
+#### Inline content — move to hooks
+
+- [ ] `msg_ok "Completed successfully!\n"` — move to `post_install_script()`
+- [ ] Access URL / cloud-init message — move to `post_install_script()`
+- [ ] Confirmation prompt `whiptail --title "This will create …"` — move to `pre_build_script()`
+
+### Step-by-step
+
+#### 1. Start from the upstream VM script
+
+Your template is `research/ProxmoxVE/vm/<slug>.sh`.
+
+#### 2. Create the header
+
+```bash
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: AuthorName (GitHubUsername)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://app-url.com
+
+APP="AppName"
+VM_OSTYPE="${VM_OSTYPE:-l26}"
+VM_BIOS="${VM_BIOS:-ovmf}"
+
+var_os="osname"
+var_version="version"
+```
+
+#### 3. Copy `header_info()` with ASCII art
+
+Copy the entire `header_info` function block. Keep it as-is. The
+framework's `render_header()` will dispatch to it.
+
+#### 4. Rename globals to `VM_` prefix
+
+In `default_settings()` and `advanced_settings()`, rename every relevant
+variable (see the checklist above). For example:
+
+- `MACHINE=""` → `VM_MACHINE=""`
+- `CPU_TYPE=""` → `VM_CPU=""`
+- `FORMAT=",efitype=4m"` → `VM_DISK_FORMAT=",efitype=4m"`
+- `START_VM="yes"` → `VM_START="yes"`
+- `CORE_COUNT="2"` → `VM_CORE_COUNT="2"`
+- `HN="ubuntu"` → `VM_HN="ubuntu"`
+- `MAC="$GEN_MAC"` → `VM_MAC=""` (default set inside `vm.func`)
+- etc.
+
+Remove the `METHOD=` line (telemetry).
+
+#### 5. Wrap inline logic
+
+Create `pre_build_script()` that wraps the upstream inline flow before
+the `qm create` block:
+
+```bash
+function pre_build_script() {
+  header_info
+  echo -e "\n Loading..."
+
+  if whiptail --backtitle "Proxmox VE Helper Scripts" --title "${APP} VM" \
+    --yesno "This will create a new ${APP} VM. Proceed?" 10 58; then
+    :
+  else
+    header_info && exit_script
+  fi
+
+  start_script
+  VM_CLOUD_INIT="${VM_CLOUD_INIT:-yes}"
+}
+```
+
+`start_script()` itself is copied as-is from upstream (it chooses
+default vs advanced). `default_settings()`/`advanced_settings()` use
+the renamed `VM_` globals.
+
+#### 6. Create `post_install_script()`
+
+Move the upsteam tail (`msg_ok "Completed successfully!\n"`, access
+URL, cloud-init message) into a `post_install_script()` function:
+
+```bash
+function post_install_script() {
+  msg_ok "Created a ${APP} VM ${CL}${BL}(${VM_HN})"
+  msg_ok "Completed successfully!\n"
+  msg_info "Setup Cloud-Init before starting"
+  msg_info "More info at https://github.com/community-scripts/ProxmoxVE/discussions/272"
+}
+```
+
+#### 7. Create `install_script()` (optional)
+
+If the VM requires software installation via SSH, define
+`install_script()`. The framework injects it via `vm_inject_install()`.
+
+#### 8. Create `update_script()` (optional)
+
+Same pattern as LXC — copied from upstream, unchanged.
+
+#### 9. Add the bootstrap source
+
+```bash
+# framework bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
+```
+
+#### 10. Verification
+
+```bash
+shfmt -i 2 -ci -sr -w scripts/vm/<slug>.sh
+shellcheck --severity=warning scripts/vm/<slug>.sh
+go run ./tools/ast/.
+```
+
+### Anti-patterns
+
+Check the upstream VM script for these and fix while porting:
+
+- **`METHOD=""` left behind** — always remove; it was only used for telemetry.
+- **Old variable names (`MACHINE`, `CPU_TYPE`, `FORMAT`) instead of `VM_` prefix** —
+  every upstream global must be renamed.
+- **Inline `qm create` / `qm set` commands** — always replaced by `vm.func`
+  (`vm_create` handles all VM lifecycle commands).
+- **`source … api.func` or `post_to_api_vm` / `post_update_to_api` calls** —
+  removed; fork has no telemetry.
+- **Inline `header_info` at script start** — removed; `render_header` in
+  the bootstrap handles this.
+- **`header_info` function named `header_info_fallback`** — keep the function
+  name `header_info` for the dispatch; `header_info_fallback` is the
+  framework's internal generic, not the script concern.
+- **Storage selection loop copied inline** — replaced by
+  `vm_select_storage()` from `vm.func`.
+- **`GEN_MAC` redefined** — removed; `vm.func` defines it.
+- **`DISK_EXT` / `DISK_REF` / `DISK_IMPORT` / `THIN` assigned** — removed;
+  `vm_create()` determines these internally from storage type.
+- **Inline image download (URL, curl, FILE, sleep)** — replaced by
+  `vm_download_image()`.
+- **`rm -rf $TEMP_DIR`** — removed; framework handles cleanup.
+- **`popd` at end** — removed; no inline `pushd` needed.
+- **ASCII art rendered inline without `header_info()` wrapper** — wrap in
+  `function header_info() { cat <<"EOF" … EOF }` so `render_header` can
+  dispatch to it.
+
+### Lifecycle flow summary
+
+```
+vm_validate            → checks root, arch, PVE version, SSH env
+vm_init_colors         → ANSI color and emoji variables
+render_header          → dispatches to script's header_info() or fallback
+catch_errors           → installs traps (safe to call after display starts)
+vm_setup               → calls pre_build_script hook (settings, confirmation)
+vm_create              → qm create + importdisk + set + resize; reads VM_ globals
+vm_start               → qm start if VM_START=yes
+complete_install       → fires post_install_script hook
+```
+
+### Verification checklist
+
+- [ ] `shellcheck --severity=warning` passes (add `# shellcheck disable=SC2034`
+      on `APP` assignment — the framework reads it, shellcheck can't see it)
+- [ ] `# shellcheck disable=SC1090` above the bootstrap source line
+- [ ] `shfmt -i 2 -ci -sr -d` shows no diffs
+- [ ] `go run ./tools/ast/.` exits 0 (no violations)
+- [ ] No `METHOD=`, `NSAPP=`, `post_to_api_vm`, `post_update_to_api`,
+      `post_to_api` anywhere
+- [ ] No inline `qm create`, `qm importdisk`, `qm set`, `qm resize`,
+      `pvesm alloc`
+- [ ] No `GEN_MAC`, `DISK_EXT`, `DISK_REF`, `DISK_IMPORT`, `THIN`,
+      `DISK0`, `DISK1`, `DISK0_REF`, `DISK1_REF`
+- [ ] No `source /dev/stdin`, `source … api.func`
+- [ ] No `header_info` call at top of script (outside `pre_build_script` or
+      `start_script`)
+- [ ] No `check_root`, `arch_check`, `pve_check`, `ssh_check` inline
+- [ ] Every global in `default_settings()` / `advanced_settings()` uses
+      `VM_` prefix
+- [ ] `bootstrap/vm` on the last line
+- [ ] `post_install_script()` exists with completion message and access info
+- [ ] `pre_build_script()` exists with confirmation prompt + `start_script` call

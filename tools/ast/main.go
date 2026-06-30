@@ -24,6 +24,7 @@ var collections = []ScriptType{TypeLXC, TypeAddon, TypePVE, TypeVM}
 var hookNames = []string{
 	"install_script", "update_script", "uninstall_script",
 	"pre_build_script", "post_build_script", "post_install_script",
+	"header_info",
 }
 
 // ---  Schema types (shared) ---

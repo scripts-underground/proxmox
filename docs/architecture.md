@@ -89,6 +89,7 @@ hooks invoked directly.
 
 | Hook | Owner | Runs |
 |------|-------|------|
+| `header_info` | `render_header` | Host, early in bootstrap |
 | `pre_build_script` | `build_container` | Host, before LXC creation |
 | `install_script` | `build_container` | Container, via wrapper |
 | `post_build_script` | `build_container` | Host, after install completes |
@@ -102,6 +103,12 @@ hooks invoked directly.
 They are invoked from inside the container later (update via re-running
 the CT script or running `/tmp/_update.sh`; uninstall via
 `/tmp/_uninstall.sh`).
+
+`header_info` is not a lifecycle hook — it's a display hook invoked by
+`render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
+before `catch_errors`). If the script defines `header_info()`, the
+framework's `render_header()` dispatches to it; otherwise a generic
+fallback (`header_info_fallback()`) displays the app name.
 
 ### 3.2 Addon — `misc/bootstrap/addon`
 

@@ -101,6 +101,10 @@ source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
 At the bottom of your script, the bootstrap line sources the framework.
 Once it runs, your hook functions are called in this order:
 
+0. `header_info()` — **optional**. Custom ASCII art displayed early in
+   the bootstrap (after colors, before error traps). If you don't define
+   it, the framework shows a generic header. Define it if your upstream
+   script has artwork worth preserving.
 1. `install_script()` — runs INSIDE the container. App-specific install.
 2. `post_build_script()` — runs ON THE HOST after container creation.
    Use for `pct set` commands, volume mounts, firewall rules.
