@@ -32,10 +32,10 @@ vm_select_storage() {
   if [ -z "$VALID" ]; then
     echo "Error: no valid storage found"; exit 1
   elif [ $((${#STORAGE_MENU[@]} / 3)) -eq 1 ]; then
-    STORAGE=${STORAGE_MENU[0]}
+    VM_STORAGE=${STORAGE_MENU[0]}
   else
-    while [ -z "${STORAGE:+x}" ]; do
-      STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
+    while [ -z "${VM_STORAGE:+x}" ]; do
+      VM_STORAGE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "Storage Pools" --radiolist \
         "Which storage pool?\n" 16 $((MSG_MAX_LENGTH + 23)) 6 "${STORAGE_MENU[@]}" 3>&1 1>&2 2>&3)
     done
   fi
@@ -59,41 +59,55 @@ vm_create() {
   local vm_cpu="${VM_CPU:-}"
   local vm_ci="${VM_CLOUD_INIT:-yes}"
 
-  msg_info "Creating VM $VMID"
-  qm create "$VMID" -agent 1${vm_machine:+ $vm_machine} -tablet 0 -localtime 1 \
-    -bios "$vm_bios"${vm_cpu:+ $vm_cpu} -cores "${CORE_COUNT:-2}" -memory "${RAM_SIZE:-2048}" \
-    -name "${HN:-vm}" -net0 "virtio,bridge=${BRG:-vmbr0},macaddr=${MAC:-$GEN_MAC}" \
+  msg_info "Creating VM $VM_VMID"
+  qm create "$VM_VMID" -agent 1${vm_machine:+ $vm_machine} -tablet 0 -localtime 1 \
+    -bios "$vm_bios"${vm_cpu:+ $vm_cpu} -cores "${VM_CORE_COUNT:-2}" -memory "${VM_RAM_SIZE:-2048}" \
+    -name "${VM_HN:-vm}" -net0 "virtio,bridge=${VM_BRG:-vmbr0},macaddr=${VM_MAC:-$GEN_MAC}" \
     -onboot 1 -ostype "$vm_ostype" -scsihw virtio-scsi-pci
 
-  pvesm alloc "$STORAGE" "$VMID" "vm-${VMID}-disk-0" 4M 1>&/dev/null
+  pvesm alloc "$VM_STORAGE" "$VM_VMID" "vm-${VM_VMID}-disk-0" 4M 1>&/dev/null
 
   local import_fmt=""
   [ "$vm_disk_format" = "raw" ] && import_fmt="-format raw"
 
-  qm importdisk "$VMID" "$VM_FILE" "$STORAGE" $import_fmt 1>&/dev/null
+  qm importdisk "$VM_VMID" "$VM_FILE" "$VM_STORAGE" $import_fmt 1>&/dev/null
 
-  local disk0_ref="${STORAGE}:vm-${VMID}-disk-0"
-  local disk1_ref="${STORAGE}:vm-${VMID}-disk-1"
+  local disk0_ref="${VM_STORAGE}:vm-${VM_VMID}-disk-0"
+  local disk1_ref="${VM_STORAGE}:vm-${VM_VMID}-disk-1"
 
   local efi=",efitype=4m"
   [ "$vm_bios" != "ovmf" ] && efi=""
 
-  qm set "$VMID" \
+  qm set "$VM_VMID" \
     -efidisk0 "${disk0_ref}${efi}" \
-    -scsi0 "${disk1_ref},${vm_disk_cache:+$vm_disk_cache,}size=${DISK_SIZE:-10G}" \
-    ${vm_ci:+-ide2 "${STORAGE}:cloudinit"} \
+    -scsi0 "${disk1_ref},${vm_disk_cache:+$vm_disk_cache,}size=${VM_DISK_SIZE:-10G}" \
+    ${vm_ci:+-ide2 "${VM_STORAGE}:cloudinit"} \
     -boot order=scsi0 \
     -serial0 socket >/dev/null
 
-  qm resize "$VMID" scsi0 "${DISK_SIZE:-10G}" >/dev/null
-  msg_ok "Created VM $VMID"
+  qm resize "$VM_VMID" scsi0 "${VM_DISK_SIZE:-10G}" >/dev/null
+  msg_ok "Created VM $VM_VMID"
 }
 
 vm_start() {
+  if [[ "${VM_START:-yes}" != "yes" ]]; then
+    msg_info "Skipping VM start (VM_START=$VM_START)"
+    return 0
+  fi
   VM_PASSWORD="${VM_PASSWORD:-$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c13)}"
-  qm set "$VMID" --ciuser root --cipassword "$VM_PASSWORD" >/dev/null 2>&1 || true
-  qm start "$VMID" >/dev/null
-  msg_ok "Started VM $VMID"
+  qm set "$VM_VMID" --ciuser root --cipassword "$VM_PASSWORD" >/dev/null 2>&1 || true
+  qm start "$VM_VMID" >/dev/null
+  msg_ok "Started VM $VM_VMID"
+}
+
+# ------------------------------------------------------------------------------
+# vm_setup()
+#
+# - Pre-build preparation: fires pre_build_script hook (if defined)
+# - Script's start_script passes through to default_settings/advanced_settings
+# ------------------------------------------------------------------------------
+vm_setup() {
+  declare -F pre_build_script >/dev/null 2>&1 && pre_build_script
 }
 
 vm_wait_for_ssh() {
