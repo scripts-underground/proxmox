@@ -35,7 +35,7 @@ function sortBtns(mode, t) {
 }
 
 var FLAG_COLORS = {
-  host:'220,50,40', sudo:'240,130,20', git:'40,100,220',
+  sudo:'240,130,20', git:'40,100,220', host:'220,50,40',
   docker:'50,120,210', podman:'60,150,195',
   external:'200,140,50', eval:'180,40,45',
   npm:'40,150,160', yarn:'60,170,130', pnpm:'30,130,180',
@@ -56,10 +56,11 @@ function cardHTML(s, idx) {
   let d = (s.description || "").length > 120 ? s.description.slice(0, 120) + "…" : (s.description || "");
   let logo = '<img src="' + (s.logo || "") + '" alt="' + inits + '" class="script-card-logo" width="40" height="40" loading="lazy" onerror="this.src=\'' + fb(inits, 40, 40, i) + '\';this.onerror=null">';
   let pills = [];
-  var flagNames = ["docker","podman","external","host","git","sudo","eval","npm","yarn","pnpm","pip","cargo"];
+  var flagNames = ["docker","podman","external","git","sudo","eval","npm","yarn","pnpm","pip","cargo"];
   for (var fi = 0; fi < flagNames.length; fi++) {
     if (s["has_" + flagNames[fi]]) pills.push('<span class="flag-pill" ' + flagStyle(flagNames[fi]) + '>' + flagNames[fi] + '</span>');
   }
+  if (s.has_global && s.type === 'lxc') pills.push('<span class="flag-pill" ' + flagStyle('host') + '>host</span>');
   let pillsHtml = pills.length ? '<div class="script-card-pills">' + pills.join('') + '</div>' : '';
   let res = date ? '<span>' + date + '</span>' : "";
   let top = logo + pillsHtml + (res ? '<div class="script-card-resources">' + res + '</div>' : "");

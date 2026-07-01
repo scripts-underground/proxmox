@@ -126,7 +126,7 @@ type ASTOutput struct {
 
 	Functions     []FunctionInfo `json:"functions"`
 	Assigns       []Assign       `json:"assigns"`
-	HostRanges    []LineRange    `json:"host_ranges"`
+	GlobalRanges  []LineRange    `json:"global_ranges"`
 	Heredocs      []Heredoc      `json:"heredocs"`
 	ExternalSpans []Span         `json:"external_spans"`
 
@@ -138,7 +138,7 @@ type ASTOutput struct {
 	Flags         Flags           `json:"flags"`
 	HasExternal   bool            `json:"has_external"`
 	HasEval       bool            `json:"has_eval"`
-	HasHost       bool            `json:"has_host"`
+	HasGlobal       bool            `json:"has_global"`
 	HasBootstrap  bool            `json:"has_bootstrap"`
 }
 
@@ -167,7 +167,7 @@ type walker struct {
 	src       string
 	funcs     []FunctionInfo
 	assigns   []Assign
-	hostRanges []LineRange
+	globalRanges []LineRange
 	heredocs  []Heredoc
 	extSpans  []Span
 	flags     Flags
@@ -716,7 +716,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		src:          src,
 		funcs:        []FunctionInfo{},
 		assigns:      []Assign{},
-		hostRanges:   []LineRange{},
+		globalRanges:   []LineRange{},
 		heredocs:     []Heredoc{},
 		extSpans:     []Span{},
 		tokens:       []Token{},
@@ -790,7 +790,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		return a.EndCol > b.EndCol
 	})
 
-	// Top-level statement analysis for assigns, host_ranges, REPO_BASE
+	// Top-level statement analysis for assigns, global_ranges, REPO_BASE
 	repoBaseFound := false
 	repoBaseFirstLine := 0
 	repoBaseFirstCol := 0
@@ -846,7 +846,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 			// Non-assign top-level call (not a function) -> host code
 			if len(ce.Assigns) == 0 && !w.insideFunc() && stmtLine != w.bootLine {
-				w.hostRanges = append(w.hostRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
+				w.globalRanges = append(w.globalRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
 			}
 		}
 
@@ -858,9 +858,9 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 			case *syntax.FuncDecl:
 				// handled separately
 			case *syntax.BinaryCmd:
-				w.hostRanges = append(w.hostRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
+				w.globalRanges = append(w.globalRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
 			default:
-				w.hostRanges = append(w.hostRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
+				w.globalRanges = append(w.globalRanges, LineRange{StartLine: stmtLine, EndLine: stmtLine})
 			}
 		}
 	}
@@ -908,7 +908,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 	// Merge adjacent host ranges
 	merged := []LineRange{}
-	for _, h := range w.hostRanges {
+	for _, h := range w.globalRanges {
 		if len(merged) == 0 {
 			merged = append(merged, h)
 		} else {
@@ -922,8 +922,8 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 			}
 		}
 	}
-	w.hostRanges = merged
-	hasHost := len(w.hostRanges) > 0 && scriptType != "addon"
+	w.globalRanges = merged
+	hasGlobal := len(w.globalRanges) > 0 
 
 	return ASTOutput{
 		SchemaVersion: 2,
@@ -934,7 +934,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		LineOffsets:  lineOffsets,
 		Functions:    w.funcs,
 		Assigns:      w.assigns,
-		HostRanges:   w.hostRanges,
+		GlobalRanges:   w.globalRanges,
 		Heredocs:     w.heredocs,
 		ExternalSpans: w.extSpans,
 		Tokens:       w.tokens,
@@ -944,7 +944,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		Flags:        w.flags,
 		HasExternal:  len(w.extSpans) > 0,
 		HasEval:      w.flags.Eval,
-		HasHost:      hasHost,
+		HasGlobal:      hasGlobal,
 		HasBootstrap: w.bootLine > 0,
 	}
 }

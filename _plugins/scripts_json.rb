@@ -58,7 +58,6 @@ Jekyll::Hooks.register :site, :post_write do |site|
       has_docker = false
       has_podman = false
       has_external = false
-      has_host = false
       has_git = false
       has_npm = false
       has_yarn = false
@@ -68,6 +67,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
       has_go = false
       has_sudo = false
       has_eval = false
+      has_global = false
       hook_order = []
       overrides = []
 
@@ -83,7 +83,6 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_docker = flags['docker'] == true
         has_podman = flags['podman'] == true
         has_external = ast['has_external'] == true
-        has_host = ast['has_host'] == true && type != 'addon'
         has_git = flags['git'] == true
         has_npm = flags['npm'] == true
         has_yarn = flags['yarn'] == true
@@ -93,6 +92,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_go = flags['go'] == true
         has_sudo = flags['sudo'] == true
         has_eval = flags['eval'] == true
+        has_global = ast['has_global'] == true
         overrides = (ast['assigns'] || []).select { |a|
           a['name'].start_with?('var_') && a['value_is_param_default']
         }.map { |a| a['name'] }.uniq.sort
@@ -141,7 +141,6 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_docker: has_docker,
         has_podman: has_podman,
         has_external: has_external,
-        has_host: has_host,
         has_sudo: has_sudo,
         has_eval: has_eval,
         has_git: has_git,
@@ -151,6 +150,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_pip: has_pip,
         has_cargo: has_cargo,
         has_go: has_go,
+        has_global: has_global,
         overrides: overrides
       }
     end
