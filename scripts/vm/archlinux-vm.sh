@@ -6,6 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Author: MickLesk (CanbiZ)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
 APP="Arch Linux"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-1024}"
@@ -275,3 +277,4 @@ function post_install_script() {
 # framework bootstrap
 # shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
+

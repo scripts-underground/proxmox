@@ -18,15 +18,17 @@ function header_info {
 EOF
 }
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Glances"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="Glances"
 YW=$(echo "\033[33m")
 GN=$(echo "\033[1;92m")
 RD=$(echo "\033[01;31m")
 BL=$(echo "\033[36m")
 CL=$(echo "\033[m")
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nCM="${GN}✔️${CL}"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+CM="${GN}✔️${CL}"
 CROSS="${RD}✖️${CL}"
 INFO="${BL}ℹ️${CL}"
 
@@ -198,4 +200,7 @@ function post_install_script() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+

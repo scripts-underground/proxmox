@@ -70,7 +70,9 @@ function perform_backup {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 # Main script execution loop
 while true; do
@@ -80,3 +82,4 @@ while true; do
     break
   fi
 done
+

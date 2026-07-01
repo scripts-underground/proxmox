@@ -6,6 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Author: michelroegl-brunner
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
 APP="OPNsense"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -226,3 +228,4 @@ function post_install_script() {
 # framework bootstrap
 # shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
+

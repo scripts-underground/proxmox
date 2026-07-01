@@ -6,8 +6,9 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://aliasvault.net
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="AliasVault"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="AliasVault"
 var_tags="${var_tags:-security;passwords;privacy}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-6144}"
@@ -415,4 +416,7 @@ for ext in ['.gz', '.br']:
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+

@@ -23,8 +23,9 @@ GN=$(echo "\033[1;92m")
 CL=$(echo "\033[m")
 BFR="\\r\\033[K"
 HOLD="-"
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nCM="${GN}✓${CL}"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+CM="${GN}✓${CL}"
 CROSS="${RD}✗${CL}"
 
 set -euo pipefail
@@ -664,6 +665,9 @@ After the upgrade or post-install routines, always clear your browser cache or p
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 main
+

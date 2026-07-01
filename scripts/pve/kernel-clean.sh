@@ -16,7 +16,9 @@ EOF
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 # Color variables
 YW="\033[33m"
@@ -101,3 +103,4 @@ done
 echo -e "${YW}Cleaning up...${CL}"
 apt-get autoremove -y > /dev/null 2>&1 && update-grub > /dev/null 2>&1
 echo -e "${GN}Cleanup and GRUB update complete.${CL}"
+

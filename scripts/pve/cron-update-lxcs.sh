@@ -325,7 +325,9 @@ rotate_log() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 OPTIONS=(
   Add "Download, review & install cron schedule"
@@ -349,3 +351,4 @@ case $CHOICE in
   "View") view_script ;;
   "Rotate") rotate_log ;;
 esac
+

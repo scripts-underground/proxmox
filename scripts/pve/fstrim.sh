@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2076,SC2199,SC2034,SC1090,SC2046
-
+# shellcheck disable=SC2046,SC2076,SC1090
 
 set -eEuo pipefail
 
@@ -75,7 +74,6 @@ excluded_containers_raw=$(whiptail --backtitle "Proxmox VE Helper Scripts" \
   --checklist "\nSelect containers to skip from trimming:\n" \
   20 $((MAX_NAME_LEN + MAX_STAT_LEN + 20)) 12 "${EXCLUDE_MENU[@]}" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit
-# shellcheck disable=SC2046
 read -ra EXCLUDED <<< $(echo "$excluded_containers_raw" | tr -d '"')
 
 TO_START=()
@@ -140,7 +138,8 @@ function trim_container() {
 }
 
 # framework bootstrap
-# shellcheck disable=SC1090# Dynamic URL from REPO_BASE - shellcheck cannot follow
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 for LINE in "${CTLINES[@]}"; do
@@ -194,3 +193,4 @@ header_info
 echo -e "${GN}Finished, LXC Containers Trimmed.${CL} \n"
 echo -e "${BL}If you want to see the complete log: cat $LOGFILE${CL}"
 exit 0
+

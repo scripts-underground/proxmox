@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034
+# shellcheck disable=SC2046,SC2034,SC2164
+# shellcheck disable=SC2034,SC2164
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: BvdBerg01 | Co-Author: remz1337
@@ -8,7 +9,6 @@
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-
 source <(curl -fsSL "$REPO_BASE/misc/core.func")
 
 # =============================================================================
@@ -123,10 +123,10 @@ EOF
 }
 
 function detect_service() {
-  pushd "$(mktemp -d)" > /dev/null || exit
+  pushd $$$$FAIL > /dev/null
   pct pull "$1" /usr/bin/update update 2> /dev/null
   service=$(cat update | sed 's|.*/ct/||g' | sed 's|\.sh).*||g')
-  popd > /dev/null || exit
+  popd > /dev/null
 }
 
 function backup_container() {
@@ -168,7 +168,9 @@ END {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 header_info
 
@@ -447,3 +449,4 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
     done
   fi
 fi
+

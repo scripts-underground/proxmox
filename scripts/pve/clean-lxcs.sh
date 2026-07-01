@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2076,SC2199,SC2034,SC1090,SC2046
-
+# shellcheck disable=SC2034,SC2199,SC2076,SC1090
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster) | MickLesk (CanbiZ)
@@ -21,8 +20,8 @@ EOF
 set -eEuo pipefail
 BL="\033[36m"
 RD="\033[01;31m"
-# shellcheck disable=SC2034,SC2046,SC2076,SC2199,SC2046,SC1090,SC2155,SC2288,SC2048
-# These are consumed by the framework at runtime - shellcheck cannot trace them
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
 CM='\xE2\x9C\x94\033'
 GN="\033[1;92m"
 CL="\033[m"
@@ -53,8 +52,6 @@ function run_lxc_clean() {
   local container=$1
   header_info
   name=$(pct exec "$container" hostname)
-# shellcheck disable=SC2034
-# Variable used by framework - shellcheck cannot trace it
 
   pct exec "$container" -- bash -c '
     BL="\033[36m"; GN="\033[1;92m"; CL="\033[m"
@@ -79,7 +76,8 @@ function run_lxc_clean() {
 }
 
 # framework bootstrap
-# shellcheck disable=SC1090# Dynamic URL from REPO_BASE - shellcheck cannot follow
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 for container in $(pct list | awk '{if(NR>1) print $1}'); do
@@ -117,3 +115,4 @@ done
 wait
 header_info
 echo -e "${GN} Finished, Selected Containers Cleaned. ${CL} \n"
+

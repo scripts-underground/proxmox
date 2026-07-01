@@ -6,8 +6,9 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://www.debian.org/
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Debian"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="Debian"
 var_tags="${var_tags:-os}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-512}"
@@ -44,4 +45,7 @@ function update_script() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+

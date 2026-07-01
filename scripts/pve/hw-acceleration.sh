@@ -33,22 +33,13 @@ TEMP_DIR=$(mktemp -d)
 trap 'rm -rf $TEMP_DIR' EXIT
 
 # shellcheck disable=SC1090
-# Direct URL - shellcheck cannot verify the sourced content
-# shellcheck disable=SC1090# Direct URL source - shellcheck cannot verify
-# shellcheck disable=SC1090
-# Direct URL source - shellcheck cannot verify
+# Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-nvidia.func)
 # shellcheck disable=SC1090
-# Direct URL - shellcheck cannot verify the sourced content
-# shellcheck disable=SC1090# Direct URL source - shellcheck cannot verify
-# shellcheck disable=SC1090
-# Direct URL source - shellcheck cannot verify
+# Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-intel.func)
 # shellcheck disable=SC1090
-# Direct URL - shellcheck cannot verify the sourced content
-# shellcheck disable=SC1090# Direct URL source - shellcheck cannot verify
-# shellcheck disable=SC1090
-# Direct URL source - shellcheck cannot verify
+# Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-amd.func)
 
 function header_info() {
@@ -215,6 +206,9 @@ function main() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 main
+

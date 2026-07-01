@@ -6,8 +6,9 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://linkwarden.app/ | Github: https://github.com/linkwarden/linkwarden
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Linkwarden"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="Linkwarden"
 var_tags="${var_tags:-bookmark}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
@@ -153,4 +154,7 @@ function update_script() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+

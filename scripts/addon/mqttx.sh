@@ -7,11 +7,12 @@
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="MQTTX Web"
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP_TYPE="tools"
 # shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="MQTTX Web"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP_TYPE="tools"
 APP_DIR="/opt/mqttx"
 SERVICE="mqttx-web"
 REPO="emqx/MQTTX"
@@ -120,4 +121,7 @@ function post_install_script() {
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+

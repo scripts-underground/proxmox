@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034,SC2155
+# shellcheck disable=SC2034,SC2155,SC2046
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
@@ -7,8 +7,9 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/toeverything/AFFiNE
 
-
-# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="AFFiNE"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="AFFiNE"
 var_tags="${var_tags:-knowledge;notes;workspace}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -325,4 +326,7 @@ TURBO
 }
 
 # framework bootstrap
-# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+

@@ -2,6 +2,8 @@
 # shellcheck disable=SC2034
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
 APP="Proxmox VE (Nested)"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-4096}"
@@ -211,3 +213,4 @@ function post_install_script() {
 # framework bootstrap
 # shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
+
