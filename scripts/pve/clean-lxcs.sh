@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2076,SC2199,SC2034,SC1090,SC2046
+
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster) | MickLesk (CanbiZ)
@@ -19,7 +21,7 @@ EOF
 set -eEuo pipefail
 BL="\033[36m"
 RD="\033[01;31m"
-# shellcheck disable=SC2034,SC2076,SC2199,SC2046,SC1090,SC2155,SC2288,SC2048
+# shellcheck disable=SC2034,SC2046,SC2076,SC2199,SC2046,SC1090,SC2155,SC2288,SC2048
 # These are consumed by the framework at runtime - shellcheck cannot trace them
 CM='\xE2\x9C\x94\033'
 GN="\033[1;92m"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 tteck
@@ -41,7 +42,7 @@ function install_script() {
 
   msg_info "Installing Docker $DOCKER_LATEST_VERSION"
   DOCKER_CONFIG_PATH='/etc/docker/daemon.json'
-  mkdir -p $(dirname $DOCKER_CONFIG_PATH)
+  mkdir -p "$(dirname "$DOCKER_CONFIG_PATH")"
   echo -e '{\n  "log-driver": "journald"\n}' > /etc/docker/daemon.json
   $STD sh <(curl -fsSL https://get.docker.com)
   msg_ok "Installed Docker $DOCKER_LATEST_VERSION"

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: BvdBerg01 | Co-Author: remz1337
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-# shellcheck disable=SC1090# URL resolved at runtime from REPO_BASE - shellcheck cannot see the sourced content
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+
 source <(curl -fsSL "$REPO_BASE/misc/core.func")
 
 # =============================================================================
