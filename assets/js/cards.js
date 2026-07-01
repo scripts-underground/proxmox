@@ -34,6 +34,20 @@ function sortBtns(mode, t) {
     '</span>';
 }
 
+var FLAG_COLORS = {
+  host:'220,50,40', sudo:'240,130,20', git:'40,100,220',
+  docker:'50,120,210', podman:'60,150,195',
+  external:'200,140,50', eval:'180,40,45',
+  npm:'40,150,160', yarn:'60,170,130', pnpm:'30,130,180',
+  pip:'140,55,185', cargo:'180,100,40'
+};
+
+function flagStyle(n) {
+  var c = FLAG_COLORS[n];
+  if (!c) return '';
+  return 'style="--flag-color:rgb(' + c + ');--flag-bg:rgba(' + c + ',0.25);--flag-bdr:rgba(' + c + ',0.6)"';
+}
+
 function cardHTML(s, idx) {
   let inits = init(s);
   let i = idx % 8;
@@ -42,20 +56,10 @@ function cardHTML(s, idx) {
   let d = (s.description || "").length > 120 ? s.description.slice(0, 120) + "…" : (s.description || "");
   let logo = '<img src="' + (s.logo || "") + '" alt="' + inits + '" class="script-card-logo" width="40" height="40" loading="lazy" onerror="this.src=\'' + fb(inits, 40, 40, i) + '\';this.onerror=null">';
   let pills = [];
-  if (s.has_docker) pills.push('<span class="flag-pill docker">docker</span>');
-  if (s.has_podman) pills.push('<span class="flag-pill docker">podman</span>');
-  if (s.has_dockerfile) pills.push('<span class="flag-pill docker">dockerfile</span>');
-  if (s.has_external) pills.push('<span class="flag-pill external">external</span>');
-  if (s.has_host) pills.push('<span class="flag-pill host">host</span>');
-  if (s.has_git) pills.push('<span class="flag-pill git">git</span>');
-  if (s.has_sudo) pills.push('<span class="flag-pill sudo">sudo</span>');
-  if (s.has_eval) pills.push('<span class="flag-pill eval">eval</span>');
-  if (s.has_npm) pills.push('<span class="flag-pill npm">npm</span>');
-  if (s.has_yarn) pills.push('<span class="flag-pill yarn">yarn</span>');
-  if (s.has_pnpm) pills.push('<span class="flag-pill pnpm">pnpm</span>');
-  if (s.has_pip) pills.push('<span class="flag-pill pip">pip</span>');
-  if (s.has_cargo) pills.push('<span class="flag-pill cargo">cargo</span>');
-  if (s.has_go) pills.push('<span class="flag-pill go">go</span>');
+  var flagNames = ["docker","podman","external","host","git","sudo","eval","npm","yarn","pnpm","pip","cargo"];
+  for (var fi = 0; fi < flagNames.length; fi++) {
+    if (s["has_" + flagNames[fi]]) pills.push('<span class="flag-pill" ' + flagStyle(flagNames[fi]) + '>' + flagNames[fi] + '</span>');
+  }
   let pillsHtml = pills.length ? '<div class="script-card-pills">' + pills.join('') + '</div>' : '';
   let res = date ? '<span>' + date + '</span>' : "";
   let top = logo + pillsHtml + (res ? '<div class="script-card-resources">' + res + '</div>' : "");
