@@ -157,6 +157,14 @@ func utf16LenOfLine(s string) int {
 
 // --- Walker state ------------------------------------------------------------
 
+type frameType int
+
+const (
+	frameOther frameType = iota
+	frameFuncDecl
+	frameIfClause
+)
+
 type funcScope struct {
 	name       string
 	dependents map[string]bool
@@ -173,6 +181,7 @@ type walker struct {
 	bootLine  int
 	tokens       []Token
 	scriptLines  []string
+	frames       []frameType
 
 	// Function-call detection state
 	mainList     map[string]bool
@@ -298,10 +307,38 @@ func (w *walker) visitNode(n syntax.Node) {
 	// ---- keywords ----
 
 	case *syntax.IfClause:
-		w.emitToken(Token{Kind: "keyword", Op: "if", StartLine: w.posLine(x.Position), StartCol: w.posCol(x.Position), EndLine: w.posLine(x.Position), EndCol: w.posCol(x.Position) + 2})
-		w.emitToken(Token{Kind: "keyword", Op: "then", StartLine: w.posLine(x.ThenPos), StartCol: w.posCol(x.ThenPos), EndLine: w.posLine(x.ThenPos), EndCol: w.posCol(x.ThenPos) + 4})
-		w.emitToken(Token{Kind: "keyword", Op: "fi", StartLine: w.posLine(x.FiPos), StartCol: w.posCol(x.FiPos), EndLine: w.posLine(x.FiPos), EndCol: w.posCol(x.FiPos) + 2})
-		// x.Else (IfClause) is visited by syntax.Walk naturally.
+		isNested := len(w.frames) > 0 && w.frames[len(w.frames)-1] == frameIfClause
+		var kw string
+		switch {
+		case !isNested:
+			kw = "if"
+		case x.ThenPos.IsValid():
+			kw = "elif"
+		default:
+			kw = "else"
+		}
+		w.emitToken(Token{Kind: "keyword", Op: kw,
+			StartLine: w.posLine(x.Position),
+			StartCol:  w.posCol(x.Position),
+			EndLine:   w.posLine(x.Position),
+			EndCol:    w.posCol(x.Position) + len(kw),
+		})
+		if x.ThenPos.IsValid() {
+			w.emitToken(Token{Kind: "keyword", Op: "then",
+				StartLine: w.posLine(x.ThenPos),
+				StartCol:  w.posCol(x.ThenPos),
+				EndLine:   w.posLine(x.ThenPos),
+				EndCol:    w.posCol(x.ThenPos) + 4,
+			})
+		}
+		if !isNested {
+			w.emitToken(Token{Kind: "keyword", Op: "fi",
+				StartLine: w.posLine(x.FiPos),
+				StartCol:  w.posCol(x.FiPos),
+				EndLine:   w.posLine(x.FiPos),
+				EndCol:    w.posCol(x.FiPos) + 2,
+			})
+		}
 
 	case *syntax.ForClause:
 		op := "for"
@@ -727,6 +764,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		extSpans:     []Span{},
 		tokens:       []Token{},
 		scriptLines:  lines,
+		frames:       []frameType{},
 		mainList:     map[string]bool{},
 		scopeStack:   []funcScope{},
 		dependentsOf: map[string]map[string]bool{},
@@ -741,22 +779,14 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	}
 
 	// Walk the AST, emitting tokens.  We maintain a frame stack to match
-	// node entry (push "FuncDecl" or "other") with exit (pop).  Since
-	// syntax.Walk calls the callback with nil exactly once per entered
-	// node, the pops are 1:1 with pushes and the FuncDecl exit is detected
-	// correctly regardless of nesting depth.
-	type frameType int
-	const (
-		frameOther frameType = iota
-		frameFuncDecl
-	)
-	var frames []frameType
-
+	// node entry with exit (pop).  Since syntax.Walk calls the callback
+	// with nil exactly once per entered node, the pops are 1:1 with
+	// pushes.
 	syntax.Walk(astFile, func(n syntax.Node) bool {
 		if n == nil {
-			if len(frames) > 0 {
-				f := frames[len(frames)-1]
-				frames = frames[:len(frames)-1]
+			if len(w.frames) > 0 {
+				f := w.frames[len(w.frames)-1]
+				w.frames = w.frames[:len(w.frames)-1]
 				if f == frameFuncDecl {
 					if len(w.scopeStack) > 0 {
 						topDep := w.scopeStack[len(w.scopeStack)-1]
@@ -772,10 +802,13 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 		w.visitNode(n)
 
-		if _, ok := n.(*syntax.FuncDecl); ok {
-			frames = append(frames, frameFuncDecl)
-		} else {
-			frames = append(frames, frameOther)
+		switch n.(type) {
+		case *syntax.FuncDecl:
+			w.frames = append(w.frames, frameFuncDecl)
+		case *syntax.IfClause:
+			w.frames = append(w.frames, frameIfClause)
+		default:
+			w.frames = append(w.frames, frameOther)
 		}
 		return true
 	})
