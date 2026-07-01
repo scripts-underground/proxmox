@@ -79,7 +79,7 @@ the script has no examples of that feature.
 | `type` | `string` | One of `lxc`, `addon`, `pve`, `vm`. | Jekyll plugin for collection lookup |
 | `total_lines` | `int` | Number of lines in the source file. | Renderer (line-number display) |
 | `source` | `string` | Raw script text. | Renderer (fallback text), future text-tools |
-| `line_offsets` | `[int]` | Byte offset of each line in `source`. `line_offsets[0]=0`. `line_offsets[n]=len(source)`. Consumers use `source[line_offsets[i]:line_offsets[i+1]]` to slice by line. | Renderer for token-to-line mapping |
+| `source_lines` | `[string]` | Pre-split script lines (one entry per line, no trailing `\n`). Replaces `line_offsets` which was removed in v2. | Renderer `lineText()`, `gatherLineSpans()` |
 | `tokens` | `[Token]` | Typed, positioned spans covering the entire script (see §5). | Renderer (syntax spans), classification (flag detection) |
 | `functions` | `[FunctionInfo]` | Every function definition: `name`, `start_line`, `end_line`, `name_span`. | Hook detection, cross-referencing |
 | `assigns` | `[Assign]` | Variable assignments with metadata flags (see §4 notes). | Jekyll plugin (bootstrap zone detection) |
@@ -215,15 +215,11 @@ were recorded, `has_host` is set, etc.
 - **End position**: End column is *exclusive* — the column *after* the
   last character of the token. For a 3-character keyword `for` at
   column 1, the token is `start_col=1, end_col=4`.
-- **Line offsets**: `line_offsets[i]` is the byte offset in `source`
-  where line `i+1` begins. `line_offsets[0] = 0`; `line_offsets[n] =
-  len(source)` (pointing past the final newline, or to end-of-string if
-  the file has no trailing newline). Consumers extract line `i` with:
-  ```python
-  line_start = line_offsets[i - 1]
-  line_end = line_offsets[i] - 1 if i < len(line_offsets) else len(source)
-  line_text = source[line_start:line_end]
-  ```
+- **Source lines**: `source_lines` is a pre-split array of strings, one
+  per line with no trailing `\n`. Consumers get line `i` via
+  `source_lines[i - 1]`. Replaces v1's `line_offsets` (byte-offset
+  slicing) which was removed because it broke on multi-byte UTF-8
+  characters when consumed as UTF-16 code units in the JS renderer.
 - **Multi-line tokens**: a token spanning multiple lines (uncommon but
   possible) has `end_line > start_line`. Consumers that process
   line-by-line must check for overlapping tokens.

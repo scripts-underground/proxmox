@@ -113,7 +113,7 @@ type Token struct {
 	Expand    bool   `json:"expand,omitempty"`
 }
 
-// ASTOutput is the schema_version 2 format.  LineOffsets and Tokens
+// ASTOutput is the schema_version 2 format.  Tokens
 // are new in v2.  Comments and Heredoc.CodeSpans / Heredoc.Delim /
 // Heredoc.Closing have been removed (tokens cover that data).
 type ASTOutput struct {
@@ -121,8 +121,8 @@ type ASTOutput struct {
 	Slug          string `json:"slug"`
 	Type          string `json:"type"`
 	TotalLines    int    `json:"total_lines"`
-	Source        string `json:"source"`
-	LineOffsets   []int  `json:"line_offsets"`
+	Source        string   `json:"source"`
+	SourceLines   []string `json:"source_lines"`
 
 	Functions     []FunctionInfo `json:"functions"`
 	Assigns       []Assign       `json:"assigns"`
@@ -142,18 +142,17 @@ type ASTOutput struct {
 	HasBootstrap  bool            `json:"has_bootstrap"`
 }
 
-// computeLineOffsets returns an array where offsets[i] is the byte
-// offset of the first character of line i+1 inside src.
-// offsets[0] == 0.  offsets[n] == len(src) for the trailing newline
-// (if any) or the end of the last line.
-func computeLineOffsets(src string) []int {
-	offsets := []int{0}
-	for i, c := range src {
-		if c == '\n' {
-			offsets = append(offsets, i+1)
+// utf16LenOfLine returns the length of a string in UTF-16 code units.
+func utf16LenOfLine(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
 		}
 	}
-	return offsets
+	return n
 }
 
 // --- Walker state ------------------------------------------------------------
@@ -172,7 +171,8 @@ type walker struct {
 	extSpans  []Span
 	flags     Flags
 	bootLine  int
-	tokens    []Token
+	tokens       []Token
+	scriptLines  []string
 
 	// Function-call detection state
 	mainList     map[string]bool
@@ -685,7 +685,13 @@ func (w *walker) visitNode(n syntax.Node) {
 		w.emitToken(Token{Kind: "string-sq", StartLine: w.posLine(x.Pos()), StartCol: w.posCol(x.Pos()), EndLine: w.posLine(x.End()), EndCol: w.posCol(x.End())})
 
 	case *syntax.Comment:
-		w.emitToken(Token{Kind: "comment", StartLine: w.posLine(x.Pos()), StartCol: w.posCol(x.Pos()), EndLine: w.posLine(x.End()), EndCol: w.posCol(x.End())})
+		startLine := w.posLine(x.Pos())
+		maxEndCol := utf16LenOfLine(w.scriptLines[startLine-1]) + 1
+		endCol := w.posCol(x.End())
+		if endCol > maxEndCol {
+			endCol = maxEndCol
+		}
+		w.emitToken(Token{Kind: "comment", StartLine: startLine, StartCol: w.posCol(x.Pos()), EndLine: startLine, EndCol: endCol})
 	}
 }
 
@@ -709,7 +715,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	astFile, err := parser.Parse(strings.NewReader(src), slug+".sh")
 	if err != nil {
 		*violations = append(*violations, fmt.Sprintf("PARSE ERROR: scripts/%s/%s.sh: %v", scriptType, slug, err))
-		return ASTOutput{Slug: slug, Type: string(scriptType), TotalLines: totalLines, Source: src, SchemaVersion: 2}
+		return ASTOutput{Slug: slug, Type: string(scriptType), TotalLines: totalLines, Source: src, SourceLines: lines, SchemaVersion: 2}
 	}
 
 	w := &walker{
@@ -720,12 +726,11 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		heredocs:     []Heredoc{},
 		extSpans:     []Span{},
 		tokens:       []Token{},
+		scriptLines:  lines,
 		mainList:     map[string]bool{},
 		scopeStack:   []funcScope{},
 		dependentsOf: map[string]map[string]bool{},
 	}
-
-	lineOffsets := computeLineOffsets(src)
 
 	// Bootstrap detection via source text scan
 	for li, l := range lines {
@@ -931,7 +936,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		Type:         string(scriptType),
 		TotalLines:   totalLines,
 		Source:       src,
-		LineOffsets:  lineOffsets,
+		SourceLines:  lines,
 		Functions:    w.funcs,
 		Assigns:      w.assigns,
 		GlobalRanges:   w.globalRanges,
