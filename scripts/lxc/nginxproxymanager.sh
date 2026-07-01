@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://nginxproxymanager.com/ | Github: https://github.com/NginxProxyManager/nginx-proxy-manager
 
-APP="Nginx Proxy Manager"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Nginx Proxy Manager"
 var_tags="${var_tags:-proxy}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -43,7 +44,7 @@ function install_script() {
   fetch_and_deploy_gh_release "openresty" "openresty/openresty" "prebuild" "latest" "/opt/openresty" "openresty-*.tar.gz"
 
   msg_info "Building OpenResty"
-  cd /opt/openresty
+  cd /opt/openresty || exit
   $STD ./configure \
     --with-http_v2_module \
     --with-http_realip_module \
@@ -131,7 +132,7 @@ EOF
 
   msg_info "Building Frontend"
   export NODE_OPTIONS="--max_old_space_size=2048 --openssl-legacy-provider"
-  cd /opt/nginxproxymanager/frontend
+  cd /opt/nginxproxymanager/frontend || exit
   sed -E -i 's/"node-sass" *: *"([^"]*)"/"sass": "\1"/g' package.json
   $STD yarn install --network-timeout 600000
   $STD yarn locale-compile
@@ -158,7 +159,7 @@ EOF
 }
 EOF
   fi
-  cd /app
+  cd /app || exit
   $STD yarn install --network-timeout 600000
   msg_ok "Initialized Backend"
 
@@ -243,7 +244,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "openresty" "openresty/openresty" "prebuild" "${CHECK_UPDATE_RELEASE}" "/opt/openresty" "openresty-*.tar.gz"
 
     msg_info "Building OpenResty"
-    cd /opt/openresty
+    cd /opt/openresty || exit
     $STD ./configure \
       --with-http_v2_module \
       --with-http_realip_module \
@@ -284,7 +285,7 @@ EOF
     msg_ok "Built OpenResty"
   fi
 
-  cd /root
+  cd /root || exit
   if [ -d /opt/certbot ]; then
     msg_info "Updating Certbot"
     $STD /opt/certbot/bin/pip install --upgrade pip setuptools wheel
@@ -362,7 +363,7 @@ EOF
 
     msg_info "Building Frontend"
     export NODE_OPTIONS="--max_old_space_size=2048 --openssl-legacy-provider"
-    cd /opt/nginxproxymanager/frontend
+    cd /opt/nginxproxymanager/frontend || exit
     sed -E -i 's/"node-sass" *: *"([^"]*)"/"sass": "\1"/g' package.json
     $STD yarn install --network-timeout 600000
     $STD yarn locale-compile
@@ -390,7 +391,7 @@ EOF
 EOF
     fi
     sed -i 's/"client": "sqlite3"/"client": "better-sqlite3"/' /app/config/production.json
-    cd /app
+    cd /app || exit
     $STD yarn install --network-timeout 600000
     msg_ok "Initialized Backend"
 
@@ -413,4 +414,4 @@ EOF
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

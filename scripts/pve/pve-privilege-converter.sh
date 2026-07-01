@@ -10,14 +10,17 @@ if ! command -v curl > /dev/null 2>&1; then
   apt-get update > /dev/null 2>&1
   apt-get install -y curl > /dev/null 2>&1
 fi
+# shellcheck disable=SC1090# URL resolved at runtime from REPO_BASE - shellcheck cannot see the sourced content
 source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
 load_functions
 
 set -euo pipefail
 shopt -s inherit_errexit nullglob
 
-APP="PVE-Privilege-Converter"
-APP_TYPE="tools"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="PVE-Privilege-Converter"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP_TYPE="tools"
 header_info "$APP"
 
 check_root() {
@@ -219,6 +222,6 @@ main() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 main

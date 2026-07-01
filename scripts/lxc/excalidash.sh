@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/ZimengXiong/ExcaliDash
 
-APP="ExcaliDash"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="ExcaliDash"
 var_tags="${var_tags:-documents;drawing;collaboration}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -29,14 +30,14 @@ function install_script() {
   fetch_and_deploy_gh_release "excalidash" "ZimengXiong/ExcaliDash" "tarball"
 
   msg_info "Building Backend"
-  cd /opt/excalidash/backend
+  cd /opt/excalidash/backend || exit
   $STD npm ci
   $STD npx prisma generate
   $STD npx tsc
   msg_ok "Built Backend"
 
   msg_info "Building Frontend"
-  cd /opt/excalidash/frontend
+  cd /opt/excalidash/frontend || exit
   $STD npm ci
   $STD npm run build
   msg_ok "Built Frontend"
@@ -57,7 +58,7 @@ JWT_SECRET=$(openssl rand -hex 32)
 CSRF_SECRET=$(openssl rand -base64 32)
 EOF
   ln -sf /opt/excalidash_data/.env /opt/excalidash/backend/.env
-  cd /opt/excalidash/backend
+  cd /opt/excalidash/backend || exit
   set -a && source /opt/excalidash_data/.env && set +a
   $STD npx prisma migrate deploy
   msg_ok "Configured Application"
@@ -156,18 +157,18 @@ function update_script() {
     ln -sf /opt/excalidash_data/.env /opt/excalidash/backend/.env
 
     msg_info "Rebuilding Application"
-    cd /opt/excalidash/backend
+    cd /opt/excalidash/backend || exit
     $STD npm ci
     $STD npx prisma generate
     $STD npx tsc
-    cd /opt/excalidash/frontend
+    cd /opt/excalidash/frontend || exit
     $STD npm ci
     $STD npm run build
     cp -r /opt/excalidash/frontend/dist/. /var/www/excalidash/
     msg_ok "Rebuilt Application"
 
     msg_info "Running Migrations"
-    cd /opt/excalidash/backend
+    cd /opt/excalidash/backend || exit
     set -a && source /opt/excalidash_data/.env && set +a
     $STD npx prisma migrate deploy
     msg_ok "Ran Migrations"
@@ -181,4 +182,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

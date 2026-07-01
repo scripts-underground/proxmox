@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground-pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground-proxmox/main/LICENSE
 # Source: https://github.com/IliasHad/edit-mind
 
-APP="Edit-Mind"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Edit-Mind"
 var_tags="${var_tags:-ai;media;photos}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -48,7 +49,7 @@ function install_script() {
   fetch_and_deploy_gh_release "edit-mind" "IliasHad/edit-mind" "tarball"
 
   msg_info "Installing Application Dependencies"
-  cd /opt/edit-mind
+  cd /opt/edit-mind || exit
   $STD pnpm install --prefer-frozen-lockfile
   $STD pnpm --filter prisma generate
   msg_ok "Installed Application Dependencies"
@@ -232,7 +233,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "edit-mind" "IliasHad/edit-mind" "tarball"
 
     msg_info "Rebuilding Application"
-    cd /opt/edit-mind
+    cd /opt/edit-mind || exit
     $STD pnpm install --prefer-frozen-lockfile
     $STD pnpm --filter prisma generate
     $STD pnpm run build:web
@@ -247,7 +248,7 @@ function update_script() {
     msg_ok "Restored Data"
 
     msg_info "Running Migrations"
-    cd /opt/edit-mind
+    cd /opt/edit-mind || exit
     set -a && source /opt/edit-mind/.env && source /opt/edit-mind/.env.system && set +a
     $STD pnpm --filter prisma migrate:deploy
     msg_ok "Ran Migrations"
@@ -261,4 +262,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

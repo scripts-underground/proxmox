@@ -7,8 +7,10 @@
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-APP="CronMaster"
-APP_TYPE="addon"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="CronMaster"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP_TYPE="addon"
 INSTALL_PATH="/opt/cronmaster"
 CONFIG_PATH="/opt/cronmaster/.env"
 SERVICE_PATH="/etc/systemd/system/cronmaster.service"
@@ -145,4 +147,4 @@ EOF
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

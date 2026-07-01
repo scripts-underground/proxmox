@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://colanode.com/
 
-APP="Colanode"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Colanode"
 var_tags="${var_tags:-collaboration;notes;chat}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-4096}"
@@ -31,7 +32,7 @@ function install_script() {
   fetch_and_deploy_gh_release "colanode" "colanode/colanode" "tarball"
 
   msg_info "Building Application"
-  cd /opt/colanode
+  cd /opt/colanode || exit
   export NODE_OPTIONS="--max-old-space-size=4096"
   $STD npm install
   $STD npm run build -w @colanode/core
@@ -151,7 +152,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "colanode" "colanode/colanode" "tarball"
 
     msg_info "Rebuilding Application"
-    cd /opt/colanode
+    cd /opt/colanode || exit
     export NODE_OPTIONS="--max-old-space-size=4096"
     $STD npm install
     $STD npm run build -w @colanode/core
@@ -179,4 +180,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

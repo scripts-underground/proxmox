@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://www.home-assistant.io/
 
-APP="Home Assistant"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Home Assistant"
 var_tags="${var_tags:-automation;smarthome}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -131,7 +132,7 @@ function update_script() {
   if [ "$UPD" == "3" ]; then
     msg_info "Installing Home Assistant Community Store (HACS)"
     $STD apt update
-    cd /var/lib/docker/volumes/hass_config/_data
+    cd /var/lib/docker/volumes/hass_config/_data || exit
     $STD bash <(curl -fsSL https://get.hacs.xyz)
     msg_ok "Installed Home Assistant Community Store (HACS)"
     echo -e "\n Reboot Home Assistant and clear browser cache then Add HACS integration.\n"
@@ -169,4 +170,4 @@ WantedBy=default.target" > $service_path
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

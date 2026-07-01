@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://bunkerai.dev/
 
-APP="BunkerM"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="BunkerM"
 var_tags="${var_tags:-mqtt;iot;mosquitto}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -82,7 +83,7 @@ function install_script() {
   msg_ok "Set up Python Environment"
 
   msg_info "Building Frontend"
-  cd /opt/bunkerm/frontend
+  cd /opt/bunkerm/frontend || exit
   rm -f package-lock.json
   export NODE_OPTIONS="--max-old-space-size=4096"
   $STD npm install
@@ -211,7 +212,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bunkerm" "bunkeriot/BunkerM" "tarball"
 
     msg_info "Rebuilding Frontend"
-    cd /opt/bunkerm/frontend
+    cd /opt/bunkerm/frontend || exit
     export NODE_OPTIONS="--max-old-space-size=4096"
     NODE_ENV=development $STD npm ci
     AUTH_SECRET="build-time-placeholder" NEXT_TELEMETRY_DISABLED=1 $STD npm run build
@@ -243,4 +244,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

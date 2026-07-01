@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground-pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground-proxmox/main/LICENSE
 # Source: https://github.com/fleetdm/fleet
 
-APP="Fleet"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Fleet"
 var_tags="${var_tags:-monitoring;device-management;security}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -137,4 +138,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

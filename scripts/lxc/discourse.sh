@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://www.discourse.org/
 
-APP="Discourse"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Discourse"
 var_tags="${var_tags:-forum;community;discussion}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-4096}"
@@ -47,7 +48,7 @@ function install_script() {
   msg_info "Configuring Discourse"
   DISCOURSE_SECRET_KEY=$(openssl rand -hex 64)
   $STD git clone --depth 1 https://github.com/discourse/discourse.git /opt/discourse
-  cd /opt/discourse
+  cd /opt/discourse || exit
   cat << EOF > /opt/discourse/.env
 RAILS_ENV=production
 RAILS_LOG_TO_STDOUT=true
@@ -66,6 +67,7 @@ DISCOURSE_SMTP_PORT=25
 DISCOURSE_SMTP_AUTHENTICATION=none
 DISCOURSE_NOTIFICATION_EMAIL=noreply@${LOCAL_IP}
 DISCOURSE_SKIP_NEW_ACCOUNT_EMAIL=true
+# shellcheck disable=SC2034
 APP_ROOT=/opt/discourse
 EOF
 
@@ -76,7 +78,7 @@ EOF
 
   msg_info "Installing Discourse Dependencies"
   $STD systemctl enable --now redis-server
-  cd /opt/discourse
+  cd /opt/discourse || exit
   export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
   eval "$(rbenv init - bash)" 2> /dev/null || true
   export RAILS_ENV=production
@@ -89,7 +91,7 @@ EOF
   msg_ok "Installed Discourse Dependencies"
 
   msg_info "Setting Up Database"
-  cd /opt/discourse
+  cd /opt/discourse || exit
   export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
   eval "$(rbenv init - bash)" 2> /dev/null || true
   export RAILS_ENV=production
@@ -124,7 +126,7 @@ SiteSetting.wizard_enabled = false
   msg_ok "Created Admin Account"
 
   msg_info "Building Discourse Assets"
-  cd /opt/discourse
+  cd /opt/discourse || exit
   export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
   eval "$(rbenv init - bash)" 2> /dev/null || true
   export RAILS_ENV=production
@@ -256,7 +258,7 @@ function update_script() {
 
   msg_info "Updating Discourse"
   PG_VERSION="16" PG_MODULES="pgvector" setup_postgresql
-  cd /opt/discourse
+  cd /opt/discourse || exit
   git pull origin main
   $STD bundle install --deployment --without test development
   $STD yarn install
@@ -277,4 +279,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

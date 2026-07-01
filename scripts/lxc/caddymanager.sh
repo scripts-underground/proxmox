@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/caddymanager/caddymanager
 
-APP="CaddyManager"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="CaddyManager"
 var_tags="${var_tags:-}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-1024}"
@@ -28,14 +29,15 @@ function install_script() {
 
   msg_info "Configuring CaddyManager"
   SECRET_JWT=$(openssl rand -hex 32)
-  cd /opt/caddymanager/backend
+  cd /opt/caddymanager/backend || exit
   $STD npm install
-  cd /opt/caddymanager/frontend
+  cd /opt/caddymanager/frontend || exit
   $STD npm install
   $STD npm run build
 
   cat << EOF > /opt/caddymanager/caddymanager.env
 PORT=3000
+# shellcheck disable=SC2034
 APP_NAME=Caddy Manager
 DB_ENGINE=sqlite
 SQLITE_DB_PATH=/opt/caddymanager/caddymanager.sqlite
@@ -120,9 +122,9 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "caddymanager" "caddymanager/caddymanager" "tarball"
 
     msg_info "Installing CaddyManager"
-    cd /opt/caddymanager/backend
+    cd /opt/caddymanager/backend || exit
     $STD npm install
-    cd /opt/caddymanager/frontend
+    cd /opt/caddymanager/frontend || exit
     $STD npm install
     $STD npm run build
     msg_ok "Installed CaddyManager"
@@ -144,4 +146,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

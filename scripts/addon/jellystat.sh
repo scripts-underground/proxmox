@@ -7,8 +7,10 @@
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-APP="Jellystat"
-APP_TYPE="addon"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Jellystat"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP_TYPE="addon"
 INSTALL_PATH="/opt/jellystat"
 CONFIG_PATH="/opt/jellystat/.env"
 DEFAULT_PORT=3000
@@ -109,7 +111,7 @@ function install_script() {
   fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$INSTALL_PATH"
 
   msg_info "Installing dependencies"
-  cd "$INSTALL_PATH"
+  cd "$INSTALL_PATH" || exit
   $STD npm install
   msg_ok "Installed dependencies"
 
@@ -201,7 +203,7 @@ function update_script() {
     msg_ok "Restored configuration"
 
     msg_info "Installing dependencies"
-    cd "$INSTALL_PATH"
+    cd "$INSTALL_PATH" || exit
     $STD npm install
     msg_ok "Installed dependencies"
 
@@ -266,4 +268,4 @@ EOF
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

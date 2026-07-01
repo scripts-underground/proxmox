@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://etherpad.org
 
-APP="Etherpad"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Etherpad"
 var_tags="${var_tags:-docs;collaboration;editor}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -39,7 +40,7 @@ function install_script() {
   fetch_and_deploy_gh_release "etherpad-lite" "ether/etherpad" "tarball"
 
   msg_info "Building Etherpad"
-  cd /opt/etherpad-lite
+  cd /opt/etherpad-lite || exit
   $STD pnpm install --frozen-lockfile
   $STD pnpm run build:etherpad
   msg_ok "Built Etherpad"
@@ -112,7 +113,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "etherpad-lite" "ether/etherpad" "tarball"
 
     msg_info "Rebuilding Etherpad"
-    cd /opt/etherpad-lite
+    cd /opt/etherpad-lite || exit
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
     $STD corepack enable
     $STD pnpm install --frozen-lockfile
@@ -134,4 +135,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

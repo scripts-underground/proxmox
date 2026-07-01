@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/goauthentik/authentik
 
-APP="authentik"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="authentik"
 var_tags="${var_tags:-auth}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -68,7 +69,7 @@ function install_script() {
   fetch_and_deploy_gh_release "geoipupdate" "maxmind/geoipupdate" "binary"
 
   msg_info "Setting up xmlsec"
-  cd /opt/xmlsec
+  cd /opt/xmlsec || exit
   $STD ./autogen.sh
   $STD make -j $(nproc)
   $STD make check
@@ -77,13 +78,13 @@ function install_script() {
   msg_ok "Setup xmlsec"
 
   msg_info "Configuring rust"
-  cd /opt/authentik
+  cd /opt/authentik || exit
   $STD rustup install
   $STD rustup default "$(sed -n 's/channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
   msg_ok "Configured rust"
 
   msg_info "Setting up web"
-  cd /opt/authentik/web
+  cd /opt/authentik/web || exit
   export NODE_ENV="production"
   $STD npm install
   $STD npm run build
@@ -91,7 +92,7 @@ function install_script() {
   msg_ok "Setup web"
 
   msg_info "Setting up go proxy"
-  cd /opt/authentik
+  cd /opt/authentik || exit
   export CGO_ENABLED="1"
   export CC="x86_64-linux-gnu-gcc"
   $STD go mod download
@@ -114,7 +115,7 @@ EOF
 
   msg_info "Building worker"
   export AWS_LC_FIPS_SYS_CC="clang"
-  cd /opt/authentik
+  cd /opt/authentik || exit
   $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1
   cp ./target/release/authentik /opt/authentik/authentik-worker
   rm -r ./target
@@ -126,7 +127,7 @@ EOF
   export UV_LINK_MODE="copy"
   export UV_NATIVE_TLS="1"
   export UV_PYTHON_INSTALL_DIR="/usr/local/bin"
-  cd /opt/authentik
+  cd /opt/authentik || exit
   $STD uv sync --frozen --no-install-project --no-dev
   cp /opt/authentik/authentik/sources/kerberos/krb5.conf /etc/krb5.conf
   msg_ok "Setup python server"
@@ -359,7 +360,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "xmlsec" "lsh123/xmlsec" "tarball" "${XMLSEC_VERSION}" "/opt/xmlsec"
 
     msg_info "Updating xmlsec"
-    cd /opt/xmlsec
+    cd /opt/xmlsec || exit
     $STD ./autogen.sh
     $STD make -j $(nproc)
     $STD make check
@@ -385,13 +386,13 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "authentik" "goauthentik/authentik" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
 
     msg_info "Configuring rust"
-    cd /opt/authentik
+    cd /opt/authentik || exit
     $STD rustup install
     $STD rustup default "$(sed -n 's/channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
     msg_ok "Configured rust"
 
     msg_info "Updating web"
-    cd /opt/authentik/web
+    cd /opt/authentik/web || exit
     export NODE_ENV="production"
     $STD npm install
     $STD npm run build
@@ -399,7 +400,7 @@ function update_script() {
     msg_ok "Updated web"
 
     msg_info "Updating go proxy"
-    cd /opt/authentik
+    cd /opt/authentik || exit
     export CGO_ENABLED="1"
     $STD go mod download
     $STD go build -o /opt/authentik/authentik-server ./cmd/server
@@ -410,7 +411,7 @@ function update_script() {
 
     msg_info "Building worker"
     export AWS_LC_FIPS_SYS_CC="clang"
-    cd /opt/authentik
+    cd /opt/authentik || exit
     $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1
     cp ./target/release/authentik /opt/authentik/authentik-worker
     rm -r ./target
@@ -423,7 +424,7 @@ function update_script() {
     export UV_NATIVE_TLS="1"
     export RUSTUP_PERMIT_COPY_RENAME="true"
     export UV_PYTHON_INSTALL_DIR="/usr/local/bin"
-    cd /opt/authentik
+    cd /opt/authentik || exit
     $STD uv sync --frozen --no-install-project --no-dev
     chown -R authentik:authentik /opt/authentik
     msg_ok "Updated python server"
@@ -543,4 +544,4 @@ EOF
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

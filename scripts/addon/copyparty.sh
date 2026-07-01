@@ -12,11 +12,13 @@ GN=$(echo "\033[1;92m")
 RD=$(echo "\033[01;31m")
 BL=$(echo "\033[36m")
 CL=$(echo "\033[m")
-CM="${GN}\u2714${CL}"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nCM="${GN}\u2714${CL}"
 CROSS="${RD}\u2716${CL}"
 INFO="${BL}\u2139${CL}"
 
-APP="CopyParty"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="CopyParty"
 BIN_PATH="/usr/local/bin/copyparty-sfx.py"
 CONF_PATH="/etc/copyparty.conf"
 LOG_PATH="/var/log/copyparty"
@@ -238,4 +240,4 @@ function uninstall_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

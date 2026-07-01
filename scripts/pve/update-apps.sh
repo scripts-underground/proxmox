@@ -5,6 +5,7 @@
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+# shellcheck disable=SC1090# URL resolved at runtime from REPO_BASE - shellcheck cannot see the sourced content
 source <(curl -fsSL "$REPO_BASE/misc/core.func")
 
 # =============================================================================
@@ -119,10 +120,10 @@ EOF
 }
 
 function detect_service() {
-  pushd $(mktemp -d) > /dev/null
+  pushd "$(mktemp -d)" > /dev/null || exit
   pct pull "$1" /usr/bin/update update 2> /dev/null
   service=$(cat update | sed 's|.*/ct/||g' | sed 's|\.sh).*||g')
-  popd > /dev/null
+  popd > /dev/null || exit
 }
 
 function backup_container() {
@@ -164,7 +165,7 @@ END {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 header_info
 

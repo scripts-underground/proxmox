@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/apache/airflow
 
-APP="Apache-Airflow"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Apache-Airflow"
 var_tags="${var_tags:-workflow;scheduler;automation}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
@@ -33,7 +34,7 @@ function install_script() {
   msg_info "Installing Apache Airflow"
   AIRFLOW_VERSION="3.2.1"
   mkdir -p /opt/airflow/{dags,logs,plugins}
-  cd /opt/airflow
+  cd /opt/airflow || exit
   $STD uv venv --python 3.12
   $STD uv pip install --python /opt/airflow/.venv/bin/python \
     "apache-airflow[postgres,fab]==${AIRFLOW_VERSION}" \
@@ -199,4 +200,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

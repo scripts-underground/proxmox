@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground-pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground-proxmox/main/LICENSE
 # Source: https://github.com/ente-io/ente
 
-APP="Ente"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Ente"
 var_tags="${var_tags:-photos}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-6144}"
@@ -36,7 +37,7 @@ function install_script() {
   fetch_and_deploy_gh_release "ente-server" "ente-io/ente" "tarball" "latest" "/opt/ente"
 
   msg_info "Building Ente CLI"
-  cd /opt/ente/cli
+  cd /opt/ente/cli || exit
   $STD go build -o /usr/local/bin/ente .
   chmod +x /usr/local/bin/ente
   msg_ok "Built Ente CLI"
@@ -56,7 +57,7 @@ EOF
   msg_ok "Configured Ente CLI"
 
   msg_info "Building Museum (server)"
-  cd /opt/ente/server
+  cd /opt/ente/server || exit
   $STD corepack enable
   $STD go mod tidy
   export CGO_ENABLED=1
@@ -187,7 +188,7 @@ EOF
   export NEXT_PUBLIC_ENTE_ALBUMS_ENDPOINT=$ENTE_ALBUMS_URL
 
   msg_info "Building Web Applications"
-  cd /opt/ente/web
+  cd /opt/ente/web || exit
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
   source "$HOME/.cargo/env"
   $STD yarn install
@@ -225,7 +226,7 @@ export NEXT_PUBLIC_ENTE_ENDPOINT=$ENTE_BACKEND_URL
 export NEXT_PUBLIC_ENTE_ALBUMS_ENDPOINT=$ENTE_ALBUMS_URL
 echo "Building Web Applications..."
 source "$HOME/.cargo/env"
-cd /opt/ente/web
+cd /opt/ente/web || exit
 yarn build
 yarn build:accounts
 yarn build:auth
@@ -470,4 +471,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

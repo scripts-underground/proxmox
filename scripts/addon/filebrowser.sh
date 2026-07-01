@@ -22,11 +22,13 @@ GN=$(echo "\033[1;92m")
 RD=$(echo "\033[01;31m")
 BL=$(echo "\033[36m")
 CL=$(echo "\033[m")
-CM="${GN}✔️${CL}"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nCM="${GN}✔️${CL}"
 CROSS="${RD}✖️${CL}"
 INFO="${BL}ℹ️${CL}"
 
-APP="FileBrowser"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="FileBrowser"
 INSTALL_PATH="/usr/local/bin/filebrowser"
 DB_PATH="/usr/local/community-scripts/filebrowser.db"
 DEFAULT_PORT=8080
@@ -89,7 +91,7 @@ function install_script() {
     chmod 644 "$DB_PATH"
     msg_ok "Directory created successfully"
 
-    cd /usr/local/community-scripts
+    cd /usr/local/community-scripts || exit
     filebrowser config init &> /dev/null
     filebrowser config set -a '0.0.0.0' -p "$PORT" -d "$DB_PATH" &> /dev/null
     filebrowser users add admin helper-scripts.com --perm.admin --database "$DB_PATH" &> /dev/null
@@ -170,4 +172,4 @@ function post_install_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

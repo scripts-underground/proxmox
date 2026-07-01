@@ -7,8 +7,11 @@
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-APP="MQTTX Web"
-APP_TYPE="tools"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="MQTTX Web"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP_TYPE="tools"
+# shellcheck disable=SC2034
 APP_DIR="/opt/mqttx"
 SERVICE="mqttx-web"
 REPO="emqx/MQTTX"
@@ -40,7 +43,7 @@ function install_script() {
   fetch_and_deploy_gh_release "mqttx" "$REPO" "tarball" "latest" "$APP_DIR"
 
   msg_info "Building ${APP}"
-  cd "$APP_DIR/web"
+  cd "$APP_DIR/web" || exit
   $STD yarn install --frozen-lockfile --ignore-engines
   $STD yarn build
   msg_ok "Built ${APP}"
@@ -91,7 +94,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "mqttx" "$REPO" "tarball" "latest" "$APP_DIR"
 
     msg_info "Updating ${APP}"
-    cd "$APP_DIR/web"
+    cd "$APP_DIR/web" || exit
     $STD yarn install --frozen-lockfile --ignore-engines
     $STD yarn build
     systemctl reload nginx
@@ -117,4 +120,4 @@ function post_install_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

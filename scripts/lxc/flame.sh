@@ -7,7 +7,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/pawelmalak/flame
 
-APP="Flame"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Flame"
 var_tags="${var_tags:-dashboard;startpage}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -29,13 +30,13 @@ function install_script() {
   fetch_and_deploy_gh_release "flame" "pawelmalak/flame" "tarball"
 
   msg_info "Setting up Flame"
-  cd /opt/flame
+  cd /opt/flame || exit
   mkdir -p data public
   $STD npm install --production
-  cd /opt/flame/client
+  cd /opt/flame/client || exit
   $STD npm install --production
   $STD npm run build
-  cd /opt/flame
+  cd /opt/flame || exit
   cp -r client/build/. public/
   FLAME_VERSION=$(cat ~/.flame)
   cat << EOF > /opt/flame/.env
@@ -104,13 +105,13 @@ function update_script() {
     msg_ok "Restored Data"
 
     msg_info "Rebuilding Application"
-    cd /opt/flame
+    cd /opt/flame || exit
     mkdir -p data public
     $STD npm install --production
-    cd /opt/flame/client
+    cd /opt/flame/client || exit
     $STD npm install --production
     $STD npm run build
-    cd /opt/flame
+    cd /opt/flame || exit
     cp -r client/build/. public/
     msg_ok "Rebuilt Application"
 
@@ -123,4 +124,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

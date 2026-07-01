@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/baserow/baserow
 
-APP="Baserow"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Baserow"
 var_tags="${var_tags:-database;nocode;spreadsheet}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -42,13 +43,13 @@ function install_script() {
   fetch_and_deploy_gh_release "baserow" "baserow/baserow" "tarball"
 
   msg_info "Installing Backend Dependencies"
-  cd /opt/baserow/backend
+  cd /opt/baserow/backend || exit
   UV_LINK_MODE="copy"
   $STD uv sync --frozen --no-dev
   msg_ok "Installed Backend Dependencies"
 
   msg_info "Building Frontend"
-  cd /opt/baserow/web-frontend
+  cd /opt/baserow/web-frontend || exit
   NODE_OPTIONS="--max-old-space-size=4096" $STD npm install --legacy-peer-deps
   NODE_OPTIONS="--max-old-space-size=4096" $STD npm run build
   msg_ok "Built Frontend"
@@ -81,7 +82,7 @@ EOF
   msg_ok "Configured Baserow"
 
   msg_info "Running Migrations"
-  cd /opt/baserow/backend
+  cd /opt/baserow/backend || exit
   set -a && source /opt/baserow/.env && set +a
   export PYTHONPATH="/opt/baserow/backend/src:/opt/baserow/premium/backend/src:/opt/baserow/enterprise/backend/src"
   $STD /opt/baserow/backend/.venv/bin/python src/baserow/manage.py migrate
@@ -228,18 +229,18 @@ function update_script() {
     msg_ok "Restored Configuration"
 
     msg_info "Updating Backend Dependencies"
-    cd /opt/baserow/backend
+    cd /opt/baserow/backend || exit
     $STD uv sync --frozen --no-dev
     msg_ok "Updated Backend Dependencies"
 
     msg_info "Updating Frontend"
-    cd /opt/baserow/web-frontend
+    cd /opt/baserow/web-frontend || exit
     $STD npm install
     $STD npm run build
     msg_ok "Updated Frontend"
 
     msg_info "Running Migrations"
-    cd /opt/baserow/backend
+    cd /opt/baserow/backend || exit
     set -a && source /opt/baserow/.env && set +a
     export PYTHONPATH="/opt/baserow/backend/src:/opt/baserow/premium/backend/src:/opt/baserow/enterprise/backend/src"
     $STD /opt/baserow/backend/.venv/bin/python src/baserow/manage.py migrate
@@ -254,4 +255,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

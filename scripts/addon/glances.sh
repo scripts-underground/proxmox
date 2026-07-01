@@ -18,13 +18,15 @@ function header_info {
 EOF
 }
 
-APP="Glances"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Glances"
 YW=$(echo "\033[33m")
 GN=$(echo "\033[1;92m")
 RD=$(echo "\033[01;31m")
 BL=$(echo "\033[36m")
 CL=$(echo "\033[m")
-CM="${GN}✔️${CL}"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nCM="${GN}✔️${CL}"
 CROSS="${RD}✖️${CL}"
 INFO="${BL}ℹ️${CL}"
 
@@ -54,9 +56,9 @@ install_glances_debian() {
   msg_ok "Setup Python + uv"
 
   msg_info "Installing $APP (with web UI)"
-  cd /opt
+  cd /opt || exit
   mkdir -p glances
-  cd glances
+  cd glances || exit
   uv venv
   source .venv/bin/activate > /dev/null 2>&1
   uv pip install --upgrade pip wheel setuptools > /dev/null 2>&1
@@ -89,7 +91,7 @@ update_glances_debian() {
     exit 1
   fi
   msg_info "Updating $APP"
-  cd /opt/glances
+  cd /opt/glances || exit
   source .venv/bin/activate
   uv pip install --upgrade "glances[web]" > /dev/null 2>&1
   deactivate
@@ -118,9 +120,9 @@ install_glances_alpine() {
   msg_ok "Setup Python + uv"
 
   msg_info "Installing $APP (with web UI)"
-  cd /opt
+  cd /opt || exit
   mkdir -p glances
-  cd glances
+  cd glances || exit
   uv venv
   source .venv/bin/activate
   uv pip install --upgrade pip wheel setuptools > /dev/null 2>&1
@@ -150,7 +152,7 @@ update_glances_alpine() {
     exit 1
   fi
   msg_info "Updating $APP"
-  cd /opt/glances
+  cd /opt/glances || exit
   source .venv/bin/activate
   uv pip install --upgrade "glances[web]" > /dev/null 2>&1
   deactivate
@@ -196,4 +198,4 @@ function post_install_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")

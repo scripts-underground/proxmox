@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://linkwarden.app/ | Github: https://github.com/linkwarden/linkwarden
 
-APP="Linkwarden"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Linkwarden"
 var_tags="${var_tags:-bookmark}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
@@ -37,7 +38,7 @@ function install_script() {
   msg_info "Installing Linkwarden (Patience)"
   SECRET_KEY="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)"
   echo "Linkwarden Secret: $SECRET_KEY" >> "${HOME}/linkwarden.creds"
-  cd /opt/linkwarden
+  cd /opt/linkwarden || exit
   yarn_ver="4.12.0"
   if [[ -f package.json ]]; then
     pkg_manager=$(jq -r '.packageManager // empty' package.json 2> /dev/null || true)
@@ -117,7 +118,7 @@ function update_script() {
     fetch_and_deploy_gh_release "linkwarden" "linkwarden/linkwarden" "tarball"
 
     msg_info "Updating Linkwarden"
-    cd /opt/linkwarden
+    cd /opt/linkwarden || exit
     yarn_ver="4.12.0"
     if [[ -f package.json ]]; then
       pkg_manager=$(jq -r '.packageManager // empty' package.json 2> /dev/null || true)
@@ -152,4 +153,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

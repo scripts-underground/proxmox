@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/qdm12/gluetun
 
-APP="Gluetun"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Gluetun"
 var_tags="${var_tags:-vpn;wireguard;openvpn}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
@@ -36,7 +37,7 @@ function install_script() {
   fetch_and_deploy_gh_release "gluetun" "qdm12/gluetun" "tarball"
 
   msg_info "Building Gluetun"
-  cd /opt/gluetun
+  cd /opt/gluetun || exit
   $STD go mod download
   CGO_ENABLED=0 $STD go build -trimpath -ldflags="-s -w" -o /usr/local/bin/gluetun ./cmd/gluetun/
   msg_ok "Built Gluetun"
@@ -122,7 +123,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gluetun" "qdm12/gluetun" "tarball"
 
     msg_info "Building Gluetun"
-    cd /opt/gluetun
+    cd /opt/gluetun || exit
     $STD go mod download
     CGO_ENABLED=0 $STD go build -trimpath -ldflags="-s -w" -o /usr/local/bin/gluetun ./cmd/gluetun/
     msg_ok "Built Gluetun"
@@ -136,4 +137,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

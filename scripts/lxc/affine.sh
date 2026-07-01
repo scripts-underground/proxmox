@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/toeverything/AFFiNE
 
-APP="AFFiNE"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="AFFiNE"
 var_tags="${var_tags:-knowledge;notes;workspace}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-8192}"
@@ -57,7 +58,7 @@ EOF
   msg_ok "Configured Environment"
 
   msg_info "Building AFFiNE (Patience)"
-  cd /opt/affine
+  cd /opt/affine || exit
   source /root/.profile
   export PATH="/root/.cargo/bin:$PATH"
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -107,7 +108,7 @@ MANIFEST
   msg_ok "Built AFFiNE"
 
   msg_info "Running Initial Migration"
-  cd /opt/affine/packages/backend/server
+  cd /opt/affine/packages/backend/server || exit
   set -a && source /opt/affine/.env && set +a
   $STD node ./scripts/self-host-predeploy.js
   msg_ok "Ran Initial Migration"
@@ -241,7 +242,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "affine_app" "toeverything/AFFiNE" "tarball" "latest" "/opt/affine"
 
     msg_info "Rebuilding Application (Patience)"
-    cd /opt/affine
+    cd /opt/affine || exit
     source /root/.profile
     export PATH="/root/.cargo/bin:/root/.rbenv/shims:$PATH"
 
@@ -304,7 +305,7 @@ TURBO
       > /opt/affine/packages/backend/server/static/mobile/assets-manifest.json
 
     # Run migrations
-    cd /opt/affine/packages/backend/server
+    cd /opt/affine/packages/backend/server || exit
     set -a && source /opt/affine/.env && set +a
     $STD node ./scripts/self-host-predeploy.js
 
@@ -323,4 +324,4 @@ TURBO
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

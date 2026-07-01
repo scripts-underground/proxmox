@@ -7,7 +7,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://github.com/alexindigo/ProxmoxVED/raw/main/LICENSE
 # Source: https://github.com/pewdiepie-archdaemon/odysseus | https://pewdiepie-archdaemon.github.io/odysseus/
 
-APP="Odysseus"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Odysseus"
 var_tags="${var_tags:-ai;workspace;llm}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
@@ -32,13 +33,13 @@ function install_script() {
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
-  cd /opt/odysseus
+  cd /opt/odysseus || exit
   $STD uv venv /opt/odysseus/venv
   $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python
   msg_ok "Set up Python Environment"
 
   msg_info "Running Setup"
-  cd /opt/odysseus
+  cd /opt/odysseus || exit
   ADMIN_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
   export ODYSSEUS_ADMIN_USER="admin"
   export ODYSSEUS_ADMIN_PASSWORD="$ADMIN_PASS"
@@ -88,7 +89,7 @@ function update_script() {
   fi
 
   msg_info "Checking for updates"
-  cd /opt/odysseus
+  cd /opt/odysseus || exit
   $STD git fetch origin main
   LOCAL=$(git rev-parse HEAD)
   REMOTE=$(git rev-parse origin/main 2> /dev/null || echo "")
@@ -124,4 +125,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

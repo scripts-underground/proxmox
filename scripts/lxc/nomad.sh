@@ -7,7 +7,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/Crosstalk-Solutions/project-nomad | https://www.projectnomad.us
 
-APP="Nomad"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="Nomad"
 var_tags="${var_tags:-offline;knowledge;education;ai}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-4096}"
@@ -85,7 +86,7 @@ function install_script() {
   msg_ok "Set up Nomad"
 
   msg_info "Starting Nomad"
-  cd ${NOMAD_DIR}
+  cd ${NOMAD_DIR} || exit
   $STD docker compose up -d
   msg_ok "Started Nomad"
 
@@ -110,7 +111,7 @@ function update_script() {
 
   if check_for_gh_release "nomad" "Crosstalk-Solutions/project-nomad"; then
     msg_info "Updating Nomad"
-    cd /opt/project-nomad
+    cd /opt/project-nomad || exit
 
     APP_KEY=$(grep 'APP_KEY=' /opt/project-nomad/compose.yml | head -1 | sed 's/.*APP_KEY=//')
     DB_PASS=$(grep 'DB_PASSWORD=' /opt/project-nomad/compose.yml | head -1 | sed 's/.*DB_PASSWORD=//')
@@ -141,4 +142,4 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")

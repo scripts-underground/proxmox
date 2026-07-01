@@ -6,7 +6,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://aliasvault.net
 
-APP="AliasVault"
+
+# Read by the framework - shellcheck cannot see the caller\n# shellcheck disable=SC2034\nAPP="AliasVault"
 var_tags="${var_tags:-security;passwords;privacy}"
 var_cpu="${var_cpu:-4}"
 var_ram="${var_ram:-6144}"
@@ -53,7 +54,7 @@ function install_script() {
   msg_info "Building Core Libraries (Patience)"
   source "$HOME/.cargo/env"
   $STD rustup target add wasm32-unknown-unknown
-  cd /opt/aliasvault/core
+  cd /opt/aliasvault/core || exit
   $STD bash build-and-distribute.sh --browser
   msg_ok "Built Core Libraries"
 
@@ -73,7 +74,7 @@ function install_script() {
   msg_ok "Copied Core Artifacts"
 
   msg_info "Building AliasVault Applications (Patience)"
-  cd /opt/aliasvault/apps/server
+  cd /opt/aliasvault/apps/server || exit
   $STD dotnet workload install wasm-tools
   $STD dotnet restore aliasvault.sln
   $STD dotnet publish AliasVault.Api/AliasVault.Api.csproj \
@@ -358,7 +359,7 @@ function update_script() {
     msg_info "Building Core Libraries (Patience)"
     source "$HOME/.cargo/env"
     $STD rustup target add wasm32-unknown-unknown
-    cd /opt/aliasvault/core
+    cd /opt/aliasvault/core || exit
     $STD bash build-and-distribute.sh --browser
     msg_ok "Built Core Libraries"
 
@@ -378,7 +379,7 @@ function update_script() {
     msg_ok "Copied Core Artifacts"
 
     msg_info "Building AliasVault Applications (Patience)"
-    cd /opt/aliasvault/apps/server
+    cd /opt/aliasvault/apps/server || exit
     $STD dotnet workload install wasm-tools
     $STD dotnet restore aliasvault.sln
     $STD dotnet publish AliasVault.Api/AliasVault.Api.csproj -c Release -o /opt/aliasvault/api --no-restore
@@ -414,4 +415,4 @@ for ext in ['.gz', '.br']:
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+# Dynamic URL resolved at runtime - shellcheck cannot follow\n# shellcheck disable=SC1090\nsource <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
