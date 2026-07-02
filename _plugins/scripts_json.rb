@@ -59,6 +59,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
       has_podman = false
       has_external = false
       has_download = false
+      has_piped_download = false
       has_git = false
       has_npm = false
       has_yarn = false
@@ -85,6 +86,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_podman = flags['podman'] == true
         has_external = ast['has_external'] == true
         has_download = ast['has_download'] == true
+        has_piped_download = ast['has_piped_download'] == true
         has_git = flags['git'] == true
         has_npm = flags['npm'] == true
         has_yarn = flags['yarn'] == true
@@ -144,6 +146,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_podman: has_podman,
         has_external: has_external,
         has_download: has_download,
+        has_piped_download: has_piped_download,
         has_sudo: has_sudo,
         has_eval: has_eval,
         has_git: has_git,

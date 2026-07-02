@@ -85,11 +85,14 @@ the script has no examples of that feature.
 | `assigns` | `[Assign]` | Variable assignments with metadata flags (see §4 notes). | Jekyll plugin (bootstrap zone detection) |
 | `host_ranges` | `[LineRange]` | Line ranges of bash logic that executes on the Proxmox host (see §7). | Safety classification (`has_host`) |
 | `heredocs` | `[Heredoc]` | Full heredoc analysis (see §6). | Renderer (body styling), classification |
+| `download_spans` | `[Span]` | Line ranges of individual curl/wget invocations not on the bootstrap line. Each span covers one download CallExpr with `kind: \"download\"` (see §8). | Safety classification |
+| `piped_download_spans` | `[Span]` | Line ranges of curl/wget piped to a non-shell consumer (see §8). Each span covers the full BinaryCmd with `kind: \"piped_download\"`. | Safety classification |
 | `external_spans` | `[Span]` | Line ranges sourced/curl'd from outside the script (see §8). | Safety classification (`has_external`) |
 | `hooks` | `{string: bool}` | Which hook functions the script defines (`install_script`, `update_script`, `uninstall_script`, `pre_build_script`, `post_build_script`, `post_install_script`). | Jekyll plugin (metadata, UI rendering) |
 | `hook_order` | `[string]` | Hook names in definition order. | Jekyll plugin (UI ordering) |
 | `flags` | `Flags` | Tool-use flags (docker, podman, npm, yarn, pnpm, pip, cargo, go, git, sudo, eval). | Safety classification, compatibility notes |
 | `has_download` | `bool` | True if the script invokes a network downloader (curl/wget). Informational, not a danger flag — see §8. | Safety information |
+| `has_piped_download` | `bool` | True if curl/wget appears on the left side of a pipe whose right side is not a shell evaluator. Payload not executed as shell code but flows into a non-shell consumer (see §8). | Safety classification |
 | `has_external` | `bool` | True if the script downloads AND executes external content (curl/wget inside shell-evaluation context). Danger flag (see §8). | Safety classification |
 | `has_eval` | `bool` | True if the script uses `eval`. | Safety classification |
 | `has_host` | `bool` | True if the script contains host-bound logic (see §7). | Safety classification |
@@ -181,17 +184,37 @@ entirely container-bound (safe to run) from those with host-side effects.
 ## 8. External span detection
 
 "External spans" mark content that is downloaded via curl/wget and
-simultaneously executed by a shell interpreter. Two flags are produced:
+simultaneously executed by a shell interpreter. Three related but distinct signals describe how a script interacts with
+remote content. Detection is layered: identify the download first
+(internal), then check if the download feeds into a pipe, then check
+what the pipe connects to.
 
-- **`has_download`** (informational): true if the script invokes `curl`
-  or `wget` anywhere, regardless of context. Indicates the script
-  reaches the network but isn't necessarily dangerous by itself.
-- **`has_external`** (danger signal): true if a network download is
-  detected **inside a shell-evaluation subtree** — meaning the script
-  downloads AND executes remote code without intermediate inspection.
+### Signals
 
-Detection uses a depth-counter approach. The walker tracks
-`shellEvalDepth`, incremented when entering:
+- **`has_download`** (internal fact): true if the script invokes `curl`
+  or `wget` anywhere not on the bootstrap line. Indicates the script
+  reaches the network to fetch content — but not necessarily to execute
+  it. Corresponding spans: `download_spans`, one per download CallExpr,
+  all with `kind: "download"`.
+- **`has_piped_download`** (intermediate): true if `curl`/`wget` appears
+  on the left side of a pipe whose right side is NOT a shell evaluator
+  (e.g. `curl ... | tar`, `curl ... | jq`, `curl ... | gpg --dearmor`).
+  The downloaded content flows into a non-shell consumer — users decide
+  whether the destination is dangerous. Corresponding spans:
+  `piped_download_spans`, each covering the full BinaryCmd with
+  `kind: "piped_download"`.
+- **`has_external`** (danger signal): true if `curl`/`wget` appears
+  inside a shell-evaluation subtree — downloaded AND executed as shell
+  code. Corresponding spans: `external_spans`.
+
+### Detection
+
+**has_download**: any `CallExpr` whose command is in
+`{curl, wget}` and not on the bootstrap line is recorded as a download
+span with uniform `kind: "download"`.
+
+**has_external**: uses a `shellEvalDepth` counter incremented when
+entering:
 
 1. A `CallExpr` whose command is a shell evaluator (`bash`, `sh`,
    `eval`, `source`, `.`) — the entire argument subtree runs in the
@@ -200,27 +223,60 @@ Detection uses a depth-counter approach. The walker tracks
    entire left subtree's output feeds into the shell, so any download
    on the left qualifies.
 
-When a download command (`curl`, `wget`) is encounterd at
-`shellEvalDepth > 0`, the outermost enclosing shell-eval span is
-recorded as an external span. This catches all syntactic shapes
-automatically: `bash -c "$(curl ...)"`, `sh <(curl ...)`,
-`source <(curl ...)`, `. <(curl ...)`, `eval "$(curl ...)"`,
-`curl | bash`, `wget | sh`.
+When a download command is encountered at `shellEvalDepth > 0`, the
+outermost enclosing shell-eval span is recorded as an external span.
+This catches all syntactic shapes automatically: `bash -c "$(curl ...)"`,
+`sh <(curl ...)`, `source <(curl ...)`, `. <(curl ...)`,
+`eval "$(curl ...)"`, `curl | bash`, `wget | sh`.
 
-The framework's own bootstrap invocation (the `source <(curl ...)`
-loading `misc/bootstrap/...`) is excluded from both `has_external`
-and `has_download` because it is the canonical entry point for all
-framework scripts. The exclusion is line-based: if the download
-command falls on the detected `bootstrap_line`, it is not counted.
-This prevents every framework script from being uniformly flagged
-while still catching non-bootstrap external code loads
-(e.g. sourcing `core.func` directly, third-party curl-into-shell).
+**has_piped_download**: a `BinaryCmd` pipe where the left side is a
+`CallExpr` with command in `{curl, wget}` and the right side is a
+`CallExpr` whose command is NOT in the shell-eval set. The full
+BinaryCmd span is recorded as a piped-download span. This detects
+patterns like `curl ... | tar`, `curl ... | jq`, `curl ... | tee`,
+etc. The user decides whether the non-shell destination is dangerous
+(archive extractors, config installers, etc.).
 
-Known limitations: modifier prefixes (`sudo bash -c ...`,
-`command bash ...`) bypass because `sudo` is the first word, not
-`bash`. Two-step patterns (`curl -o /tmp/x.sh && bash /tmp/x.sh`)
-require data-flow analysis and are not detected. Downloaders outside
-the hardcoded set (`axel`, `aria2c`) are not recognized.
+Relationships: `has_piped_download` implies `has_download` in practice
+(curl/wget was invoked). `has_external` and `has_piped_download` are
+mutually exclusive by construction — a given pipe's right side is
+either a shell evaluator or not. Any combination of the three flags
+can appear.
+
+### Framework bootstrap exclusion
+
+Every framework script contains `source <(curl -fsSL $REPO_BASE/.../bootstrap/...)`
+as its canonical entry point. This is a genuine external code load but
+semantically it is the framework itself. Excluding it prevents all three
+signals from firing uniformly on all scripts. The exclusion is line-based:
+any download command on the detected `bootstrap_line` is skipped for all
+three signals. Non-bootstrap external loads (e.g. sourcing `core.func`
+directly) are still detected.
+
+### Known limitations
+
+1. **Chained pipes**: `a | b | c` parses as `(a | b) | c`; only the
+   inner pipe sees direct `CallExpr`s on both sides. Impact minimal
+   for download-to-consumer shapes.
+2. **Two-step patterns**: `curl -o file` followed by `bash file`
+   (or `systemd ExecStart`, `cron`, `chmod +x`). No syntactic
+   containment; requires data-flow analysis. Not detected.
+3. **Modifier prefixes**: `sudo bash -c "$(curl ...)"`,
+   `command bash ...`, `env bash ...`, `exec bash ...`. First word
+   is not in `shellEvalCommands`, so no depth push.
+4. **Parametric shells**: `$SHELL -c "..."`, `"bash" -c "..."`.
+   First arg is `ParamExp` or quoted string; `callExprCommandName`
+   returns `""`.
+5. **Non-shell interpreters**: `python -c "$(curl ...)"`,
+   `perl -e ...`, `ruby -e ...`, `node -e ...`. Not in
+   `shellEvalCommands`. The map is extensible.
+6. **Non-curl/wget downloaders**: `axel`, `aria2c`, `http`, `httpie`.
+   Not in `downloadCommands`. The map is extensible.
+7. **Function indirection**: user-defined function that curls
+   internally, invoked later or piped later — no containment visible
+   at invocation site.
+8. **Cross-file**: script sourcing another local file that performs
+   downloads — per-file analysis only.
 
 ## 9. Hook and flag detection
 
@@ -236,7 +292,7 @@ against a known set of tool commands (`docker`, `podman`, `npm`, `yarn`,
 keyword rather than a command name. The respective `flags.*` field is
 set to `true` when the command is used.
 
-**Boolean flags**: `has_download`, `has_eval`, `has_external`, `has_host`,
+**Boolean flags**: `has_download`, `has_piped_download`, `has_external`, `has_eval`, `has_host`,
 `has_bootstrap` are derived from accumulated state during the walk.
 If the walker encounters `eval`, `has_eval` is set. If any `host_ranges`
 were recorded, `has_host` is set, etc.

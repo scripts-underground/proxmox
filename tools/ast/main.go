@@ -124,11 +124,13 @@ type ASTOutput struct {
 	Source        string   `json:"source"`
 	SourceLines   []string `json:"source_lines"`
 
-	Functions     []FunctionInfo `json:"functions"`
-	Assigns       []Assign       `json:"assigns"`
-	GlobalRanges  []LineRange    `json:"global_ranges"`
-	Heredocs      []Heredoc      `json:"heredocs"`
-	ExternalSpans []Span         `json:"external_spans"`
+	Functions        []FunctionInfo `json:"functions"`
+	Assigns          []Assign       `json:"assigns"`
+	GlobalRanges     []LineRange    `json:"global_ranges"`
+	Heredocs         []Heredoc      `json:"heredocs"`
+	DownloadSpans    []Span         `json:"download_spans"`
+	PipedDownloadSpans []Span       `json:"piped_download_spans"`
+	ExternalSpans    []Span         `json:"external_spans"`
 
 	Tokens []Token `json:"tokens"`
 
@@ -136,11 +138,12 @@ type ASTOutput struct {
 	Hooks         map[string]bool `json:"hooks"`
 	HookOrder     []string        `json:"hook_order"`
 	Flags         Flags           `json:"flags"`
-	HasExternal   bool            `json:"has_external"`
-	HasDownload   bool            `json:"has_download"`
-	HasEval       bool            `json:"has_eval"`
-	HasGlobal       bool            `json:"has_global"`
-	HasBootstrap  bool            `json:"has_bootstrap"`
+	HasDownload      bool `json:"has_download"`
+	HasPipedDownload bool `json:"has_piped_download"`
+	HasExternal      bool `json:"has_external"`
+	HasEval          bool `json:"has_eval"`
+	HasGlobal        bool `json:"has_global"`
+	HasBootstrap     bool `json:"has_bootstrap"`
 }
 
 var downloadCommands = map[string]bool{
@@ -194,13 +197,15 @@ type walker struct {
 	extSpans  []Span
 	flags     Flags
 	bootLine  int
-	tokens          []Token
-	scriptLines     []string
-	frames          []frameType
-	shellEvalDepth  int
-	evalStack       []Span
-	pushedEval      bool
-	hasDownload     bool
+	tokens              []Token
+	scriptLines         []string
+	frames              []frameType
+	shellEvalDepth      int
+	evalStack           []Span
+	pushedEval          bool
+	hasDownload         bool
+	downloadSpans       []Span
+	pipedDownloadSpans  []Span
 
 	// Function-call detection state
 	mainList     map[string]bool
@@ -539,6 +544,13 @@ func (w *walker) visitNode(n syntax.Node) {
 		if downloadCommands[cmdName] {
 			if w.posLine(x.Pos()) != w.bootLine {
 				w.hasDownload = true
+				w.downloadSpans = append(w.downloadSpans, Span{
+					StartLine: w.posLine(x.Pos()),
+					StartCol:  w.posCol(x.Pos()),
+					EndLine:   w.posLine(x.End()),
+					EndCol:    w.posCol(x.End()),
+					Kind:      "download",
+				})
 				if w.shellEvalDepth > 0 && len(w.evalStack) > 0 {
 					outer := w.evalStack[0]
 					w.extSpans = append(w.extSpans, outer)
@@ -614,8 +626,9 @@ func (w *walker) visitNode(n syntax.Node) {
 
 	case *syntax.BinaryCmd:
 		w.emitToken(Token{Kind: "operator", Op: x.Op.String(), StartLine: w.posLine(x.OpPos), StartCol: w.posCol(x.OpPos), EndLine: w.posLine(x.OpPos), EndCol: w.posCol(x.OpPos) + len(x.Op.String())})
-		// Pipe-to-shell: push eval depth when right side is a shell eval command
+		// Pipe detection: external (shell eval) + piped-download (non-shell)
 		if x.Op == syntax.Pipe {
+			left := getCallExpr(x.X)
 			right := getCallExpr(x.Y)
 			if right != nil {
 				rightCmd := callExprCommandName(right)
@@ -629,6 +642,22 @@ func (w *walker) visitNode(n syntax.Node) {
 					})
 					w.shellEvalDepth++
 					w.pushedEval = true
+				}
+			}
+			// Piped-download: curl/wget piped to non-shell
+			if left != nil && right != nil {
+				leftCmd := callExprCommandName(left)
+				rightCmd := callExprCommandName(right)
+				if downloadCommands[leftCmd] && !shellEvalCommands[rightCmd] {
+					if w.posLine(x.Pos()) != w.bootLine {
+						w.pipedDownloadSpans = append(w.pipedDownloadSpans, Span{
+							StartLine: w.posLine(x.Pos()),
+							StartCol:  w.posCol(x.Pos()),
+							EndLine:   w.posLine(x.End()),
+							EndCol:    w.posCol(x.End()),
+							Kind:      "piped_download",
+						})
+					}
 				}
 			}
 		}
@@ -772,9 +801,11 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		extSpans:     []Span{},
 		tokens:       []Token{},
 		scriptLines:  lines,
-		frames:       []frameType{},
-		evalStack:    []Span{},
-		mainList:     map[string]bool{},
+		frames:              []frameType{},
+		evalStack:           []Span{},
+		downloadSpans:       []Span{},
+		pipedDownloadSpans:  []Span{},
+		mainList:            map[string]bool{},
 		scopeStack:   []funcScope{},
 		dependentsOf: map[string]map[string]bool{},
 	}
@@ -996,17 +1027,20 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		Assigns:      w.assigns,
 		GlobalRanges:   w.globalRanges,
 		Heredocs:     w.heredocs,
-		ExternalSpans: w.extSpans,
-		Tokens:       w.tokens,
-		BootstrapLine: w.bootLine,
-		Hooks:        hooks,
-		HookOrder:    hookOrder,
-		Flags:        w.flags,
-		HasExternal:  len(w.extSpans) > 0,
-		HasDownload:  w.hasDownload,
-		HasEval:      w.flags.Eval,
-		HasGlobal:      hasGlobal,
-		HasBootstrap: w.bootLine > 0,
+		DownloadSpans:       w.downloadSpans,
+		PipedDownloadSpans:  w.pipedDownloadSpans,
+		ExternalSpans:       w.extSpans,
+		Tokens:             w.tokens,
+		BootstrapLine:      w.bootLine,
+		Hooks:              hooks,
+		HookOrder:          hookOrder,
+		Flags:              w.flags,
+		HasDownload:        w.hasDownload,
+		HasPipedDownload:   len(w.pipedDownloadSpans) > 0,
+		HasExternal:        len(w.extSpans) > 0,
+		HasEval:            w.flags.Eval,
+		HasGlobal:          hasGlobal,
+		HasBootstrap:       w.bootLine > 0,
 	}
 }
 
