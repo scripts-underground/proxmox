@@ -34,20 +34,6 @@ function sortBtns(mode, t) {
     '</span>';
 }
 
-var FLAG_COLORS = {
-  sudo:'240,130,20', git:'40,100,220', host:'220,50,40',
-  docker:'50,120,210', podman:'60,150,195',
-  external:'200,140,50', eval:'180,40,45',
-  npm:'40,150,160', yarn:'60,170,130', pnpm:'30,130,180',
-  pip:'140,55,185', cargo:'180,100,40'
-};
-
-function flagStyle(n) {
-  var c = FLAG_COLORS[n];
-  if (!c) return '';
-  return 'style="--flag-color:rgb(' + c + ');--flag-bg:rgba(' + c + ',0.25);--flag-bdr:rgba(' + c + ',0.6)"';
-}
-
 function cardHTML(s, idx) {
   let inits = init(s);
   let i = idx % 8;
@@ -55,13 +41,9 @@ function cardHTML(s, idx) {
   let tags = (s.tags || []).slice(0, 4).map(function(t) { return '<a href="/?tag=' + encodeURIComponent(t) + '" class="tag" onclick="if(window.setF){event.stopPropagation();setF(\'' + t + '\');return false}">' + t + '</a>'; }).join("");
   let d = (s.description || "").length > 120 ? s.description.slice(0, 120) + "…" : (s.description || "");
   let logo = '<img src="' + (s.logo || "") + '" alt="' + inits + '" class="script-card-logo" width="40" height="40" loading="lazy" onerror="this.src=\'' + fb(inits, 40, 40, i) + '\';this.onerror=null">';
-  let pills = [];
-  var flagNames = ["docker","podman","external","git","sudo","eval","npm","yarn","pnpm","pip","cargo"];
-  for (var fi = 0; fi < flagNames.length; fi++) {
-    if (s["has_" + flagNames[fi]]) pills.push('<span class="flag-pill" ' + flagStyle(flagNames[fi]) + '>' + flagNames[fi] + '</span>');
-  }
-  if (s.has_global && s.type === 'lxc') pills.push('<span class="flag-pill" ' + flagStyle('host') + '>host</span>');
-  let pillsHtml = pills.length ? '<div class="script-card-pills">' + pills.join('') + '</div>' : '';
+  var pillsHtml = '';
+  var rendered = window.renderFlagPills(s);
+  if (rendered) pillsHtml = '<div class="script-card-pills">' + rendered + '</div>';
   let res = date ? '<span>' + date + '</span>' : "";
   let top = logo + pillsHtml + (res ? '<div class="script-card-resources">' + res + '</div>' : "");
   let titleLink = '<a href="' + s.page + '">' + s.title + '</a>';
