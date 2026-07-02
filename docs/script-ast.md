@@ -89,7 +89,8 @@ the script has no examples of that feature.
 | `hooks` | `{string: bool}` | Which hook functions the script defines (`install_script`, `update_script`, `uninstall_script`, `pre_build_script`, `post_build_script`, `post_install_script`). | Jekyll plugin (metadata, UI rendering) |
 | `hook_order` | `[string]` | Hook names in definition order. | Jekyll plugin (UI ordering) |
 | `flags` | `Flags` | Tool-use flags (docker, podman, npm, yarn, pnpm, pip, cargo, go, git, sudo, eval). | Safety classification, compatibility notes |
-| `has_external` | `bool` | True if the script sources external content at runtime (see §8). | Safety classification |
+| `has_download` | `bool` | True if the script invokes a network downloader (curl/wget). Informational, not a danger flag — see §8. | Safety information |
+| `has_external` | `bool` | True if the script downloads AND executes external content (curl/wget inside shell-evaluation context). Danger flag (see §8). | Safety classification |
 | `has_eval` | `bool` | True if the script uses `eval`. | Safety classification |
 | `has_host` | `bool` | True if the script contains host-bound logic (see §7). | Safety classification |
 | `has_bootstrap` | `bool` | True if the script ends with a bootstrap-source line. | Framework detection |
@@ -179,15 +180,38 @@ entirely container-bound (safe to run) from those with host-side effects.
 
 ## 8. External span detection
 
-"External spans" mark content that is `source <(curl ...)`'d or
-`source <(wget ...)`'d from a URL at runtime. These indicate that the
-script dynamically fetches and executes code from a remote source,
-which has implications for reproducibility and trust.
+"External spans" mark content that is downloaded via curl/wget and
+simultaneously executed by a shell interpreter. Two flags are produced:
 
-The walker identifies `source <(curl ...)` and `source <(wget ...)`
-patterns and records the line range of each such invocation, along with
-the URL when extractable. `has_external` is set to `true` if any such
-span exists.
+- **`has_download`** (informational): true if the script invokes `curl`
+  or `wget` anywhere, regardless of context. Indicates the script
+  reaches the network but isn't necessarily dangerous by itself.
+- **`has_external`** (danger signal): true if a network download is
+  detected **inside a shell-evaluation subtree** — meaning the script
+  downloads AND executes remote code without intermediate inspection.
+
+Detection uses a depth-counter approach. The walker tracks
+`shellEvalDepth`, incremented when entering:
+
+1. A `CallExpr` whose command is a shell evaluator (`bash`, `sh`,
+   `eval`, `source`, `.`) — the entire argument subtree runs in the
+   shell, so any download there is external.
+2. A `BinaryCmd` pipe whose right side is a shell evaluator — the
+   entire left subtree's output feeds into the shell, so any download
+   on the left qualifies.
+
+When a download command (`curl`, `wget`) is encounterd at
+`shellEvalDepth > 0`, the outermost enclosing shell-eval span is
+recorded as an external span. This catches all syntactic shapes
+automatically: `bash -c "$(curl ...)"`, `sh <(curl ...)`,
+`source <(curl ...)`, `. <(curl ...)`, `eval "$(curl ...)"`,
+`curl | bash`, `wget | sh`.
+
+Known limitations: modifier prefixes (`sudo bash -c ...`,
+`command bash ...`) bypass because `sudo` is the first word, not
+`bash`. Two-step patterns (`curl -o /tmp/x.sh && bash /tmp/x.sh`)
+require data-flow analysis and are not detected. Downloaders outside
+the hardcoded set (`axel`, `aria2c`) are not recognized.
 
 ## 9. Hook and flag detection
 
@@ -203,7 +227,7 @@ against a known set of tool commands (`docker`, `podman`, `npm`, `yarn`,
 keyword rather than a command name. The respective `flags.*` field is
 set to `true` when the command is used.
 
-**Boolean flags**: `has_eval`, `has_external`, `has_host`,
+**Boolean flags**: `has_download`, `has_eval`, `has_external`, `has_host`,
 `has_bootstrap` are derived from accumulated state during the walk.
 If the walker encounters `eval`, `has_eval` is set. If any `host_ranges`
 were recorded, `has_host` is set, etc.

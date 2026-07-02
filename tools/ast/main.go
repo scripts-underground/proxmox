@@ -137,9 +137,23 @@ type ASTOutput struct {
 	HookOrder     []string        `json:"hook_order"`
 	Flags         Flags           `json:"flags"`
 	HasExternal   bool            `json:"has_external"`
+	HasDownload   bool            `json:"has_download"`
 	HasEval       bool            `json:"has_eval"`
 	HasGlobal       bool            `json:"has_global"`
 	HasBootstrap  bool            `json:"has_bootstrap"`
+}
+
+var downloadCommands = map[string]bool{
+	"curl": true,
+	"wget": true,
+}
+
+var shellEvalCommands = map[string]bool{
+	"bash":   true,
+	"sh":     true,
+	"eval":   true,
+	"source": true,
+	".":      true,
 }
 
 // utf16LenOfLine returns the length of a string in UTF-16 code units.
@@ -163,6 +177,7 @@ const (
 	frameOther frameType = iota
 	frameFuncDecl
 	frameIfClause
+	frameShellEval
 )
 
 type funcScope struct {
@@ -179,9 +194,13 @@ type walker struct {
 	extSpans  []Span
 	flags     Flags
 	bootLine  int
-	tokens       []Token
-	scriptLines  []string
-	frames       []frameType
+	tokens          []Token
+	scriptLines     []string
+	frames          []frameType
+	shellEvalDepth  int
+	evalStack       []Span
+	pushedEval      bool
+	hasDownload     bool
 
 	// Function-call detection state
 	mainList     map[string]bool
@@ -451,8 +470,6 @@ func (w *walker) visitNode(n syntax.Node) {
 
 		// Flag detection (preserving existing behavior)
 		switch cmdName {
-		case "source":
-			return
 		case "sudo":
 			w.flags.Sudo = true
 			if len(x.Args) > 1 {
@@ -505,41 +522,40 @@ func (w *walker) visitNode(n syntax.Node) {
 			}
 		}
 
-		// bash/sh -c detection for external & eval spans
+		// Shell-eval depth push (cover bash/sh, eval, source, .)
+		if shellEvalCommands[cmdName] {
+			w.evalStack = append(w.evalStack, Span{
+				StartLine: w.posLine(x.Pos()),
+				StartCol:  w.posCol(x.Pos()),
+				EndLine:   w.posLine(x.End()),
+				EndCol:    w.posCol(x.End()),
+				Kind:      cmdName,
+			})
+			w.shellEvalDepth++
+			w.pushedEval = true
+		}
+
+		// Download detection
+		if downloadCommands[cmdName] {
+			w.hasDownload = true
+			if w.shellEvalDepth > 0 && len(w.evalStack) > 0 {
+				outer := w.evalStack[0]
+				w.extSpans = append(w.extSpans, outer)
+			}
+		}
+
+		// Keep CmdSubst detection inside bash/sh -c for eval flag
 		if cmdName == "bash" || cmdName == "sh" {
 			for i := 1; i < len(x.Args)-1; i++ {
 				if lit, ok := x.Args[i].Parts[0].(*syntax.Lit); ok && lit.Value == "-c" {
 					if i+1 < len(x.Args) {
-						hasCurl := false
-						hasSubst := false
 						syntax.Walk(x.Args[i+1], func(n syntax.Node) bool {
-							switch n.(type) {
-							case *syntax.CmdSubst:
-								hasSubst = true
-							}
-							if ce, ok := n.(*syntax.CallExpr); ok {
-								if len(ce.Args) > 0 {
-									if lit2, ok := ce.Args[0].Parts[0].(*syntax.Lit); ok {
-										if lit2.Value == "curl" || lit2.Value == "wget" {
-											hasCurl = true
-										}
-									}
-								}
+							if _, ok := n.(*syntax.CmdSubst); ok {
+								w.flags.Eval = true
+								return false
 							}
 							return true
 						})
-						if hasSubst {
-							w.flags.Eval = true
-						}
-						if hasCurl {
-							w.extSpans = append(w.extSpans, Span{
-								StartLine: w.posLine(x.Pos()),
-								StartCol:  w.posCol(x.Pos()),
-								EndLine:   w.posLine(x.End()),
-								EndCol:    w.posCol(x.End()),
-								Kind:      "shell_c_subst",
-							})
-						}
 					}
 				}
 			}
@@ -596,31 +612,21 @@ func (w *walker) visitNode(n syntax.Node) {
 
 	case *syntax.BinaryCmd:
 		w.emitToken(Token{Kind: "operator", Op: x.Op.String(), StartLine: w.posLine(x.OpPos), StartCol: w.posCol(x.OpPos), EndLine: w.posLine(x.OpPos), EndCol: w.posCol(x.OpPos) + len(x.Op.String())})
-		// External-spans: pipe_to_shell detection (preserving existing behavior)
+		// Pipe-to-shell: push eval depth when right side is a shell eval command
 		if x.Op == syntax.Pipe {
-			left := getCallExpr(x.X)
 			right := getCallExpr(x.Y)
-			if left != nil && right != nil {
-				leftCmd := ""
-				rightCmd := ""
-				if len(left.Args) > 0 {
-					if lit, ok := left.Args[0].Parts[0].(*syntax.Lit); ok {
-						leftCmd = lit.Value
-					}
-				}
-				if len(right.Args) > 0 {
-					if lit, ok := right.Args[0].Parts[0].(*syntax.Lit); ok {
-						rightCmd = lit.Value
-					}
-				}
-				if (leftCmd == "curl" || leftCmd == "wget") && (rightCmd == "sh" || rightCmd == "bash") {
-					w.extSpans = append(w.extSpans, Span{
+			if right != nil {
+				rightCmd := callExprCommandName(right)
+				if shellEvalCommands[rightCmd] {
+					w.evalStack = append(w.evalStack, Span{
 						StartLine: w.posLine(x.Pos()),
 						StartCol:  w.posCol(x.Pos()),
 						EndLine:   w.posLine(x.End()),
 						EndCol:    w.posCol(x.End()),
 						Kind:      "pipe_to_shell",
 					})
+					w.shellEvalDepth++
+					w.pushedEval = true
 				}
 			}
 		}
@@ -765,6 +771,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		tokens:       []Token{},
 		scriptLines:  lines,
 		frames:       []frameType{},
+		evalStack:    []Span{},
 		mainList:     map[string]bool{},
 		scopeStack:   []funcScope{},
 		dependentsOf: map[string]map[string]bool{},
@@ -787,13 +794,21 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 			if len(w.frames) > 0 {
 				f := w.frames[len(w.frames)-1]
 				w.frames = w.frames[:len(w.frames)-1]
-				if f == frameFuncDecl {
+				switch f {
+				case frameFuncDecl:
 					if len(w.scopeStack) > 0 {
 						topDep := w.scopeStack[len(w.scopeStack)-1]
 						w.scopeStack = w.scopeStack[:len(w.scopeStack)-1]
 						if topDep.name != "" {
 							w.dependentsOf[topDep.name] = topDep.dependents
 						}
+					}
+				case frameShellEval:
+					if w.shellEvalDepth > 0 {
+						w.shellEvalDepth--
+					}
+					if len(w.evalStack) > 0 {
+						w.evalStack = w.evalStack[:len(w.evalStack)-1]
 					}
 				}
 			}
@@ -802,13 +817,18 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 		w.visitNode(n)
 
-		switch n.(type) {
-		case *syntax.FuncDecl:
-			w.frames = append(w.frames, frameFuncDecl)
-		case *syntax.IfClause:
-			w.frames = append(w.frames, frameIfClause)
-		default:
-			w.frames = append(w.frames, frameOther)
+		if w.pushedEval {
+			w.frames = append(w.frames, frameShellEval)
+			w.pushedEval = false
+		} else {
+			switch n.(type) {
+			case *syntax.FuncDecl:
+				w.frames = append(w.frames, frameFuncDecl)
+			case *syntax.IfClause:
+				w.frames = append(w.frames, frameIfClause)
+			default:
+				w.frames = append(w.frames, frameOther)
+			}
 		}
 		return true
 	})
@@ -981,6 +1001,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		HookOrder:    hookOrder,
 		Flags:        w.flags,
 		HasExternal:  len(w.extSpans) > 0,
+		HasDownload:  w.hasDownload,
 		HasEval:      w.flags.Eval,
 		HasGlobal:      hasGlobal,
 		HasBootstrap: w.bootLine > 0,
