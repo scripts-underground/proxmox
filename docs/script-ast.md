@@ -207,6 +207,15 @@ automatically: `bash -c "$(curl ...)"`, `sh <(curl ...)`,
 `source <(curl ...)`, `. <(curl ...)`, `eval "$(curl ...)"`,
 `curl | bash`, `wget | sh`.
 
+The framework's own bootstrap invocation (the `source <(curl ...)`
+loading `misc/bootstrap/...`) is excluded from both `has_external`
+and `has_download` because it is the canonical entry point for all
+framework scripts. The exclusion is line-based: if the download
+command falls on the detected `bootstrap_line`, it is not counted.
+This prevents every framework script from being uniformly flagged
+while still catching non-bootstrap external code loads
+(e.g. sourcing `core.func` directly, third-party curl-into-shell).
+
 Known limitations: modifier prefixes (`sudo bash -c ...`,
 `command bash ...`) bypass because `sudo` is the first word, not
 `bash`. Two-step patterns (`curl -o /tmp/x.sh && bash /tmp/x.sh`)

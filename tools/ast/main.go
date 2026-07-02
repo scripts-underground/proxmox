@@ -535,12 +535,14 @@ func (w *walker) visitNode(n syntax.Node) {
 			w.pushedEval = true
 		}
 
-		// Download detection
+		// Download detection (exclude framework bootstrap line)
 		if downloadCommands[cmdName] {
-			w.hasDownload = true
-			if w.shellEvalDepth > 0 && len(w.evalStack) > 0 {
-				outer := w.evalStack[0]
-				w.extSpans = append(w.extSpans, outer)
+			if w.posLine(x.Pos()) != w.bootLine {
+				w.hasDownload = true
+				if w.shellEvalDepth > 0 && len(w.evalStack) > 0 {
+					outer := w.evalStack[0]
+					w.extSpans = append(w.extSpans, outer)
+				}
 			}
 		}
 
