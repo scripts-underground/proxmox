@@ -81,18 +81,19 @@ variables() {
   fi
 }
 
-# Configurable base URL for development — override with SCRIPTS_URL
-# See docs/DEV_MODE.md for details
-SCRIPTS_URL="${SCRIPTS_URL:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+# Configurable base URL for development — override with REPO_BASE
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 if command -v curl >/dev/null 2>&1; then
-  source <(curl -fsSL "$SCRIPTS_URL/misc/core.func")
-  source <(curl -fsSL "$SCRIPTS_URL/misc/error_handler.func")
+  source <(curl -fsSL "$REPO_BASE/misc/core.func")
+  source <(curl -fsSL "$REPO_BASE/misc/error_handler.func")
+  source <(curl -fsSL "$REPO_BASE/misc/bundle.func")
   load_functions
   catch_errors
 elif command -v wget >/dev/null 2>&1; then
-  source <(wget -qO- "$SCRIPTS_URL/misc/core.func")
-  source <(wget -qO- "$SCRIPTS_URL/misc/error_handler.func")
+  source <(wget -qO- "$REPO_BASE/misc/core.func")
+  source <(wget -qO- "$REPO_BASE/misc/error_handler.func")
+  source <(wget -qO- "$REPO_BASE/misc/bundle.func")
   load_functions
   catch_errors
 fi
@@ -3823,7 +3824,7 @@ msg_menu() {
 # - Otherwise: shows update/setting menu and runs update_script with cleanup
 # ------------------------------------------------------------------------------
 lxc_setup() {
-  source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func")
+  source <(curl -fsSL "$REPO_BASE/misc/tools.func")
   if command -v pveversion >/dev/null 2>&1; then
     setup_script || return 0
     return 0
@@ -3831,7 +3832,7 @@ lxc_setup() {
     VERBOSE="no"
     set_std_mode
     ensure_profile_loaded
-    update_script
+    execute_optional_hook update_script
     cleanup_lxc
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${APP} LXC Update/Setting" --menu \
@@ -3857,7 +3858,7 @@ lxc_setup() {
       ;;
     esac
     ensure_profile_loaded
-    update_script
+    execute_optional_hook update_script
     cleanup_lxc
   fi
 }
@@ -3880,7 +3881,7 @@ lxc_setup() {
 # - Posts installation status to API
 # ------------------------------------------------------------------------------
 build_container() {
-  declare -F pre_build_script >/dev/null 2>&1 && pre_build_script
+  execute_optional_hook pre_build_script
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
 
   NET_STRING="-net0 name=eth0,bridge=${BRG:-vmbr0}"
@@ -3953,12 +3954,6 @@ build_container() {
   # Build PCT_OPTIONS as string for export
   TEMP_DIR=$(mktemp -d)
   pushd "$TEMP_DIR" >/dev/null
-  if [ "$var_os" == "alpine" ]; then
-    export FUNCTIONS_FILE_PATH="$(curl -fsSL "$SCRIPTS_URL/misc/alpine-install.func")"
-  else
-    export FUNCTIONS_FILE_PATH="$(curl -fsSL "$SCRIPTS_URL/misc/install.func")"
-  fi
-
   # Core exports for install.func
   export SESSION_ID="$SESSION_ID"
   export CACHER="$APT_CACHER"
@@ -3984,7 +3979,7 @@ build_container() {
   # DEV_MODE exports (optional, for debugging)
   export BUILD_LOG="$BUILD_LOG"
   export INSTALL_LOG="/root/.install-${SESSION_ID}.log"
-  export SCRIPTS_URL="$SCRIPTS_URL"
+  export REPO_BASE="$REPO_BASE"
   # Keep host-side logging on BUILD_LOG (not exported — invisible to container)
   # Without this, get_active_logfile() would return INSTALL_LOG (a container path)
   # and all host msg_info/msg_ok/msg_error would write to /root/.install-SESSION.log
@@ -4678,79 +4673,49 @@ PROFILE
   # Install SSH keys
   install_ssh_keys_into_ct
 
-  # Run application installer
-  # Start timer for duration tracking
+  # Run application installer — export env vars the container needs
+  export SESSION_ID
+  export INSTALL_LOG="/root/.install-${SESSION_ID}.log"
+  export REPO_BASE APP NSAPP CTID CTTYPE
+  export CACHER="$APT_CACHER" CACHER_IP="$APT_CACHER_IP"
+  export VERBOSE="${VERBOSE:-no}"
 
   # Disable error trap - container errors are handled internally via flag file
-  set +Eeuo pipefail # Disable ALL error handling temporarily
-  trap - ERR         # Remove ERR trap completely
+  set +Eeuo pipefail
+  trap - ERR
 
-  {
-    cat <<BOILERPLATE
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || {
-  echo "Error: must run inside LXC container"
-  exit 1
-}
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-verb_ip6
-catch_errors
-setting_up_container
-network_check
-update_os
-BOILERPLATE
-    declare -f install_script
-    echo 'install_script'
-    echo 'motd_ssh'
+  msg_info "Preparing container installer"
 
-    local _slug
-    _slug="$(echo "${APP:-install}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
+  build_bundle install install_script /tmp/install-bundle.sh 0700 \
+    setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
 
-    if declare -f update_script >/dev/null 2>&1; then
-      {
-        cat <<UPDEOF
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || { echo "Error: must run inside LXC container"; exit 1; }
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-catch_errors
-UPDEOF
-        declare -f update_script
-        echo 'update_script'
-      } > "/tmp/_update.sh"
-    fi
+  if declare -F update_script >/dev/null 2>&1; then
+    build_bundle update update_script /usr/local/sbin/update 0755
+  fi
 
-    if declare -f uninstall_script >/dev/null 2>&1; then
-      {
-        cat <<UNEOF
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || { echo "Error: must run inside LXC container"; exit 1; }
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-catch_errors
-UNEOF
-        declare -f uninstall_script
-        echo 'uninstall_script'
-      } > "/tmp/_uninstall.sh"
-    fi
+  if declare -F uninstall_script >/dev/null 2>&1; then
+    build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0755
+  fi
 
-    echo 'setup_lxc'
-    echo 'cleanup_lxc'
-  } > /tmp/_install_wrapper.sh
-  pct push "$CTID" /tmp/_install_wrapper.sh /tmp/_install_wrapper.sh
-  pct push "$CTID" /tmp/_update.sh /tmp/_update.sh 2>/dev/null || true
-  pct push "$CTID" /tmp/_uninstall.sh /tmp/_uninstall.sh 2>/dev/null || true
-  lxc-attach -n "$CTID" -- bash /tmp/_install_wrapper.sh
+  msg_ok "Container installer ready"
+
+  lxc-attach -n "$CTID" -- bash /tmp/install-bundle.sh
   local lxc_exit=$?
+  msg_debug "lxc-attach exit=$lxc_exit"
 
-  set -Eeuo pipefail       # Re-enable error handling
-  trap 'error_handler' ERR # Restore ERR trap
+  local install_log_host="/tmp/.install-pulled-${SESSION_ID}.log"
+  pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$install_log_host" 2>/dev/null || true
+  if [[ -s "$install_log_host" ]]; then
+    msg_debug "pulled install log ($(wc -l < "$install_log_host") lines)"
+  else
+    msg_debug "no install log found in container"
+  fi
+  rm -f "$install_log_host"
 
-  # Check for error flag file in container (more reliable than lxc-attach exit code)
+  set -Eeuo pipefail
+  trap 'error_handler' ERR
+
+  # Check for error flag file in container
   local install_exit_code=0
   if [[ -n "${SESSION_ID:-}" ]]; then
     local error_flag="/root/.install-${SESSION_ID}.failed"
@@ -4993,7 +4958,7 @@ UNEOF
         if [[ "${DEV_MODE_MOTD:-false}" == "true" ]]; then
           echo -e "${TAB}${HOLD}${DGN}Setting up MOTD and SSH for debugging...${CL}"
           if pct exec "$CTID" -- bash -c "
-              source <(curl -fsSL "$SCRIPTS_URL/misc/install.func")
+              source <(curl -fsSL "$REPO_BASE/misc/install.func")
               declare -f motd_ssh >/dev/null 2>&1 && motd_ssh || true
             " >/dev/null 2>&1; then
             local ct_ip=$(pct exec "$CTID" ip a s dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
@@ -5066,66 +5031,18 @@ UNEOF
           set +Eeuo pipefail
           trap - ERR
           local _LXC_CAPTURE_LOG="/tmp/.install-capture-${SESSION_ID}.log"
-          {
-            cat <<BOILERPLATE
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || {
-  echo "Error: must run inside LXC container"
-  exit 1
-}
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-verb_ip6
-catch_errors
-setting_up_container
-network_check
-update_os
-BOILERPLATE
-            declare -f install_script
-            echo 'install_script'
-            echo 'motd_ssh'
 
-            local _slug
-            _slug="$(echo "${APP:-install}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
+          build_bundle install install_script /tmp/install-bundle.sh 0700 \
+            setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
 
-            if declare -f update_script >/dev/null 2>&1; then
-              {
-                cat <<UPDEOF
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || { echo "Error: must run inside LXC container"; exit 1; }
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-catch_errors
-UPDEOF
-                declare -f update_script
-                echo 'update_script'
-              } > "/tmp/_update.sh"
-            fi
+          if declare -F update_script >/dev/null 2>&1; then
+            build_bundle update update_script /usr/local/sbin/update 0755
+          fi
+          if declare -F uninstall_script >/dev/null 2>&1; then
+            build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0755
+          fi
 
-            if declare -f uninstall_script >/dev/null 2>&1; then
-              {
-                cat <<UNEOF
-#!/usr/bin/env bash
-grep -q container=lxc /proc/1/environ 2>/dev/null || { echo "Error: must run inside LXC container"; exit 1; }
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null
-color
-catch_errors
-UNEOF
-                declare -f uninstall_script
-                echo 'uninstall_script'
-              } > "/tmp/_uninstall.sh"
-            fi
-
-            echo 'setup_lxc'
-            echo 'cleanup_lxc'
-          } > /tmp/_install_wrapper_retry.sh
-          pct push "$CTID" /tmp/_install_wrapper_retry.sh /tmp/_install_wrapper_retry.sh
-          pct push "$CTID" /tmp/_update.sh /tmp/_update.sh 2>/dev/null || true
-          pct push "$CTID" /tmp/_uninstall.sh /tmp/_uninstall.sh 2>/dev/null || true
-          lxc-attach -n "$CTID" -- bash /tmp/_install_wrapper_retry.sh 2>&1 | tee "$_LXC_CAPTURE_LOG"
+          lxc-attach -n "$CTID" -- bash /tmp/install-bundle.sh 2>&1 | tee "$_LXC_CAPTURE_LOG"
           local apt_retry_exit=${PIPESTATUS[0]}
           set -Eeuo pipefail
           trap 'error_handler' ERR
@@ -6192,7 +6109,7 @@ create_lxc_container() {
   }
 
   msg_ok "LXC Container ${BL}$CTID${CL} ${GN}was successfully created."
-  declare -F post_build_script >/dev/null 2>&1 && post_build_script
+  execute_optional_hook post_build_script
 }
 
 # ==============================================================================
@@ -6247,7 +6164,7 @@ EOF
     systemctl start ping-instances.service
   fi
 
-  declare -F post_install_script >/dev/null 2>&1 && post_install_script
+  execute_optional_hook post_install_script
   msg_ok "Completed Successfully!\n"
 }
 

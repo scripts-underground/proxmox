@@ -5,35 +5,83 @@ if ! grep -q container=lxc /proc/1/environ 2>/dev/null; then
   exit 1
 fi
 
-source <(curl -fsSL "$SCRIPTS_URL/misc/core.func") 2>/dev/null || true
-source <(curl -fsSL "$SCRIPTS_URL/misc/tools.func") 2>/dev/null || true
+source <(curl -fsSL "${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/misc/core.func") 2>/dev/null || true
+source <(curl -fsSL "${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/misc/tools.func") 2>/dev/null || true
 
 APP_SLUG="$(echo "${APP:-}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
 
+# Legacy MODE entry points — kept for backward compatibility with existing
+# wrappers that re-source this script via curl. New installs use the
+# self-contained bundles at /usr/local/sbin/{update,uninstall}_<slug>.
 if [[ "${MODE:-}" == "update" ]]; then
-  declare -F update_script >/dev/null 2>&1 && update_script
+  execute_optional_hook update_script
   exit 0
 elif [[ "${MODE:-}" == "uninstall" ]]; then
-  declare -F uninstall_script >/dev/null 2>&1 && uninstall_script
+  execute_optional_hook uninstall_script
   exit 0
 fi
 
-if declare -F install_script >/dev/null 2>&1; then
-  install_script
-fi
+execute_optional_hook install_script
+execute_optional_hook post_install_script
 
-declare -F post_install_script >/dev/null 2>&1 && post_install_script
+# ---------------------------------------------------------------------------
+# Assemble self-contained update/uninstall bundles
+# Inlines framework libs + hook so future invocations need zero network I/O.
+# ---------------------------------------------------------------------------
+_addon_assemble_bundle() {
+  local mode="$1" hook="$2" slug="$3"
+  local dest="/usr/local/sbin/${mode}_${slug}"
+  local tag="${mode:0:4}" && tag="${tag^^}"
+  local stage_dir="/tmp/.addon-bundle-$$"
+
+  mkdir -p "$stage_dir" || return 1
+  for f in core.func error_handler.func install.func tools.func; do
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${stage_dir}/${f}" 2>/dev/null || {
+      echo "[_addon] FAILED to fetch ${f}" >&2
+      rm -rf "$stage_dir"
+      return 1
+    }
+  done
+
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -euo pipefail'
+    echo ''
+    for f in core error_handler install tools; do
+      echo "# ═══ ${f}.func ═══"
+      cat "${stage_dir}/${f}.func"
+    done
+    echo ''
+    echo 'command -v load_functions >/dev/null 2>&1 && load_functions'
+    echo 'command -v catch_errors >/dev/null 2>&1 && catch_errors'
+    echo 'color'
+    echo ''
+    echo "# ═══ hook: ${hook} ═══"
+    declare -f "$hook"
+    echo ''
+    if [ "$mode" = "uninstall" ]; then
+      echo 'if '"${hook}"'; then'
+      echo "  rm -f \"\${BASH_SOURCE[0]}\""
+      echo "  rm -f \"/usr/local/sbin/update_${slug}\""
+      echo "  _log 'uninstall complete, self-destructed'"
+      echo 'fi'
+    else
+      echo "${hook}"
+    fi
+  } > "$dest"
+
+  chmod 0755 "$dest"
+  rm -rf "$stage_dir"
+  echo "[_addon] ${mode} bundle assembled: ${dest}" >&2
+}
 
 if [[ -n "${APP_SLUG:-}" ]]; then
-  cat <<CLIEOF > "/usr/bin/update-${APP_SLUG}"
-#!/usr/bin/env bash
-MODE=update bash -c "\$(curl -fsSL ${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/scripts/addon/${APP_SLUG}.sh)"
-CLIEOF
-  chmod +x "/usr/bin/update-${APP_SLUG}"
-
-  cat <<CLIEOF > "/usr/bin/uninstall-${APP_SLUG}"
-#!/usr/bin/env bash
-MODE=uninstall bash -c "\$(curl -fsSL ${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/scripts/addon/${APP_SLUG}.sh)"
-CLIEOF
-  chmod +x "/usr/bin/uninstall-${APP_SLUG}"
+  if declare -F update_script >/dev/null 2>&1; then
+    _addon_assemble_bundle update update_script "$APP_SLUG" && \
+      ln -sf "/usr/local/sbin/update_${APP_SLUG}" "/usr/bin/update-${APP_SLUG}" 2>/dev/null || true
+  fi
+  if declare -F uninstall_script >/dev/null 2>&1; then
+    _addon_assemble_bundle uninstall uninstall_script "$APP_SLUG" && \
+      ln -sf "/usr/local/sbin/uninstall_${APP_SLUG}" "/usr/bin/uninstall-${APP_SLUG}" 2>/dev/null || true
+  fi
 fi

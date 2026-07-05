@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# bundle.func - Self-contained bundle generation for guest-side execution
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+
+# ------------------------------------------------------------------------------
+# _framework_cache_ensure()
+#
+# Ensures the 4 framework .func files are cached on the host at
+# /tmp/framework-$SESSION_ID/. Fetches from REPO_BASE once per session.
+# Verifies size (> 100 bytes) and sentinel function presence.
+# ------------------------------------------------------------------------------
+_framework_cache_ensure() {
+  local cache_dir="/tmp/framework-${SESSION_ID}"
+
+  if [[ -d "$cache_dir" ]] \
+    && [[ -s "$cache_dir/core.func" ]] \
+    && [[ -s "$cache_dir/error_handler.func" ]] \
+    && [[ -s "$cache_dir/install.func" ]] \
+    && [[ -s "$cache_dir/tools.func" ]]; then
+    msg_debug "framework cache hit: ${cache_dir}"
+    return 0
+  fi
+
+  msg_debug "framework cache miss: fetching from REPO_BASE=${REPO_BASE:-<unset>}"
+  mkdir -p "$cache_dir"
+
+  for f in core.func error_handler.func install.func tools.func; do
+    msg_debug "  fetching ${f} ..."
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${cache_dir}/${f}" 2>/dev/null || {
+      msg_error "Failed to fetch ${f}"
+      return 1
+    }
+    local size
+    size=$(stat -c%s "${cache_dir}/${f}" 2>/dev/null || echo 0)
+    if [[ $size -lt 100 ]]; then
+      msg_error "${f}: too small (${size}b), fetch likely failed"
+      return 1
+    fi
+  done
+
+  grep -q 'load_functions' "${cache_dir}/core.func" \
+    || { msg_error "core.func missing load_functions"; return 1; }
+  grep -q 'catch_errors' "${cache_dir}/error_handler.func" \
+    || { msg_error "error_handler.func missing catch_errors"; return 1; }
+  grep -q 'setup_lxc' "${cache_dir}/install.func" \
+    || { msg_error "install.func missing setup_lxc"; return 1; }
+  grep -q 'setup_uv' "${cache_dir}/tools.func" \
+    || { msg_error "tools.func missing setup_uv"; return 1; }
+}
+
+# ------------------------------------------------------------------------------
+# build_bundle()
+#
+# Assembles a self-contained bundle script that includes inline framework
+# libraries + the extracted hook function, pushes it into the container, and
+# sets its mode.
+#
+# Usage: build_bundle <name> <hook> <destination> <mode> [pipeline-step ...]
+#
+#   name        — human-readable label (install | update | uninstall)
+#   hook        — function name to extract via declare -f (must exist)
+#   destination — path inside the container (e.g., /tmp/install-bundle.sh)
+#   mode        — chmod value (e.g., 0700, 0755)
+#   pipeline    — remaining args are exact commands to emit after the hook
+#
+# Bundle layout inside container:
+#   shebang, set -euo pipefail, set -x
+#   _wrap_log function with tag derived from name
+#   ═══ framework: core.func ═══ (inlined verbatim)
+#   ═══ framework: error_handler.func ═══
+#   ═══ framework: install.func ═══
+#   ═══ framework: tools.func ═══
+#   sanity checks (command -v load_functions, catch_errors, setup_lxc, setup_uv)
+#   load_functions; catch_errors; color
+#   ═══ hook: <hook> ═══ (declare -f output)
+#   [install] trap 'rm -f "${BASH_SOURCE[0]}"' EXIT  (self-destruct)
+#   [install] <pipeline steps in order>
+#   [update]  <pipeline steps in order>
+#   [uninstall] if <hook>; then rm -f "${BASH_SOURCE[0]}"; fi  (conditional)
+# ------------------------------------------------------------------------------
+build_bundle() {
+  local name="$1" hook="$2" dest="$3" mode="$4"
+  shift 4
+  local pipeline=("$@")
+  local tag="${name:0:4}" && tag="${tag^^}"
+  local bundle_path="/tmp/${name}-bundle-${SESSION_ID}.sh"
+
+  declare -F "$hook" >/dev/null 2>&1 || {
+    msg_error "hook '${hook}' not defined"
+    return 1
+  }
+
+  _framework_cache_ensure || {
+    msg_error "framework cache failed"
+    return 1
+  }
+
+  {
+    cat <<BUNDLE_HEADER
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUNDLE_HEADER
+
+    for f in core error_handler install tools; do
+      echo "# ═══ framework: ${f}.func ═══"
+      cat "/tmp/framework-${SESSION_ID}/${f}.func"
+    done
+
+    cat <<BUNDLE_INIT
+# ═══ runtime init ═══
+command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
+command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
+command -v setup_lxc >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
+command -v setup_uv >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
+
+load_functions
+catch_errors
+color
+BUNDLE_INIT
+
+    echo "# ═══ hook: ${hook} ═══"
+    declare -f "$hook"
+
+    case "$name" in
+      install)
+        echo "# ═══ install pipeline ═══"
+        echo "trap 'rm -f \"\${BASH_SOURCE[0]}\"' EXIT"
+        for step in "${pipeline[@]}"; do
+          echo "$step"
+        done
+        ;;
+      update)
+        echo "# ═══ update pipeline ═══"
+        for step in "${pipeline[@]}"; do
+          echo "$step"
+        done
+        ;;
+      uninstall)
+        echo "# ═══ uninstall (conditional self-destruct) ═══"
+        echo "if ${hook}; then"
+        echo "  rm -f \"\${BASH_SOURCE[0]}\""
+        echo "  echo \"[${tag}] uninstall complete, removed self\" >&2"
+        echo "fi"
+        ;;
+    esac
+  } > "$bundle_path"
+
+  pct push "$CTID" "$bundle_path" "$dest" >&2
+  local push_exit=$?
+  if [[ $push_exit -ne 0 ]]; then
+    msg_error "pct push ${name} bundle failed (exit=${push_exit})"
+    return $push_exit
+  fi
+
+  pct exec "$CTID" -- chmod "$mode" "$dest" >/dev/null 2>&1
+  msg_debug "${name} bundle pushed → ${dest} (mode ${mode})"
+}

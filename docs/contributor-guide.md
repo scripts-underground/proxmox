@@ -110,9 +110,10 @@ Once it runs, your hook functions are called in this order:
    Use for `pct set` commands, volume mounts, firewall rules.
 3. `post_install_script()` — runs ON THE HOST after everything completes.
    Print access URLs and credentials here. `$IP` is available.
-4. `update_script()` — runs INSIDE the container when the script is re-run.
-   Check resources, stop services, fetch upgrade, restart.
-5. `uninstall_script()` — runs INSIDE the container via `/tmp/_uninstall.sh`.
+4. `update_script()` — runs INSIDE the container via a persistent bundle
+   at `/usr/local/sbin/update`. User runs `update` to trigger upgrades.
+5. `uninstall_script()` — runs INSIDE the container via a bundle at
+   `/usr/local/sbin/uninstall` (self-destructs on success).
 
 ## What you should NOT call
 
@@ -127,7 +128,7 @@ Declared by your script:
 - `$APP`, `$var_cpu`, `$var_ram`, `$var_disk`, `$var_os`, `$var_version`
 
 Set by the framework and available inside the container:
-- `$IP`, `$CTID`, `$NSAPP`, `$SCRIPTS_URL`
+- `$IP`, `$CTID`, `$NSAPP`, `$REPO_BASE`
 - `$PASSWORD` (the root password chosen during install)
 
 ## Helpers available inside the container
@@ -294,6 +295,70 @@ maintainer: GitHubUsername
 - **port, cpu, ram, disk** — must match `var_*` defaults in script
 - **by** — primary author (matches `# Author:` in script header)
 - **co_author** — optional array of co-authors
+
+## Addon scripts
+
+Addon scripts (`scripts/addon/<slug>.sh`) run inside an existing LXC
+container. They use `misc/bootstrap/addon` instead of `misc/bootstrap/lxc`.
+
+### Update/uninstall bundle naming
+
+Each addon gets its own self-contained bundles on first install:
+
+| Hook | Bundle destination | Lifecycle |
+|------|-------------------|-----------|
+| `update_script` | `/usr/local/sbin/update_<slug>` | Persists |
+| `uninstall_script` | `/usr/local/sbin/uninstall_<slug>` | Self-destructs on success |
+
+The `<slug>` is derived from `${NSAPP,,}` (lowercased `NSAPP`). Users
+trigger updates by running `/usr/local/sbin/update_<slug>` inside the
+container.
+
+### Addon script template
+
+```bash
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: YourName (GitHubUsername)
+# License: MIT | <url>
+# Source: <url>
+
+APP="AddonName"
+var_tags="${var_tags:-tag1}"
+var_cpu="${var_cpu:-1}"
+var_ram="${var_ram:-512}"
+var_disk="${var_disk:-2}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+
+function install_script() {
+  msg_info "Installing AddonName"
+  # ... addon install steps ...
+  msg_ok "Installed AddonName"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  # ... addon update steps ...
+  exit
+}
+
+function uninstall_script() {
+  # ... addon removal steps ...
+}
+
+# Addon bootstrap
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+```
+
+The `install_script` and `post_install_script` run immediately during
+addon install. `update_script` and `uninstall_script` are bundled into
+self-contained scripts at `/usr/local/sbin/update_<slug>` and
+`/usr/local/sbin/uninstall_<slug>` for later use.
 
 ## Pre-commit checklist
 

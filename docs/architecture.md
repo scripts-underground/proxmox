@@ -91,18 +91,21 @@ hooks invoked directly.
 |------|-------|------|
 | `header_info` | `render_header` | Host, early in bootstrap |
 | `pre_build_script` | `build_container` | Host, before LXC creation |
-| `install_script` | `build_container` | Container, via wrapper |
+| `install_script` | `build_container` | Container, via install bundle (self-destructs) |
 | `post_build_script` | `build_container` | Host, after install completes |
 | `post_install_script` | `complete_install` | Host, as final step |
-| `update_script` | `start` | Container, on re-run |
-| `uninstall_script` | — | Container, via pre-staged `/tmp/_uninstall.sh` |
+| `update_script` | — | Container, via `/usr/local/sbin/update` (persistent bundle) |
+| `uninstall_script` | — | Container, via `/usr/local/sbin/uninstall` (self-destructs on success) |
 
 #### Hooks NOT invoked by the shim
 
 `update_script` and `uninstall_script` are not part of the install path.
-They are invoked from inside the container later (update via re-running
-the CT script or running `/tmp/_update.sh`; uninstall via
-`/tmp/_uninstall.sh`).
+They are invoked from inside the container later via self-contained
+bundles pushed at install time:
+- **Update**: `/usr/local/sbin/update` (persists after install)
+- **Uninstall**: `/usr/local/sbin/uninstall` (self-destructs on success)
+- **Addon variants**: `/usr/local/sbin/update_<slug>`,
+  `/usr/local/sbin/uninstall_<slug>` (same lifecycle rules)
 
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
@@ -245,41 +248,56 @@ Stages, in order:
 4. Start the container, wait for network connectivity.
 5. Install base packages inside the container via `pct exec`
    (bash, curl, sudo, jq, etc. — distro-dependent).
-6. Compose the install wrapper and the update/uninstall wrappers.
-7. Push all wrappers into the container via `pct push`.
-8. Execute the install wrapper via `lxc-attach`.
-9. Check the failure flag that the wrapper writes on error.
+6. Build self-contained bundles via `build_bundle()`:
+   - **Install bundle** (`/tmp/install-bundle.sh`): inlines all 4
+     framework `.func` files + `install_script` hook + install
+     pipeline. Self-destructs on completion via `trap ... EXIT`.
+   - **Update bundle** (`/usr/local/sbin/update`): inlines framework
+     + `update_script` hook. Persists for future updates.
+   - **Uninstall bundle** (`/usr/local/sbin/uninstall`): inlines
+     framework + `uninstall_script` hook. Self-destructs on success.
+7. Push all bundles into the container via `pct push`.
+8. Execute the install bundle via `lxc-attach`.
+9. Check the failure flag that the bundle writes on error.
 10. Invoke the user's `post_build_script` on the host.
 
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
 
-#### 4.1.5 Wrapper composition
+#### 4.1.5 Bundle composition
 
-The user's `install_script` is a bash function defined in the host shell.
-The framework needs that function to execute inside the new LXC, in a
-different bash process spawned via `lxc-attach`. Bash function definitions
-don't cross process boundaries — the framework must transport the function
-body explicitly.
+The user's hook functions (`install_script`, `update_script`,
+`uninstall_script`) are bash functions defined in the host shell. They
+must execute inside the new LXC, in a different bash process spawned via
+`lxc-attach`. Bash function definitions don't cross process boundaries —
+the framework must transport the function bodies explicitly.
 
-The transport mechanism uses `declare -f`. The framework calls
-`declare -f install_script` in the host shell, which outputs the function
-body as text. That text is appended to a wrapper script alongside two
-other sections:
+The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
 
-- A **fixed prelude** that asserts the script is inside an LXC and
-  sources the framework files again (`core.func`, `tools.func`) so that
-  helpers like `msg_info` and `$STD` are available inside the container.
-- A **postamble** that calls setup/cleanup functions (`setting_up_container`,
-  `network_check`, `update_os`, `motd_ssh`, `setup_lxc`, `cleanup_lxc`).
+1. **Cache framework libs on the host** (once per session):
+   `core.func`, `error_handler.func`, `install.func`, `tools.func` are
+   fetched from `$REPO_BASE` and verified (size > 100 bytes, sentinel
+   functions present).
 
-The complete wrapper is a self-contained bash file. The framework writes
-it to a host temp file, pushes it into the container with `pct push`,
-then executes it via `lxc-attach`. No env vars are needed to carry the
-function — the function body is part of the file.
+2. **Inline everything into a single script**:
+   - Shebang, `set -euo pipefail`, `set -x`
+   - `_wrap_log` with a per-bundle tag (`INST`, `UPDA`, `UNIN`)
+   - All 4 framework `.func` files, verbatim, between `# ═══` markers
+   - Sanity checks that the expected sentinel functions loaded
+   - `load_functions`, `catch_errors`, `color`
+   - `declare -f <hook>` — the function body extracted via `declare -f`
+   - Role-specific pipeline and footer:
+     - **Install**: `trap 'rm -f "${BASH_SOURCE[0]}"' EXIT` +
+       `setting_up_container`, `network_check`, `update_os`,
+       `install_script`, `motd_ssh`, `setup_lxc`, `cleanup_lxc`
+     - **Update**: just `update_script` — no self-destruct
+     - **Uninstall**: `if uninstall_script; then rm -f "${BASH_SOURCE[0]}"; fi`
 
-The same mechanism composes two additional wrappers for
-`update_script` and `uninstall_script`.
+3. **Push into the container** via `pct push` and set the execution mode.
+
+No network I/O happens inside the container for framework loading — all
+libraries are already part of the bundle file. Each bundle is fully
+self-contained once it leaves the host.
 
 #### 4.1.6 In-container execution and exit-flag check
 
@@ -299,20 +317,27 @@ modification to the wrapper prelude or postamble must respect this
 convention — new error paths must write the failure flag to prevent
 silently swallowed failures.
 
-#### 4.1.7 Pre-staging update and uninstall wrappers
+#### 4.1.7 Persistent update and uninstall bundles
 
-While composing the install wrapper, the framework also composes wrappers
-for `update_script` and `uninstall_script` using the same `declare -f`
-mechanism. These are written to `/tmp/_update.sh` and
-`/tmp/_uninstall.sh` inside the container. After install completes, they
-remain there.
+While assembling the install bundle, `build_container` also assembles
+update and uninstall bundles:
 
-The user can trigger an update by running `bash /tmp/_update.sh` inside
-the LXC. There is also a second path to update: re-running the CT script
-inside the container. The framework's `start` function detects the
-container context (no `pveversion`) and dispatches to update mode,
-calling the user's `update_script` directly. The two paths are equivalent
-in effect.
+| Bundle | Destination inside container | Lifecycle |
+|--------|------------------------------|-----------|
+| Install | `/tmp/install-bundle.sh` | Self-destructs on EXIT (success or failure) |
+| Update | `/usr/local/sbin/update` | Persists — user runs it directly |
+| Uninstall | `/usr/local/sbin/uninstall` | Self-destructs on successful uninstall |
+
+The update bundle is a first-class command. The user triggers updates by
+running `/usr/local/sbin/update` inside the LXC — no wrapper path, no
+re-downloading the CT script.
+
+For addons, the naming follows the same convention:
+`/usr/local/sbin/update_<slug>` and `/usr/local/sbin/uninstall_<slug>`,
+with the same lifecycle rules (update persists, uninstall self-destructs).
+
+There is no longer a legacy path through `/tmp/_update.sh` or
+`/tmp/_uninstall.sh` — the temporary wrapper files have been removed.
 
 #### 4.1.8 Post-install hooks: `complete_install`
 
@@ -381,48 +406,41 @@ These identifiers are computed once from the user-declared values at the
 beginning of `variables()` and shared globally across the framework for
 the rest of the install path.
 
-#### Host-to-wrapper transfer
+#### Host-to-bundle transfer
 
-Two mechanisms carry values from the host environment into the running
-container's install session.
+All values that the container needs are baked into the bundle at
+composition time on the host:
 
-The first mechanism bakes host-derived values directly into the wrapper
-script text via the unquoted heredoc at composition time. When the host
-composes `_install_wrapper.sh`, specific shell variables (`$SCRIPTS_URL`)
-are expanded to their literal values at that moment, becoming part of the
-wrapper file as static text.
+- **Framework libraries** — the full text of `core.func`,
+  `error_handler.func`, `install.func`, and `tools.func` is inlined
+  verbatim into the bundle. No re-fetch occurs inside the container.
 
-The second mechanism re-acquires values from the network at container
-runtime. The wrapper's prelude curls framework files (`core.func`,
-`tools.func`) fresh inside the container, sourcing them to make helpers
-available.
+- **Hook functions** — extracted via `declare -f <hook>` and appended
+  as literal function definitions.
 
-The split follows a clear rule: values that depend on the host's
-environment at install time get baked in; values the container can
-re-derive (framework helpers) get re-curled. Values are never smuggled
-across the boundary via environment variables — the wrapper is fully
-self-contained once it leaves the host.
+- **Host-derived values** — any `$REPO_BASE` reference used by the
+  hook or install pipeline is expanded to its literal URL at bundle
+  composition time. The container never needs to resolve the variable.
+
+The bundle is fully self-contained once it leaves the host. The old
+split (bake-in vs. re-curl) is eliminated — everything is baked in.
 
 #### In-container environment
 
 When `install_script()` runs inside the LXC, it executes inside a bash
-process that has already sourced the wrapper's prelude. The prelude has
-curled `core.func` and `tools.func` and run their setup functions, so
-all standard helpers are available: `$STD`, `msg_info`, `msg_ok`,
-`msg_error`, `catch_errors`, `color`, and more.
-
-The host-derived values that were baked into the wrapper during
-composition are present in the wrapper file as literal strings. The
-variable `$SCRIPTS_URL`, for example, was expanded at host time and
-appears as a plain URL string inside the bash file — the container does
-not need access to the original environment or `REPO_BASE` to know where
-to curl framework files.
+process that has already sourced all 4 inlined framework libraries (the
+bundle's preamble). All standard helpers are available: `$STD`,
+`msg_info`, `msg_ok`, `msg_error`, `catch_errors`, `color`, and more.
 
 State flows back to the host via the failure-flag file convention.
-If an error occurs inside the container during the install, the wrapper
+If an error occurs inside the container during the install, the bundle
 writes `/root/.install-${SESSION_ID}.failed`. The host checks for this
 file after `lxc-attach` returns and treats its presence as definitive
 failure regardless of the attach's exit code.
+
+The install bundle self-destructs on any exit (success or failure) via
+`trap 'rm -f "${BASH_SOURCE[0]}"' EXIT`, so no host-side cleanup is
+needed for the install artifact.
 
 ### 5.2 Addon
 
@@ -462,10 +480,10 @@ owning framework function and documenting it in `function-reference.md`.
 **Modifying the in-container experience.** When every install needs to
 include a new step inside the container — for example, a new setup
 routine that runs before `install_script` or a new cleanup task after.
-The seam is the wrapper's boilerplate composition in `build.func`. The
-wrapper's prelude and postamble are the sections that define what every
-in-container install session includes. Adding a step there applies it to
-all LXC installs.
+The seam is the pipeline argument passed to `build_bundle install ...`
+in `build_container()`. Adding a step to that argument list applies it to
+all LXC installs. The underlying bundle assembler (`misc/bundle.func`)
+handles inlining and transport — no changes needed there.
 
 For a catalog of existing framework helpers and their file locations,
 see `function-reference.md`.
@@ -488,6 +506,7 @@ see `function-reference.md`.
 - `misc/bootstrap/addon` — Addon entry-point shim
 - `misc/bootstrap/pve` — PVE entry-point shim
 - `misc/bootstrap/vm` — VM entry-point shim
+- `misc/bundle.func` — Self-contained bundle assembler (`build_bundle`, `_framework_cache_ensure`)
 - `misc/build.func` — LXC framework (orchestration, container creation)
 - `misc/core.func` — common helpers (`msg_info`, `$STD`, `color`)
 - `misc/install.func` — in-container install helpers
