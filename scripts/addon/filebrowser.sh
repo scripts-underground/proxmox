@@ -32,7 +32,7 @@ INFO="${BL}ℹ️${CL}"
 # Read by the framework - shellcheck cannot see the caller
 APP="FileBrowser"
 INSTALL_PATH="/usr/local/bin/filebrowser"
-DB_PATH="/usr/local/community-scripts/filebrowser.db"
+DB_PATH="/usr/local/scripts-underground/filebrowser.db"
 DEFAULT_PORT=8080
 
 IFACE=$(ip -4 route | awk '/default/ {print $5; exit}')
@@ -85,15 +85,15 @@ function install_script() {
     msg_ok "Installed ${APP}"
 
     msg_info "Creating FileBrowser directory"
-    mkdir -p /usr/local/community-scripts
-    chown root:root /usr/local/community-scripts
-    chmod 755 /usr/local/community-scripts
+    mkdir -p /usr/local/scripts-underground
+    chown root:root /usr/local/scripts-underground
+    chmod 755 /usr/local/scripts-underground
     touch "$DB_PATH"
     chown root:root "$DB_PATH"
     chmod 644 "$DB_PATH"
     msg_ok "Directory created successfully"
 
-    cd /usr/local/community-scripts || exit
+    cd /usr/local/scripts-underground || exit
     filebrowser config init &> /dev/null
     filebrowser config set -a '0.0.0.0' -p "$PORT" -d "$DB_PATH" &> /dev/null
     filebrowser users add admin helper-scripts.com --perm.admin --database "$DB_PATH" &> /dev/null
@@ -116,10 +116,10 @@ After=network-online.target
 
 [Service]
 User=root
-WorkingDirectory=/usr/local/community-scripts
-ExecStartPre=/bin/touch /usr/local/community-scripts/filebrowser.db
-ExecStartPre=/usr/local/bin/filebrowser config set -a "0.0.0.0" -p ${PORT} -d /usr/local/community-scripts/filebrowser.db
-ExecStart=/usr/local/bin/filebrowser -r / -d /usr/local/community-scripts/filebrowser.db -p ${PORT}
+WorkingDirectory=/usr/local/scripts-underground
+ExecStartPre=/bin/touch /usr/local/scripts-underground/filebrowser.db
+ExecStartPre=/usr/local/bin/filebrowser config set -a "0.0.0.0" -p ${PORT} -d /usr/local/scripts-underground/filebrowser.db
+ExecStart=/usr/local/bin/filebrowser -r / -d /usr/local/scripts-underground/filebrowser.db -p ${PORT}
 Restart=always
 
 [Install]
@@ -134,7 +134,7 @@ command="/usr/local/bin/filebrowser"
 command_args="-r / -d $DB_PATH -p $PORT"
 command_background=true
 pidfile="/var/run/filebrowser.pid"
-directory="/usr/local/community-scripts"
+directory="/usr/local/scripts-underground"
 
 depend() {
     need net

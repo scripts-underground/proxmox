@@ -88,7 +88,7 @@ Called by `setup_script`:
 - **`setup_script()`** — Host-side menu entry. Runs preflight checks, shows whiptail (Default / Advanced / User Defaults / App Defaults / Settings). Dispatches to matching settings function. Reads `env mode`, `NSAPP`, `PVEHOST_NAME`.
 - **`base_settings()`** — Populates container-config globals from `var_*` defaults. Applies "higher wins" rule for CPU/RAM/disk. Validates ID, hostname, network, APT cacher. Sets `CT_TYPE`, `DISK_SIZE`, `CORE_COUNT`, `RAM_SIZE`, `CT_ID`, `HN`, `BRG`, `GATE`, `SD`, `NS`, `VLAN`, `MTU`, `TAGS`, all `ENABLE_*`, `CT_TIMEZONE`, etc. Input: `var_*` globals + `$1` (verbose override).
 - **`advanced_settings()`** — 28-step whiptail wizard. Same globals as `base_settings` but user-filled. Each step validates input.
-- **`default_var_settings()`** — Loads user defaults from `/usr/local/community-scripts/default.vars`, runs `base_settings` + `echo_default`.
+- **`default_var_settings()`** — Loads user defaults from `/usr/local/scripts-underground/default.vars`, runs `base_settings` + `echo_default`.
 - **`echo_default()`** — Prints pre-creation summary. Reads all container-config globals.
 - **`settings_menu()`** — Sub-menu: user defaults, app defaults, dev mode.
 - **`dev_mode_menu()`** — Toggle dev mode flags.
@@ -110,7 +110,7 @@ Pure functions returning 0/1, no side effects:
 ### Defaults file management
 
 - **`load_vars_file()`** — Saves whitelisted `var_*` from file into env. Validates each value. Reads `$1` file path, `$2` force flag.
-- **`get_app_defaults_path()`** — Prints path to app-specific vars file (`/usr/local/community-scripts/defaults/<nsapp>.vars`).
+- **`get_app_defaults_path()`** — Prints path to app-specific vars file (`/usr/local/scripts-underground/defaults/<nsapp>.vars`).
 - **`maybe_offer_save_app_defaults()`** — After Advanced install, prompts to save current settings as app defaults.
 - **`ensure_storage_selection_for_vars_file()`** — Ensures template and container storage vars exist in a file; prompts if missing.
 - **`choose_and_set_storage_for_file()`** — Storage selection wizard for vars file creation.
@@ -174,7 +174,7 @@ Each dispatches based on `INIT_SYSTEM` (systemd / OpenRC / sysvinit):
 
 ### MOTD & SSH — Called by wrapper postamble
 
-- **`motd_ssh()`** — Install community-scripts MOTD, configure terminal size, optionally install/configure SSH for root login. Reads `SSH_ROOT`, `APPLICATION`.
+- **`motd_ssh()`** — Install scripts-underground MOTD, configure terminal size, optionally install/configure SSH for root login. Reads `SSH_ROOT`, `APPLICATION`.
 
 ### Container customization — Called by wrapper postamble
 

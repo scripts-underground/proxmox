@@ -20,7 +20,7 @@ defaults). The framework handles **when** (orchestration) and **how**
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-# Copyright (c) 2021-2026 community-scripts ORG
+# Copyright (c) 2021-2026 scripts-underground ORG
 # Author: YourName (GitHubUsername)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://application-url.com
@@ -253,7 +253,7 @@ function install_script() {
 
 ## Porting from upstream (ProxmoxVE / ProxmoxVED)
 
-If you are porting a script from `community-scripts/ProxmoxVED/ct/<app>.sh`:
+If you are porting a script from `scripts-underground/ProxmoxVED/ct/<app>.sh`:
 
 1. Keep the same `APP`, `var_*`, and the `update_script()` body.
 2. Copy the upstream `install/<app>-install.sh` content into `install_script()`.
@@ -320,7 +320,7 @@ container.
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-# Copyright (c) 2021-2026 community-scripts ORG
+# Copyright (c) 2021-2026 scripts-underground ORG
 # Author: YourName (GitHubUsername)
 # License: MIT | <url>
 # Source: <url>

@@ -26,9 +26,9 @@ var_backup_storage="${var_backup_storage:-}"
 
 # var_container: Which containers to update
 #   Options:
-#     - "all"         : All containers with community-scripts tags
-#     - "all_running" : Only running containers with community-scripts tags
-#     - "all_stopped" : Only stopped containers with community-scripts tags
+#     - "all"         : All containers with scripts-underground tags
+#     - "all_running" : Only running containers with scripts-underground tags
+#     - "all_stopped" : Only stopped containers with scripts-underground tags
 #     - "101,102,109" : Comma-separated list of specific container IDs
 #     - ""            : Interactive selection via Whiptail
 var_container="${var_container:-}"
@@ -67,7 +67,7 @@ function print_usage() {
   cat << EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Update LXC containers created with community-scripts.
+Update LXC containers created with scripts-underground.
 
 Options:
   --help              Show this help message
@@ -131,7 +131,7 @@ function detect_service() {
 
 function backup_container() {
   msg_info "Creating backup for container $1"
-  vzdump $1 --compress zstd --storage $STORAGE_CHOICE -notes-template "community-scripts backup updater" > /dev/null 2>&1
+  vzdump $1 --compress zstd --storage $STORAGE_CHOICE -notes-template "scripts-underground backup updater" > /dev/null 2>&1
   status=$?
 
   if [ $status -eq 0 ]; then
