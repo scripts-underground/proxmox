@@ -205,6 +205,21 @@ shellcheck --severity=warning scripts/**/*.sh  # lint
 
 These checks run in CI (`.github/workflows/deploy.yml`) and as pre-commit hooks (`.pre-commit-config.yaml`).
 
+## Development environment
+
+The devcontainer under `.devcontainer/` is the primary contribution environment. It bundles Ruby/Jekyll, Go (for the AST tool), `pre-commit`, `shellcheck`, and `shfmt`, and wires the pre-commit git hook automatically on `postCreateCommand`. Contributors are expected to work inside the devcontainer for full linting and hook coverage.
+
+Open the devcontainer via VS Code's "Reopen in Container", GitHub Codespaces, or [DevPod](https://devpod.sh/). See `README.md` for details.
+
+Host-only setups skip the automatic hook installation. If contributing without the devcontainer, install pre-commit manually before your first commit:
+
+```bash
+uv tool install pre-commit    # or: pipx install pre-commit
+pre-commit install            # wires .git/hooks/pre-commit
+```
+
+`shellcheck` and `shfmt` binaries also need to be on `PATH` (e.g., `pacman -S shellcheck shfmt`, `apt install shellcheck shfmt`).
+
 ## Regenerating AST files
 
 `_ast/` is gitignored. Generate it locally with:
