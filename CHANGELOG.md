@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-16
+
+### Fix
+
+The top-level `LICENSE` gained the upstream `Copyright (c) 2021-2025 tteck | community-scripts ORG` line to preserve MIT §3 attribution. The four framework files (`misc/build.func`, `misc/install.func`, `misc/core.func`, `misc/error_handler.func`) whose copyright headers were rewritten in commit `33ccf9d` had the upstream `community-scripts ORG` line restored alongside the fork's copyright.
+
+- Restore upstream MIT copyright attribution in LICENSE and framework file headers [<HEAD>]
+
 ## 2026-06-28
 
 ### Breaking
