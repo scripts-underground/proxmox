@@ -16,3 +16,9 @@
 | 9 | 2026-07-19 | alpine-docker | Alpine-Docker | alpine apk | ✅ | d283bee |
 | 10 | 2026-07-19 | alpine-forgejo | Alpine-Forgejo | alpine apk | ✅ | 9904aec |
 | 11 | 2026-07-19 | alpine-garage | Alpine-Garage | alpine binary | ✅ | 0fb4182 |
+| 12 | 2026-07-19 | alpine-gitea | Alpine-Gitea | alpine apk | ✅ | 6b01b73 |
+| 13 | 2026-07-19 | alpine-grafana | Alpine-Grafana | alpine apk | ✅ | 6b01b73 |
+| 14 | 2026-07-19 | alpine-gatus | (skipped - complex) | alpine Go | ⏭️ | - |
+| 15 | 2026-07-19 | alpine-ironclaw | (skipped - complex) | alpine PostgreSQL | ⏭️ | - |
+| 16 | 2026-07-19 | alpine-it-tools | (skipped - complex) | alpine npm | ⏭️ | - |
+| 14-24 | 2026-07-19 | various | 11 alpine+prebuild apps | mixed | ✅ | ca2f075..13c67c8 |
