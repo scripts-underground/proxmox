@@ -20,7 +20,7 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
-  fetch_and_deploy_gh_release "AdGuardHome" "AdguardTeam/AdGuardHome" "prebuild" "latest" "/opt/AdGuardHome" "AdGuardHome_linux_$(arch_resolve).tar.gz"
+  fetch_and_deploy_gh_release "AdGuardHome" "AdguardTeam/AdGuardHome" "prebuild" "latest" "/opt/AdGuardHome" "AdGuardHome_linux_$(get_system_arch).tar.gz"
 
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/AdGuardHome.service
