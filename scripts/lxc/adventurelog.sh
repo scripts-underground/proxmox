@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Sourced by lxc.bootstrap — never executed directly
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: MickLesk (Canbiz)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://github.com/seanmorley15/AdventureLog
+
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="AdventureLog"
+var_tags="${var_tags:-traveling}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-7}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
+var_unprivileged="${var_unprivileged:-1}"
+
+function install_script() {
+  msg_info "Installing Dependencies"
+  $STD apt install -y \
+    gdal-bin \
+    libgdal-dev \
+    git \
+    memcached \
+    libmemcached-tools
+  msg_ok "Installed Dependencies"
+
+  PYTHON_VERSION="3.13" setup_uv
+  NODE_VERSION="22" NODE_MODULE="pnpm@latest" setup_nodejs
+  PG_VERSION="17" PG_MODULES="postgis" setup_postgresql
+  PG_DB_NAME="adventurelog_db" PG_DB_USER="adventurelog_user" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
+
+  fetch_and_deploy_gh_release "adventurelog" "seanmorley15/adventurelog" "tarball"
+
+  msg_info "Installing AdventureLog (Patience)"
+  SECRET_KEY="$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | cut -c1-32)"
+  echo "AdventureLog Secret: $SECRET_KEY" >> ~/adventurelog.creds
+  DJANGO_ADMIN_USER="djangoadmin"
+  DJANGO_ADMIN_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)"
+  cat << EOF > /opt/adventurelog/backend/server/.env
+PGHOST='localhost'
+PGDATABASE='${PG_DB_NAME}'
+PGUSER='${PG_DB_USER}'
+PGPASSWORD='${PG_DB_PASS}'
+SECRET_KEY='${SECRET_KEY}'
+PUBLIC_URL='http://$LOCAL_IP:8000'
+DEBUG=True
+FRONTEND_URL='http://$LOCAL_IP:3000'
+CSRF_TRUSTED_ORIGINS='http://127.0.0.1:3000,http://localhost:3000,http://$LOCAL_IP:3000'
+DJANGO_ADMIN_USERNAME='${DJANGO_ADMIN_USER}'
+DJANGO_ADMIN_PASSWORD='${DJANGO_ADMIN_PASS}'
+DISABLE_REGISTRATION=False
+EOF
+  cd /opt/adventurelog/backend/server || exit
+  mkdir -p /opt/adventurelog/backend/server/media
+  $STD uv venv --clear /opt/adventurelog/backend/server/.venv
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m ensurepip --upgrade
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install --upgrade pip
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install -r requirements.txt
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install 'djangorestframework<3.15'
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage collectstatic --noinput
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage migrate
+  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage download-countries
+  cat << EOF > /opt/adventurelog/frontend/.env
+PUBLIC_SERVER_URL=http://$LOCAL_IP:8000
+BODY_SIZE_LIMIT=Infinity
+ORIGIN='http://$LOCAL_IP:3000'
+EOF
+  cd /opt/adventurelog/frontend || exit
+  grep -q "^dangerouslyAllowAllBuilds:" ./pnpm-workspace.yaml 2> /dev/null || echo "dangerouslyAllowAllBuilds: true" >> ./pnpm-workspace.yaml
+  $STD pnpm i
+  $STD pnpm build
+  msg_ok "Installed AdventureLog"
+
+  msg_info "Setting up Django Admin"
+  cd /opt/adventurelog/backend/server || exit
+  $STD .venv/bin/python -m manage shell << EOF
+from django.contrib.auth import get_user_model
+UserModel = get_user_model()
+user = UserModel.objects.create_user('$DJANGO_ADMIN_USER', password='$DJANGO_ADMIN_PASS')
+user.is_superuser = True
+user.is_staff = True
+user.save()
+EOF
+  cat << EOF >> ~/adventurelog.creds
+Django-Credentials
+Django Admin User: $DJANGO_ADMIN_USER
+Django Admin Password: $DJANGO_ADMIN_PASS
+EOF
+  msg_ok "Setup Django Admin"
+
+  msg_info "Creating Service"
+  cat << EOF > /etc/systemd/system/adventurelog-backend.service
+[Unit]
+Description=AdventureLog Backend Service
+After=network.target postgresql.service
+
+[Service]
+WorkingDirectory=/opt/adventurelog/backend/server
+ExecStart=/opt/adventurelog/backend/server/.venv/bin/python -m manage runserver 0.0.0.0:8000
+Restart=always
+EnvironmentFile=/opt/adventurelog/backend/server/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat << EOF > /etc/systemd/system/adventurelog-frontend.service
+[Unit]
+Description=AdventureLog SvelteKit Frontend Service
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/adventurelog/frontend
+ExecStart=/usr/bin/node build 127.0.0.1:3000
+Restart=always
+EnvironmentFile=/opt/adventurelog/frontend/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now adventurelog-backend
+  systemctl enable -q --now adventurelog-frontend
+  msg_ok "Created Service"
+}
+
+function post_install_script() {
+  msg_ok "Completed Successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -d /opt/adventurelog ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+  $STD apt install -y memcached libmemcached-tools
+  if check_for_gh_release "adventurelog" "seanmorley15/adventurelog"; then
+    msg_info "Stopping Services"
+    systemctl stop adventurelog-backend
+    systemctl stop adventurelog-frontend
+    msg_ok "Services Stopped"
+
+    create_backup /opt/adventurelog/backend/server/.env \
+      /opt/adventurelog/backend/server/media
+
+    fetch_and_deploy_gh_release "adventurelog" "seanmorley15/adventurelog" "tarball"
+    PYTHON_VERSION="3.13" setup_uv
+
+    msg_info "Ensuring PostgreSQL Extensions"
+    $STD sudo -u postgres psql -d adventurelog_db -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+    msg_ok "PostgreSQL Extensions Ready"
+
+    restore_backup
+
+    msg_info "Updating AdventureLog"
+    cd /opt/adventurelog/backend/server || exit
+    if [[ ! -x .venv/bin/python ]]; then
+      $STD uv venv --clear .venv
+      $STD .venv/bin/python -m ensurepip --upgrade
+    fi
+    $STD .venv/bin/python -m pip install --upgrade pip
+    $STD .venv/bin/python -m pip install -r requirements.txt
+    $STD .venv/bin/python -m pip install 'djangorestframework<3.15'
+    $STD .venv/bin/python -m manage collectstatic --noinput
+    $STD .venv/bin/python -m manage migrate
+
+    cd /opt/adventurelog/frontend || exit
+    grep -q "^dangerouslyAllowAllBuilds:" ./pnpm-workspace.yaml 2> /dev/null || echo "dangerouslyAllowAllBuilds: true" >> ./pnpm-workspace.yaml
+    $STD pnpm i
+    $STD pnpm build
+    msg_ok "Updated AdventureLog"
+
+    msg_info "Starting Services"
+    systemctl daemon-reexec
+    systemctl start adventurelog-backend
+    systemctl start adventurelog-frontend
+    msg_ok "Services Started"
+    msg_ok "Updated successfully!"
+  fi
+  exit
+}
+
+# framework bootstrap
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
