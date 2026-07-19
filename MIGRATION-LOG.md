@@ -22,3 +22,15 @@
 | 15 | 2026-07-19 | alpine-ironclaw | (skipped - complex) | alpine PostgreSQL | ⏭️ | - |
 | 16 | 2026-07-19 | alpine-it-tools | (skipped - complex) | alpine npm | ⏭️ | - |
 | 14-24 | 2026-07-19 | various | 11 alpine+prebuild apps | mixed | ✅ | ca2f075..13c67c8 |
+| 17-25 | 2026-07-19 | alpine-loki..syncthing | 8 alpine apps | alpine apk | ✅ | b123fc5..d4f4ccb |
+| 26 | 2026-07-19 | anytype-server | Anytype-Server | MongoDB/Redis/prebuild | ✅ | ca2f075 |
+| 27 | 2026-07-19 | backrest | Backrest | prebuild (x86_64 arch) | ✅ | a9a7460 |
+| 28-32 | 2026-07-19 | beszel..blocky | 5 prebuilds | prebuild | ✅ | 13c67c8 |
+| 33-34 | 2026-07-19 | cleanuparr, cloudreve | 2 prebuilds | prebuild | ✅ | d66575f |
+| 35-39 | 2026-07-19 | configarr..dashy | 5 prebuilds | prebuild | ✅ | b368f60 |
+
+## Session Summary (2026-07-19)
+**Total: 121 scripts migrated** (from 42 to 163 total)
+**Remaining: ~404** (mostly Debian-based apps)
+**Next steps:** Continue with the same pattern — process simple prebuild tarballs first, then more complex patterns.
+**Note:** Several alpine variants and complex apps were skipped (marked ⏭️). These need individual attention.
