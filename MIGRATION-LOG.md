@@ -13,3 +13,6 @@
 | 6 | 2026-07-19 | alpine-bitmagnet-logo | (fix logo URL) | fix | ✅ | - |
 | 7 | 2026-07-19 | alpine-borgbackup-server | Alpine-BorgBackup-Server | alpine SSH/backup | ✅ | 4b1ed8e |
 | 8 | 2026-07-19 | alpine-caddy | Alpine-Caddy | alpine apk | ✅ | 751fed2 |
+| 9 | 2026-07-19 | alpine-docker | Alpine-Docker | alpine apk | ✅ | d283bee |
+| 10 | 2026-07-19 | alpine-forgejo | Alpine-Forgejo | alpine apk | ✅ | 9904aec |
+| 11 | 2026-07-19 | alpine-garage | Alpine-Garage | alpine binary | ✅ | 0fb4182 |
