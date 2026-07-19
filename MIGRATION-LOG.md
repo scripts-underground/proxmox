@@ -34,3 +34,7 @@
 **Remaining: ~404** (mostly Debian-based apps)
 **Next steps:** Continue with the same pattern — process simple prebuild tarballs first, then more complex patterns.
 **Note:** Several alpine variants and complex apps were skipped (marked ⏭️). These need individual attention.
+
+## Session Summary (2026-07-20 Morning)
+**Additional: 16 scripts migrated** (Aria2, degoog, DiscoPanel, Donetick, ezBookkeeping, Glance, Gogs, HomeBox, Homarr, Hoodik, Jackett, jotty, Kavita, Kubo, Lychee, MySpeed)
+**Total: ~110 scripts** | **Missing remaining: ~466** | **AST: 137**
