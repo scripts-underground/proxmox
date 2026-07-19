@@ -12,3 +12,4 @@
 | 5 | 2026-07-19 | alpine-bitmagnet | Alpine-bitmagnet | alpine Go + PostgreSQL | ✅ | 4890d7b |
 | 6 | 2026-07-19 | alpine-bitmagnet-logo | (fix logo URL) | fix | ✅ | - |
 | 7 | 2026-07-19 | alpine-borgbackup-server | Alpine-BorgBackup-Server | alpine SSH/backup | ✅ | 4b1ed8e |
+| 8 | 2026-07-19 | alpine-caddy | Alpine-Caddy | alpine apk | ✅ | 751fed2 |
