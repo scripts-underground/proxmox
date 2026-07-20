@@ -23,7 +23,7 @@ function install_script() {
   msg_ok "Installed Dependencies"
 
   msg_info "Ensuring ASP.NET Core Runtime"
-  if [[ "$(arch_resolve)" == "arm64" ]]; then
+  if [[ "$(get_system_arch)" == "arm64" ]]; then
     if [[ ! -x /usr/lib/dotnet10/dotnet ]]; then
       curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
       $STD bash /tmp/dotnet-install.sh --channel 10.0 --runtime aspnetcore --install-dir /usr/lib/dotnet10
@@ -120,7 +120,7 @@ function update_script() {
   msg_ok "Backup Created"
 
   msg_info "Ensuring ASP.NET Core Runtime"
-  if [[ "$(arch_resolve)" == "arm64" ]]; then
+  if [[ "$(get_system_arch)" == "arm64" ]]; then
     if [[ ! -x /usr/lib/dotnet10/dotnet ]]; then
       curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
       $STD bash /tmp/dotnet-install.sh --channel 10.0 --runtime aspnetcore --install-dir /usr/lib/dotnet10
