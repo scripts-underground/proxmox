@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: MickLesk (CanbiZ)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://github.com/Freika/dawarich
+
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="Dawarich"
+var_tags="${var_tags:-location;tracking;gps}"
+var_cpu="${var_cpu:-4}"
+var_ram="${var_ram:-4096}"
+var_disk="${var_disk:-15}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
+var_unprivileged="${var_unprivileged:-1}"
+
+function install_script() {
+  msg_info "Installing Dependencies"
+  $STD apt install -y \
+    build-essential \
+    cmake \
+    git \
+    imagemagick \
+    libffi-dev \
+    libgeos-dev \
+    libgeos++-dev \
+    libjemalloc2 \
+    libjemalloc-dev \
+    libmagickwand-dev \
+    libpq-dev \
+    libssl-dev \
+    libvips-dev \
+    libxml2-dev \
+    libxslt-dev \
+    libyaml-dev \
+    nginx \
+    redis-server
+  msg_ok "Installed Dependencies"
+
+  PG_VERSION="17" PG_MODULES="postgis-3" setup_postgresql
+  PG_DB_NAME="dawarich_db" PG_DB_USER="dawarich" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
+
+  fetch_and_deploy_gh_release "dawarich" "Freika/dawarich" "tarball" "latest" "/opt/dawarich/app"
+
+  msg_info "Setting up Directories"
+  mkdir -p /opt/dawarich/app/{storage,log,tmp/pids,tmp/cache,tmp/sockets}
+  msg_ok "Set up Directories"
+
+  msg_info "Configuring Environment"
+  SECRET_KEY_BASE=$(openssl rand -hex 64)
+  OTP_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 64)
+  OTP_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -hex 64)
+  OTP_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -hex 64)
+  RELEASE=$(get_latest_github_release "Freika/dawarich")
+  cat << EOF > /opt/dawarich/.env
+RAILS_ENV=production
+SECRET_KEY_BASE=${SECRET_KEY_BASE}
+OTP_ENCRYPTION_PRIMARY_KEY=${OTP_ENCRYPTION_PRIMARY_KEY}
+OTP_ENCRYPTION_DETERMINISTIC_KEY=${OTP_ENCRYPTION_DETERMINISTIC_KEY}
+OTP_ENCRYPTION_KEY_DERIVATION_SALT=${OTP_ENCRYPTION_KEY_DERIVATION_SALT}
+DATABASE_HOST=localhost
+DATABASE_USERNAME=${PG_DB_USER}
+DATABASE_PASSWORD=${PG_DB_PASS}
+DATABASE_NAME=${PG_DB_NAME}
+REDIS_URL=redis://127.0.0.1:6379/0
+BACKGROUND_PROCESSING_CONCURRENCY=10
+APPLICATION_HOST=${LOCAL_IP}
+APPLICATION_HOSTS=${LOCAL_IP},localhost
+TIME_ZONE=UTC
+DISABLE_TELEMETRY=true
+APP_VERSION=${RELEASE}
+EOF
+  msg_ok "Configured Environment"
+
+  NODE_VERSION="22" setup_nodejs
+  RUBY_VERSION=$(cat /opt/dawarich/app/.ruby-version 2> /dev/null || echo "3.4.6")
+  RUBY_VERSION=${RUBY_VERSION} RUBY_INSTALL_RAILS="false" HOME=/root setup_ruby
+
+  msg_info "Installing Dawarich"
+  cd /opt/dawarich/app || exit
+  source /root/.profile
+  export PATH="/root/.rbenv/shims:/root/.rbenv/bin:${PATH}"
+  eval "$(/root/.rbenv/bin/rbenv init - bash)"
+  set -a && source /opt/dawarich/.env && set +a
+  $STD gem install bundler
+  $STD bundle config set --local deployment 'true'
+  $STD bundle config set --local without 'development test'
+  $STD bundle install
+  if [[ -f /opt/dawarich/package.json ]]; then
+    cd /opt/dawarich || exit
+    $STD npm install
+    cd /opt/dawarich/app || exit
+  elif [[ -f /opt/dawarich/app/package.json ]]; then
+    $STD npm install
+  fi
+  $STD bundle exec rake assets:precompile
+  $STD bundle exec rails db:schema:load
+  $STD bundle exec rails db:seed || msg_warn "Database seed failed (upstream rgeo-geojson issue), app will still work"
+  $STD bundle exec rake data:migrate
+  msg_ok "Installed Dawarich"
+
+  msg_info "Creating Services"
+  cat << EOF > /etc/systemd/system/dawarich-web.service
+[Unit]
+Description=Dawarich Web Server
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dawarich/app
+EnvironmentFile=/opt/dawarich/.env
+ExecStart=/root/.rbenv/shims/bundle exec puma -C config/puma.rb
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat << EOF > /etc/systemd/system/dawarich-worker.service
+[Unit]
+Description=Dawarich Sidekiq Worker
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dawarich/app
+EnvironmentFile=/opt/dawarich/.env
+ExecStart=/root/.rbenv/shims/bundle exec sidekiq -C config/sidekiq.yml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl enable -q --now redis-server dawarich-web dawarich-worker
+  msg_ok "Created Services"
+
+  msg_info "Configuring Nginx"
+  cat << EOF > /etc/nginx/sites-available/dawarich.conf
+upstream dawarich {
+    server 127.0.0.1:3000;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    root /opt/dawarich/app/public;
+    client_max_body_size 100M;
+
+    location ~ ^/(assets|packs)/ {
+        expires max;
+        add_header Cache-Control "public, immutable";
+        try_files \$uri =404;
+    }
+
+    location / {
+        try_files \$uri @rails;
+    }
+
+    location @rails {
+        proxy_pass http://dawarich;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_redirect off;
+        proxy_buffering off;
+    }
+}
+EOF
+  ln -sf /etc/nginx/sites-available/dawarich.conf /etc/nginx/sites-enabled/
+  rm -f /etc/nginx/sites-enabled/default
+  systemctl enable -q --now nginx
+  msg_ok "Configured Nginx"
+}
+
+function post_install_script() {
+  msg_ok "Completed Successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW}Access it using the following URL:${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}:3000${CL}"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+
+  if [[ ! -d /opt/dawarich ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+
+  ensure_dependencies libgeos++-dev libxml2-dev libxslt-dev libjemalloc-dev
+
+  if check_for_gh_release "dawarich" "Freika/dawarich"; then
+    msg_info "Stopping Services"
+    systemctl stop dawarich-web dawarich-worker
+    msg_ok "Stopped Services"
+
+    create_backup /opt/dawarich/app/storage \
+      /opt/dawarich/app/config/master.key \
+      /opt/dawarich/app/config/credentials.yml.enc
+
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "dawarich" "Freika/dawarich" "tarball" "latest" "/opt/dawarich/app"
+
+    RUBY_VERSION=$(cat /opt/dawarich/app/.ruby-version 2> /dev/null || echo "3.4.6")
+    RUBY_VERSION=${RUBY_VERSION} RUBY_INSTALL_RAILS="false" HOME=/root setup_ruby
+
+    msg_info "Running Migrations"
+    cd /opt/dawarich/app || exit
+    source /root/.profile
+    export PATH="/root/.rbenv/shims:/root/.rbenv/bin:${PATH}"
+    eval "$(/root/.rbenv/bin/rbenv init - bash)"
+
+    if ! grep -q "OTP_ENCRYPTION_PRIMARY_KEY" /opt/dawarich/.env; then
+      echo "OTP_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 64)" >> /opt/dawarich/.env
+    fi
+
+    if ! grep -q "OTP_ENCRYPTION_DETERMINISTIC_KEY" /opt/dawarich/.env; then
+      echo "OTP_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -hex 64)" >> /opt/dawarich/.env
+    fi
+
+    if ! grep -q "OTP_ENCRYPTION_KEY_DERIVATION_SALT" /opt/dawarich/.env; then
+      echo "OTP_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -hex 64)" >> /opt/dawarich/.env
+    fi
+
+    set -a && source /opt/dawarich/.env && set +a
+
+    $STD bundle config set --local deployment 'true'
+    $STD bundle config set --local without 'development test'
+    $STD bundle install
+
+    if [[ -f /opt/dawarich/package.json ]]; then
+      cd /opt/dawarich || exit
+      $STD npm install
+      cd /opt/dawarich/app || exit
+    elif [[ -f /opt/dawarich/app/package.json ]]; then
+      $STD npm install
+    fi
+
+    $STD bundle exec rails db:migrate
+    $STD bundle exec rake assets:precompile
+    $STD bundle exec rake data:migrate
+    msg_ok "Ran Migrations"
+
+    restore_backup
+
+    msg_info "Starting Services"
+    systemctl start dawarich-web dawarich-worker
+    msg_ok "Started Services"
+    msg_ok "Updated successfully!"
+  fi
+  exit
+}
+
+# framework bootstrap
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
