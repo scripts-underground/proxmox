@@ -8,8 +8,8 @@ repo: https://github.com/mayswind/ezbookkeeping
 site: https://ezbookkeeping.mayswind.net/
 port: 8080
 cpu: 1
-ram: 512
-disk: 2
+ram: 1024
+disk: 4
 maintainer: tremor021
 ---
 Personal finance tracking tool. Double-entry bookkeeping with web interface.

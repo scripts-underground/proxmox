@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-# Sourced by lxc.bootstrap — never executed directly
+
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: Slaviša Arežina (tremor021)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://ezbookkeeping.mayswind.net/
-# shellcheck disable=SC2034
+
 APP="ezBookkeeping"
 var_tags="${var_tags:-finance}"
 var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-512}"
-var_disk="${var_disk:-2}"
+var_ram="${var_ram:-1024}"
+var_disk="${var_disk:-4}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+
 function install_script() {
   fetch_and_deploy_gh_release "ezbookkeeping" "mayswind/ezbookkeeping" "prebuild" "latest" "/opt/ezbookkeeping" "ezbookkeeping-*-linux-$(get_system_arch).tar.gz"
   msg_info "Setting up ezBookkeeping"
@@ -28,22 +29,26 @@ function install_script() {
 [Unit]
 Description=ezBookkeeping Service
 After=network.target
+
 [Service]
 WorkingDirectory=/opt/ezbookkeeping
 ExecStart=/opt/ezbookkeeping/ezbookkeeping server run
 Restart=always
+
 [Install]
 WantedBy=multi-user.target
 EOF
   systemctl enable -q --now ezbookkeeping
   msg_ok "Created service"
 }
+
 function post_install_script() {
   msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:8080${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}https://${IP}${CL}"
 }
+
 function update_script() {
   header_info
   check_container_storage
@@ -56,7 +61,19 @@ function update_script() {
     msg_info "Stopping Service"
     systemctl stop ezbookkeeping
     msg_ok "Stopped Service"
+    msg_info "Backing up configuration"
+    mkdir -p /opt/ezbookkeeping-backup
+    cp /opt/ezbookkeeping/conf/ezbookkeeping.ini /opt/ezbookkeeping-backup/
+    cp -r /opt/ezbookkeeping/data /opt/ezbookkeeping-backup/data/
+    cp -r /opt/ezbookkeeping/storage /opt/ezbookkeeping-backup/storage/
+    msg_ok "Backed up configuration"
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ezbookkeeping" "mayswind/ezbookkeeping" "prebuild" "latest" "/opt/ezbookkeeping" "ezbookkeeping-*-linux-$(get_system_arch).tar.gz"
+    msg_info "Restoring configuration"
+    cp -rf /opt/ezbookkeeping-backup/ezbookkeeping.ini /opt/ezbookkeeping/conf/
+    cp -rf /opt/ezbookkeeping-backup/data/. /opt/ezbookkeeping/data/
+    cp -rf /opt/ezbookkeeping-backup/storage/. /opt/ezbookkeeping/storage/
+    rm -rf /opt/ezbookkeeping-backup
+    msg_ok "Restored configuration"
     msg_info "Starting Service"
     systemctl start ezbookkeeping
     msg_ok "Started Service"
@@ -64,5 +81,6 @@ function update_script() {
   fi
   exit
 }
+
 # shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
