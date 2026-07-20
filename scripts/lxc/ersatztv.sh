@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: MickLesk (Canbiz)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://ersatztv.org/ | https://github.com/ErsatzTV/ErsatzTV
+
+# shellcheck disable=SC2034
+APP="ErsatzTV"
+var_tags="${var_tags:-iptv}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-1024}"
+var_disk="${var_disk:-5}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
+var_gpu="${var_gpu:-yes}"
+var_unprivileged="${var_unprivileged:-1}"
+
+function install_script() {
+  setup_hwaccel
+
+  msg_info "Fetching ErsatzTV"
+  ARCH=$(uname -m)
+  if [ "$ARCH" = "x86_64" ]; then
+    ETV_ARCH="x64"
+    FFM_ARCH="linux64"
+  elif [ "$ARCH" = "aarch64" ]; then
+    ETV_ARCH="arm64"
+    FFM_ARCH="linuxarm64"
+  fi
+  fetch_and_deploy_gh_release "ersatztv" "ErsatzTV/ErsatzTV" "prebuild" "latest" "/opt/ErsatzTV" "*linux-${ETV_ARCH}.tar.gz"
+  msg_ok "Fetched ErsatzTV"
+
+  msg_info "Fetching ErsatzTV-ffmpeg"
+  fetch_and_deploy_gh_release "ersatztv-ffmpeg" "ErsatzTV/ErsatzTV-ffmpeg" "prebuild" "latest" "/opt/ErsatzTV-ffmpeg" "*-${FFM_ARCH}-gpl-7.1.tar.xz"
+  msg_ok "Fetched ErsatzTV-ffmpeg"
+
+  msg_info "Setting ErsatzTV-ffmpeg links"
+  chmod +x /opt/ErsatzTV-ffmpeg/bin/*
+  ln -sf /opt/ErsatzTV-ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
+  ln -sf /opt/ErsatzTV-ffmpeg/bin/ffplay /usr/local/bin/ffplay
+  ln -sf /opt/ErsatzTV-ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
+  msg_ok "Set ErsatzTV-ffmpeg links"
+
+  msg_info "Creating Service"
+  cat << EOF > /etc/systemd/system/ersatzTV.service
+[Unit]
+Description=ErsatzTV Service
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ErsatzTV
+ExecStart=/opt/ErsatzTV/ErsatzTV
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now ersatzTV
+  msg_ok "Created Service"
+}
+
+function post_install_script() {
+  msg_ok "Completed successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW}Access it using the following URL:${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}:8409${CL}"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -d /opt/ErsatzTV ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+  if check_for_gh_release "ersatztv" "ErsatzTV/ErsatzTV"; then
+    msg_info "Stopping ErsatzTV"
+    systemctl stop ersatzTV
+    msg_ok "Stopped ErsatzTV"
+
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+      ETV_ARCH="x64"
+    elif [ "$ARCH" = "aarch64" ]; then
+      ETV_ARCH="arm64"
+    fi
+    fetch_and_deploy_gh_release "ersatztv" "ErsatzTV/ErsatzTV" "prebuild" "latest" "/opt/ErsatzTV" "*linux-${ETV_ARCH}.tar.gz"
+
+    msg_info "Starting ErsatzTV"
+    systemctl start ersatzTV
+    msg_ok "Started ErsatzTV"
+    msg_ok "Updated successfully!"
+  fi
+  if check_for_gh_release "ersatztv-ffmpeg" "ErsatzTV/ErsatzTV-ffmpeg"; then
+    msg_info "Stopping ErsatzTV"
+    systemctl stop ersatzTV
+    msg_ok "Stopped ErsatzTV"
+
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+      FFM_ARCH="linux64"
+    elif [ "$ARCH" = "aarch64" ]; then
+      FFM_ARCH="linuxarm64"
+    fi
+    fetch_and_deploy_gh_release "ersatztv-ffmpeg" "ErsatzTV/ErsatzTV-ffmpeg" "prebuild" "latest" "/opt/ErsatzTV-ffmpeg" "*-${FFM_ARCH}-gpl-7.1.tar.xz"
+
+    msg_info "Setting ErsatzTV-ffmpeg links"
+    chmod +x /opt/ErsatzTV-ffmpeg/bin/*
+    ln -sf /opt/ErsatzTV-ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
+    ln -sf /opt/ErsatzTV-ffmpeg/bin/ffplay /usr/local/bin/ffplay
+    ln -sf /opt/ErsatzTV-ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
+    msg_ok "Set ErsatzTV-ffmpeg links"
+
+    msg_info "Starting ErsatzTV"
+    systemctl start ersatzTV
+    msg_ok "Started ErsatzTV"
+    msg_ok "Updated successfully!"
+  fi
+  exit
+}
+
+# framework bootstrap
+# shellcheck disable=SC1090
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
