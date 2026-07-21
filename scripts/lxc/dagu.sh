@@ -9,10 +9,10 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 # shellcheck disable=SC2034
 APP="Dagu"
-var_tags="${var_tags:-automation}"
+var_tags="${var_tags:-automation;workflow;scheduler}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-512}"
-var_disk="${var_disk:-2}"
+var_disk="${var_disk:-4}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
@@ -20,15 +20,22 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   fetch_and_deploy_gh_release "dagu" "dagucloud/dagu" "prebuild" "latest" "/opt/dagu" "dagu_*_linux_$(get_system_arch).tar.gz"
+  mkdir -p /opt/dagu/data
   msg_info "Creating Service"
   cat << 'EOF' > /etc/systemd/system/dagu.service
 [Unit]
-Description=Dagu
+Description=Dagu Workflow Engine
 After=network.target
 [Service]
 Type=simple
-ExecStart=/opt/dagu/dagu
+User=root
+WorkingDirectory=/opt/dagu
+Environment=DAGU_HOME=/opt/dagu/data
+Environment=DAGU_HOST=0.0.0.0
+Environment=DAGU_PORT=8080
+ExecStart=/opt/dagu/dagu start-all
 Restart=on-failure
+RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -47,7 +54,7 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -d /opt/dagu ]]; then
+  if [[ ! -f /opt/dagu/dagu ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
@@ -55,7 +62,9 @@ function update_script() {
     msg_info "Stopping Service"
     systemctl stop dagu
     msg_ok "Stopped Service"
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "dagu" "dagucloud/dagu" "prebuild" "latest" "/opt/dagu" "dagu_*_linux_$(get_system_arch).tar.gz"
+    create_backup /opt/dagu/data
+    fetch_and_deploy_gh_release "dagu" "dagucloud/dagu" "prebuild" "latest" "/opt/dagu" "dagu_*_linux_$(get_system_arch).tar.gz"
+    restore_backup
     msg_info "Starting Service"
     systemctl start dagu
     msg_ok "Started Service"

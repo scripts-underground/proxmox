@@ -9,29 +9,45 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 # shellcheck disable=SC2034
 APP="Cosmos"
-var_tags="${var_tags:-cloud}"
+var_tags="${var_tags:-cloud;docker}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-8}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
+var_fuse="${var_fuse:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   msg_info "Installing Dependencies"
-  $STD apt install -y sudo
+  $STD apt install -y ca-certificates openssl snapraid avahi-daemon fdisk mergerfs unzip
+  setup_docker
   msg_ok "Installed Dependencies"
   fetch_and_deploy_gh_release "cosmos" "azukaar/Cosmos-Server" "prebuild" "latest" "/opt/cosmos" "cosmos-cloud-*-$(get_system_arch).zip"
+  chmod +x /opt/cosmos/cosmos
+  cat << 'EOF' > /opt/cosmos/start.sh
+#!/usr/bin/env bash
+exec /opt/cosmos/cosmos "$@"
+EOF
+  chmod +x /opt/cosmos/start.sh
+  mkdir -p /etc/sysconfig
+  touch /etc/sysconfig/CosmosCloud
   msg_info "Creating Service"
   cat << 'EOF' > /etc/systemd/system/cosmos.service
 [Unit]
-Description=Cosmos Server
+Description=Cosmos Cloud service
 After=network.target
+ConditionFileIsExecutable=/opt/cosmos/start.sh
+StartLimitInterval=10
+StartLimitBurst=5
 [Service]
 Type=simple
-ExecStart=/opt/cosmos/Cosmos
-Restart=on-failure
+ExecStart=/opt/cosmos/start.sh
+WorkingDirectory=/opt/cosmos
+Restart=always
+RestartSec=2
+EnvironmentFile=-/etc/sysconfig/CosmosCloud
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -54,16 +70,8 @@ function update_script() {
     msg_error "No ${APP} Installation Found!"
     exit
   fi
-  if check_for_gh_release "cosmos" "azukaar/Cosmos-Server"; then
-    msg_info "Stopping Service"
-    systemctl stop cosmos
-    msg_ok "Stopped Service"
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cosmos" "azukaar/Cosmos-Server" "prebuild" "latest" "/opt/cosmos" "cosmos-cloud-*-$(get_system_arch).zip"
-    msg_info "Starting Service"
-    systemctl start cosmos
-    msg_ok "Started Service"
-    msg_ok "Updated successfully!"
-  fi
+  msg_info "${APP} updates itself automatically via its built-in update mechanism."
+  msg_ok "No manual update needed."
   exit
 }
 

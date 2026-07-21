@@ -66,7 +66,7 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -d /opt/birdnet ]]; then
+  if [[ ! -f /usr/local/bin/birdnet-go ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
@@ -77,6 +77,9 @@ function update_script() {
     fetch_and_deploy_gh_release "birdnet" "tphakala/birdnet-go" "prebuild" "latest" "/opt/birdnet" "birdnet-go-linux-$(get_system_arch)*.tar.gz"
     cp /opt/birdnet/birdnet-go /usr/local/bin/birdnet-go
     chmod +x /usr/local/bin/birdnet-go
+    cp -r /opt/birdnet/libtensorflowlite_c.so /usr/local/lib/ 2> /dev/null || true
+    cp -r /opt/birdnet/libonnxruntime.so /usr/local/lib/ 2> /dev/null || true
+    ldconfig
     msg_info "Starting Service"
     systemctl start birdnet
     msg_ok "Started Service"

@@ -19,39 +19,40 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   msg_info "Installing Dependencies"
-  $STD apt install -y git unzip
+  $STD apt install -y git git-lfs
   msg_ok "Installed Dependencies"
 
   fetch_and_deploy_codeberg_release "forgejo" "forgejo/forgejo" "singlefile" "latest" "/opt/forgejo" "forgejo-*-linux-$(get_system_arch)"
   ln -sf /opt/forgejo/forgejo /usr/local/bin/forgejo
 
   msg_info "Creating Forgejo User"
-  $STD adduser --system --group --disabled-password --disabled-login --shell /bin/bash --home /var/lib/forgejo forgejo
+  $STD adduser --system --group --disabled-password --disabled-login --shell /bin/bash --home /var/lib/forgejo git
   msg_ok "Created Forgejo User"
 
   msg_info "Creating Directory Structure"
   mkdir -p /var/lib/forgejo/{custom,data,log}
-  chown -R forgejo:forgejo /var/lib/forgejo /opt/forgejo
-  chmod 755 /opt/forgejo/forgejo
+  mkdir -p /etc/forgejo
+  chown -R git:git /var/lib/forgejo /opt/forgejo
+  chown root:git /etc/forgejo
+  chmod 770 /etc/forgejo
   msg_ok "Created Directory Structure"
 
   msg_info "Creating Service"
   cat << 'EOF' > /etc/systemd/system/forgejo.service
 [Unit]
 Description=Forgejo
-After=network.target
+After=syslog.target network.target
 
 [Service]
 Type=simple
-User=forgejo
-Group=forgejo
-WorkingDirectory=/var/lib/forgejo
-ExecStart=/usr/local/bin/forgejo web --config /opt/forgejo/app.ini
+User=git
+Group=git
+WorkingDirectory=/var/lib/forgejo/
+ExecStart=/usr/local/bin/forgejo web --config /etc/forgejo/app.ini
 Restart=always
-RestartSec=5
+RestartSec=2s
 Environment=FORGEJO_WORK_DIR=/var/lib/forgejo
-Environment=FORGEJO_CUSTOM=/var/lib/forgejo/custom
-Environment=USER=forgejo
+Environment=USER=git
 Environment=HOME=/var/lib/forgejo
 
 [Install]

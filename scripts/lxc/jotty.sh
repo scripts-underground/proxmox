@@ -9,8 +9,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 APP="jotty"
 var_tags="${var_tags:-tasks;notes}"
 var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-512}"
-var_disk="${var_disk:-2}"
+var_ram="${var_ram:-1024}"
+var_disk="${var_disk:-4}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
@@ -55,10 +55,13 @@ function update_script() {
     exit
   fi
   if check_for_gh_release "jotty" "fccview/jotty"; then
+    NODE_VERSION="22" NODE_MODULE="yarn" setup_nodejs
     msg_info "Stopping Service"
     systemctl stop jotty
     msg_ok "Stopped Service"
+    create_backup /opt/jotty/.env /opt/jotty/data
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jotty" "fccview/jotty" "prebuild" "latest" "/opt/jotty" "jotty_*_prebuild.tar.gz"
+    restore_backup
     msg_info "Starting Service"
     systemctl start jotty
     msg_ok "Started Service"

@@ -21,22 +21,32 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   msg_info "Installing Dependencies"
-  $STD apt install -y python3 python3-pip python3-setuptools python3-dev build-essential
+  $STD apt install -y python3 python3-pip python3-setuptools python3-dev build-essential python3-libtorrent
   msg_ok "Installed Dependencies"
 
   msg_info "Installing Deluge"
   $STD pip3 install deluge[all] "pyopenssl<25" --upgrade
   msg_ok "Installed Deluge"
 
+  msg_info "Configuring pip"
+  mkdir -p ~/.config/pip
+  cat << EOF > ~/.config/pip/pip.conf
+[global]
+break-system-packages = true
+EOF
+  msg_ok "Configured pip"
+
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/deluged.service
 [Unit]
-Description=Deluge Daemon
-After=network.target
+Description=Deluge Bittorrent Client Daemon
+Documentation=man:deluged
+After=network-online.target
 
 [Service]
 Type=simple
 User=root
+UMask=007
 ExecStart=/usr/local/bin/deluged -d
 Restart=on-failure
 TimeoutStopSec=300
@@ -47,13 +57,15 @@ EOF
 
   cat << EOF > /etc/systemd/system/deluge-web.service
 [Unit]
-Description=Deluge Web UI
-After=network.target deluged.service
-Requires=deluged.service
+Description=Deluge Bittorrent Client Web Interface
+Documentation=man:deluge-web
+Wants=deluged.service
+After=deluged.service
 
 [Service]
 Type=simple
 User=root
+UMask=027
 ExecStart=/usr/local/bin/deluge-web -d
 Restart=on-failure
 
@@ -81,6 +93,7 @@ function update_script() {
     exit
   fi
   msg_info "Updating Deluge"
+  ensure_dependencies python3-setuptools
   $STD apt update
   $STD pip3 install deluge[all] "pyopenssl<25" --upgrade
   msg_ok "Updated Deluge"

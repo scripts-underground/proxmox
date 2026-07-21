@@ -23,18 +23,31 @@ function install_script() {
   $STD apt install -y git
   msg_ok "Installed Dependencies"
   fetch_and_deploy_gh_release "configarr" "raydak-labs/configarr" "prebuild" "latest" "/opt/configarr" "configarr-linux-$(get_system_arch).tar.xz"
+  cat << 'EOF' > /opt/configarr/.env
+ROOT_PATH=/opt/configarr
+CUSTOM_REPO_ROOT=/opt/configarr/custom
+CONFIG_LOCATION=/opt/configarr/config.yml
+SECRETS_LOCATION=/opt/configarr/secrets.yml
+EOF
   msg_info "Creating Service"
-  cat << 'EOF' > /etc/systemd/system/configarr.service
+  cat << 'EOF' > /etc/systemd/system/configarr-task.service
 [Unit]
 Description=Configarr
-After=network.target
 [Service]
 Type=simple
+WorkingDirectory=/opt/configarr
 ExecStart=/opt/configarr/configarr
-[Install]
-WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now configarr
+  cat << 'EOF' > /etc/systemd/system/configarr-task.timer
+[Unit]
+Description=Configarr Timer
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl enable -q --now configarr-task.timer
   msg_ok "Created Service"
 }
 
@@ -54,13 +67,15 @@ function update_script() {
     exit
   fi
   if check_for_gh_release "configarr" "raydak-labs/configarr"; then
-    msg_info "Stopping Service"
-    systemctl stop configarr
-    msg_ok "Stopped Service"
-    fetch_and_deploy_gh_release "configarr" "raydak-labs/configarr" "prebuild" "latest" "/opt/configarr" "configarr-linux-$(get_system_arch).tar.xz"
-    msg_info "Starting Service"
-    systemctl start configarr
-    msg_ok "Started Service"
+    msg_info "Stopping Timer"
+    systemctl stop configarr-task.timer
+    msg_ok "Stopped Timer"
+    create_backup /opt/configarr/config.yml /opt/configarr/secrets.yml /opt/configarr/.env
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "configarr" "raydak-labs/configarr" "prebuild" "latest" "/opt/configarr" "configarr-linux-$(get_system_arch).tar.xz"
+    restore_backup
+    msg_info "Starting Timer"
+    systemctl start configarr-task.timer
+    msg_ok "Started Timer"
     msg_ok "Updated successfully!"
   fi
   exit

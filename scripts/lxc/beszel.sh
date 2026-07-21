@@ -12,7 +12,7 @@ APP="Beszel"
 var_tags="${var_tags:-monitoring}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-512}"
-var_disk="${var_disk:-2}"
+var_disk="${var_disk:-5}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
@@ -24,21 +24,21 @@ function install_script() {
   msg_ok "Installed Dependencies"
   fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "latest" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz"
   msg_info "Creating Service"
-  cat << 'EOF' > /etc/systemd/system/beszel.service
+  cat << 'EOF' > /etc/systemd/system/beszel-hub.service
 [Unit]
-Description=Beszel Agent
+Description=Beszel Hub Service
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=/opt/beszel/beszel agent
+WorkingDirectory=/opt/beszel
+ExecStart=/opt/beszel/beszel serve --http "0.0.0.0:8090"
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now beszel
+  systemctl enable -q --now beszel-hub
   msg_ok "Created Service"
 }
 
@@ -53,17 +53,17 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -f /opt/beszel/beszel ]]; then
+  if [[ ! -d /opt/beszel ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
   if check_for_gh_release "beszel" "henrygd/beszel"; then
     msg_info "Stopping Service"
-    systemctl stop beszel
+    systemctl stop beszel-hub
     msg_ok "Stopped Service"
     fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "latest" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz"
     msg_info "Starting Service"
-    systemctl start beszel
+    systemctl start beszel-hub
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi

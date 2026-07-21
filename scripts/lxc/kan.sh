@@ -21,28 +21,33 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   msg_info "Installing Dependencies"
-  $STD apt install -y gpg
+  $STD apt install -y build-essential git gpg
   msg_ok "Installed Dependencies"
 
-  NODE_VERSION="22" NODE_MODULE="pnpm@9.14.2" setup_nodejs
-  PG_VERSION="17" setup_postgresql
-  PG_DB_NAME="kan_db" PG_DB_USER="kan" setup_postgresql_db
-  fetch_and_deploy_gh_release "kan" "kanbn/kan" "tarball"
+  NODE_VERSION="20" NODE_MODULE="pnpm" setup_nodejs
+  PG_VERSION="16" setup_postgresql
+  PG_DB_NAME="kan" PG_DB_USER="kan" setup_postgresql_db
+  fetch_and_deploy_gh_tag "kan" "kanbn/kan" "latest" "/opt/kan"
 
   msg_info "Configuring Kan (Patience)"
   cd /opt/kan || exit
 
-  cp .env.example .env
   mkdir -p data
 
   local BETTER_AUTH_SECRET
   BETTER_AUTH_SECRET=$(openssl rand -base64 26 | tr -dc 'a-zA-Z0-9' | head -c 32)
-  sed -i \
-    -e "s|^NEXT_PUBLIC_BASE_URL=.*|NEXT_PUBLIC_BASE_URL=http://$LOCAL_IP:3000|" \
-    -e "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET|" \
-    -e "s|^POSTGRES_URL=.*|POSTGRES_URL=postgresql://$PG_DB_USER:$PG_DB_PASS@localhost:5432/$PG_DB_NAME|" \
-    -e "s|^NEXT_PUBLIC_ALLOW_CREDENTIALS=.*|NEXT_PUBLIC_ALLOW_CREDENTIALS=true|" \
-    /opt/kan/.env
+  cat << EOF > /opt/kan/.env
+BETTER_AUTH_TRUSTED_ORIGINS=http://$LOCAL_IP:3000
+NEXT_PUBLIC_BASE_URL=http://$LOCAL_IP:3000
+BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
+POSTGRES_URL=postgres://$PG_DB_USER:$PG_DB_PASS@localhost:5432/$PG_DB_NAME
+NEXT_PUBLIC_ALLOW_CREDENTIALS=true
+TRELLO_APP_API_KEY=
+TRELLO_APP_API_SECRET=
+HOSTNAME=0.0.0.0
+PORT=3000
+NODE_ENV=production
+EOF
 
   $STD pnpm install --ignore-scripts --prod=false
 
@@ -67,14 +72,18 @@ function install_script() {
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/kan.service
 [Unit]
-Description=Kan Service
+Description=Kan Board
+Requires=postgresql.service
 After=network.target postgresql.service
 
 [Service]
-WorkingDirectory=/opt/kan
+Type=simple
+User=root
+WorkingDirectory=/opt/kan/apps/web/.next/standalone
 EnvironmentFile=/opt/kan/.env
-ExecStart=/usr/bin/node /opt/kan/apps/web/.next/standalone/apps/web/server.js
-Restart=always
+ExecStart=/usr/bin/node apps/web/server.js
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -84,7 +93,7 @@ EOF
 }
 
 function post_install_script() {
-  msg_ok "Completed successfully!\n"
+  msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW}Access it using the following URL:${CL}"
   echo -e "${GATEWAY}${BGN}http://${IP}:3000${CL}"
@@ -100,7 +109,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "kan" "kanbn/kan"; then
+  if check_for_gh_tag "kan" "kanbn/kan"; then
     msg_info "Stopping Service"
     systemctl stop kan
     msg_ok "Stopped Service"
@@ -109,7 +118,7 @@ function update_script() {
     cp /opt/kan/.env /opt/kan.env.bak
     msg_ok "Backed up Data"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "kan" "kanbn/kan" "tarball"
+    fetch_and_deploy_gh_tag "kan" "kanbn/kan" "latest" "/opt/kan"
 
     msg_info "Restoring Configuration"
     cp /opt/kan.env.bak /opt/kan/.env

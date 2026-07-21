@@ -11,7 +11,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 APP="Bichon"
 var_tags="${var_tags:-email;archive}"
 var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-512}"
+var_ram="${var_ram:-1024}"
 var_disk="${var_disk:-4}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
@@ -83,8 +83,10 @@ function update_script() {
     msg_info "Stopping Service"
     systemctl stop bichon
     msg_ok "Stopped Service"
+    create_backup /opt/bichon/bichon.env
     ARCH=$(uname -m)
-    fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "latest" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "latest" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
+    restore_backup
     msg_info "Starting Service"
     systemctl start bichon
     msg_ok "Started Service"

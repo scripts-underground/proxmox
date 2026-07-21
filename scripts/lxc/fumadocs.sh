@@ -19,8 +19,37 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
-  # This space intentionally left blank — build_container handles setup/teardown
-  :
+  $STD apt install -y ca-certificates git
+  NODE_VERSION="24" NODE_MODULE="pnpm@latest" setup_nodejs
+
+  read -r -p "${TAB3}Enter project name for Fumadocs (default: fumadocs): " PROJECT_NAME
+  PROJECT_NAME=${PROJECT_NAME:-fumadocs}
+
+  msg_info "Setting up Fumadocs"
+  mkdir -p /opt/fumadocs
+  cd /opt/fumadocs || exit
+  $STD pnpm create fumadocs-app "$PROJECT_NAME"
+
+  echo "$PROJECT_NAME" > /opt/fumadocs/.projectname
+  msg_ok "Set up Fumadocs"
+
+  msg_info "Creating Service"
+  cat << EOF > "/etc/systemd/system/fumadocs_${PROJECT_NAME}.service"
+[Unit]
+Description=Fumadocs ${PROJECT_NAME} Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fumadocs/${PROJECT_NAME}
+ExecStart=/usr/bin/pnpm run dev
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now "fumadocs_${PROJECT_NAME}"
+  msg_ok "Created Service"
 }
 
 function post_install_script() {

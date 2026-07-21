@@ -35,19 +35,31 @@ function install_script() {
   fetch_and_deploy_gh_release "isponsorblocktv" "dmunozv04/iSponsorBlockTV" "singlefile" "latest" "/opt/isponsorblocktv" "${ISBTV_BINARY}"
   chmod +x "/opt/isponsorblocktv/${ISBTV_BINARY}"
   ln -sf "/opt/isponsorblocktv/${ISBTV_BINARY}" /opt/isponsorblocktv/isponsorblocktv
+  install -d /var/lib/isponsorblocktv
+  cat << 'WRAPPER' > /usr/local/bin/iSponsorBlockTV
+#!/usr/bin/env bash
+export iSPBTV_data_dir=/var/lib/isponsorblocktv
+exec /opt/isponsorblocktv/isponsorblocktv "$@"
+WRAPPER
+  chmod +x /usr/local/bin/iSponsorBlockTV
+  ln -sf /usr/local/bin/iSponsorBlockTV /usr/bin/iSponsorBlockTV
   msg_ok "Installed iSponsorBlockTV"
 
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/isponsorblocktv.service
 [Unit]
-Description=iSponsorBlockTV Service
-After=network.target
+Description=iSponsorBlockTV
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 User=root
+Group=root
+Environment=iSPBTV_data_dir=/var/lib/isponsorblocktv
 ExecStart=/opt/isponsorblocktv/isponsorblocktv
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

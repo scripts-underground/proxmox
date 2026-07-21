@@ -16,6 +16,7 @@ var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-4}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
@@ -26,10 +27,12 @@ function install_script() {
   fetch_and_deploy_gh_release "Fladder" "DonutWare/Fladder" "prebuild" "latest" "/opt/fladder" "Fladder-Web-*.zip"
 
   msg_info "Configuring Nginx"
-  cat << 'EOF' > /etc/nginx/sites-available/fladder
+  cat << 'EOF' > /etc/nginx/conf.d/fladder.conf
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
+
+    server_name _;
 
     root /opt/fladder;
     index index.html;
@@ -39,10 +42,9 @@ server {
     }
 }
 EOF
-  ln -sf /etc/nginx/sites-available/fladder /etc/nginx/sites-enabled/fladder
-  rm -f /etc/nginx/sites-enabled/default
-  systemctl enable -q nginx
-  systemctl start nginx
+  rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
+  systemctl enable -q --now nginx
+  systemctl reload nginx
   msg_ok "Configured Nginx"
 }
 

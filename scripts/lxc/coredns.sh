@@ -9,9 +9,9 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 # shellcheck disable=SC2034
 APP="CoreDNS"
-var_tags="${var_tags:-dns}"
+var_tags="${var_tags:-dns;network}"
 var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-512}"
+var_ram="${var_ram:-256}"
 var_disk="${var_disk:-2}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
@@ -20,14 +20,29 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   fetch_and_deploy_gh_release "coredns" "coredns/coredns" "prebuild" "latest" "/usr/local/bin" "coredns_*_linux_$(get_system_arch).tgz"
+  chmod +x /usr/local/bin/coredns
+  mkdir -p /etc/coredns
+  cat << 'EOF' > /etc/coredns/Corefile
+. {
+    forward . 1.1.1.1 1.0.0.1
+    cache 30
+    log
+    errors
+    health :8080
+    ready :8181
+}
+EOF
   msg_info "Creating Service"
   cat << 'EOF' > /etc/systemd/system/coredns.service
 [Unit]
-Description=CoreDNS
+Description=CoreDNS DNS Server
 After=network.target
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/coredns
+ExecStart=/usr/local/bin/coredns -conf /etc/coredns/Corefile
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -38,7 +53,8 @@ EOF
 function post_install_script() {
   msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
-  echo -e "${INFO}${YW} CoreDNS has been installed.${CL}"
+  echo -e "${INFO}${YW} CoreDNS is listening on port 53 (DNS)${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}dns://${IP}${CL}"
 }
 
 function update_script() {
@@ -54,6 +70,7 @@ function update_script() {
     systemctl stop coredns
     msg_ok "Stopped Service"
     fetch_and_deploy_gh_release "coredns" "coredns/coredns" "prebuild" "latest" "/usr/local/bin" "coredns_*_linux_$(get_system_arch).tgz"
+    chmod +x /usr/local/bin/coredns
     msg_info "Starting Service"
     systemctl start coredns
     msg_ok "Started Service"

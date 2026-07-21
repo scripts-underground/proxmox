@@ -21,38 +21,30 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   msg_info "Installing Dependencies"
-  $STD apt install -y \
-    build-essential \
-    ffmpeg \
-    python3
+  $STD apt install -y --no-install-recommends ffmpeg
   msg_ok "Installed Dependencies"
 
-  NODE_VERSION="22" setup_nodejs
+  NODE_MODULE="corepack" NODE_VERSION="25" setup_nodejs
+  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
   fetch_and_deploy_gh_release "foldergram" "foldergram/foldergram" "tarball"
 
   msg_info "Setting up Foldergram"
   cd /opt/foldergram || exit
-  cat << EOF > /opt/foldergram/.env
+  mkdir -p /opt/foldergram_media
+  cat << EOF > /opt/foldergram_media/foldergram.env
 NODE_ENV=production
 SERVER_PORT=4141
-DATA_ROOT=/opt/foldergram/data
-GALLERY_ROOT=/opt/foldergram/data/gallery
-DB_DIR=/opt/foldergram/data/db
-THUMBNAILS_DIR=/opt/foldergram/data/thumbnails
-PREVIEWS_DIR=/opt/foldergram/data/previews
+DATA_ROOT=/opt/foldergram_media
+GALLERY_ROOT=/opt/foldergram_media/gallery
+DB_DIR=/opt/foldergram_media/db
+THUMBNAILS_DIR=/opt/foldergram_media/thumbnails
+PREVIEWS_DIR=/opt/foldergram_media/previews
 GALLERY_EXCLUDED_FOLDERS=
 IMAGE_DETAIL_SOURCE=preview
 DERIVATIVE_MODE=eager
-LOG_VERBOSE=0
-SCAN_MEDIA_ERROR_MODE=skip
-SCAN_DISCOVERY_CONCURRENCY=4
-SCAN_DERIVATIVE_CONCURRENCY=4
-PUBLIC_DEMO_MODE=0
-CSRF_TRUSTED_ORIGINS=
 EOF
-  mkdir -p /opt/foldergram/data/gallery
-  $STD pnpm install --frozen-lockfile
+  $STD pnpm install
   $STD pnpm run build
   msg_ok "Set up Foldergram"
 
@@ -63,13 +55,10 @@ Description=Foldergram Service
 After=network.target
 
 [Service]
-Type=simple
-User=root
 WorkingDirectory=/opt/foldergram
-ExecStart=/usr/bin/node scripts/run-workspace-script.mjs server start
-Restart=on-failure
-RestartSec=5
-EnvironmentFile=/opt/foldergram/.env
+ExecStart=/usr/bin/pnpm start
+Restart=always
+EnvironmentFile=/opt/foldergram_media/foldergram.env
 
 [Install]
 WantedBy=multi-user.target
@@ -99,17 +88,11 @@ function update_script() {
     systemctl stop foldergram
     msg_ok "Stopped Service"
 
-    cp /opt/foldergram/.env /opt/foldergram.env.bak
-
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "foldergram" "foldergram/foldergram" "tarball"
-
-    msg_info "Restoring Data"
-    mv /opt/foldergram.env.bak /opt/foldergram/.env
-    msg_ok "Restored Data"
 
     msg_info "Installing Foldergram"
     cd /opt/foldergram || exit
-    $STD pnpm install --frozen-lockfile
+    $STD pnpm install
     $STD pnpm run build
     msg_ok "Installed Foldergram"
 

@@ -86,9 +86,11 @@ function update_script() {
     msg_info "Stopping Service"
     systemctl stop blocky
     msg_ok "Stopped Service"
+    create_backup /opt/blocky/config.yml
     ARCH=$(uname -m)
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
-    fetch_and_deploy_gh_release "blocky" "0xERR0R/blocky" "prebuild" "latest" "/opt/blocky" "blocky_*_Linux_${ARCH}.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "blocky" "0xERR0R/blocky" "prebuild" "latest" "/opt/blocky" "blocky_*_Linux_${ARCH}.tar.gz"
+    restore_backup
     msg_info "Starting Service"
     systemctl start blocky
     msg_ok "Started Service"
