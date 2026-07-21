@@ -2,7 +2,7 @@
 # shellcheck disable=SC2034,SC2046
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-# Copyright (c) 2021-2026 tteck
+# Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://www.home-assistant.io/
@@ -16,7 +16,7 @@ var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-16}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
-var_arm64="${var_arm64:-no}"
+var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
