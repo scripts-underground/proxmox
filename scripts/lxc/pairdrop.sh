@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-
 # Sourced by lxc.bootstrap — never executed directly
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://pairdrop.net/ | Github: https://github.com/schlagmichdoch/PairDrop
 # shellcheck disable=SC2034
-
 APP="PairDrop"
 var_tags="${var_tags:-sharing}"
 var_cpu="${var_cpu:-1}"
@@ -83,4 +81,5 @@ function update_script() {
 }
 
 # shellcheck disable=SC1090
+# Dynamic URL resolved at runtime
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
