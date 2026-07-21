@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: vhsdream
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://tududi.com/ | Github: https://github.com/chrisvel/tududi
+
+# shellcheck disable=SC2034
+APP="Tududi"
+var_tags="${var_tags:-todo-app}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-2048}"
+var_disk="${var_disk:-4}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
+var_unprivileged="${var_unprivileged:-1}"
+
+function install_script() {
+  msg_info "Installing Dependencies"
+  $STD apt install -y \
+    sqlite3 \
+    yq
+  msg_ok "Installed Dependencies"
+
+  NODE_VERSION="22" setup_nodejs
+  fetch_and_deploy_gh_release "tududi" "chrisvel/tududi" "tarball" "latest" "/opt/tududi"
+
+  msg_info "Configuring Tududi"
+  cd /opt/tududi || exit
+  $STD npm install
+  export NODE_ENV=production
+  $STD npm run frontend:build
+  mv ./dist ./backend
+  msg_ok "Configured Tududi"
+
+  msg_info "Creating env and database"
+  DB_LOCATION="/opt/tududi-db"
+  UPLOAD_DIR="/opt/tududi-uploads"
+  mkdir -p {"$DB_LOCATION","$UPLOAD_DIR"}
+  SECRET="$(openssl rand -hex 64)"
+  sed -e '/^NODE_ENV=/s/=.*$/=production/' \
+    -e 's/^TUDUDI_USER/# TUDUDI_USER/g' \
+    -e "/_SECRET=/s/=.*$/=${SECRET}/" \
+    -e '/^# DB_FILE=/s/^# //' \
+    -e "s|^DB_FILE=.*|DB_FILE=${DB_LOCATION}/production.sqlite3|" \
+    -e "/^# TUDUDI_ALLOWED/s/^# //; \
+      \|_ORIGINS=|s|=.*$|=<your tududi IP or FDQN>|" \
+    -e "/^# TUDUDI_UPLOAD/s/^# //; \
+      \|UPLOAD_PATH=|s|=.*$|=${UPLOAD_DIR}|" \
+    /opt/tududi/backend/.env.example > /opt/tududi/backend/.env
+  export DB_FILE="${DB_LOCATION}/production.sqlite3"
+  $STD npm run db:init
+  msg_ok "Created env and database"
+
+  msg_info "Creating service"
+  cat << EOF > /etc/systemd/system/tududi.service
+[Unit]
+Description=Tududi Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tududi/backend
+EnvironmentFile=/opt/tududi/backend/.env
+ExecStart=/usr/bin/bash /opt/tududi/backend/cmd/start.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now tududi
+  msg_ok "Created service"
+}
+
+function post_install_script() {
+  msg_ok "Completed successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW}Access it using the following URL:${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}:3002${CL}"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -d /opt/tududi ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+
+  NODE_VERSION="22" setup_nodejs
+
+  if check_for_gh_release "tududi" "chrisvel/tududi"; then
+    msg_info "Stopping Service"
+    systemctl stop tududi
+    msg_ok "Stopped Service"
+
+    msg_info "Backing up env file"
+    if [[ -f /opt/tududi/backend/.env ]]; then
+      cp /opt/tududi/backend/.env /opt/tududi.env
+    else
+      cp /opt/tududi/.env /opt/tududi.env
+    fi
+    msg_ok "Backed up env file"
+
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "tududi" "chrisvel/tududi" "tarball" "latest" "/opt/tududi"
+
+    msg_info "Updating Tududi"
+    cd /opt/tududi || exit
+    $STD npm install
+    export NODE_ENV=production
+    $STD npm run frontend:build
+    mv ./dist ./backend
+    mv /opt/tududi.env /opt/tududi/backend/.env
+    DB="$(sed -n '/^DB_FILE/s/[^=]*=//p' /opt/tududi/backend/.env)"
+    export DB_FILE="$DB"
+    sed -i -e 's|/tududi$|/tududi/backend|' \
+      -e 's|npm run start|bash /opt/tududi/backend/cmd/start.sh|' \
+      /etc/systemd/system/tududi.service
+    systemctl daemon-reload
+    msg_ok "Updated Tududi"
+
+    msg_info "Starting Service"
+    systemctl start tududi
+    msg_ok "Started Service"
+    msg_ok "Updated successfully!"
+  fi
+  exit
+}
+
+# shellcheck disable=SC1090
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
