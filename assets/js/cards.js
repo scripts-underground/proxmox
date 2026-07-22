@@ -37,14 +37,16 @@ function sortBtns(mode, t) {
 function cardHTML(s, idx) {
   let inits = init(s);
   let i = idx % 8;
-  let date = s.updated_at ? s.updated_at.slice(0,10).split("-").join("/") : "";
+  let datePart = s.updated_at ? s.updated_at.slice(0,10).split("-").join("/") : "";
+  let timePart = s.updated_at ? s.updated_at.slice(11,16) : "";
+  let dateHtml = datePart ? '<span class="date-only">' + datePart + '</span><span class="time-only">' + timePart + '</span>' : "";
   let tags = (s.tags || []).slice(0, 4).map(function(t) { return '<a href="/?tag=' + encodeURIComponent(t) + '" class="tag" onclick="if(window.setF){event.stopPropagation();setF(\'' + t + '\');return false}">' + t + '</a>'; }).join("");
   let d = (s.description || "").length > 120 ? s.description.slice(0, 120) + "…" : (s.description || "");
   let logo = '<img src="' + (s.logo || "") + '" alt="' + inits + '" class="script-card-logo" width="40" height="40" loading="lazy" onerror="this.src=\'' + fb(inits, 40, 40, i) + '\';this.onerror=null">';
   var pillsHtml = '';
   var rendered = window.renderFlagPills(s);
   if (rendered) pillsHtml = '<div class="script-card-pills">' + rendered + '</div>';
-  let res = date ? '<span>' + date + '</span>' : "";
+  let res = dateHtml ? dateHtml : "";
   let top = logo + pillsHtml + (res ? '<div class="script-card-resources">' + res + '</div>' : "");
   let titleLink = '<a href="' + s.page + '">' + s.title + '</a>';
   return '<div class="script-card" onclick="location.href=\'' + s.page + '\'"><div class="script-card-top">' + top + '</div><div class="script-card-info"><div class="script-card-title">' + titleLink + '</div>' + (d ? '<div class="script-card-desc">' + d + '</div>' : "") + (tags ? '<div class="script-card-tags">' + tags + '</div>' : "") + '</div></div>';
