@@ -2,7 +2,7 @@
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Sourced by lxc.bootstrap — never executed directly
-# Copyright (c) 2021-2026 community-scripts ORG
+# Copyright (c) 2026 scripts-underground.org
 # Author: Alex Indigo (alexindigo)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/Crosstalk-Solutions/project-nomad | https://www.projectnomad.us
@@ -146,4 +146,3 @@ function update_script() {
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
-
