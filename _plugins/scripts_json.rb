@@ -1,6 +1,8 @@
 require 'json'
 require 'yaml'
 require 'fileutils'
+require 'shellwords'
+require 'time'
 
 COLLECTIONS = {
   'lxc' => '_lxc',
@@ -31,6 +33,20 @@ end
 
 def install_cmd(base_url, type, slug)
   "REPO_BASE=#{base_url} bash -c \"$(curl -fsSL #{base_url}/scripts/#{type}/#{slug}.sh)\""
+end
+
+def git_date(file, mode = :last)
+  escaped = Shellwords.escape(file)
+  cmd = if mode == :first
+    "git log --reverse --format=%cI -- #{escaped} 2>/dev/null | head -1"
+  else
+    "git log -1 --format=%cI -- #{escaped} 2>/dev/null"
+  end
+  result = `#{cmd}`.strip
+  return nil unless result != '' && ($?.respond_to?(:to_i) ? $?.to_i == 0 : $?.success?)
+  Time.parse(result)
+rescue
+  nil
 end
 
 Jekyll::Hooks.register :site, :post_write do |site|
@@ -103,13 +119,13 @@ Jekyll::Hooks.register :site, :post_write do |site|
       end
 
       created = begin
-        t1 = File.ctime(file) rescue Time.at(0)
-        t2 = File.exist?(script_file) ? (File.ctime(script_file) rescue Time.at(0)) : Time.at(0)
+        t1 = git_date(file, :first) || (File.ctime(file) rescue Time.at(0))
+        t2 = File.exist?(script_file) ? (git_date(script_file, :first) || (File.ctime(script_file) rescue Time.at(0))) : Time.at(0)
         [t1, t2].min.iso8601
       end
       updated = begin
-        t1 = File.mtime(file)
-        t2 = File.exist?(script_file) ? File.mtime(script_file) : t1
+        t1 = git_date(file, :last) || File.mtime(file)
+        t2 = File.exist?(script_file) ? (git_date(script_file, :last) || File.mtime(script_file)) : t1
         [t1, t2].max.iso8601
       end
 
