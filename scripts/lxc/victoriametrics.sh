@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+
+# Sourced by lxc.bootstrap — never executed directly
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: Slaviša Arežina (tremor021)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://github.com/VictoriaMetrics/VictoriaMetrics
+
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="VictoriaMetrics"
+var_tags="${var_tags:-database}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-2048}"
+var_disk="${var_disk:-16}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-13}"
+var_arm64="${var_arm64:-yes}"
+var_unprivileged="${var_unprivileged:-1}"
+
+function install_script() {
+  msg_info "Getting latest version of VictoriaMetrics"
+  victoriametrics_release=$(curl -fsSL "https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases" |
+    jq -r --arg a "$(get_system_arch)" '.[] | select(.assets[].name | match("^victoria-metrics-linux-" + $a + "-v[0-9.]+.tar.gz$")) | .tag_name' |
+    head -n 1)
+  victoriametrics_filename="victoria-metrics-linux-$(get_system_arch)-${victoriametrics_release}.tar.gz"
+  vmutils_filename="vmutils-linux-$(get_system_arch)-${victoriametrics_release}.tar.gz"
+  msg_ok "Got version $victoriametrics_release of VictoriaMetrics"
+
+  fetch_and_deploy_gh_release "victoriametrics" "VictoriaMetrics/VictoriaMetrics" "prebuild" "$victoriametrics_release" "/opt/victoriametrics" "$victoriametrics_filename"
+  fetch_and_deploy_gh_release "vmutils" "VictoriaMetrics/VictoriaMetrics" "prebuild" "$victoriametrics_release" "/opt/victoriametrics" "$vmutils_filename"
+
+  msg_info "Setup VictoriaMetrics"
+  mkdir -p /opt/victoriametrics/data
+  chmod +x /opt/victoriametrics/*
+  msg_ok "Setup VictoriaMetrics"
+
+  msg_info "Creating Service"
+  cat << EOF > /etc/systemd/system/victoriametrics.service
+[Unit]
+Description=VictoriaMetrics Service
+
+[Service]
+Type=simple
+Restart=always
+User=root
+WorkingDirectory=/opt/victoriametrics
+ExecStart=/opt/victoriametrics/victoria-metrics-prod --storageDataPath="/opt/victoriametrics/data"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable -q --now victoriametrics
+  msg_ok "Created Service"
+}
+
+function post_install_script() {
+  msg_ok "Completed Successfully!\n"
+  echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:8428/vmui${CL}"
+}
+
+function update_script() {
+  header_info
+  check_container_storage
+  check_container_resources
+  if [[ ! -d /opt/victoriametrics ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+
+  if check_for_gh_release "victoriametrics" "VictoriaMetrics/VictoriaMetrics"; then
+    msg_info "Stopping Service"
+    systemctl stop victoriametrics
+    [[ -f /etc/systemd/system/victoriametrics-logs.service ]] && systemctl stop victoriametrics-logs
+    [[ -f /etc/systemd/system/vmagent.service ]] && systemctl stop vmagent
+    [[ -f /etc/systemd/system/vmalert.service ]] && systemctl stop vmalert
+    msg_ok "Stopped Service"
+
+    victoriametrics_release=$(curl -fsSL "https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases" |
+      jq -r --arg a "$(get_system_arch)" '.[] | select(.assets[].name | match("^victoria-metrics-linux-" + $a + "-v[0-9.]+.tar.gz$")) | .tag_name' |
+      head -n 1)
+
+    msg_debug "Using release $victoriametrics_release"
+
+    victoriametrics_filename="victoria-metrics-linux-$(get_system_arch)-${victoriametrics_release}.tar.gz"
+    vmutils_filename="vmutils-linux-$(get_system_arch)-${victoriametrics_release}.tar.gz"
+
+    fetch_and_deploy_gh_release "victoriametrics" "VictoriaMetrics/VictoriaMetrics" "prebuild" "$victoriametrics_release" "/opt/victoriametrics" "$victoriametrics_filename"
+    fetch_and_deploy_gh_release "vmutils" "VictoriaMetrics/VictoriaMetrics" "prebuild" "$victoriametrics_release" "/opt/victoriametrics" "$vmutils_filename"
+
+    if [[ -f /etc/systemd/system/victoriametrics-logs.service ]]; then
+      vmlogs_filename=$(curl -fsSL "https://api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/latest" |
+        jq -r '.assets[].name' |
+        grep -E "^victoria-logs-linux-$(get_system_arch)-v[0-9.]+\.tar\.gz$")
+      vlutils_filename=$(curl -fsSL "https://api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/latest" |
+        jq -r '.assets[].name' |
+        grep -E "^vlutils-linux-$(get_system_arch)-v[0-9.]+\.tar\.gz$")
+
+      fetch_and_deploy_gh_release "victorialogs" "VictoriaMetrics/VictoriaLogs" "prebuild" "latest" "/opt/victoriametrics" "$vmlogs_filename"
+      fetch_and_deploy_gh_release "vlutils" "VictoriaMetrics/VictoriaLogs" "prebuild" "latest" "/opt/victoriametrics" "$vlutils_filename"
+    fi
+    chmod +x /opt/victoriametrics/*
+
+    msg_info "Starting Service"
+    systemctl start victoriametrics
+    [[ -f /etc/systemd/system/victoriametrics-logs.service ]] && systemctl start victoriametrics-logs
+    [[ -f /etc/systemd/system/vmagent.service ]] && systemctl start vmagent
+    [[ -f /etc/systemd/system/vmalert.service ]] && systemctl start vmalert
+    msg_ok "Started Service"
+    msg_ok "Updated successfully!"
+  fi
+  exit
+}
+
+# framework bootstrap
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
