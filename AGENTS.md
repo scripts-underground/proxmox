@@ -170,6 +170,7 @@ The bootstrap requires `install_script()` to be defined, but `build_container` h
 
 ## Conventions
 
+- **Never contain periods in default hostname** — `var_hostname` must be a simple label (no dots). LXC/PVE can misinterpret periods in hostnames as FQDN boundaries. If the app slug contains periods or is too long, set a short clean default: `var_hostname="${var_hostname:-shortname}"`.
 - **No `start`/`build_container`/`description` calls** — the bootstrap handles the flow
 - **No `motd_ssh`/`customize`/`cleanup_lxc`** in `install_script()` — `build_container` handles them
 - **All `var_*` must use `${var:-default}` pattern** — enables env var overrides
