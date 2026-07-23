@@ -3,7 +3,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://raw.githubusercontent.com/scripts-underground-proxmox/main/LICENSE
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/tubearchivist/tubearchivist
 
 # shellcheck disable=SC2034
