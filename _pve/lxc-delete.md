@@ -2,7 +2,7 @@
 slug: lxc-delete
 title: PVE LXC Deletion
 tags: [proxmox]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/linuxcontainers.webp
+logo: ""
 by: MickLesk
 maintainer: MickLesk
 ---

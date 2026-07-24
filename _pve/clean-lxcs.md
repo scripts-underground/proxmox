@@ -2,7 +2,7 @@
 slug: clean-lxcs
 title: PVE LXC Cleaner
 tags: [proxmox]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/linuxcontainers.webp
+logo: ""
 by: tteck
 maintainer: community-scripts
 ---
