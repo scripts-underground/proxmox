@@ -2,7 +2,7 @@
 slug: birdnet-go
 title: BirdNET-Go
 tags: [monitoring, ai, nature]
-logo: ""
+logo: /assets/logos/birdnet-go.webp
 by: MickLesk
 repo: https://github.com/tphakala/birdnet-go
 site: https://github.com/tphakala/birdnet-go

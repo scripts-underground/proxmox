@@ -2,7 +2,7 @@
 slug: openthread-br
 title: OpenThread Border Router
 tags: [thread, iot, border-router, matter]
-logo: ""
+logo: /assets/logos/openthread-br.webp
 by: MickLesk
 co_author: [tomfrenzel]
 repo: https://github.com/openthread/ot-br-posix

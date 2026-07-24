@@ -2,7 +2,7 @@
 slug: alpine-cinny
 title: Alpine-Cinny
 tags: [misc, network]
-logo: ""
+logo: /assets/logos/alpine-cinny.webp
 by: Tobias Salzmann
 repo: https://github.com/cinnyapp/cinny
 site: https://cinny.in/
