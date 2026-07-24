@@ -2,7 +2,7 @@
 slug: joplin-server
 title: Joplin Server
 tags: [notes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/joplin.webp
+logo: /assets/logos/joplin-server.webp
 by: tremor021
 repo: https://github.com/laurent22/joplin
 site: https://joplinapp.org

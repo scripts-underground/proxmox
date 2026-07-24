@@ -2,7 +2,7 @@
 slug: alpine-postgresql
 title: Alpine-PostgreSQL
 tags: [alpine, database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/postgresql.webp
+logo: /assets/logos/alpine-postgresql.webp
 by: MickLesk
 repo: https://github.com/postgres/postgres
 site: https://www.postgresql.org/

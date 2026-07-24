@@ -2,7 +2,7 @@
 slug: n8n
 title: n8n
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/n8n.webp
+logo: /assets/logos/n8n.webp
 by: tteck
 co_author: [CrazyWolf13]
 repo: https://github.com/n8n-io/n8n

@@ -2,7 +2,7 @@
 slug: apache-airflow
 title: Apache Airflow
 tags: [workflow, scheduler, automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apache-airflow.webp
+logo: ""
 by: MickLesk
 repo: https://github.com/apache/airflow
 site: https://airflow.apache.org/

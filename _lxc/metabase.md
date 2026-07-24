@@ -2,7 +2,7 @@
 slug: metabase
 title: Metabase
 tags: [analytics]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/metabase.webp
+logo: /assets/logos/metabase.webp
 by: tremor021
 repo: https://github.com/metabase/metabase
 site: https://www.metabase.com/

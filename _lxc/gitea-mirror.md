@@ -2,7 +2,7 @@
 slug: gitea-mirror
 title: gitea-mirror
 tags: [mirror, gitea]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gitea.webp
+logo: /assets/logos/gitea-mirror.webp
 by: CrazyWolf13
 repo: https://github.com/RayLabsHQ/gitea-mirror
 site: https://github.com/RayLabsHQ/gitea-mirror

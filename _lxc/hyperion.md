@@ -2,7 +2,7 @@
 slug: hyperion
 title: Hyperion
 tags: [ambient-lightning]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/hyperion.webp
+logo: /assets/logos/hyperion.webp
 by: tteck
 repo: https://github.com/hyperion-project/hyperion.ng
 site: https://hyperion-project.org/forum/

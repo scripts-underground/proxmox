@@ -2,7 +2,7 @@
 slug: 2fauth
 title: 2FAuth
 tags: [2fa, authenticator]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/2fauth.webp
+logo: /assets/logos/2fauth.webp
 by: jkrgr0
 repo: https://github.com/Bubka/2FAuth
 site: https://docs.2fauth.app/

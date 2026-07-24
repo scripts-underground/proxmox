@@ -2,7 +2,7 @@
 slug: the-lounge
 title: The-Lounge
 tags: [irc]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/the-lounge.webp
+logo: /assets/logos/the-lounge.webp
 by: kristocopani
 repo: https://github.com/thelounge/thelounge
 site: https://thelounge.chat/

@@ -2,7 +2,7 @@
 slug: rustdeskserver
 title: RustDesk Server
 tags: [remote-desktop]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rustdesk.webp
+logo: /assets/logos/rustdeskserver.webp
 by: tremor021
 repo: https://github.com/lejianwen/rustdesk-server
 site: https://rustdesk.com/

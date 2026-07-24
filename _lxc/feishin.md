@@ -2,7 +2,7 @@
 slug: feishin
 title: Feishin
 tags: [music, player, streaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/feishin.webp
+logo: /assets/logos/feishin.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/jeffvli/feishin

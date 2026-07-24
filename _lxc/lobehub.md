@@ -2,7 +2,7 @@
 slug: lobehub
 title: LobeHub
 tags: [ai, chat]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/lobehub.webp
+logo: /assets/logos/lobehub.webp
 by: MickLesk
 repo: https://github.com/lobehub/lobehub
 site: https://lobehub.com

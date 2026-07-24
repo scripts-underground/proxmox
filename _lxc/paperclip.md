@@ -2,7 +2,7 @@
 slug: paperclip
 title: Paperclip
 tags: [ai, automation, dev-tools]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/paperclip-ai.webp
+logo: /assets/logos/paperclip.webp
 by: fpulch
 repo: https://github.com/paperclipai/paperclip
 site: https://docs.paperclip.ing/

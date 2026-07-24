@@ -2,7 +2,7 @@
 slug: mqtt
 title: MQTT
 tags: [mqtt, iot, broker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mosquitto.webp
+logo: /assets/logos/mqtt.webp
 by: tteck (tteckster)
 repo: https://github.com/eclipse/mosquitto
 site: https://mosquitto.org/

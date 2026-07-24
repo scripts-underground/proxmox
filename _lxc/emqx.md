@@ -2,7 +2,7 @@
 slug: emqx
 title: EMQX
 tags: [mqtt]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/emqx.webp
+logo: /assets/logos/emqx.webp
 by: tteck (tteckster)
 repo: https://github.com/emqx/emqx
 site: https://www.emqx.com/en

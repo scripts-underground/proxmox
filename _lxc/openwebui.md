@@ -2,7 +2,7 @@
 slug: openwebui
 title: Open WebUI
 tags: [ai, interface]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/open-webui.webp
+logo: /assets/logos/openwebui.webp
 by: tteck
 co_author: [havardthom, tremor021]
 repo: https://github.com/open-webui/open-webui

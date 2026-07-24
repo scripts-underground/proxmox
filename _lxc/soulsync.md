@@ -2,7 +2,7 @@
 slug: soulsync
 title: SoulSync
 tags: [music, automation, media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/soulsync.webp
+logo: /assets/logos/soulsync.webp
 by: MickLesk
 repo: https://github.com/Nezreka/SoulSync
 site: https://github.com/Nezreka/SoulSync

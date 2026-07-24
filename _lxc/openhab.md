@@ -2,7 +2,7 @@
 slug: openhab
 title: openHAB
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/openhab.webp
+logo: /assets/logos/openhab.webp
 by: tteck
 repo: https://github.com/openhab/openhab-distro
 site: https://www.openhab.org/

@@ -2,7 +2,7 @@
 slug: watchyourlan
 title: WatchYourLAN
 tags: [network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/watchyourlan.webp
+logo: /assets/logos/watchyourlan.webp
 by: tteckster
 repo: https://github.com/aceberg/WatchYourLAN
 site: https://github.com/aceberg/WatchYourLAN

@@ -2,7 +2,7 @@
 slug: plex
 title: Plex Media Server
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/plex.webp
+logo: /assets/logos/plex.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://www.plex.tv/

@@ -2,7 +2,7 @@
 slug: omada
 title: Omada
 tags: [tp-link, controller]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/omada.webp
+logo: /assets/logos/omada.webp
 by: tteck
 repo: https://github.com/community-scripts/ProxmoxVE
 site: https://www.tp-link.com/us/support/download/omada-software-controller/

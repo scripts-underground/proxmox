@@ -2,7 +2,7 @@
 slug: audiobookshelf
 title: Audiobookshelf
 tags: [podcast, audiobook]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/audiobookshelf.webp
+logo: /assets/logos/audiobookshelf.webp
 by: tteck
 repo: https://github.com/advplyr/audiobookshelf
 site: https://www.audiobookshelf.org/

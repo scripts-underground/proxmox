@@ -2,7 +2,7 @@
 slug: traefik
 title: Traefik
 tags: [proxy, networking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/traefik.webp
+logo: /assets/logos/traefik.webp
 by: tteck
 repo: https://github.com/traefik/traefik
 site: https://traefik.io/

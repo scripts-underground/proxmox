@@ -2,7 +2,7 @@
 slug: speedtest-tracker
 title: Speedtest Tracker
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/speedtest-tracker.webp
+logo: /assets/logos/speedtest-tracker.webp
 by: AlphaLawless
 repo: https://github.com/alexjustesen/speedtest-tracker
 site: https://github.com/alexjustesen/speedtest-tracker

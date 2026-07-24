@@ -2,7 +2,7 @@
 slug: miniflux
 title: Miniflux
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/miniflux-light.webp
+logo: /assets/logos/miniflux.webp
 by: omernaveedxyz
 repo: https://github.com/miniflux/v2
 site: https://miniflux.app/

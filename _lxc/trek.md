@@ -2,7 +2,7 @@
 slug: trek
 title: TREK
 tags: [travel, planning, collaboration]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/trek.webp
+logo: /assets/logos/trek.webp
 by: MickLesk
 repo: https://github.com/liketrek/TREK
 site: https://github.com/liketrek/TREK

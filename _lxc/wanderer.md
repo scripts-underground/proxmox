@@ -2,7 +2,7 @@
 slug: wanderer
 title: Wanderer
 tags: [travelling, sport]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wanderer.webp
+logo: /assets/logos/wanderer.webp
 by: rrole
 repo: https://github.com/open-wanderer/wanderer
 site: https://wanderer.to

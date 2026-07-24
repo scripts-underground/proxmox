@@ -2,7 +2,7 @@
 slug: alpine-syncthing
 title: Alpine-Syncthing
 tags: [alpine, networking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/syncthing.webp
+logo: /assets/logos/alpine-syncthing.webp
 by: MickLesk
 repo: https://github.com/syncthing/syncthing
 site: https://syncthing.net/

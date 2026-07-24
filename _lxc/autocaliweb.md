@@ -2,7 +2,7 @@
 slug: autocaliweb
 title: Autocaliweb
 tags: [ebooks]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/autocaliweb.webp
+logo: /assets/logos/autocaliweb.webp
 by: vhsdream
 repo: https://codeberg.org/gelbphoenix/autocaliweb
 site: https://codeberg.org/gelbphoenix/autocaliweb

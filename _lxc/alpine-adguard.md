@@ -2,7 +2,7 @@
 slug: alpine-adguard
 title: Alpine-AdGuard
 tags: [alpine, adblock]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/adguard-home.webp
+logo: /assets/logos/alpine-adguard.webp
 by: MickLesk
 repo: https://github.com/AdguardTeam/AdGuardHome
 site: https://adguardhome.com/

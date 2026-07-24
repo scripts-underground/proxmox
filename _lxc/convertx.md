@@ -2,7 +2,7 @@
 slug: convertx
 title: ConvertX
 tags: [converter]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/convertx.webp
+logo: /assets/logos/convertx.webp
 by: MickLesk (Canbiz)
 co_author: [Omar Minaya]
 repo: https://github.com/C4illin/ConvertX

@@ -2,6 +2,7 @@
 slug: discourse
 title: Discourse
 tags: [forum, community, discussion]
+port: ""
 logo: /assets/logos/discourse.webp
 by: MickLesk
 repo: https://github.com/discourse/discourse

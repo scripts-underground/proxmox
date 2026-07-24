@@ -2,7 +2,7 @@
 slug: alpine-prometheus
 title: Alpine-Prometheus
 tags: [alpine, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/prometheus.webp
+logo: /assets/logos/alpine-prometheus.webp
 by: MickLesk
 repo: https://github.com/prometheus/prometheus
 site: https://prometheus.io/

@@ -2,7 +2,7 @@
 slug: oxicloud
 title: OxiCloud
 tags: [files, documents]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/oxicloud.webp
+logo: /assets/logos/oxicloud.webp
 by: vhsdream
 repo: https://github.com/DioCrafts/OxiCloud
 site: https://atalayalabs.github.io/OxiCloud/guide/

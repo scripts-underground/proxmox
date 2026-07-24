@@ -2,7 +2,7 @@
 slug: alpine-forgejo
 title: Alpine-Forgejo
 tags: [alpine, git]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/forgejo.webp
+logo: /assets/logos/alpine-forgejo.webp
 by: An!ma
 repo: https://codeberg.org/forgejo/forgejo
 site: https://forgejo.org/

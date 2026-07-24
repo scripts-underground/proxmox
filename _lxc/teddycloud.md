@@ -2,7 +2,7 @@
 slug: teddycloud
 title: TeddyCloud
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/teddycloud.webp
+logo: /assets/logos/teddycloud.webp
 by: dsiebel
 repo: https://github.com/toniebox-reverse-engineering/teddycloud
 site: https://github.com/toniebox-reverse-engineering/teddycloud

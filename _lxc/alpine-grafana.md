@@ -2,7 +2,7 @@
 slug: alpine-grafana
 title: Alpine-Grafana
 tags: [alpine, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/grafana.webp
+logo: /assets/logos/alpine-grafana.webp
 by: tteck
 repo: https://github.com/grafana/grafana
 site: https://grafana.com/

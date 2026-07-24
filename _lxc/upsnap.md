@@ -2,7 +2,7 @@
 slug: upsnap
 title: UpSnap
 tags: [network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/upsnap.webp
+logo: /assets/logos/upsnap.webp
 by: tremor021
 repo: https://github.com/seriousm4x/UpSnap
 site: https://github.com/seriousm4x/UpSnap

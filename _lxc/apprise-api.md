@@ -2,7 +2,7 @@
 slug: apprise-api
 title: Apprise-API
 tags: [notification]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apprise.webp
+logo: /assets/logos/apprise-api.webp
 by: SystemIdleProcess
 repo: https://github.com/caronc/apprise-api
 site: https://github.com/caronc/apprise-api

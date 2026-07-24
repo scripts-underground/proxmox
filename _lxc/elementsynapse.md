@@ -2,7 +2,7 @@
 slug: elementsynapse
 title: Element Synapse
 tags: [server, matrix]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/element.webp
+logo: /assets/logos/elementsynapse.webp
 by: tremor021
 repo: https://github.com/element-hq/synapse
 site: https://element-hq.github.io/synapse/

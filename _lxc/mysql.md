@@ -2,7 +2,7 @@
 slug: mysql
 title: MySQL
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mysql.webp
+logo: /assets/logos/mysql.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/mysql/mysql-server

@@ -2,7 +2,7 @@
 slug: readarr
 title: Readarr
 tags: [media, comic, ebook]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/readarr.webp
+logo: /assets/logos/readarr.webp
 by: tteck
 repo: https://github.com/Readarr/Readarr
 site: https://readarr.com/

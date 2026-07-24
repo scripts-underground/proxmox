@@ -2,7 +2,7 @@
 slug: resiliosync
 title: Resilio Sync
 tags: [sync]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/resilio-sync.webp
+logo: /assets/logos/resiliosync.webp
 by: dbinit
 repo: https://www.resilio.com/
 site: https://www.resilio.com/

@@ -2,7 +2,7 @@
 slug: dolibarr
 title: Dolibarr
 tags: [business-erp]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dolibarr.webp
+logo: /assets/logos/dolibarr.webp
 by: tremor021
 repo: https://github.com/Dolibarr/dolibarr/
 site: https://www.dolibarr.org/

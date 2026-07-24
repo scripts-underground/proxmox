@@ -2,9 +2,10 @@
 slug: gwn-manager
 title: GWN-Manager
 tags: [network, management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/gwn-manager.webp
+logo: /assets/logos/gwn-manager.webp
 by: tremor021
 site: https://www.grandstream.com/products/networking-solutions/wi-fi-management/product/gwn-manager
+repo: ""
 port: 8443
 cpu: 2
 ram: 6144

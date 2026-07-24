@@ -2,7 +2,7 @@
 slug: dashy
 title: Dashy
 tags: [dashboard]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dashy.webp
+logo: /assets/logos/dashy.webp
 by: tteck
 repo: https://github.com/Lissy93/dashy
 site: https://dashy.to/

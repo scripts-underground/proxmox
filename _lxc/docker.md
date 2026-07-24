@@ -2,7 +2,7 @@
 slug: docker
 title: Docker
 tags: [docker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/docker.webp
+logo: /assets/logos/docker.webp
 by: tteck
 repo: https://github.com/docker/docker-ce
 site: https://www.docker.com/

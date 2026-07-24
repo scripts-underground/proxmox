@@ -2,7 +2,7 @@
 slug: certimate
 title: Certimate
 tags: [auth-security]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/certimate.webp
+logo: /assets/logos/certimate.webp
 by: MickLesk
 repo: https://github.com/certimate-go/certimate
 site: https://certimate.me/

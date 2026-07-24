@@ -2,7 +2,7 @@
 slug: onlyoffice
 title: ONLYOFFICE
 tags: [word, excel, powerpoint, pdf]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/onlyoffice.webp
+logo: /assets/logos/onlyoffice.webp
 by: MickLesk
 repo: https://github.com/community-scripts/ProxmoxVE
 site: https://www.onlyoffice.com/

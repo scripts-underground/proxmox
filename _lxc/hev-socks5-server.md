@@ -2,7 +2,7 @@
 slug: hev-socks5-server
 title: hev-socks5-server
 tags: [proxy, socks5]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/hev.webp
+logo: /assets/logos/hev-socks5-server.webp
 by: miviro
 repo: https://github.com/heiher/hev-socks5-server
 site: https://github.com/heiher/hev-socks5-server

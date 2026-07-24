@@ -2,7 +2,7 @@
 slug: bytestash
 title: ByteStash
 tags: [code]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bytestash.webp
+logo: /assets/logos/bytestash.webp
 by: tremor021
 repo: https://github.com/jordan-dalby/ByteStash
 site: https://github.com/jordan-dalby/ByteStash

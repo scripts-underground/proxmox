@@ -2,7 +2,7 @@
 slug: seerr
 title: Seerr
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/seerr.webp
+logo: /assets/logos/seerr.webp
 by: CrazyWolf13
 repo: https://github.com/seerr-team/seerr
 site: https://docs.seerr.dev/

@@ -2,7 +2,7 @@
 slug: librechat
 title: LibreChat
 tags: [ai, chat]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/librechat.webp
+logo: /assets/logos/librechat.webp
 by: MickLesk
 repo: https://github.com/danny-avila/LibreChat
 site: https://librechat.ai/

@@ -2,7 +2,7 @@
 slug: alpine-nextcloud
 title: Nextcloud on Alpine
 tags: [alpine, cloud]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nextcloud.webp
+logo: /assets/logos/alpine-nextcloud.webp
 by: tteckster
 repo: https://github.com/nextcloud/nextcloud
 site: https://nextcloud.com/

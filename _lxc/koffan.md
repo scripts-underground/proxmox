@@ -2,7 +2,7 @@
 slug: koffan
 title: Koffan
 tags: [productivity]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/koffan.webp
+logo: /assets/logos/koffan.webp
 by: AminGholizad
 repo: https://github.com/PanSalut/Koffan
 site: https://github.com/PanSalut/Koffan

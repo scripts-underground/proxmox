@@ -2,7 +2,7 @@
 slug: cross-seed
 title: cross-seed
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cross-seed.webp
+logo: /assets/logos/cross-seed.webp
 by: jmatraszek
 repo: https://github.com/cross-seed/cross-seed
 site: https://www.cross-seed.org/

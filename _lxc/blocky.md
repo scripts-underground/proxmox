@@ -2,7 +2,7 @@
 slug: blocky
 title: Blocky
 tags: [adblock]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/blocky.webp
+logo: /assets/logos/blocky.webp
 by: tteck
 repo: https://github.com/0xERR0R/blocky
 site: https://0xerr0r.github.io/blocky

@@ -2,7 +2,7 @@
 slug: grav
 title: Grav
 tags: [cms]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/grav.webp
+logo: /assets/logos/grav.webp
 by: rafspiny
 repo: https://github.com/getgrav/grav
 site: https://getgrav.org/

@@ -2,7 +2,7 @@
 slug: shinobi
 title: Shinobi
 tags: [nvr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/shinobi.webp
+logo: /assets/logos/shinobi.webp
 by: tteck
 repo: https://gitlab.com/Shinobi-Systems/Shinobi
 site: https://shinobi.video/

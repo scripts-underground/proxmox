@@ -2,7 +2,7 @@
 slug: radicale
 title: Radicale
 tags: [calendar]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/radicale.webp
+logo: /assets/logos/radicale.webp
 by: tremor021
 repo: https://github.com/Kozea/Radicale
 site: https://radicale.org/

@@ -2,6 +2,7 @@
 slug: almalinux
 title: AlmaLinux
 tags: [os]
+port: ""
 logo: /assets/logos/almalinux.webp
 by: MickLesk
 repo: https://almalinux.org/

@@ -2,7 +2,7 @@
 slug: nodebb
 title: NodeBB
 tags: [forum]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nodebb.webp
+logo: /assets/logos/nodebb.webp
 by: MickLesk
 repo: https://github.com/NodeBB/NodeBB
 site: https://nodebb.org

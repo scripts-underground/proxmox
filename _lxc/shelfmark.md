@@ -2,7 +2,7 @@
 slug: shelfmark
 title: Shelfmark
 tags: [ebooks]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/shelfmark.webp
+logo: /assets/logos/shelfmark.webp
 by: vhsdream
 repo: https://github.com/calibrain/shelfmark
 site: https://github.com/calibrain/shelfmark

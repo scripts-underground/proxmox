@@ -2,7 +2,7 @@
 slug: tandoor
 title: Tandoor Recipes
 tags: [recipes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tandoor-recipes.webp
+logo: /assets/logos/tandoor.webp
 by: MickLesk
 repo: https://github.com/TandoorRecipes/recipes
 site: https://tandoor.dev/

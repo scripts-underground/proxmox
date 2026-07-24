@@ -2,7 +2,7 @@
 slug: step-ca
 title: step-ca
 tags: [certificate-authority, pki, acme-server]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/step-ca.webp
+logo: /assets/logos/step-ca.webp
 by: heinemannj
 repo: https://github.com/smallstep/certificates
 site: https://smallstep.com/docs/step-ca/

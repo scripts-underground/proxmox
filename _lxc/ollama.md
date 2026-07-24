@@ -2,7 +2,7 @@
 slug: ollama
 title: Ollama
 tags: [ai]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ollama.webp
+logo: /assets/logos/ollama.webp
 by: havardthom
 co_author: [MickLesk]
 repo: https://github.com/ollama/ollama

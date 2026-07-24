@@ -2,7 +2,7 @@
 slug: freshrss
 title: FreshRSS
 tags: [RSS]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/freshrss.webp
+logo: /assets/logos/freshrss.webp
 by: bvdberg01
 repo: https://github.com/FreshRSS/FreshRSS
 site: https://freshrss.org

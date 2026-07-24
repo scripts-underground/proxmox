@@ -2,7 +2,7 @@
 slug: apache-couchdb
 title: Apache CouchDB
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/couchdb.webp
+logo: /assets/logos/apache-couchdb.webp
 by: tteckster
 repo: https://github.com/apache/couchdb
 site: https://couchdb.apache.org/

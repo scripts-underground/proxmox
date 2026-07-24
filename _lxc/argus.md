@@ -2,7 +2,7 @@
 slug: argus
 title: Argus
 tags: [watcher]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/argus.webp
+logo: /assets/logos/argus.webp
 by: MickLesk
 repo: https://github.com/release-argus/Argus
 site: https://release-argus.io/

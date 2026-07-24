@@ -2,7 +2,7 @@
 slug: homarr
 title: Homarr
 tags: [arr, dashboard]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/homarr.webp
+logo: /assets/logos/homarr.webp
 by: MickLesk
 repo: https://github.com/homarr-labs/homarr
 site: https://homarr.dev/

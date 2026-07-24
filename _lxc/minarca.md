@@ -2,7 +2,7 @@
 slug: minarca
 title: Minarca
 tags: [backup]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/minarca.webp
+logo: /assets/logos/minarca.webp
 by: Slaviša Arežina (tremor021)
 repo: https://gitlab.com/ikus-soft/minarca
 site: https://minarca.org

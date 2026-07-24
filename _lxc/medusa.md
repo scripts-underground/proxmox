@@ -2,7 +2,7 @@
 slug: medusa
 title: Medusa
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/medusa.webp
+logo: /assets/logos/medusa.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/pymedusa/Medusa

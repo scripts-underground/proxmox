@@ -2,7 +2,7 @@
 slug: spoolman
 title: Spoolman
 tags: [3d-printing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/spoolman.webp
+logo: /assets/logos/spoolman.webp
 by: MickLesk
 repo: https://github.com/Donkie/Spoolman
 site: https://github.com/Donkie/Spoolman

@@ -2,7 +2,7 @@
 slug: opencloud
 title: OpenCloud
 tags: [files, cloud]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/opencloud.webp
+logo: /assets/logos/opencloud.webp
 by: vhsdream
 repo: https://github.com/opencloud-eu/opencloud
 site: https://opencloud.eu

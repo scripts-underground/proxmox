@@ -2,7 +2,7 @@
 slug: strapi
 title: Strapi
 tags: [cms]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/strapi.webp
+logo: /assets/logos/strapi.webp
 by: pespinel
 repo: https://github.com/strapi/strapi
 site: https://strapi.io/

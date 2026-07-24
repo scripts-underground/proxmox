@@ -2,7 +2,7 @@
 slug: nocodb
 title: NocoDB
 tags: [nocodb, database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nocodb.webp
+logo: /assets/logos/nocodb.webp
 by: tteck
 repo: https://github.com/nocodb/nocodb
 site: https://www.nocodb.com/

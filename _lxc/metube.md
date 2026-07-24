@@ -2,7 +2,7 @@
 slug: metube
 title: MeTube
 tags: [media, youtube]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/metube.webp
+logo: /assets/logos/metube.webp
 by: MickLesk
 repo: https://github.com/alexta69/metube
 site: https://github.com/alexta69/metube

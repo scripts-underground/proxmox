@@ -2,7 +2,7 @@
 slug: librespeed-rust
 title: Librespeed-Rust
 tags: [network]
-logo: https://raw.githubusercontent.com/scripts-underground/proxmox/main/assets/logos/librespeed-rust.webp
+logo: /assets/logos/librespeed-rust.webp
 by: stubbers
 repo: https://github.com/librespeed/speedtest-rust
 site: https://github.com/librespeed/speedtest-rust

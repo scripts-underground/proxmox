@@ -2,7 +2,7 @@
 slug: anchor
 title: Anchor
 tags: [notes, productivity, sync]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/anchor-notes.webp
+logo: /assets/logos/anchor.webp
 by: MickLesk
 repo: https://github.com/ZhFahim/anchor
 site: https://github.com/ZhFahim/anchor

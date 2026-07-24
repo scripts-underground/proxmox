@@ -2,7 +2,7 @@
 slug: redis
 title: Redis
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/redis.webp
+logo: /assets/logos/redis.webp
 by: tteck
 repo: https://github.com/redis/redis
 site: https://redis.io/

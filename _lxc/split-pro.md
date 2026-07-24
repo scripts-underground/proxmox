@@ -2,7 +2,7 @@
 slug: split-pro
 title: Split Pro
 tags: [finance;expense-sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/splitpro.webp
+logo: /assets/logos/split-pro.webp
 by: johanngrobe
 repo: https://github.com/oss-apps/split-pro
 site: https://splitpro.app

@@ -2,7 +2,7 @@
 slug: proxmox-datacenter-manager
 title: Proxmox Datacenter Manager
 tags: [datacenter]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/proxmox.webp
+logo: /assets/logos/proxmox-datacenter-manager.webp
 by: CrazyWolf13
 repo: https://git.proxmox.com/?p=proxmox-datacenter-manager.git;a=summary
 site: https://www.proxmox.com/en/products/proxmox-datacenter-manager

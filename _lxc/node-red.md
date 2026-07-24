@@ -2,7 +2,7 @@
 slug: node-red
 title: Node-RED
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/node-red.webp
+logo: /assets/logos/node-red.webp
 by: tteck
 repo: https://github.com/node-red/node-red
 site: https://nodered.org/

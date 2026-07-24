@@ -2,7 +2,7 @@
 slug: apache-tika
 title: Apache Tika
 tags: [document]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apache-tika.webp
+logo: /assets/logos/apache-tika.webp
 by: andygrunwald
 repo: https://github.com/apache/tika
 site: https://tika.apache.org/

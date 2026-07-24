@@ -2,7 +2,7 @@
 slug: trip
 title: TRIP
 tags: [maps, travel]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/trip.webp
+logo: /assets/logos/trip.webp
 by: CrazyWolf13
 repo: https://github.com/itskovacs/TRIP
 site: https://itskovacs.github.io/trip/docs/intro

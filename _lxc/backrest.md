@@ -2,7 +2,7 @@
 slug: backrest
 title: Backrest
 tags: [backup]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/backrest.webp
+logo: /assets/logos/backrest.webp
 by: enirys31
 repo: https://github.com/garethgeorge/backrest
 site: https://garethgeorge.github.io/backrest/

@@ -2,7 +2,7 @@
 slug: discopanel
 title: DiscoPanel
 tags: [gaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/discopanel.webp
+logo: /assets/logos/discopanel.webp
 by: DragoQC
 repo: https://github.com/nickheyer/discopanel
 site: https://discopanel.app/

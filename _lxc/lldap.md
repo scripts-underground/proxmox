@@ -2,7 +2,7 @@
 slug: lldap
 title: lldap
 tags: [ldap]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/lldap.webp
+logo: /assets/logos/lldap.webp
 by: tteck
 co_author: [remz1337]
 repo: https://github.com/lldap/lldap

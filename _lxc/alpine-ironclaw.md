@@ -2,7 +2,7 @@
 slug: alpine-ironclaw
 title: Alpine-IronClaw
 tags: [ai, agent, alpine]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ironclaw.webp
+logo: /assets/logos/alpine-ironclaw.webp
 by: MickLesk
 repo: https://github.com/nearai/ironclaw
 site: https://github.com/nearai/ironclaw

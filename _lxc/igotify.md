@@ -2,7 +2,7 @@
 slug: igotify
 title: iGotify
 tags: [notifications, gotify]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gotify.webp
+logo: /assets/logos/igotify.webp
 by: pfassina
 repo: https://github.com/androidseb25/iGotify-Notification-Assistent
 site: https://github.com/androidseb25/iGotify-Notification-Assistent

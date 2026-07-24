@@ -2,7 +2,7 @@
 slug: alpine-borgbackup-server
 title: Alpine-BorgBackup-Server
 tags: [alpine, backup]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/alpine-borg.webp
+logo: /assets/logos/alpine-borgbackup-server.webp
 by: sanderkoenders
 repo: https://github.com/borgbackup/borg
 site: https://www.borgbackup.org/

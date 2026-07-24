@@ -2,7 +2,7 @@
 slug: booklore
 title: BookLore
 tags: [books, library]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/booklore.webp
+logo: /assets/logos/booklore.webp
 by: MickLesk
 repo: https://github.com/booklore-app/BookLore
 site: https://github.com/booklore-app/BookLore

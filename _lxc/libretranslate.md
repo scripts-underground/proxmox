@@ -2,7 +2,7 @@
 slug: libretranslate
 title: LibreTranslate
 tags: [arr-suite]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/libretranslate.webp
+logo: /assets/logos/libretranslate.webp
 by: tremor021
 repo: https://github.com/LibreTranslate/LibreTranslate
 site: https://libretranslate.com/

@@ -2,7 +2,7 @@
 slug: alpine-redlib
 title: Alpine-Redlib
 tags: [alpine, frontend]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/redlib.webp
+logo: /assets/logos/alpine-redlib.webp
 by: andrej-kocijan
 repo: https://github.com/redlib-org/redlib
 site: https://github.com/redlib-org/redlib

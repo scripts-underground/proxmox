@@ -2,7 +2,7 @@
 slug: apt-cacher-ng
 title: Apt-Cacher-NG
 tags: [caching]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apt-cacher-ng.webp
+logo: ""
 by: tteck
 repo: https://wiki.debian.org/AptCacherNg
 site: https://wiki.debian.org/AptCacherNg

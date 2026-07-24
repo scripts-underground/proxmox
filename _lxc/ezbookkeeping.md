@@ -2,7 +2,7 @@
 slug: ezbookkeeping
 title: ezBookkeeping
 tags: [finance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ezbookkeeping.webp
+logo: /assets/logos/ezbookkeeping.webp
 by: tremor021
 repo: https://github.com/mayswind/ezbookkeeping
 site: https://ezbookkeeping.mayswind.net/

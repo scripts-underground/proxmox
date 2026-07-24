@@ -2,7 +2,7 @@
 slug: alpine-teamspeak-server
 title: Alpine-TeamSpeak-Server
 tags: [alpine, communication]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/teamspeak-server.webp
+logo: /assets/logos/alpine-teamspeak-server.webp
 by: tremor021
 repo: https://github.com/TeamSpeak-Systems/teamspeak-linux-docker
 site: https://www.teamspeak.com/

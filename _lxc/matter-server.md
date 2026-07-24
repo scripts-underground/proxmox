@@ -2,7 +2,7 @@
 slug: matter-server
 title: Matter-Server
 tags: [matter, iot, smart-home]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/matter.webp
+logo: /assets/logos/matter-server.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/matter-js/python-matter-server

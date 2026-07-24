@@ -2,7 +2,7 @@
 slug: itsm-ng
 title: ITSM-NG
 tags: [asset-management, foss]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/itsm-ng.webp
+logo: /assets/logos/itsm-ng.webp
 by: Florianb63
 repo: https://github.com/itsmng/itsm-ng
 site: https://itsm-ng.com/

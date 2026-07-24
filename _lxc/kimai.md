@@ -2,7 +2,7 @@
 slug: kimai
 title: Kimai
 tags: [time-tracking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kimai.webp
+logo: /assets/logos/kimai.webp
 by: MickLesk
 repo: https://github.com/kimai/kimai
 site: https://www.kimai.org/

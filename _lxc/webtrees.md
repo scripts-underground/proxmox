@@ -2,7 +2,7 @@
 slug: webtrees
 title: Webtrees
 tags: [genealogy, cms]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/webtrees.webp
+logo: /assets/logos/webtrees.webp
 by: sudofly
 repo: https://github.com/fisharebest/webtrees
 site: https://webtrees.net/

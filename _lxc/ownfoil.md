@@ -2,7 +2,7 @@
 slug: ownfoil
 title: Ownfoil
 tags: [gaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ownfoil.webp
+logo: /assets/logos/ownfoil.webp
 by: pajjski
 repo: https://github.com/a1ex4/ownfoil
 site: https://github.com/a1ex4/ownfoil

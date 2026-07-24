@@ -2,7 +2,7 @@
 slug: gramps-web
 title: gramps-web
 tags: [genealogy, family, collaboration]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gramps.webp
+logo: /assets/logos/gramps-web.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/gramps-project/gramps-web

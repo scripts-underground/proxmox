@@ -2,7 +2,7 @@
 slug: umami
 title: Umami
 tags: [analytics]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/umami.webp
+logo: /assets/logos/umami.webp
 by: tteck
 repo: https://github.com/umami-software/umami
 site: https://umami.is/

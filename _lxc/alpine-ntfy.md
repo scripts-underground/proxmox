@@ -2,7 +2,7 @@
 slug: alpine-ntfy
 title: Alpine-ntfy
 tags: [notification]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ntfy.webp
+logo: /assets/logos/alpine-ntfy.webp
 by: cobaltgit
 repo: https://github.com/binwiederhier/ntfy
 site: https://ntfy.sh/

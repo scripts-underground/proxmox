@@ -2,7 +2,7 @@
 slug: alpine-zigbee2mqtt
 title: Alpine-Zigbee2MQTT
 tags: [alpine, iot]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/zigbee2mqtt.webp
+logo: /assets/logos/alpine-zigbee2mqtt.webp
 by: tteck
 repo: https://github.com/Koenkk/zigbee2mqtt
 site: https://www.zigbee2mqtt.io/

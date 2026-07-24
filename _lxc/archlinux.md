@@ -2,7 +2,8 @@
 slug: archlinux
 title: Arch Linux
 tags: [os]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/arch-linux.webp
+port: ""
+logo: /assets/logos/archlinux.webp
 by: MickLesk
 repo: https://archlinux.org/
 site: https://archlinux.org/

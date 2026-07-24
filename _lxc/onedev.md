@@ -2,7 +2,7 @@
 slug: onedev
 title: OneDev
 tags: [git]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/onedev.webp
+logo: /assets/logos/onedev.webp
 by: kristocopani
 repo: https://github.com/theonedev/onedev
 site: https://onedev.io/

@@ -2,7 +2,7 @@
 slug: alpine-redis
 title: Alpine-Redis
 tags: [alpine, database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/redis.webp
+logo: /assets/logos/alpine-redis.webp
 by: MickLesk
 repo: https://github.com/redis/redis
 site: https://redis.io/

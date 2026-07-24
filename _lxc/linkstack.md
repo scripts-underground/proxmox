@@ -2,7 +2,7 @@
 slug: linkstack
 title: LinkStack
 tags: [os]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/linkstack.webp
+logo: /assets/logos/linkstack.webp
 by: MickLesk
 repo: https://github.com/linkstackorg/linkstack
 site: https://linkstack.org/

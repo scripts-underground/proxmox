@@ -2,7 +2,7 @@
 slug: archivebox
 title: ArchiveBox
 tags: [archive, bookmark]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/archivebox.webp
+logo: /assets/logos/archivebox.webp
 by: tteck
 repo: https://github.com/ArchiveBox/ArchiveBox
 site: https://archivebox.io/

@@ -2,7 +2,7 @@
 slug: kavita
 title: Kavita
 tags: [reader]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kavita.webp
+logo: /assets/logos/kavita.webp
 by: tteck
 repo: https://github.com/Kareadita/Kavita
 site: https://www.kavitareader.com/

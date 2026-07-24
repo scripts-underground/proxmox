@@ -2,7 +2,7 @@
 slug: dispatcharr
 title: Dispatcharr
 tags: [media, arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dispatcharr.webp
+logo: /assets/logos/dispatcharr.webp
 by: ekke85
 co_author: [MickLesk]
 repo: https://github.com/Dispatcharr/Dispatcharr

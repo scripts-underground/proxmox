@@ -2,7 +2,7 @@
 slug: telegraf
 title: Telegraf
 tags: [collector, metrics]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/telegraf.webp
+logo: /assets/logos/telegraf.webp
 by: CrazyWolf13
 repo: https://github.com/influxdata/telegraf
 site: https://www.influxdata.com/time-series-platform/telegraf/

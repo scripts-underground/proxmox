@@ -2,7 +2,7 @@
 slug: traccar
 title: Traccar
 tags: [gps, tracker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/traccar.webp
+logo: /assets/logos/traccar.webp
 by: tteck
 repo: https://github.com/traccar/traccar
 site: https://www.traccar.org/

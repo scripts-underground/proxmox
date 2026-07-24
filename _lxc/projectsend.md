@@ -2,7 +2,7 @@
 slug: projectsend
 title: ProjectSend
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/projectsend.webp
+logo: /assets/logos/projectsend.webp
 by: bvdberg01
 repo: https://github.com/projectsend/projectsend
 site: https://projectsend.org/

@@ -2,7 +2,7 @@
 slug: alpine-transmission
 title: Alpine-Transmission
 tags: [alpine, torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/transmission.webp
+logo: /assets/logos/alpine-transmission.webp
 by: tremor021
 repo: https://github.com/transmission/transmission
 site: https://transmissionbt.com/

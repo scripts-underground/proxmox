@@ -2,6 +2,7 @@
 slug: devuan
 title: Devuan
 tags: [os]
+port: ""
 logo: /assets/logos/devuan.webp
 by: MickLesk
 repo: https://www.devuan.org/

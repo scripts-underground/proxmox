@@ -2,7 +2,7 @@
 slug: searxng
 title: SearXNG
 tags: [search]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/searxng.webp
+logo: /assets/logos/searxng.webp
 by: MickLesk
 repo: https://github.com/searxng/searxng
 site: https://github.com/searxng/searxng

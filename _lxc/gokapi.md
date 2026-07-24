@@ -2,7 +2,7 @@
 slug: gokapi
 title: Gokapi
 tags: [file, sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gokapi.webp
+logo: /assets/logos/gokapi.webp
 by: tteck
 repo: https://github.com/Forceu/Gokapi
 site: https://github.com/Forceu/Gokapi

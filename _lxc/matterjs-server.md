@@ -2,7 +2,7 @@
 slug: matterjs-server
 title: MatterJS-Server
 tags: [matter, iot, smarthome, homeassistant]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/matter.webp
+logo: /assets/logos/matterjs-server.webp
 by: CanbiZ
 repo: https://github.com/matter-js/matterjs-server
 site: https://github.com/matter-js/matterjs-server

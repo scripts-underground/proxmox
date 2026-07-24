@@ -2,7 +2,7 @@
 slug: influxdb
 title: InfluxDB
 tags: [database, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/influxdb.webp
+logo: /assets/logos/influxdb.webp
 by: tteck (tteckster)
 repo: https://github.com/influxdata/influxdb
 site: https://www.influxdata.com/

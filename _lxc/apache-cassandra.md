@@ -2,7 +2,7 @@
 slug: apache-cassandra
 title: Apache Cassandra
 tags: [database, NoSQL]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apache-cassandra.webp
+logo: /assets/logos/apache-cassandra.webp
 by: tteck
 repo: https://github.com/apache/cassandra
 site: https://cassandra.apache.org/

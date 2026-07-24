@@ -2,7 +2,7 @@
 slug: rackula
 title: Rackula
 tags: [homelab]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rackula.webp
+logo: /assets/logos/rackula.webp
 by: ggfevans
 repo: https://github.com/RackulaLives/Rackula
 site: https://github.com/RackulaLives/Rackula

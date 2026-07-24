@@ -2,7 +2,7 @@
 slug: recyclarr
 title: Recyclarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/recyclarr.webp
+logo: /assets/logos/recyclarr.webp
 by: MrYadro
 repo: https://github.com/recyclarr/recyclarr
 site: https://recyclarr.dev/wiki/

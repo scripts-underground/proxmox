@@ -2,7 +2,7 @@
 slug: invoiceninja
 title: InvoiceNinja
 tags: [invoicing, business]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/invoice-ninja.webp
+logo: /assets/logos/invoiceninja.webp
 by: MickLesk
 repo: https://github.com/invoiceninja/invoiceninja
 site: https://invoiceninja.com/

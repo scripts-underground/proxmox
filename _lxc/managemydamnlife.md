@@ -2,7 +2,7 @@
 slug: managemydamnlife
 title: Manage My Damn Life
 tags: [calendar, tasks]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/manage-my-damn-life.webp
+logo: /assets/logos/managemydamnlife.webp
 by: vhsdream
 repo: https://github.com/intri-in/manage-my-damn-life-nextjs
 site: https://github.com/intri-in/manage-my-damn-life-nextjs

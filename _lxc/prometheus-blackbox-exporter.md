@@ -2,7 +2,7 @@
 slug: prometheus-blackbox-exporter
 title: Prometheus-Blackbox-Exporter
 tags: [monitoring, prometheus]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/prometheus.webp
+logo: /assets/logos/prometheus-blackbox-exporter.webp
 by: Marfnl
 repo: https://github.com/prometheus/blackbox_exporter
 site: https://github.com/prometheus/blackbox_exporter

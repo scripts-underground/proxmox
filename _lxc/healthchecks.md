@@ -2,7 +2,7 @@
 slug: healthchecks
 title: healthchecks
 tags: [monitoring]
-logo: https://healthchecks.io/favicon.ico
+logo: ""
 by: MickLesk
 repo: https://github.com/healthchecks/healthchecks
 site: https://healthchecks.io

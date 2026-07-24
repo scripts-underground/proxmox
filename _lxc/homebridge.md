@@ -2,7 +2,7 @@
 slug: homebridge
 title: Homebridge
 tags: [smarthome, homekit]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/homebridge.webp
+logo: /assets/logos/homebridge.webp
 by: tteck
 repo: https://github.com/homebridge/homebridge
 site: https://homebridge.io/

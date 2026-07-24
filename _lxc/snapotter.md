@@ -2,7 +2,7 @@
 slug: snapotter
 title: SnapOtter
 tags: [media, image]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/snapotter.webp
+logo: /assets/logos/snapotter.webp
 by: CanbiZ
 co_author: []
 repo: https://github.com/snapotter-hq/SnapOtter

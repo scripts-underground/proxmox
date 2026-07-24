@@ -2,7 +2,7 @@
 slug: bazarr
 title: Bazarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bazarr.webp
+logo: /assets/logos/bazarr.webp
 by: tteck
 repo: https://github.com/morpheus65535/bazarr
 site: https://www.bazarr.media/

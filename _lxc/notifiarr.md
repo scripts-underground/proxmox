@@ -2,7 +2,7 @@
 slug: notifiarr
 title: Notifiarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/notifiarr.webp
+logo: /assets/logos/notifiarr.webp
 by: tteck
 repo: https://github.com/Notifiarr/notifiarr
 site: https://notifiarr.com/

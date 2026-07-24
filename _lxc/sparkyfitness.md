@@ -2,7 +2,7 @@
 slug: sparkyfitness
 title: SparkyFitness
 tags: [health, fitness]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/sparkyfitness.webp
+logo: /assets/logos/sparkyfitness.webp
 by: tomfrenzel
 repo: https://github.com/CodeWithCJ/SparkyFitness
 site: https://codewithcj.github.io/SparkyFitness/

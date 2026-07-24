@@ -2,7 +2,7 @@
 slug: victoriametrics
 title: VictoriaMetrics
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/victoriametrics.webp
+logo: /assets/logos/victoriametrics.webp
 by: tremor021
 repo: https://github.com/VictoriaMetrics/VictoriaMetrics
 site: https://victoriametrics.com/

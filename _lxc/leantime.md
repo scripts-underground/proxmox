@@ -2,7 +2,7 @@
 slug: leantime
 title: Leantime
 tags: [productivity]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/leantime.webp
+logo: /assets/logos/leantime.webp
 by: Stroopwafe1
 repo: https://github.com/Leantime/leantime
 site: https://leantime.io

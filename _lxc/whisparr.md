@@ -2,7 +2,7 @@
 slug: whisparr
 title: Whisparr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/whisparr.webp
+logo: /assets/logos/whisparr.webp
 by: tteck
 repo: https://github.com/Whisparr/Whisparr
 site: https://github.com/Whisparr/Whisparr

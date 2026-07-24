@@ -2,7 +2,7 @@
 slug: apache-guacamole
 title: Apache Guacamole
 tags: [webserver, remote]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apache-guacamole.webp
+logo: /assets/logos/apache-guacamole.webp
 by: michelroegl-brunner
 co_author: [MickLesk (CanbiZ)]
 repo: https://github.com/apache/guacamole-server

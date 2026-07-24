@@ -2,7 +2,7 @@
 slug: baikal
 title: Baikal
 tags: [Dav]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/baikal.webp
+logo: /assets/logos/baikal.webp
 by: bvdberg01
 repo: https://github.com/sabre-io/Baikal
 site: https://sabre.io/baikal/

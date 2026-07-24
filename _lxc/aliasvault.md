@@ -2,7 +2,7 @@
 slug: aliasvault
 title: AliasVault
 tags: [auth-security]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/aliasvault.webp
+logo: /assets/logos/aliasvault.webp
 by: ProxmoxVED Community
 repo: https://github.com/aliasvault/aliasvault
 site: https://aliasvault.net/

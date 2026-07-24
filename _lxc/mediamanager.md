@@ -2,7 +2,7 @@
 slug: mediamanager
 title: MediaManager
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mediamanager.webp
+logo: /assets/logos/mediamanager.webp
 by: vhsdream
 repo: https://github.com/maxdorninger/MediaManager
 site: https://maxdorninger.github.io/MediaManager/

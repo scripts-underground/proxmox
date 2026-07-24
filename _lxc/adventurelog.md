@@ -2,7 +2,7 @@
 slug: adventurelog
 title: AdventureLog
 tags: [traveling]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/adventurelog.webp
+logo: /assets/logos/adventurelog.webp
 by: MickLesk
 repo: https://github.com/seanmorley15/AdventureLog
 site: https://github.com/seanmorley15/AdventureLog

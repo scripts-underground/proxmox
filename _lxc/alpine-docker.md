@@ -2,7 +2,7 @@
 slug: alpine-docker
 title: Alpine-Docker
 tags: [docker, alpine]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/docker.webp
+logo: /assets/logos/alpine-docker.webp
 by: tteck
 repo: https://github.com/docker/docker
 site: https://www.docker.com/

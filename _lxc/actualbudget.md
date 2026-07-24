@@ -2,7 +2,7 @@
 slug: actualbudget
 title: Actual Budget
 tags: [finance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/actual-budget.webp
+logo: /assets/logos/actualbudget.webp
 by: MickLesk
 repo: https://github.com/actualbudget/actual
 site: https://actualbudget.org/

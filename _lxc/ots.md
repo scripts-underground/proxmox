@@ -2,7 +2,7 @@
 slug: ots
 title: OTS
 tags: [secrets-sharer]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ots.webp
+logo: /assets/logos/ots.webp
 by: bvdberg01
 repo: https://github.com/Luzifer/ots
 site: https://github.com/Luzifer/ots

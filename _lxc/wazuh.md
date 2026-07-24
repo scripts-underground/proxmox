@@ -2,7 +2,7 @@
 slug: wazuh
 title: Wazuh
 tags: [security, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wazuh.webp
+logo: /assets/logos/wazuh.webp
 by: Omar Minaya
 repo: https://github.com/wazuh/wazuh
 site: https://wazuh.com/

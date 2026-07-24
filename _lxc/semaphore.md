@@ -2,7 +2,7 @@
 slug: semaphore
 title: Semaphore
 tags: [dev_ops]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/semaphore.webp
+logo: /assets/logos/semaphore.webp
 by: kristocopani
 repo: https://github.com/semaphoreui/semaphore
 site: https://semaphoreui.com/

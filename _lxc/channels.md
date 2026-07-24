@@ -2,7 +2,7 @@
 slug: channels
 title: Channels DVR Server
 tags: [dvr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/channels-dvr.webp
+logo: /assets/logos/channels.webp
 by: tteck
 repo: https://github.com/FancyBits/channels-dvr
 site: https://getchannels.com/dvr-server/

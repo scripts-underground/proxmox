@@ -2,7 +2,7 @@
 slug: seaweedfs
 title: SeaweedFS
 tags: [storage, s3, filesystem]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/seaweedfs.webp
+logo: /assets/logos/seaweedfs.webp
 by: MickLesk
 repo: https://github.com/seaweedfs/seaweedfs
 site: https://github.com/seaweedfs/seaweedfs

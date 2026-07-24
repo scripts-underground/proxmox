@@ -2,7 +2,7 @@
 slug: netbird
 title: NetBird
 tags: [network, vpn]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/netbird.webp
+logo: /assets/logos/netbird.webp
 by: TechHutTV
 repo: https://github.com/netbirdio/netbird
 site: https://netbird.io

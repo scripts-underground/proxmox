@@ -2,7 +2,7 @@
 slug: outline
 title: Outline
 tags: [documentation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/outline.webp
+logo: /assets/logos/outline.webp
 by: tremor021
 repo: https://github.com/outline/outline
 site: https://www.getoutline.com/

@@ -2,7 +2,7 @@
 slug: grocy
 title: grocy
 tags: [grocery, household]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/grocy.webp
+logo: /assets/logos/grocy.webp
 by: tteckster
 repo: https://github.com/grocy/grocy
 site: https://grocy.info/

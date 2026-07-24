@@ -2,7 +2,7 @@
 slug: karakeep
 title: Karakeep
 tags: [bookmark]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/karakeep.webp
+logo: /assets/logos/karakeep.webp
 by: MickLesk
 co_author: [vhsdream]
 repo: https://github.com/karakeep-app/karakeep

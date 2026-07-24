@@ -2,7 +2,7 @@
 slug: lidarr
 title: Lidarr
 tags: [arr, torrent, usenet]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/lidarr.webp
+logo: /assets/logos/lidarr.webp
 by: tteck
 repo: https://github.com/Lidarr/Lidarr
 site: https://lidarr.audio/

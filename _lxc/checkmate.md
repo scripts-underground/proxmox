@@ -2,7 +2,7 @@
 slug: checkmate
 title: Checkmate
 tags: [monitoring, uptime]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/checkmate.webp
+logo: /assets/logos/checkmate.webp
 by: MickLesk
 repo: https://github.com/bluewave-labs/Checkmate
 site: https://checkmate.so

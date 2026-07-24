@@ -2,7 +2,7 @@
 slug: prometheus-alertmanager
 title: Prometheus-Alertmanager
 tags: [monitoring, alerting]
-logo: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/webp/alertmanager.webp
+logo: /assets/logos/prometheus-alertmanager.webp
 by: andygrunwald
 repo: https://github.com/prometheus/alertmanager
 site: https://prometheus.io/

@@ -2,7 +2,7 @@
 slug: kitchenowl
 title: KitchenOwl
 tags: [food, recipes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kitchenowl.webp
+logo: /assets/logos/kitchenowl.webp
 by: snazzybean
 repo: https://github.com/TomBursch/kitchenowl
 site: https://kitchenowl.org/

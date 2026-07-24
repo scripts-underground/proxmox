@@ -2,7 +2,7 @@
 slug: crafty-controller
 title: Crafty Controller
 tags: [gaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/crafty-controller.webp
+logo: /assets/logos/crafty-controller.webp
 by: tteck
 repo: https://gitlab.com/crafty-controller/crafty-4
 site: https://craftycontrol.com/

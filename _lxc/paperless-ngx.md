@@ -2,7 +2,7 @@
 slug: paperless-ngx
 title: Paperless-ngx
 tags: [document, management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/paperless-ngx.webp
+logo: /assets/logos/paperless-ngx.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/paperless-ngx/paperless-ngx

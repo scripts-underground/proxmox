@@ -2,7 +2,7 @@
 slug: docmost
 title: Docmost
 tags: [documents]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/docmost.webp
+logo: /assets/logos/docmost.webp
 by: MickLesk
 repo: https://github.com/docmost/docmost
 site: https://docmost.com/

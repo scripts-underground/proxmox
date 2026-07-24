@@ -2,7 +2,7 @@
 slug: endurain
 title: Endurain
 tags: [sport, social-media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/endurain.webp
+logo: /assets/logos/endurain.webp
 by: johanngrobe
 repo: https://codeberg.org/endurain-project/endurain
 site: https://docs.endurain.com

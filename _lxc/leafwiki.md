@@ -2,6 +2,7 @@
 slug: leafwiki
 title: LeafWiki
 tags: [wiki, markdown, notes]
+logo: /assets/logos/leafwiki.webp
 by: MickLesk
 repo: https://github.com/perber/leafwiki
 site: https://leafwiki.com

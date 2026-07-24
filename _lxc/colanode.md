@@ -2,7 +2,7 @@
 slug: colanode
 title: Colanode
 tags: [collaboration, notes, chat]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/colanode.webp
+logo: /assets/logos/colanode.webp
 by: MickLesk
 repo: https://github.com/colanode/colanode
 site: https://colanode.com/

@@ -2,7 +2,7 @@
 slug: glance
 title: Glance
 tags: [dashboard]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/glance.webp
+logo: /assets/logos/glance.webp
 by: kristocopani
 repo: https://github.com/glanceapp/glance
 site: https://github.com/glanceapp/glance

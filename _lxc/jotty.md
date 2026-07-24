@@ -2,7 +2,7 @@
 slug: jotty
 title: jotty
 tags: [tasks, notes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/jotty.webp
+logo: /assets/logos/jotty.webp
 by: vhsdream
 repo: https://github.com/fccview/jotty
 site: https://github.com/fccview/jotty

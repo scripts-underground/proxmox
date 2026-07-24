@@ -2,7 +2,7 @@
 slug: swizzin
 title: Swizzin
 tags: [seedbox]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/swizzin.webp
+logo: /assets/logos/swizzin.webp
 by: EEJoshua
 repo: https://github.com/swizzin/swizzin
 site: https://swizzin.ltd/

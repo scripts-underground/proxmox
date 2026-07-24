@@ -2,7 +2,7 @@
 slug: clickhouse
 title: ClickHouse
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/clickhouse.webp
+logo: /assets/logos/clickhouse.webp
 by: MickLesk
 repo: https://github.com/ClickHouse/ClickHouse
 site: https://clickhouse.com/

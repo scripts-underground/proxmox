@@ -2,7 +2,7 @@
 slug: bunkerm
 title: BunkerM
 tags: [mqtt, iot, mosquitto]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bunkerm.webp
+logo: /assets/logos/bunkerm.webp
 by: MickLesk
 repo: https://github.com/bunkeriot/BunkerM
 site: https://bunkerai.dev/

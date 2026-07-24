@@ -2,7 +2,7 @@
 slug: akaunting
 title: Akaunting
 tags: [finance, business]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/akaunting.webp
+logo: /assets/logos/akaunting.webp
 by: MickLesk
 repo: https://github.com/akaunting/akaunting
 site: https://akaunting.com/

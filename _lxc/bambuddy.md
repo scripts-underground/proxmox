@@ -2,7 +2,7 @@
 slug: bambuddy
 title: Bambuddy
 tags: [media, 3d-printing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bambuddy.webp
+logo: /assets/logos/bambuddy.webp
 by: Adrian-RDA
 repo: https://github.com/maziggy/bambuddy
 site: https://github.com/maziggy/bambuddy

@@ -2,7 +2,7 @@
 slug: neo4j
 title: Neo4j
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/neo4j.webp
+logo: /assets/logos/neo4j.webp
 by: tteckster
 co_author: [havardthom]
 repo: https://github.com/neo4j/neo4j

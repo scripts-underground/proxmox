@@ -2,7 +2,7 @@
 slug: alpine-garage
 title: Alpine-Garage
 tags: [alpine, object-storage]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/garage.webp
+logo: /assets/logos/alpine-garage.webp
 by: MickLesk
 repo: https://github.com/deuxfleurs-org/garage
 site: https://garagehq.deuxfleurs.fr/

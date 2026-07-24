@@ -2,7 +2,7 @@
 slug: pelican-panel
 title: Pelican Panel
 tags: [gaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/pelican-panel.webp
+logo: /assets/logos/pelican-panel.webp
 by: bvdberg01
 repo: https://github.com/pelican-dev/panel
 site: https://pelican.dev/

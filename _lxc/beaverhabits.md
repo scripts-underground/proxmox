@@ -2,7 +2,7 @@
 slug: beaverhabits
 title: BeaverHabits
 tags: [habits, tracking, productivity]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/beaver-habit-tracker.webp
+logo: /assets/logos/beaverhabits.webp
 by: MickLesk
 repo: https://github.com/daya0576/beaverhabits
 site: https://github.com/daya0576/beaverhabits

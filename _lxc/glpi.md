@@ -2,7 +2,7 @@
 slug: glpi
 title: GLPI
 tags: [asset-management, foss]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/glpi.webp
+logo: /assets/logos/glpi.webp
 by: opastorello
 repo: https://github.com/glpi-project/glpi
 site: https://www.glpi-project.org/

@@ -2,7 +2,7 @@
 slug: calibre-web
 title: Calibre-Web
 tags: [media, books]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/calibre-web.webp
+logo: /assets/logos/calibre-web.webp
 by: mikolaj92
 repo: https://github.com/janeczku/calibre-web
 site: https://github.com/janeczku/calibre-web

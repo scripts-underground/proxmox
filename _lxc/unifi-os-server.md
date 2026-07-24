@@ -5,6 +5,7 @@ tags: [network]
 logo: /assets/logos/unifi-os-server.webp
 by: MickLesk
 site: https://ui.com/
+repo: ""
 port: 11443
 cpu: 2
 ram: 4096

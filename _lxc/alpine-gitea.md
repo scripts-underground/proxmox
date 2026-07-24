@@ -2,7 +2,7 @@
 slug: alpine-gitea
 title: Alpine-Gitea
 tags: [alpine, git]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gitea.webp
+logo: /assets/logos/alpine-gitea.webp
 by: MickLesk
 repo: https://github.com/go-gitea/gitea
 site: https://gitea.io/

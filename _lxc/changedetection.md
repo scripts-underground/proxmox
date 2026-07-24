@@ -2,7 +2,7 @@
 slug: changedetection
 title: Change Detection
 tags: [monitoring, crawler]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/changedetection.webp
+logo: /assets/logos/changedetection.webp
 by: tteck
 repo: https://github.com/dgtlmoon/changedetection.io
 site: https://changedetection.io/

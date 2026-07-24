@@ -2,7 +2,7 @@
 slug: mylar3
 title: Mylar3
 tags: [torrent, downloader, comic]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mylar3.webp
+logo: /assets/logos/mylar3.webp
 by: davalanche
 co_author: [tremor021]
 repo: https://github.com/mylar3/mylar3

@@ -2,7 +2,7 @@
 slug: openobserve
 title: OpenObserve
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/openobserve.webp
+logo: /assets/logos/openobserve.webp
 by: tteck
 repo: https://github.com/openobserve/openobserve
 site: https://openobserve.ai/

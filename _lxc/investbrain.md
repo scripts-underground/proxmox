@@ -2,7 +2,7 @@
 slug: investbrain
 title: Investbrain
 tags: [finance, portfolio, investing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/investbrain.webp
+logo: /assets/logos/investbrain.webp
 by: b3ni
 repo: https://github.com/investbrainapp/investbrain
 site: https://investbra.in

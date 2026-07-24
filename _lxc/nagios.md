@@ -2,7 +2,7 @@
 slug: nagios
 title: Nagios
 tags: [monitoring, alerts, infrastructure]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nagios.webp
+logo: /assets/logos/nagios.webp
 by: MickLesk
 repo: https://github.com/NagiosEnterprises/nagioscore
 site: https://www.nagios.org/

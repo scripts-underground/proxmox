@@ -2,7 +2,7 @@
 slug: duplicati
 title: Duplicati
 tags: [backup]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/duplicati.webp
+logo: /assets/logos/duplicati.webp
 by: tremor021
 repo: https://github.com/duplicati/duplicati
 site: https://www.duplicati.com

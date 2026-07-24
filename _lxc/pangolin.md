@@ -2,7 +2,7 @@
 slug: pangolin
 title: Pangolin
 tags: [proxy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/pangolin.webp
+logo: /assets/logos/pangolin.webp
 by: tremor021
 repo: https://github.com/fosrl/pangolin
 site: https://pangolin.net/

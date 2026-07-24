@@ -2,7 +2,7 @@
 slug: alpine-wakapi
 title: Alpine-Wakapi
 tags: [code, time-tracking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wakapi.webp
+logo: /assets/logos/alpine-wakapi.webp
 by: tremor021
 repo: https://github.com/muety/wakapi
 site: https://wakapi.dev/

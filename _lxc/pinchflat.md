@@ -2,7 +2,7 @@
 slug: pinchflat
 title: Pinchflat
 tags: [media, youtube, downloader]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/pinchflat.webp
+logo: /assets/logos/pinchflat.webp
 by: nnsense
 repo: https://github.com/kieraneglin/pinchflat
 site: https://github.com/kieraneglin/pinchflat

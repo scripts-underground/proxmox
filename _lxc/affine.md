@@ -2,7 +2,7 @@
 slug: affine
 title: AFFiNE
 tags: [knowledge, notes, workspace]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/affine.webp
+logo: /assets/logos/affine.webp
 by: MickLesk
 repo: https://github.com/toeverything/AFFiNE
 site: https://affine.pro/

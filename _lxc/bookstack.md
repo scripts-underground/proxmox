@@ -2,7 +2,7 @@
 slug: bookstack
 title: Bookstack
 tags: [organizer]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bookstack.webp
+logo: /assets/logos/bookstack.webp
 by: MickLesk
 repo: https://github.com/BookStackApp/BookStack
 site: https://www.bookstackapp.com/

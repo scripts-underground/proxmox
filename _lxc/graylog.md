@@ -2,7 +2,7 @@
 slug: graylog
 title: Graylog
 tags: [logging]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/graylog.webp
+logo: /assets/logos/graylog.webp
 by: tremor021
 repo: https://github.com/Graylog2/graylog2-server
 site: https://graylog.org/

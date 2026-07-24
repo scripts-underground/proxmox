@@ -2,7 +2,7 @@
 slug: tautulli
 title: Tautulli
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tautulli.webp
+logo: /assets/logos/tautulli.webp
 by: tteck
 repo: https://github.com/Tautulli/Tautulli
 site: https://tautulli.com/

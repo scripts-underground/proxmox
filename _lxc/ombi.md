@@ -2,7 +2,7 @@
 slug: ombi
 title: Ombi
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ombi.webp
+logo: /assets/logos/ombi.webp
 by: tteck
 repo: https://github.com/Ombi-app/Ombi
 site: https://ombi.io/

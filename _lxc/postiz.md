@@ -2,7 +2,7 @@
 slug: postiz
 title: Postiz
 tags: [social-media, scheduling, automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/postiz.webp
+logo: /assets/logos/postiz.webp
 by: MickLesk
 repo: https://github.com/gitroomhq/postiz-app
 site: https://postiz.com

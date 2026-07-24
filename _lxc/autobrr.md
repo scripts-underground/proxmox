@@ -2,7 +2,7 @@
 slug: autobrr
 title: Autobrr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/autobrr.webp
+logo: /assets/logos/autobrr.webp
 by: tteck
 repo: https://github.com/autobrr/autobrr
 site: https://autobrr.com/

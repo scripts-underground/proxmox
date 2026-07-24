@@ -2,7 +2,7 @@
 slug: meshcentral
 title: MeshCentral
 tags: [remote-management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/meshcentral.webp
+logo: /assets/logos/meshcentral.webp
 by: tteck
 repo: https://github.com/Ylianst/MeshCentral
 site: https://meshcentral.com/

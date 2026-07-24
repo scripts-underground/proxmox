@@ -2,7 +2,7 @@
 slug: librenms
 title: LibreNMS
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/librenms.webp
+logo: /assets/logos/librenms.webp
 by: michelroegl-brunner
 repo: https://github.com/librenms/librenms
 site: https://www.librenms.org/

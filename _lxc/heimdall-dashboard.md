@@ -2,7 +2,7 @@
 slug: heimdall-dashboard
 title: Heimdall-Dashboard
 tags: [dashboard]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/heimdall.webp
+logo: /assets/logos/heimdall-dashboard.webp
 by: tteck
 repo: https://github.com/linuxserver/Heimdall
 site: https://heimdall.site

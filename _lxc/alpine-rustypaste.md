@@ -2,7 +2,7 @@
 slug: alpine-rustypaste
 title: Alpine-RustyPaste
 tags: [alpine, pastebin, storage]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rustypaste.webp
+logo: ""
 by: MickLesk
 repo: https://github.com/orhun/rustypaste
 site: https://github.com/orhun/rustypaste

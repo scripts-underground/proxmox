@@ -2,7 +2,7 @@
 slug: alpine-wireguard
 title: Alpine-Wireguard
 tags: [alpine, networking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wireguard.webp
+logo: /assets/logos/alpine-wireguard.webp
 by: MickLesk
 repo: https://github.com/WireGuard/WireGuard
 site: https://www.wireguard.com/

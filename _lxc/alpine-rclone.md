@@ -2,7 +2,7 @@
 slug: alpine-rclone
 title: Alpine-rclone
 tags: [alpine, storage]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rclone.webp
+logo: /assets/logos/alpine-rclone.webp
 by: tremor021
 repo: https://github.com/rclone/rclone
 site: https://rclone.org/

@@ -2,7 +2,7 @@
 slug: cosmos
 title: Cosmos
 tags: [cloud]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cosmos.webp
+logo: ""
 by: michelroegl-brunner
 repo: https://github.com/azukaar/Cosmos-Server
 site: https://cosmos-cloud.io/

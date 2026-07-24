@@ -2,7 +2,7 @@
 slug: lyrionmusicserver
 title: Lyrion Music Server
 tags: [media]
-logo: https://lyrion.org/assets/logo.png
+logo: /assets/logos/lyrionmusicserver.webp
 by: Omar Minaya
 repo: https://github.com/LMS-Community/slimserver
 site: https://lyrion.org/

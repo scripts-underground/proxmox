@@ -2,7 +2,7 @@
 slug: dagu
 title: Dagu
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dagu.webp
+logo: /assets/logos/dagu.webp
 by: MickLesk
 repo: https://github.com/dagucloud/dagu
 site: https://dagu.readthedocs.io/

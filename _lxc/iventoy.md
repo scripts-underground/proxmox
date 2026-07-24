@@ -2,7 +2,7 @@
 slug: iventoy
 title: iVentoy
 tags: [pxe-tool]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/iventoy.webp
+logo: /assets/logos/iventoy.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/ventoy/PXE

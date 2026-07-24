@@ -2,7 +2,7 @@
 slug: alpine-traefik
 title: Alpine-Traefik
 tags: [alpine, networking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/traefik.webp
+logo: /assets/logos/alpine-traefik.webp
 by: MickLesk
 repo: https://github.com/traefik/traefik
 site: https://alpinelinux.org/

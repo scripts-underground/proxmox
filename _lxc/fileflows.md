@@ -2,7 +2,7 @@
 slug: fileflows
 title: FileFlows
 tags: [media, automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/fileflows.webp
+logo: /assets/logos/fileflows.webp
 by: kkroboth
 repo: https://github.com/revenz/FileFlows
 site: https://fileflows.com

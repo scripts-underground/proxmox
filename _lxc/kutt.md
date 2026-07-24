@@ -2,7 +2,7 @@
 slug: kutt
 title: Kutt
 tags: [sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kutt.webp
+logo: /assets/logos/kutt.webp
 by: tomfrenzel
 repo: https://github.com/thedevs-network/kutt
 site: https://github.com/thedevs-network/kutt

@@ -2,7 +2,7 @@
 slug: inventree
 title: InvenTree
 tags: [inventory]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/inventree.webp
+logo: /assets/logos/inventree.webp
 by: tremor021
 repo: https://github.com/inventree/InvenTree
 site: https://inventree.org

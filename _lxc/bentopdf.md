@@ -2,7 +2,7 @@
 slug: bentopdf
 title: BentoPDF
 tags: [pdf-editor]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bentopdf.webp
+logo: /assets/logos/bentopdf.webp
 by: vhsdream
 repo: https://github.com/alam00000/bentopdf
 site: https://github.com/alam00000/bentopdf

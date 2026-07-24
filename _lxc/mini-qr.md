@@ -2,7 +2,7 @@
 slug: mini-qr
 title: Mini-QR
 tags: [qr, tools]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mini-qr.webp
+logo: /assets/logos/mini-qr.webp
 by: doge0420
 repo: https://github.com/lyqht/mini-qr
 site: https://github.com/lyqht/mini-qr

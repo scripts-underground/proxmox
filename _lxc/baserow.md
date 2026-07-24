@@ -2,7 +2,7 @@
 slug: baserow
 title: Baserow
 tags: [database, nocode, spreadsheet]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/baserow.webp
+logo: /assets/logos/baserow.webp
 by: MickLesk
 repo: https://github.com/baserow/baserow
 site: https://baserow.io/

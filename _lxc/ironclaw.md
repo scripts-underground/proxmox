@@ -2,7 +2,7 @@
 slug: ironclaw
 title: IronClaw
 tags: [ai, agent, security]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ironclaw.webp
+logo: /assets/logos/ironclaw.webp
 by: MickLesk
 repo: https://github.com/nearai/ironclaw
 site: https://github.com/nearai/ironclaw

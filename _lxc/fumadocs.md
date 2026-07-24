@@ -2,7 +2,7 @@
 slug: fumadocs
 title: Fumadocs
 tags: [documentation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/fumadocs.webp
+logo: /assets/logos/fumadocs.webp
 by: MickLesk
 repo: https://github.com/fuma-nama/fumadocs
 site: https://fumadocs.vercel.app/

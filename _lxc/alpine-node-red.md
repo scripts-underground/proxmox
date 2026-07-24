@@ -2,7 +2,7 @@
 slug: alpine-node-red
 title: Alpine-Node-RED
 tags: [alpine, automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/node-red.webp
+logo: /assets/logos/alpine-node-red.webp
 by: MickLesk
 repo: https://github.com/node-red/node-red
 site: https://nodered.org/

@@ -2,7 +2,7 @@
 slug: alpine-caddy
 title: Alpine-Caddy
 tags: [webserver]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/caddy.webp
+logo: /assets/logos/alpine-caddy.webp
 by: cobaltgit
 repo: https://github.com/caddyserver/caddy
 site: https://caddyserver.com/

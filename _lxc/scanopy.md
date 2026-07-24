@@ -2,7 +2,7 @@
 slug: scanopy
 title: Scanopy
 tags: [analytics]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/scanopy.webp
+logo: /assets/logos/scanopy.webp
 by: vhsdream
 repo: https://github.com/scanopy/scanopy
 site: https://github.com/scanopy/scanopy

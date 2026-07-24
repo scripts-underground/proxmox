@@ -2,6 +2,7 @@
 slug: jeedom
 title: Jeedom
 tags: [automation, smarthome]
+logo: /assets/logos/jeedom.webp
 by: Mips2648
 repo: https://github.com/jeedom/core
 site: https://jeedom.com/

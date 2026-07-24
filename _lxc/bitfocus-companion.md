@@ -2,7 +2,7 @@
 slug: bitfocus-companion
 title: Bitfocus Companion
 tags: [automation, media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bitfocus-companion.webp
+logo: /assets/logos/bitfocus-companion.webp
 by: glabutis
 repo: https://github.com/bitfocus/companion
 site: https://github.com/bitfocus/companion

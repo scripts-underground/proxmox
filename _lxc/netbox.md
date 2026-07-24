@@ -2,7 +2,7 @@
 slug: netbox
 title: NetBox
 tags: [network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/netbox.webp
+logo: /assets/logos/netbox.webp
 by: bvdberg01
 repo: https://github.com/netbox-community/netbox
 site: https://netboxlabs.com/

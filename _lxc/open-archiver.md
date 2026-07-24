@@ -2,7 +2,7 @@
 slug: open-archiver
 title: Open-Archiver
 tags: [os]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/open-archiver.webp
+logo: /assets/logos/open-archiver.webp
 by: tremor021
 repo: https://github.com/LogicLabs-OU/OpenArchiver
 site: https://openarchiver.com/

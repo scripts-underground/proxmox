@@ -2,7 +2,7 @@
 slug: apache-tomcat
 title: Apache Tomcat
 tags: [webserver]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/apache-tomcat.webp
+logo: /assets/logos/apache-tomcat.webp
 by: MickLesk
 repo: https://github.com/apache/tomcat
 site: https://tomcat.apache.org/

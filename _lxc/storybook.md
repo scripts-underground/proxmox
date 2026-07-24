@@ -2,7 +2,7 @@
 slug: storybook
 title: Storybook
 tags: [dev-tools, frontend, ui]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/storybook.webp
+logo: /assets/logos/storybook.webp
 by: MickLesk
 repo: https://github.com/storybookjs/storybook
 site: https://storybook.js.org/

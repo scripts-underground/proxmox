@@ -2,7 +2,7 @@
 slug: uhf
 title: UHF
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/uhf.webp
+logo: /assets/logos/uhf.webp
 by: zackwithak13
 repo: https://github.com/swapplications/uhf-server-dist
 site: https://www.uhfapp.com/server

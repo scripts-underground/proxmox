@@ -2,7 +2,7 @@
 slug: notediscovery
 title: NoteDiscovery
 tags: [notes, wiki, knowledge-base]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/notediscovery.webp
+logo: /assets/logos/notediscovery.webp
 by: MickLesk
 repo: https://github.com/gamosoft/NoteDiscovery
 site: https://github.com/gamosoft/NoteDiscovery

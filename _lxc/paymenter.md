@@ -2,7 +2,7 @@
 slug: paymenter
 title: Paymenter
 tags: [hosting, ecommerce, marketplace]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/paymenter.webp
+logo: /assets/logos/paymenter.webp
 by: opastorello
 repo: https://github.com/paymenter/paymenter
 site: https://www.paymenter.org

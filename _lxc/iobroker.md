@@ -1,6 +1,7 @@
 ---
 slug: iobroker
 title: ioBroker
+logo: /assets/logos/iobroker.webp
 tags: [automation]
 by: tteck
 repo: https://github.com/ioBroker/ioBroker.js-controller

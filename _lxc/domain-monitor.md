@@ -2,7 +2,7 @@
 slug: domain-monitor
 title: Domain-Monitor
 tags: [proxy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/domain-monitor.webp
+logo: /assets/logos/domain-monitor.webp
 by: tremor021
 repo: https://github.com/Hosteroid/domain-monitor
 site: https://github.com/Hosteroid/domain-monitor

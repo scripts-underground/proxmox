@@ -2,7 +2,7 @@
 slug: commafeed
 title: CommaFeed
 tags: [rss-reader]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/commafeed.webp
+logo: /assets/logos/commafeed.webp
 by: tteck
 repo: https://github.com/Athou/commafeed
 site: https://www.commafeed.com/

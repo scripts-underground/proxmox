@@ -2,7 +2,7 @@
 slug: cliproxyapi
 title: CLIProxyAPI
 tags: [ai]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/openai.webp
+logo: /assets/logos/cliproxyapi.webp
 by: mathiasnagler
 repo: https://github.com/router-for-me/CLIProxyAPI
 site: https://github.com/router-for-me/CLIProxyAPI

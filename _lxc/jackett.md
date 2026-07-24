@@ -2,7 +2,7 @@
 slug: jackett
 title: Jackett
 tags: [torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/jackett.webp
+logo: /assets/logos/jackett.webp
 by: tteck
 repo: https://github.com/Jackett/Jackett
 site: https://github.com/Jackett/Jackett

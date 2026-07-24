@@ -2,7 +2,7 @@
 slug: alpine-tinyauth
 title: Alpine-Tinyauth
 tags: [alpine, auth]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tinyauth.webp
+logo: /assets/logos/alpine-tinyauth.webp
 by: tremor021
 repo: https://github.com/tinyauthapp/tinyauth
 site: https://github.com/tinyauthapp/tinyauth

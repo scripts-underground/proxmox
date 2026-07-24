@@ -2,7 +2,7 @@
 slug: nametag
 title: Nametag
 tags: [contacts, crm]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nametag.webp
+logo: /assets/logos/nametag.webp
 by: MickLesk
 repo: https://github.com/mattogodoy/nametag
 site: https://nametag.one

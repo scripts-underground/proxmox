@@ -2,7 +2,7 @@
 slug: pairdrop
 title: PairDrop
 tags: [sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/pairdrop.webp
+logo: /assets/logos/pairdrop.webp
 by: tteck
 repo: https://github.com/schlagmichdoch/PairDrop
 site: https://pairdrop.net/

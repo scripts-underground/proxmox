@@ -2,7 +2,7 @@
 slug: bichon
 title: Bichon
 tags: [email, archive]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bichon.webp
+logo: /assets/logos/bichon.webp
 by: tremor021
 repo: https://github.com/rustmailer/bichon
 site: https://github.com/rustmailer/bichon

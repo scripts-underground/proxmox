@@ -2,7 +2,7 @@
 slug: erpnext
 title: ERPNext
 tags: [erp, business, accounting]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/frappe-erpnext.webp
+logo: /assets/logos/erpnext.webp
 by: MickLesk
 repo: https://github.com/frappe/erpnext
 site: https://frappe.io/erpnext

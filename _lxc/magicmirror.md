@@ -2,7 +2,7 @@
 slug: magicmirror
 title: MagicMirror
 tags: [smarthome]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/magicmirror2.webp
+logo: /assets/logos/magicmirror.webp
 by: tteckster
 co_author: [tremor021]
 repo: https://github.com/MagicMirrorOrg/MagicMirror

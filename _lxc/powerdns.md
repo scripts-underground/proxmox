@@ -2,7 +2,7 @@
 slug: powerdns
 title: PowerDNS
 tags: [dns]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/powerdns.webp
+logo: /assets/logos/powerdns.webp
 by: tremor021
 repo: https://github.com/PowerDNS/pdns
 site: https://www.powerdns.com/

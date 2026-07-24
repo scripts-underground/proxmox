@@ -2,7 +2,7 @@
 slug: drawio
 title: DrawIO
 tags: [diagrams]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/draw-io.webp
+logo: /assets/logos/drawio.webp
 by: tremor021
 repo: https://github.com/jgraph/drawio
 site: https://www.drawio.com/

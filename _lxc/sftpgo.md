@@ -2,7 +2,7 @@
 slug: sftpgo
 title: SFTPGo
 tags: [ftp, sftp]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/sftpgo.webp
+logo: /assets/logos/sftpgo.webp
 by: tteck
 repo: https://github.com/drakkan/sftpgo
 site: https://sftpgo.com/

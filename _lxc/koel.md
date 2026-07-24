@@ -2,7 +2,7 @@
 slug: koel
 title: Koel
 tags: [music, streaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/koel.webp
+logo: /assets/logos/koel.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/koel/koel

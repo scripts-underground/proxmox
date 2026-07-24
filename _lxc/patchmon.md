@@ -2,7 +2,7 @@
 slug: patchmon
 title: PatchMon
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/patchmon.webp
+logo: /assets/logos/patchmon.webp
 by: vhsdream
 repo: https://github.com/PatchMon/PatchMon
 site: https://patchmon.net/

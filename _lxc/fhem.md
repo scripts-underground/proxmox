@@ -2,9 +2,10 @@
 slug: fhem
 title: FHEM
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/fhem.webp
+logo: /assets/logos/fhem.webp
 by: tteck
 site: https://fhem.de
+repo: ""
 port: 8083
 cpu: 2
 ram: 2048

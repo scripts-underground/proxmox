@@ -2,7 +2,7 @@
 slug: owncast
 title: Owncast
 tags: [broadcasting]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/owncast.webp
+logo: /assets/logos/owncast.webp
 by: tteck
 repo: https://github.com/owncast/owncast
 site: https://owncast.online/

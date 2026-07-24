@@ -2,7 +2,7 @@
 slug: beszel
 title: Beszel
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/beszel.webp
+logo: /assets/logos/beszel.webp
 by: Sinofage
 repo: https://github.com/henrygd/beszel
 site: https://beszel.dev/

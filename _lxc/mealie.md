@@ -2,7 +2,7 @@
 slug: mealie
 title: Mealie
 tags: [recipes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mealie.webp
+logo: /assets/logos/mealie.webp
 by: MickLesk
 repo: https://github.com/mealie-recipes/mealie
 site: https://mealie.io

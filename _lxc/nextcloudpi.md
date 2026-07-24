@@ -2,7 +2,7 @@
 slug: nextcloudpi
 title: NextCloudPi
 tags: [cloud]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nextcloudpi.webp
+logo: /assets/logos/nextcloudpi.webp
 by: tteckster
 repo: https://github.com/nextcloud/nextcloudpi
 site: https://nextcloudpi.com/

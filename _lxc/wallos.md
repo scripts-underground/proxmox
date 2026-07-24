@@ -2,7 +2,7 @@
 slug: wallos
 title: Wallos
 tags: [finance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wallos.webp
+logo: /assets/logos/wallos.webp
 by: MickLesk
 repo: https://github.com/ellite/wallos
 site: https://wallosapp.com/

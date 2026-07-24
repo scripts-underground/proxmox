@@ -2,7 +2,7 @@
 slug: yourls
 title: YOURLS
 tags: [url-shortener, php]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/yourls.webp
+logo: /assets/logos/yourls.webp
 by: MickLesk
 repo: https://github.com/YOURLS/YOURLS
 site: https://yourls.org/

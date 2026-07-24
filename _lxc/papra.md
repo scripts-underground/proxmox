@@ -2,7 +2,7 @@
 slug: papra
 title: Papra
 tags: [document-management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/papra.webp
+logo: /assets/logos/papra.webp
 by: MickLesk
 repo: https://github.com/papra-hq/papra
 site: https://github.com/papra-hq/papra

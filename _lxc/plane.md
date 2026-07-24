@@ -2,7 +2,7 @@
 slug: plane
 title: Plane
 tags: [project-management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/plane.webp
+logo: /assets/logos/plane.webp
 by: onionrings29
 repo: https://github.com/makeplane/plane
 site: https://plane.so

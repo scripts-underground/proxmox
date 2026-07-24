@@ -2,7 +2,7 @@
 slug: rclone
 title: Rclone
 tags: [os, storage]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rclone.webp
+logo: /assets/logos/rclone.webp
 by: tremor021
 repo: https://github.com/rclone/rclone
 site: https://rclone.org/

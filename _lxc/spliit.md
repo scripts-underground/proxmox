@@ -2,7 +2,7 @@
 slug: spliit
 title: Spliit
 tags: [finance, expense-sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/spliit.webp
+logo: /assets/logos/spliit.webp
 by: phof
 repo: https://github.com/spliit-app/spliit
 site: https://spliit.app/

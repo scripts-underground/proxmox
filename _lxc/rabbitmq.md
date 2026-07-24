@@ -2,7 +2,7 @@
 slug: rabbitmq
 title: RabbitMQ
 tags: [mqtt]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/rabbitmq.webp
+logo: /assets/logos/rabbitmq.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/rabbitmq/rabbitmq-server

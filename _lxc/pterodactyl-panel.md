@@ -2,7 +2,7 @@
 slug: pterodactyl-panel
 title: Pterodactyl Panel
 tags: [gaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/pterodactyl.webp
+logo: /assets/logos/pterodactyl-panel.webp
 by: bvdberg01
 repo: https://github.com/pterodactyl/panel
 site: https://github.com/pterodactyl/panel

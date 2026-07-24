@@ -2,7 +2,7 @@
 slug: wavelog
 title: Wavelog
 tags: [radio-logging]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wavelog.webp
+logo: /assets/logos/wavelog.webp
 by: DonLocke
 repo: https://github.com/wavelog/wavelog
 site: https://www.wavelog.org/

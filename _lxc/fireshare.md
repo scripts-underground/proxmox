@@ -2,7 +2,7 @@
 slug: fireshare
 title: Fireshare
 tags: [sharing, video]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/fireshare.webp
+logo: /assets/logos/fireshare.webp
 by: tremor021
 repo: https://github.com/ShaneIsrael/fireshare
 site: https://fireshare.net

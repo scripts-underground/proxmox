@@ -2,7 +2,7 @@
 slug: kubo
 title: Kubo
 tags: [sharing]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kubo.webp
+logo: /assets/logos/kubo.webp
 by: tteck
 repo: https://github.com/ipfs/kubo
 site: https://ipfs.tech/

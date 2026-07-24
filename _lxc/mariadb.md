@@ -2,7 +2,7 @@
 slug: mariadb
 title: MariaDB
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mariadb.webp
+logo: /assets/logos/mariadb.webp
 by: tteck
 repo: https://github.com/MariaDB/server
 site: https://mariadb.org/

@@ -2,7 +2,7 @@
 slug: comfyui
 title: ComfyUI
 tags: [ai]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/comfyui.webp
+logo: /assets/logos/comfyui.webp
 by: jdacode
 repo: https://github.com/comfyanonymous/ComfyUI
 site: https://github.com/comfyanonymous/ComfyUI

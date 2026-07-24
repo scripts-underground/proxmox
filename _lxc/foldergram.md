@@ -2,7 +2,7 @@
 slug: foldergram
 title: Foldergram
 tags: [photos]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/foldergram.webp
+logo: /assets/logos/foldergram.webp
 by: tremor021
 repo: https://github.com/foldergram/foldergram
 site: https://foldergram.github.io/

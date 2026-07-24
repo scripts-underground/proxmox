@@ -2,7 +2,7 @@
 slug: gitea
 title: Gitea
 tags: [git, code, devops]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gitea.webp
+logo: /assets/logos/gitea.webp
 by: tteck
 co_author: [Rogue-King]
 repo: https://github.com/go-gitea/gitea

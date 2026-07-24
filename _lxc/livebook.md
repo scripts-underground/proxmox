@@ -2,7 +2,7 @@
 slug: livebook
 title: Livebook
 tags: [development]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/livebook.webp
+logo: /assets/logos/livebook.webp
 by: dkuku
 repo: https://github.com/livebook-dev/livebook
 site: https://livebook.dev/

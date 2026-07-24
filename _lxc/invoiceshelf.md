@@ -2,7 +2,7 @@
 slug: invoiceshelf
 title: InvoiceShelf
 tags: [invoicing, finance, business]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/invoiceshelf.webp
+logo: /assets/logos/invoiceshelf.webp
 by: MickLesk
 repo: https://github.com/InvoiceShelf/InvoiceShelf
 site: https://invoiceshelf.com/

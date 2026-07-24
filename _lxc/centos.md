@@ -2,6 +2,7 @@
 slug: centos
 title: CentOS Stream
 tags: [os]
+port: ""
 logo: /assets/logos/centos.webp
 by: MickLesk
 repo: https://www.centos.org/centos-stream/

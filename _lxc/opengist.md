@@ -2,7 +2,7 @@
 slug: opengist
 title: Opengist
 tags: [development]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/opengist.webp
+logo: /assets/logos/opengist.webp
 by: jd-apprentice
 repo: https://github.com/thomiceli/opengist
 site: https://opengist.io

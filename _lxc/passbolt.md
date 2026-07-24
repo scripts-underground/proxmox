@@ -2,7 +2,7 @@
 slug: passbolt
 title: Passbolt
 tags: [auth]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/passbolt.webp
+logo: /assets/logos/passbolt.webp
 by: tremor021
 repo: https://github.com/passbolt/passbolt_api
 site: https://www.passbolt.com/

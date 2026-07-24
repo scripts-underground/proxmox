@@ -2,7 +2,7 @@
 slug: bunkerweb
 title: BunkerWeb
 tags: [webserver]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bunkerweb.webp
+logo: /assets/logos/bunkerweb.webp
 by: tteck
 repo: https://github.com/bunkerity/bunkerweb
 site: https://www.bunkerweb.io/

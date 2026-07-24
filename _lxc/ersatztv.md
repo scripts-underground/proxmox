@@ -2,7 +2,7 @@
 slug: ersatztv
 title: ErsatzTV
 tags: [iptv]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ersatztv.webp
+logo: /assets/logos/ersatztv.webp
 by: MickLesk
 repo: https://github.com/ErsatzTV/ErsatzTV
 site: https://ersatztv.org/

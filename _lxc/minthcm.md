@@ -2,7 +2,7 @@
 slug: minthcm
 title: MintHCM
 tags: [hcm]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/minthcm.webp
+logo: /assets/logos/minthcm.webp
 by: MintHCM
 repo: https://github.com/minthcm/minthcm
 site: https://minthcm.org/

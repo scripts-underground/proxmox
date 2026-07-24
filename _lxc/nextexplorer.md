@@ -2,7 +2,7 @@
 slug: nextexplorer
 title: nextExplorer
 tags: [files, documents]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nextexplorer.webp
+logo: /assets/logos/nextexplorer.webp
 by: vhsdream
 repo: https://github.com/nxzai/nextExplorer
 site: https://explorer.nxz.ai

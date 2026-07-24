@@ -2,7 +2,7 @@
 slug: seelf
 title: seelf
 tags: [server, docker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/seelf.webp
+logo: /assets/logos/seelf.webp
 by: tremor021
 repo: https://github.com/YuukanOO/seelf
 site: https://yuukanoo.github.io/seelf/

@@ -2,7 +2,7 @@
 slug: nzbget
 title: NZBGet
 tags: [usenet, downloader]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nzbget.webp
+logo: /assets/logos/nzbget.webp
 by: tteck
 co_author: [havardthom]
 repo: https://github.com/nzbgetcom/nzbget

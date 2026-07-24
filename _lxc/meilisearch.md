@@ -2,7 +2,7 @@
 slug: meilisearch
 title: Meilisearch
 tags: [full-text-search]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/meilisearch.webp
+logo: /assets/logos/meilisearch.webp
 by: MickLesk
 repo: https://github.com/meilisearch/meilisearch
 site: https://www.meilisearch.com/

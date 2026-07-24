@@ -2,7 +2,7 @@
 slug: gogs
 title: Gogs
 tags: [git, code, devops]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gogs.webp
+logo: /assets/logos/gogs.webp
 by: MickLesk
 repo: https://github.com/gogs/gogs
 site: https://gogs.io/

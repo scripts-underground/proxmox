@@ -2,7 +2,7 @@
 slug: tracktor
 title: Tracktor
 tags: [car, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tracktor.webp
+logo: /assets/logos/tracktor.webp
 by: CrazyWolf13
 repo: https://github.com/javedh-dev/tracktor
 site: https://tracktor.bytedge.in

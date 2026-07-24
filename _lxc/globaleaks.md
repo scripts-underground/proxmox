@@ -2,7 +2,7 @@
 slug: globaleaks
 title: GlobaLeaks
 tags: [whistleblowing-software]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/globaleaks.webp
+logo: /assets/logos/globaleaks.webp
 by: evilaliv3
 repo: https://github.com/globaleaks/globaleaks-whistleblowing-software
 site: https://www.globaleaks.org

@@ -2,7 +2,7 @@
 slug: languagetool
 title: LanguageTool
 tags: [spellcheck]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/languagetool.webp
+logo: /assets/logos/languagetool.webp
 by: tremor021
 repo: https://github.com/languagetool-org/languagetool
 site: https://languagetool.org/

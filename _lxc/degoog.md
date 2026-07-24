@@ -2,7 +2,7 @@
 slug: degoog
 title: degoog
 tags: [search, privacy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/degoog.webp
+logo: /assets/logos/degoog.webp
 by: MickLesk
 repo: https://github.com/fccview/degoog
 site: https://github.com/fccview/degoog

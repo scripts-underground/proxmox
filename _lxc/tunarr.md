@@ -2,7 +2,7 @@
 slug: tunarr
 title: Tunarr
 tags: [iptv]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tunarr.webp
+logo: /assets/logos/tunarr.webp
 by: chrisbenincasa
 repo: https://github.com/chrisbenincasa/tunarr
 site: https://tunarr.com/

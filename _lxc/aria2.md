@@ -2,7 +2,7 @@
 slug: aria2
 title: Aria2
 tags: [download-utility]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/aria2.webp
+logo: /assets/logos/aria2.webp
 by: tteck
 repo: https://github.com/aria2/aria2
 site: https://aria2.github.io/

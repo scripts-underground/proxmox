@@ -2,7 +2,7 @@
 slug: qbittorrent
 title: qBittorrent
 tags: [torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/qbittorrent.webp
+logo: /assets/logos/qbittorrent.webp
 by: tteck
 co_author: [Slaviša Arežina]
 repo: https://github.com/qbittorrent/qBittorrent

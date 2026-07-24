@@ -2,7 +2,7 @@
 slug: ampache
 title: Ampache
 tags: [music]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ampache.webp
+logo: /assets/logos/ampache.webp
 by: MickLesk
 repo: https://github.com/ampache/ampache
 site: https://ampache.org/

@@ -2,7 +2,7 @@
 slug: watcharr
 title: Watcharr
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/watcharr.webp
+logo: /assets/logos/watcharr.webp
 by: tremor021
 repo: https://github.com/sbondCo/Watcharr
 site: https://watcharr.app/

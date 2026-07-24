@@ -2,7 +2,7 @@
 slug: uptimekuma
 title: Uptime Kuma
 tags: [analytics, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/uptime-kuma.webp
+logo: /assets/logos/uptimekuma.webp
 by: tteck
 repo: https://github.com/louislam/uptime-kuma
 site: https://uptime.kuma.pet/

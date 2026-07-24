@@ -2,7 +2,7 @@
 slug: asterisk
 title: Asterisk
 tags: [telephone, pbx]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/asterisk.webp
+logo: /assets/logos/asterisk.webp
 by: michelroegl-brunner
 repo: https://github.com/asterisk/asterisk
 site: https://asterisk.org

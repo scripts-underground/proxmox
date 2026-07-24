@@ -2,7 +2,7 @@
 slug: kometa
 title: Kometa
 tags: [media, streaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/kometa.webp
+logo: /assets/logos/kometa.webp
 by: tremor021
 repo: https://github.com/Kometa-Team/Kometa
 site: https://kometa.wiki

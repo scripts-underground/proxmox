@@ -2,7 +2,7 @@
 slug: postgresql
 title: PostgreSQL
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/postgresql.webp
+logo: /assets/logos/postgresql.webp
 by: tteck
 repo: https://github.com/postgres/postgres
 site: https://www.postgresql.org/

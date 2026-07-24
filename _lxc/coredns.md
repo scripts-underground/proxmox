@@ -2,7 +2,7 @@
 slug: coredns
 title: CoreDNS
 tags: [dns]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/coredns.webp
+logo: /assets/logos/coredns.webp
 by: MickLesk
 repo: https://github.com/coredns/coredns
 site: https://coredns.io/

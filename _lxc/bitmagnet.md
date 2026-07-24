@@ -2,7 +2,7 @@
 slug: bitmagnet
 title: Bitmagnet
 tags: [torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bitmagnet.webp
+logo: /assets/logos/bitmagnet.webp
 by: tremor021
 repo: https://github.com/bitmagnet-io/bitmagnet
 site: https://bitmagnet.io/

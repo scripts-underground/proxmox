@@ -2,7 +2,7 @@
 slug: prowlarr
 title: Prowlarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/prowlarr.webp
+logo: /assets/logos/prowlarr.webp
 by: tteck
 repo: https://github.com/Prowlarr/Prowlarr
 site: https://prowlarr.com/

@@ -2,7 +2,7 @@
 slug: prometheus
 title: Prometheus
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/prometheus.webp
+logo: /assets/logos/prometheus.webp
 by: tteck
 repo: https://github.com/prometheus/prometheus
 site: https://prometheus.io/

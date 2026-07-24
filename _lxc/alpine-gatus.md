@@ -2,7 +2,7 @@
 slug: alpine-gatus
 title: Gatus on Alpine
 tags: [alpine, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/gatus.webp
+logo: /assets/logos/alpine-gatus.webp
 by: tremor021
 repo: https://github.com/TwiN/gatus
 site: https://github.com/TwiN/gatus

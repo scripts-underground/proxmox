@@ -2,7 +2,7 @@
 slug: nodecast-tv
 title: nodecast-tv
 tags: [media]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nodecast-tv.webp
+logo: /assets/logos/nodecast-tv.webp
 by: luismco
 repo: https://github.com/technomancer702/nodecast-tv
 site: https://github.com/technomancer702/nodecast-tv

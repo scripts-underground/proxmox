@@ -2,7 +2,7 @@
 slug: qui
 title: Qui
 tags: [torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/qui.webp
+logo: /assets/logos/qui.webp
 by: Canbiz
 repo: https://github.com/autobrr/qui
 site: https://getqui.com/

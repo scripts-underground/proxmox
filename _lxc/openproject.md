@@ -2,7 +2,7 @@
 slug: openproject
 title: OpenProject
 tags: [project-management, erp]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/openproject.webp
+logo: /assets/logos/openproject.webp
 by: michelroegl-brunner
 repo: https://github.com/opf/openproject
 site: https://www.openproject.org/

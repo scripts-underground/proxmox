@@ -2,7 +2,7 @@
 slug: caddymanager
 title: CaddyManager
 tags: [webservers-proxies]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/caddymanager.webp
+logo: /assets/logos/caddymanager.webp
 by: tremor021
 repo: https://github.com/caddymanager/caddymanager
 site: https://caddymanager.online

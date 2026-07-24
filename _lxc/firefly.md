@@ -2,7 +2,7 @@
 slug: firefly
 title: Firefly III
 tags: [finance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/firefly-iii.webp
+logo: /assets/logos/firefly.webp
 by: quantumryuu
 co_author: [Slaviša Arežina (tremor021)]
 repo: https://github.com/firefly-iii/firefly-iii

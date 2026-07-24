@@ -2,7 +2,7 @@
 slug: donetick
 title: Donetick
 tags: [productivity, tasks]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/donetick.webp
+logo: /assets/logos/donetick.webp
 by: fstof
 repo: https://github.com/donetick/donetick
 site: https://github.com/donetick/donetick

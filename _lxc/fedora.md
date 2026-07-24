@@ -2,6 +2,7 @@
 slug: fedora
 title: Fedora
 tags: [os]
+port: ""
 logo: /assets/logos/fedora.webp
 by: MickLesk
 repo: https://fedoraproject.org/

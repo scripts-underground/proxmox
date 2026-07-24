@@ -2,7 +2,7 @@
 slug: myip
 title: MyIP
 tags: [network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/myip.webp
+logo: /assets/logos/myip.webp
 by: tremor021
 repo: https://github.com/jason5ng32/MyIP
 site: https://ipcheck.ing/

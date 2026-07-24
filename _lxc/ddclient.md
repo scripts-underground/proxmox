@@ -2,7 +2,7 @@
 slug: ddclient
 title: ddclient
 tags: [network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ddclient.webp
+logo: /assets/logos/ddclient.webp
 by: mitchscobell
 repo: https://github.com/ddclient/ddclient
 site: https://ddclient.net/

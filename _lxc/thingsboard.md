@@ -2,7 +2,7 @@
 slug: thingsboard
 title: ThingsBoard
 tags: [iot, platform]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/thingsboard.webp
+logo: /assets/logos/thingsboard.webp
 by: MickLesk
 repo: https://github.com/thingsboard/thingsboard
 site: https://thingsboard.io/

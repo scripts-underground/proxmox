@@ -2,7 +2,7 @@
 slug: alpine-it-tools
 title: IT-Tools (Alpine)
 tags: [alpine, development]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/it-tools.webp
+logo: /assets/logos/alpine-it-tools.webp
 by: nicedevil007
 repo: https://github.com/sharevb/it-tools
 site: https://it-tools.tech/

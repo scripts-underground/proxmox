@@ -2,7 +2,7 @@
 slug: xyops
 title: xyOps
 tags: [scheduler, automation, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/xyops.webp
+logo: /assets/logos/xyops.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/pixlcore/xyops

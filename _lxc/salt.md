@@ -2,7 +2,7 @@
 slug: salt
 title: Salt
 tags: [automation]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/salt.webp
+logo: /assets/logos/salt.webp
 by: bvdberg01
 repo: https://github.com/saltstack/salt
 site: https://saltproject.io/

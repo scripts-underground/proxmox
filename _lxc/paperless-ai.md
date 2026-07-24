@@ -2,7 +2,7 @@
 slug: paperless-ai
 title: Paperless-AI
 tags: [ai, document]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/paperless-ai.webp
+logo: /assets/logos/paperless-ai.webp
 by: MickLesk
 repo: https://github.com/clusterzx/paperless-ai
 site: https://github.com/clusterzx/paperless-ai

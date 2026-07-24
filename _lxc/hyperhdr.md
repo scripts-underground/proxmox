@@ -2,7 +2,7 @@
 slug: hyperhdr
 title: HyperHDR
 tags: [ambient-lightning]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/hyperhdr.webp
+logo: /assets/logos/hyperhdr.webp
 by: tteck
 repo: https://github.com/awawa-dev/HyperHDR
 site: https://www.hyperhdr.eu/

@@ -2,7 +2,7 @@
 slug: manyfold
 title: Manyfold
 tags: [3d]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/manyfold.webp
+logo: /assets/logos/manyfold.webp
 by: bvdberg01
 co_author: [SunFlowerOwl]
 repo: https://github.com/manyfold3d/manyfold

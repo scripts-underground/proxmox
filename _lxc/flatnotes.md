@@ -2,7 +2,7 @@
 slug: flatnotes
 title: Flatnotes
 tags: [notes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/flatnotes.webp
+logo: /assets/logos/flatnotes.webp
 by: luismco
 repo: https://github.com/dullage/flatnotes
 site: https://github.com/dullage/flatnotes

@@ -2,7 +2,7 @@
 slug: agentdvr
 title: AgentDVR
 tags: [dvr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/agent-dvr.webp
+logo: /assets/logos/agentdvr.webp
 by: tteck
 repo: https://github.com/ispysoftware/agent
 site: https://www.ispyconnect.com/

@@ -2,7 +2,7 @@
 slug: hoodik
 title: Hoodik
 tags: [cloud, storage]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/hoodik.webp
+logo: /assets/logos/hoodik.webp
 by: MickLesk
 repo: https://github.com/hudikhq/hoodik
 site: https://github.com/hudikhq/hoodik

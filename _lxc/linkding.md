@@ -2,7 +2,7 @@
 slug: linkding
 title: linkding
 tags: [bookmarks, management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/linkding.webp
+logo: /assets/logos/linkding.webp
 by: MickLesk
 repo: https://github.com/sissbruecker/linkding
 site: https://linkding.link/

@@ -2,7 +2,7 @@
 slug: dockge
 title: Dockge
 tags: [docker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dockge.webp
+logo: /assets/logos/dockge.webp
 by: tteck
 co_author: [MickLesk]
 repo: https://github.com/louislam/dockge

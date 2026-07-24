@@ -2,6 +2,7 @@
 slug: alpine
 title: Alpine
 tags: [os, alpine]
+port: ""
 logo: /assets/logos/alpine.webp
 by: tteck
 repo: https://alpinelinux.org/

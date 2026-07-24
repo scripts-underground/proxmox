@@ -2,7 +2,7 @@
 slug: myspeed
 title: MySpeed
 tags: [tracking]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/myspeed.webp
+logo: /assets/logos/myspeed.webp
 by: MickLesk
 repo: https://github.com/gnmyt/myspeed
 site: https://github.com/gnmyt/myspeed

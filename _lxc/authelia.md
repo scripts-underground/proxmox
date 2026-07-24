@@ -2,7 +2,7 @@
 slug: authelia
 title: Authelia
 tags: [authenticator]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/authelia.webp
+logo: /assets/logos/authelia.webp
 by: thost96
 repo: https://github.com/authelia/authelia
 site: https://www.authelia.com/

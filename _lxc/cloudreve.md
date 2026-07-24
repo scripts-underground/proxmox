@@ -2,7 +2,7 @@
 slug: cloudreve
 title: Cloudreve
 tags: [cloud]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cloudreve.webp
+logo: /assets/logos/cloudreve.webp
 by: MickLesk
 repo: https://github.com/cloudreve/cloudreve
 site: https://cloudreve.org/

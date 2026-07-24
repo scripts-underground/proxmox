@@ -2,7 +2,7 @@
 slug: rwmarkable
 title: rwMarkable
 tags: [tasks, notes]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons/webp/rwmarkable.webp
+logo: /assets/logos/rwmarkable.webp
 by: vhsdream
 repo: https://github.com/fccview/rwMarkable
 site: https://github.com/fccview/rwMarkable

@@ -2,7 +2,7 @@
 slug: jitsi-meet
 title: Jitsi-Meet
 tags: [video, conference, communication]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/jitsi-meet.webp
+logo: /assets/logos/jitsi-meet.webp
 by: MickLesk
 repo: https://github.com/jitsi/jitsi-meet
 site: https://jitsi.org/

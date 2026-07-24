@@ -2,7 +2,7 @@
 slug: alpine-valkey
 title: Alpine-Valkey
 tags: [alpine, database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/valkey.webp
+logo: /assets/logos/alpine-valkey.webp
 by: lazarillo
 repo: https://github.com/valkey-io/valkey
 site: https://valkey.io/

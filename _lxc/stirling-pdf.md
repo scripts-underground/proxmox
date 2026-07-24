@@ -2,7 +2,7 @@
 slug: stirling-pdf
 title: Stirling-PDF
 tags: [documents]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/stirling-pdf.webp
+logo: /assets/logos/stirling-pdf.webp
 by: tteck
 repo: https://github.com/Stirling-Tools/Stirling-PDF
 site: https://www.stirlingpdf.com/

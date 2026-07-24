@@ -2,7 +2,7 @@
 slug: byparr
 title: Byparr
 tags: [proxy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/byparr.webp
+logo: /assets/logos/byparr.webp
 by: luismco
 repo: https://github.com/ThePhaseless/Byparr
 site: https://github.com/ThePhaseless/Byparr

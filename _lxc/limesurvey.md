@@ -2,7 +2,7 @@
 slug: limesurvey
 title: LimeSurvey
 tags: [survey, research, forms]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/limesurvey.webp
+logo: /assets/logos/limesurvey.webp
 by: tremor021
 repo: https://github.com/LimeSurvey/LimeSurvey
 site: https://www.limesurvey.org

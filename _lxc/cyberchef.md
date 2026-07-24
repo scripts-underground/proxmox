@@ -2,7 +2,7 @@
 slug: cyberchef
 title: CyberChef
 tags: [security, data, tools]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cyberchef.webp
+logo: /assets/logos/cyberchef.webp
 by: ethan-hgwr
 repo: https://github.com/gchq/CyberChef
 site: https://gchq.github.io/CyberChef/

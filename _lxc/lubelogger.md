@@ -2,7 +2,7 @@
 slug: lubelogger
 title: LubeLogger
 tags: [vehicle, maintenance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/lubelogger.webp
+logo: /assets/logos/lubelogger.webp
 by: kristocopani
 repo: https://github.com/hargata/lubelog
 site: https://lubelogger.com/

@@ -2,7 +2,7 @@
 slug: alpine-mariadb
 title: Alpine-MariaDB
 tags: [alpine, database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mariadb.webp
+logo: /assets/logos/alpine-mariadb.webp
 by: MickLesk
 repo: https://github.com/MariaDB/server
 site: https://mariadb.org/

@@ -2,7 +2,7 @@
 slug: deluge
 title: Deluge
 tags: [torrent]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/deluge.webp
+logo: /assets/logos/deluge.webp
 by: tteck
 repo: https://github.com/deluge-torrent/deluge
 site: https://www.deluge-torrent.org/

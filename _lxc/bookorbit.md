@@ -2,7 +2,7 @@
 slug: bookorbit
 title: BookOrbit
 tags: [books, library, reading]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/bookorbit.webp
+logo: /assets/logos/bookorbit.webp
 by: MickLesk
 repo: https://github.com/bookorbit/bookorbit
 site: https://bookorbit.app

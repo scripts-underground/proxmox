@@ -2,7 +2,7 @@
 slug: alpine-loki
 title: Alpine-Loki
 tags: [alpine, monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/loki.webp
+logo: /assets/logos/alpine-loki.webp
 by: hoholms
 repo: https://github.com/grafana/loki
 site: https://github.com/grafana/loki

@@ -2,7 +2,7 @@
 slug: nightscout
 title: Nightscout
 tags: [health]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nightscout.webp
+logo: /assets/logos/nightscout.webp
 by: aendel
 repo: https://github.com/nightscout/cgm-remote-monitor
 site: https://nightscout.github.io

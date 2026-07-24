@@ -2,7 +2,7 @@
 slug: homebox
 title: HomeBox
 tags: [inventory, household]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/homebox.webp
+logo: /assets/logos/homebox.webp
 by: tteck
 repo: https://github.com/sysadminsmedia/homebox
 site: https://homebox.app/

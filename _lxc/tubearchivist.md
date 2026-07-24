@@ -2,7 +2,7 @@
 slug: tubearchivist
 title: Tube Archivist
 tags: [media, youtube, archiving]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tube-archivist.webp
+logo: /assets/logos/tubearchivist.webp
 by: MickLesk
 repo: https://github.com/tubearchivist/tubearchivist
 site: https://www.tubearchivist.com/

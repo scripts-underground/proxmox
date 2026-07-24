@@ -2,7 +2,7 @@
 slug: tududi
 title: Tududi
 tags: [todo-app]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/tududi.webp
+logo: /assets/logos/tududi.webp
 by: vhsdream
 repo: https://github.com/chrisvel/tududi
 site: https://tududi.com

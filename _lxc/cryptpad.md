@@ -2,7 +2,7 @@
 slug: cryptpad
 title: CryptPad
 tags: [docs, office]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cryptpad.webp
+logo: /assets/logos/cryptpad.webp
 by: tremor021
 repo: https://github.com/cryptpad/cryptpad
 site: https://cryptpad.org/

@@ -2,6 +2,7 @@
 slug: ubuntu
 title: Ubuntu
 tags: [os]
+port: ""
 logo: ""
 by: tteck
 repo: https://ubuntu.com/

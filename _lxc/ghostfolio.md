@@ -2,7 +2,7 @@
 slug: ghostfolio
 title: Ghostfolio
 tags: [finance, investment]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/ghostfolio.webp
+logo: /assets/logos/ghostfolio.webp
 by: lucasfell
 repo: https://github.com/ghostfolio/ghostfolio
 site: https://ghostfol.io/

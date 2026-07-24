@@ -2,7 +2,7 @@
 slug: part-db
 title: Part-DB
 tags: [inventory, parts]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/part-db.webp
+logo: /assets/logos/part-db.webp
 by: bvdberg01
 repo: https://github.com/Part-DB/Part-DB-server
 site: https://docs.part-db.de/

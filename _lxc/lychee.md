@@ -2,7 +2,7 @@
 slug: lychee
 title: Lychee
 tags: [media, photos, gallery]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/lychee.webp
+logo: /assets/logos/lychee.webp
 by: MickLesk
 repo: https://github.com/LycheeOrg/Lychee
 site: https://lycheeorg.github.io/

@@ -2,7 +2,7 @@
 slug: nexterm
 title: Nexterm
 tags: [server-management]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nexterm.webp
+logo: /assets/logos/nexterm.webp
 by: gnmyt
 repo: https://github.com/gnmyt/Nexterm
 site: https://nexterm.dev/

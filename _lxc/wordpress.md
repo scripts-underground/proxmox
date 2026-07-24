@@ -2,7 +2,7 @@
 slug: wordpress
 title: Wordpress
 tags: [blog, cms]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/wordpress.webp
+logo: /assets/logos/wordpress.webp
 by: MickLesk
 repo: https://github.com/WordPress/WordPress
 site: https://wordpress.org/

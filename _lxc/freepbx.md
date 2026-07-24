@@ -2,7 +2,7 @@
 slug: freepbx
 title: FreePBX
 tags: [pbx, voip, telephony]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/freepbx.webp
+logo: /assets/logos/freepbx.webp
 by: arian-nasr
 repo: https://github.com/FreePBX/framework
 site: https://www.freepbx.org/

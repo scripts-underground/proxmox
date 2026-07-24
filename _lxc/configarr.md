@@ -2,7 +2,7 @@
 slug: configarr
 title: Configarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/configarr.webp
+logo: /assets/logos/configarr.webp
 by: finkerle
 repo: https://github.com/raydak-labs/configarr
 site: https://github.com/raydak-labs/configarr

@@ -2,7 +2,7 @@
 slug: mail-archiver
 title: Mail-Archiver
 tags: [mail, archive]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/mail-archiver.webp
+logo: /assets/logos/mail-archiver.webp
 by: tremor021
 repo: https://github.com/s1t5/mail-archiver
 site: https://mail-archiver.org

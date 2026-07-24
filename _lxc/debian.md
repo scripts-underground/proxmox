@@ -2,6 +2,7 @@
 slug: debian
 title: Debian
 tags: [os]
+port: ""
 logo: /assets/logos/debian.webp
 by: tteck
 repo: https://www.debian.org/

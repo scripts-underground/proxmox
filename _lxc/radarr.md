@@ -2,7 +2,7 @@
 slug: radarr
 title: Radarr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/radarr.webp
+logo: /assets/logos/radarr.webp
 by: tteck
 repo: https://github.com/Radarr/Radarr
 site: https://radarr.video/

@@ -2,7 +2,7 @@
 slug: headscale
 title: Headscale
 tags: [networking, vpn]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/headscale.webp
+logo: /assets/logos/headscale.webp
 by: tteck (tteckster)
 repo: https://github.com/juanfont/headscale
 site: https://headscale.net

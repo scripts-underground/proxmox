@@ -2,7 +2,7 @@
 slug: neko
 title: Neko
 tags: [virtual-browser, webrtc, streaming]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/neko.webp
+logo: /assets/logos/neko.webp
 by: MickLesk
 repo: https://github.com/m1k1o/neko
 site: https://neko.m1k1o.net/

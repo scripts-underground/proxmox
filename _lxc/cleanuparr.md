@@ -2,7 +2,7 @@
 slug: cleanuparr
 title: Cleanuparr
 tags: [arr]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/cleanuparr.webp
+logo: /assets/logos/cleanuparr.webp
 by: zampierilucas
 repo: https://github.com/Cleanuparr/Cleanuparr
 site: https://github.com/Cleanuparr/Cleanuparr

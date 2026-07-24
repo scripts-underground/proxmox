@@ -2,7 +2,7 @@
 slug: caddy
 title: Caddy
 tags: [webserver]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/caddy.webp
+logo: /assets/logos/caddy.webp
 by: tteckster
 co_author: [MickLesk]
 repo: https://github.com/caddyserver/caddy

@@ -2,7 +2,7 @@
 slug: anytype-server
 title: Anytype-Server
 tags: [notes, productivity, sync]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/anytype-server.webp
+logo: /assets/logos/anytype-server.webp
 by: MickLesk
 repo: https://github.com/grishy/any-sync-bundle
 site: https://anytype.io

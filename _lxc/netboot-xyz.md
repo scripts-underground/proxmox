@@ -2,7 +2,7 @@
 slug: netboot-xyz
 title: netboot.xyz
 tags: [network, pxe, boot]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/netboot-xyz.webp
+logo: /assets/logos/netboot-xyz.webp
 by: MickLesk
 repo: https://github.com/netbootxyz/netboot.xyz
 site: https://netboot.xyz/

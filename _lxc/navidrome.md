@@ -2,7 +2,7 @@
 slug: navidrome
 title: Navidrome
 tags: [music]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/navidrome.webp
+logo: /assets/logos/navidrome.webp
 by: MickLesk
 co_author: [CanbiZ]
 repo: https://github.com/navidrome/navidrome

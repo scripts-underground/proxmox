@@ -2,7 +2,7 @@
 slug: oauth2-proxy
 title: OAuth2-Proxy
 tags: [authentication, proxy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/oauth2-proxy.webp
+logo: /assets/logos/oauth2-proxy.webp
 by: bvdberg01
 repo: https://github.com/oauth2-proxy/oauth2-proxy
 site: https://oauth2-proxy.github.io/oauth2-proxy/
