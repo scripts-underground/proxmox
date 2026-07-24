@@ -2,7 +2,7 @@
 slug: isponsorblocktv
 title: iSponsorBlockTV
 tags: [media, automation]
-logo: ""
+logo: /assets/logos/isponsorblocktv.webp
 by: sternma
 co_author: [MickLesk]
 repo: https://github.com/dmunozv04/iSponsorBlockTV
