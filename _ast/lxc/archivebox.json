@@ -1,0 +1,1886 @@
+{
+  "schema_version": 2,
+  "slug": "archivebox",
+  "type": "lxc",
+  "total_lines": 148,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: tteck\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://archivebox.io/ | Github: https://github.com/ArchiveBox/ArchiveBox\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"ArchiveBox\"\nvar_tags=\"${var_tags:-archive;bookmark}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-1024}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-12}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    git \\\n    expect \\\n    libssl-dev \\\n    libldap2-dev \\\n    libsasl2-dev \\\n    procps \\\n    dnsutils \\\n    ripgrep \\\n    chromium\n  msg_ok \"Installed Dependencies\"\n\n  msg_info \"Installing Python Dependencies\"\n  $STD apt install -y \\\n    python3-ldap \\\n    python3-msgpack \\\n    python3-regex\n  msg_ok \"Installed Python Dependencies\"\n\n  NODE_VERSION=\"22\" NODE_MODULE=\"@postlight/parser@latest,single-file-cli@latest\" setup_nodejs\n  PYTHON_VERSION=\"3.13\" setup_uv\n\n  msg_info \"Installing Playwright\"\n  $STD uv pip install playwright --system --break-system-packages\n  $STD playwright install-deps chromium\n  msg_ok \"Installed Playwright\"\n\n  msg_info \"Installing ArchiveBox\"\n  mkdir -p /opt/archivebox/{data,.npm,.cache,.local}\n  $STD adduser --system --shell /bin/bash --gecos 'Archive Box User' --group --disabled-password --home /home/archivebox archivebox\n  chown -R archivebox:archivebox /opt/archivebox/{data,.npm,.cache,.local}\n  chmod -R 755 /opt/archivebox/data\n  $STD uv pip install archivebox --system --break-system-packages\n  cd /opt/archivebox/data || exit\n  expect \u003c\u003c EOF\nset timeout -1\nlog_user 0\n\nspawn su - archivebox -c \"playwright install chromium\"\nspawn su - archivebox -c \"archivebox setup\"\n\nexpect \"Username\"\nsend \"\\r\"\n\nexpect \"Email address\"\nsend \"\\r\"\n\nexpect \"Password\"\nsend \"community-scripts.org\\r\"\n\nexpect \"Password (again)\"\nsend \"community-scripts.org\\r\"\n\nexpect eof\nEOF\n  msg_ok \"Installed ArchiveBox\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/archivebox.service\n[Unit]\nDescription=ArchiveBox Server\nAfter=network.target\n\n[Service]\nUser=archivebox\nWorkingDirectory=/opt/archivebox/data\nExecStart=/usr/local/bin/archivebox server 0.0.0.0:8000\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now archivebox\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8000/admin/login${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/archivebox ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"22\" NODE_MODULE=\"@postlight/parser@latest,single-file-cli@latest\" setup_nodejs\n  PYTHON_VERSION=\"3.13\" setup_uv\n\n  ensure_dependencies chromium\n\n  msg_info \"Stopping Service\"\n  systemctl stop archivebox\n  msg_ok \"Stopped Service\"\n\n  msg_info \"Upgrading Playwright\"\n  $STD uv pip install playwright --system --break-system-packages\n  $STD playwright install-deps chromium\n  msg_ok \"Upgraded Playwright\"\n\n  msg_info \"Updating ArchiveBox\"\n  cd /opt/archivebox/data || exit\n  $STD uv pip install --system --break-system-packages --upgrade --no-reinstall archivebox\n  su - archivebox -c \"archivebox init\"\n  msg_ok \"Updated ArchiveBox\"\n\n  msg_info \"Starting Service\"\n  systemctl start archivebox\n  msg_ok \"Started Service\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Sourced by lxc.bootstrap — never executed directly",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: tteck",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://archivebox.io/ | Github: https://github.com/ArchiveBox/ArchiveBox",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"ArchiveBox\"",
+    "var_tags=\"${var_tags:-archive;bookmark}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-1024}\"",
+    "var_disk=\"${var_disk:-8}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-12}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y \\",
+    "    git \\",
+    "    expect \\",
+    "    libssl-dev \\",
+    "    libldap2-dev \\",
+    "    libsasl2-dev \\",
+    "    procps \\",
+    "    dnsutils \\",
+    "    ripgrep \\",
+    "    chromium",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  msg_info \"Installing Python Dependencies\"",
+    "  $STD apt install -y \\",
+    "    python3-ldap \\",
+    "    python3-msgpack \\",
+    "    python3-regex",
+    "  msg_ok \"Installed Python Dependencies\"",
+    "",
+    "  NODE_VERSION=\"22\" NODE_MODULE=\"@postlight/parser@latest,single-file-cli@latest\" setup_nodejs",
+    "  PYTHON_VERSION=\"3.13\" setup_uv",
+    "",
+    "  msg_info \"Installing Playwright\"",
+    "  $STD uv pip install playwright --system --break-system-packages",
+    "  $STD playwright install-deps chromium",
+    "  msg_ok \"Installed Playwright\"",
+    "",
+    "  msg_info \"Installing ArchiveBox\"",
+    "  mkdir -p /opt/archivebox/{data,.npm,.cache,.local}",
+    "  $STD adduser --system --shell /bin/bash --gecos 'Archive Box User' --group --disabled-password --home /home/archivebox archivebox",
+    "  chown -R archivebox:archivebox /opt/archivebox/{data,.npm,.cache,.local}",
+    "  chmod -R 755 /opt/archivebox/data",
+    "  $STD uv pip install archivebox --system --break-system-packages",
+    "  cd /opt/archivebox/data || exit",
+    "  expect \u003c\u003c EOF",
+    "set timeout -1",
+    "log_user 0",
+    "",
+    "spawn su - archivebox -c \"playwright install chromium\"",
+    "spawn su - archivebox -c \"archivebox setup\"",
+    "",
+    "expect \"Username\"",
+    "send \"\\r\"",
+    "",
+    "expect \"Email address\"",
+    "send \"\\r\"",
+    "",
+    "expect \"Password\"",
+    "send \"community-scripts.org\\r\"",
+    "",
+    "expect \"Password (again)\"",
+    "send \"community-scripts.org\\r\"",
+    "",
+    "expect eof",
+    "EOF",
+    "  msg_ok \"Installed ArchiveBox\"",
+    "",
+    "  msg_info \"Creating Service\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/archivebox.service",
+    "[Unit]",
+    "Description=ArchiveBox Server",
+    "After=network.target",
+    "",
+    "[Service]",
+    "User=archivebox",
+    "WorkingDirectory=/opt/archivebox/data",
+    "ExecStart=/usr/local/bin/archivebox server 0.0.0.0:8000",
+    "Restart=always",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now archivebox",
+    "  msg_ok \"Created Service\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}:8000/admin/login${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "",
+    "  if [[ ! -d /opt/archivebox ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "",
+    "  NODE_VERSION=\"22\" NODE_MODULE=\"@postlight/parser@latest,single-file-cli@latest\" setup_nodejs",
+    "  PYTHON_VERSION=\"3.13\" setup_uv",
+    "",
+    "  ensure_dependencies chromium",
+    "",
+    "  msg_info \"Stopping Service\"",
+    "  systemctl stop archivebox",
+    "  msg_ok \"Stopped Service\"",
+    "",
+    "  msg_info \"Upgrading Playwright\"",
+    "  $STD uv pip install playwright --system --break-system-packages",
+    "  $STD playwright install-deps chromium",
+    "  msg_ok \"Upgraded Playwright\"",
+    "",
+    "  msg_info \"Updating ArchiveBox\"",
+    "  cd /opt/archivebox/data || exit",
+    "  $STD uv pip install --system --break-system-packages --upgrade --no-reinstall archivebox",
+    "  su - archivebox -c \"archivebox init\"",
+    "  msg_ok \"Updated ArchiveBox\"",
+    "",
+    "  msg_info \"Starting Service\"",
+    "  systemctl start archivebox",
+    "  msg_ok \"Started Service\"",
+    "  msg_ok \"Updated successfully!\"",
+    "  exit",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 22,
+      "end_line": 98,
+      "name_span": {
+        "start_line": 22,
+        "start_col": 10,
+        "end_line": 22,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 100,
+      "end_line": 105,
+      "name_span": {
+        "start_line": 100,
+        "start_col": 10,
+        "end_line": 100,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 107,
+      "end_line": 142,
+      "name_span": {
+        "start_line": 107,
+        "start_col": 10,
+        "end_line": 107,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 17,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 41,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 26,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 19,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 20,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 58,
+        "col": 10,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 58,
+        "start_col": 13,
+        "end_col": 16,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 78,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 59,
+        "end_line": 77
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 82,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 82,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 95,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 83,
+        "end_line": 94
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 53
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 16
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 8,
+      "start_col": 1,
+      "end_line": 8,
+      "end_col": 84
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 17
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 5,
+      "end_line": 12,
+      "end_col": 17
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 41
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 11,
+      "end_line": 13,
+      "end_col": 40
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 9,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 9,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 10,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 10,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 11,
+      "end_line": 16,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 8,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 9,
+      "end_line": 17,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 13,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 14,
+      "end_line": 18,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 19,
+      "start_col": 11,
+      "end_line": 19,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 19,
+      "start_col": 12,
+      "end_line": 19,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 20,
+      "start_col": 18,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 20,
+      "start_col": 19,
+      "end_line": 20,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 22,
+      "start_col": 10,
+      "end_line": 22,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 22,
+      "start_col": 27,
+      "end_line": 22,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 12,
+      "end_line": 23,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 24,
+      "start_col": 3,
+      "end_line": 24,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 24,
+      "start_col": 8,
+      "end_line": 24,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 34,
+      "start_col": 10,
+      "end_line": 34,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 36,
+      "start_col": 3,
+      "end_line": 36,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 12,
+      "end_line": 36,
+      "end_col": 44
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 8,
+      "end_line": 37,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 41,
+      "start_col": 10,
+      "end_line": 41,
+      "end_col": 41
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 43,
+      "start_col": 3,
+      "end_line": 43,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 43,
+      "start_col": 3,
+      "end_line": 43,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 16,
+      "end_line": 43,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 43,
+      "start_col": 21,
+      "end_line": 43,
+      "end_col": 82
+    },
+    {
+      "kind": "var-name",
+      "start_line": 43,
+      "start_col": 21,
+      "end_line": 43,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 33,
+      "end_line": 43,
+      "end_col": 82
+    },
+    {
+      "kind": "command",
+      "start_line": 43,
+      "start_col": 83,
+      "end_line": 43,
+      "end_col": 95
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 18,
+      "end_line": 44,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 44,
+      "start_col": 25,
+      "end_line": 44,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 12,
+      "end_line": 46,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 8,
+      "end_line": 47,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 8,
+      "end_line": 48,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 3,
+      "end_line": 49,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 10,
+      "end_line": 49,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 51,
+      "start_col": 3,
+      "end_line": 51,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 12,
+      "end_line": 51,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 3,
+      "end_line": 52,
+      "end_col": 8
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 53,
+      "start_col": 3,
+      "end_line": 53,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 53,
+      "start_col": 8,
+      "end_line": 53,
+      "end_col": 15
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 53,
+      "start_col": 51,
+      "end_line": 53,
+      "end_col": 69
+    },
+    {
+      "kind": "command",
+      "start_line": 54,
+      "start_col": 3,
+      "end_line": 54,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 55,
+      "start_col": 3,
+      "end_line": 55,
+      "end_col": 8
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 56,
+      "start_col": 3,
+      "end_line": 56,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 8,
+      "end_line": 56,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 57,
+      "start_col": 3,
+      "end_line": 57,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 57,
+      "start_col": 27,
+      "end_line": 57,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 57,
+      "start_col": 30,
+      "end_line": 57,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 58,
+      "start_col": 3,
+      "end_line": 58,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 58,
+      "start_col": 10,
+      "end_line": 58,
+      "end_col": 12
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 58,
+      "start_col": 13,
+      "end_line": 58,
+      "end_col": 16,
+      "expand": true
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 78,
+      "start_col": 1,
+      "end_line": 78,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 79,
+      "start_col": 10,
+      "end_line": 79,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 81,
+      "start_col": 3,
+      "end_line": 81,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 81,
+      "start_col": 12,
+      "end_line": 81,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 82,
+      "start_col": 3,
+      "end_line": 82,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 82,
+      "start_col": 7,
+      "end_line": 82,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 82,
+      "start_col": 10,
+      "end_line": 82,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 82,
+      "start_col": 14,
+      "end_line": 82,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 95,
+      "start_col": 1,
+      "end_line": 95,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 96,
+      "start_col": 3,
+      "end_line": 96,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 97,
+      "start_col": 3,
+      "end_line": 97,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 97,
+      "start_col": 10,
+      "end_line": 97,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 98,
+      "start_col": 1,
+      "end_line": 98,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 100,
+      "start_col": 1,
+      "end_line": 100,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 100,
+      "start_col": 10,
+      "end_line": 100,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 100,
+      "start_col": 32,
+      "end_line": 100,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 101,
+      "start_col": 3,
+      "end_line": 101,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 101,
+      "start_col": 10,
+      "end_line": 101,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 3,
+      "end_line": 102,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 11,
+      "end_line": 102,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 12,
+      "end_line": 102,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 23,
+      "end_line": 102,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 28,
+      "end_line": 102,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 75,
+      "end_line": 102,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 103,
+      "start_col": 3,
+      "end_line": 103,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 103,
+      "start_col": 11,
+      "end_line": 103,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 12,
+      "end_line": 103,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 19,
+      "end_line": 103,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 58,
+      "end_line": 103,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 104,
+      "start_col": 3,
+      "end_line": 104,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 104,
+      "start_col": 11,
+      "end_line": 104,
+      "end_col": 63
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 104,
+      "start_col": 12,
+      "end_line": 104,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 104,
+      "start_col": 22,
+      "end_line": 104,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 104,
+      "start_col": 35,
+      "end_line": 104,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 104,
+      "start_col": 57,
+      "end_line": 104,
+      "end_col": 62
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 105,
+      "start_col": 1,
+      "end_line": 105,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 107,
+      "start_col": 1,
+      "end_line": 107,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 107,
+      "start_col": 10,
+      "end_line": 107,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 107,
+      "start_col": 26,
+      "end_line": 107,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 108,
+      "start_col": 3,
+      "end_line": 108,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 109,
+      "start_col": 3,
+      "end_line": 109,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 112,
+      "start_col": 6,
+      "end_line": 112,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 112,
+      "start_col": 9,
+      "end_line": 112,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 112,
+      "start_col": 11,
+      "end_line": 112,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 112,
+      "start_col": 30,
+      "end_line": 112,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 112,
+      "start_col": 32,
+      "end_line": 112,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 112,
+      "start_col": 34,
+      "end_line": 112,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 5,
+      "end_line": 113,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 113,
+      "start_col": 15,
+      "end_line": 113,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 19,
+      "end_line": 113,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 114,
+      "start_col": 5,
+      "end_line": 114,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 115,
+      "start_col": 3,
+      "end_line": 115,
+      "end_col": 5
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 117,
+      "start_col": 16,
+      "end_line": 117,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 117,
+      "start_col": 21,
+      "end_line": 117,
+      "end_col": 82
+    },
+    {
+      "kind": "var-name",
+      "start_line": 117,
+      "start_col": 21,
+      "end_line": 117,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 117,
+      "start_col": 33,
+      "end_line": 117,
+      "end_col": 82
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 83,
+      "end_line": 117,
+      "end_col": 95
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 118,
+      "start_col": 18,
+      "end_line": 118,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 25,
+      "end_line": 118,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 122,
+      "start_col": 3,
+      "end_line": 122,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 122,
+      "start_col": 12,
+      "end_line": 122,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 3,
+      "end_line": 123,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 124,
+      "start_col": 3,
+      "end_line": 124,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 124,
+      "start_col": 10,
+      "end_line": 124,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 12,
+      "end_line": 126,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 8,
+      "end_line": 127,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 128,
+      "start_col": 3,
+      "end_line": 128,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 8,
+      "end_line": 128,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 129,
+      "start_col": 3,
+      "end_line": 129,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 10,
+      "end_line": 129,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 3,
+      "end_line": 131,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 12,
+      "end_line": 131,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 3,
+      "end_line": 132,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 132,
+      "start_col": 27,
+      "end_line": 132,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 30,
+      "end_line": 132,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 133,
+      "start_col": 3,
+      "end_line": 133,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 8,
+      "end_line": 133,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 3,
+      "end_line": 134,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 134,
+      "start_col": 22,
+      "end_line": 134,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 3,
+      "end_line": 135,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 10,
+      "end_line": 135,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 3,
+      "end_line": 137,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 137,
+      "start_col": 12,
+      "end_line": 137,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 3,
+      "end_line": 138,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 3,
+      "end_line": 139,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 10,
+      "end_line": 139,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 140,
+      "start_col": 3,
+      "end_line": 140,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 140,
+      "start_col": 10,
+      "end_line": 140,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 3,
+      "end_line": 141,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 142,
+      "start_col": 1,
+      "end_line": 142,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 144,
+      "start_col": 1,
+      "end_line": 144,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 145,
+      "start_col": 1,
+      "end_line": 145,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 146,
+      "start_col": 1,
+      "end_line": 146,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 1,
+      "end_line": 147,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 147,
+      "start_col": 8,
+      "end_line": 147,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 21,
+      "end_line": 147,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 22,
+      "end_line": 147,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 147,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "archivebox.service",
+      "path": "/etc/systemd/system/archivebox.service",
+      "user": "archivebox",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "archivebox",
+      "source": "adduser",
+      "line": 53
+    }
+  ],
+  "interactive_prompts": []
+}

@@ -28,8 +28,8 @@ replication:
 EOF
   systemctl restart mongod
   # shellcheck disable=SC2034
-# shellcheck disable=SC2034
-for i in $(seq 1 30); do
+  # shellcheck disable=SC2034
+  for i in $(seq 1 30); do
     if mongosh --quiet --eval "db.adminCommand('ping')" &> /dev/null; then
       break
     fi

@@ -1,0 +1,2038 @@
+{
+  "schema_version": 2,
+  "slug": "plant-it",
+  "type": "lxc",
+  "total_lines": 148,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://plant-it.org/ | Github: https://github.com/MDeLuise/plant-it\n\n# shellcheck disable=SC2034\nAPP=\"Plant-it\"\nvar_tags=\"${var_tags:-plants;garden}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    redis \\\n    nginx\n  msg_ok \"Installed Dependencies\"\n\n  setup_mariadb\n  MARIADB_DB_NAME=\"plantit\" MARIADB_DB_USER=\"plantit_usr\" setup_mariadb_db\n  JAVA_VERSION=\"21\" setup_java\n  USE_ORIGINAL_FILENAME=\"true\" fetch_and_deploy_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"singlefile\" \"0.10.0\" \"/opt/plant-it/backend\" \"server.jar\"\n  fetch_and_deploy_gh_release \"plant-it-front\" \"MDeLuise/plant-it\" \"prebuild\" \"0.10.0\" \"/opt/plant-it/frontend\" \"client.tar.gz\"\n\n  msg_info \"Configuring Plant-it\"\n  JWT_SECRET=$(openssl rand -base64 24 | tr -d '/+=')\n  mkdir -p /opt/plant-it-data\n  cat \u003c\u003c EOF \u003e /opt/plant-it/backend/server.env\nMYSQL_HOST=localhost\nMYSQL_PORT=3306\nMYSQL_USERNAME=$MARIADB_DB_USER\nMYSQL_PSW=$MARIADB_DB_PASS\nMYSQL_DATABASE=$MARIADB_DB_NAME\nMYSQL_ROOT_PASSWORD=$MARIADB_DB_PASS\n\nJWT_SECRET=$JWT_SECRET\nJWT_EXP=1\n\nUSERS_LIMIT=-1\nUPLOAD_DIR=/opt/plant-it-data\nAPI_PORT=8080\nFLORACODEX_KEY=\nLOG_LEVEL=DEBUG\nALLOWED_ORIGINS=*\n\nCACHE_TYPE=redis\nCACHE_TTL=86400\nCACHE_HOST=localhost\nCACHE_PORT=6379\nEOF\n  msg_ok \"Configured Plant-it\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plant-it.service\n[Unit]\nDescription=Plant-it Backend Service\nAfter=syslog.target network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plant-it/backend\nEnvironmentFile=/opt/plant-it/backend/server.env\nExecStart=/usr/bin/java -jar -Xmx2g server.jar\nTimeoutStopSec=20\nKillMode=process\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now plant-it\n\n  cat \u003c\u003c EOF \u003e /etc/nginx/nginx.conf\nevents {\n    worker_connections 1024;\n}\n\nhttp {\n    server {\n        listen 3000;\n        server_name localhost;\n\n        root /opt/plant-it/frontend;\n        index index.html;\n\n        location / {\n            try_files \\$uri \\$uri/ /index.html;\n        }\n\n        error_page 404 /404.html;\n        location = /404.html {\n            internal;\n        }\n    }\n}\nEOF\n  systemctl restart nginx\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  RELEASE=\"0.10.0\"\n  if [[ ! -d /opt/plant-it ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  setup_mariadb\n  if check_for_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"${RELEASE}\" \"last version that includes the web frontend\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop plant-it\n    msg_ok \"Stopped Service\"\n\n    USE_ORIGINAL_FILENAME=\"true\" fetch_and_deploy_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"singlefile\" \"${RELEASE}\" \"/opt/plant-it/backend\" \"server.jar\"\n    fetch_and_deploy_gh_release \"plant-it-front\" \"MDeLuise/plant-it\" \"prebuild\" \"${RELEASE}\" \"/opt/plant-it/frontend\" \"client.tar.gz\"\n    msg_warn \"Application is updated to latest Web version (v0.10.0). There will be no more updates available.\"\n    msg_warn \"Please read: https://github.com/MDeLuise/plant-it/releases/tag/1.0.0\"\n\n    msg_info \"Starting Service\"\n    systemctl start plant-it\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: MickLesk (CanbiZ)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://plant-it.org/ | Github: https://github.com/MDeLuise/plant-it",
+    "",
+    "# shellcheck disable=SC2034",
+    "APP=\"Plant-it\"",
+    "var_tags=\"${var_tags:-plants;garden}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-2048}\"",
+    "var_disk=\"${var_disk:-5}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y \\",
+    "    redis \\",
+    "    nginx",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  setup_mariadb",
+    "  MARIADB_DB_NAME=\"plantit\" MARIADB_DB_USER=\"plantit_usr\" setup_mariadb_db",
+    "  JAVA_VERSION=\"21\" setup_java",
+    "  USE_ORIGINAL_FILENAME=\"true\" fetch_and_deploy_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"singlefile\" \"0.10.0\" \"/opt/plant-it/backend\" \"server.jar\"",
+    "  fetch_and_deploy_gh_release \"plant-it-front\" \"MDeLuise/plant-it\" \"prebuild\" \"0.10.0\" \"/opt/plant-it/frontend\" \"client.tar.gz\"",
+    "",
+    "  msg_info \"Configuring Plant-it\"",
+    "  JWT_SECRET=$(openssl rand -base64 24 | tr -d '/+=')",
+    "  mkdir -p /opt/plant-it-data",
+    "  cat \u003c\u003c EOF \u003e /opt/plant-it/backend/server.env",
+    "MYSQL_HOST=localhost",
+    "MYSQL_PORT=3306",
+    "MYSQL_USERNAME=$MARIADB_DB_USER",
+    "MYSQL_PSW=$MARIADB_DB_PASS",
+    "MYSQL_DATABASE=$MARIADB_DB_NAME",
+    "MYSQL_ROOT_PASSWORD=$MARIADB_DB_PASS",
+    "",
+    "JWT_SECRET=$JWT_SECRET",
+    "JWT_EXP=1",
+    "",
+    "USERS_LIMIT=-1",
+    "UPLOAD_DIR=/opt/plant-it-data",
+    "API_PORT=8080",
+    "FLORACODEX_KEY=",
+    "LOG_LEVEL=DEBUG",
+    "ALLOWED_ORIGINS=*",
+    "",
+    "CACHE_TYPE=redis",
+    "CACHE_TTL=86400",
+    "CACHE_HOST=localhost",
+    "CACHE_PORT=6379",
+    "EOF",
+    "  msg_ok \"Configured Plant-it\"",
+    "",
+    "  msg_info \"Creating Service\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/plant-it.service",
+    "[Unit]",
+    "Description=Plant-it Backend Service",
+    "After=syslog.target network.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    "WorkingDirectory=/opt/plant-it/backend",
+    "EnvironmentFile=/opt/plant-it/backend/server.env",
+    "ExecStart=/usr/bin/java -jar -Xmx2g server.jar",
+    "TimeoutStopSec=20",
+    "KillMode=process",
+    "Restart=on-failure",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now plant-it",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/nginx/nginx.conf",
+    "events {",
+    "    worker_connections 1024;",
+    "}",
+    "",
+    "http {",
+    "    server {",
+    "        listen 3000;",
+    "        server_name localhost;",
+    "",
+    "        root /opt/plant-it/frontend;",
+    "        index index.html;",
+    "",
+    "        location / {",
+    "            try_files \\$uri \\$uri/ /index.html;",
+    "        }",
+    "",
+    "        error_page 404 /404.html;",
+    "        location = /404.html {",
+    "            internal;",
+    "        }",
+    "    }",
+    "}",
+    "EOF",
+    "  systemctl restart nginx",
+    "  msg_ok \"Created Service\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed Successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}:3000${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "  RELEASE=\"0.10.0\"",
+    "  if [[ ! -d /opt/plant-it ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "  setup_mariadb",
+    "  if check_for_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"${RELEASE}\" \"last version that includes the web frontend\"; then",
+    "    msg_info \"Stopping Service\"",
+    "    systemctl stop plant-it",
+    "    msg_ok \"Stopped Service\"",
+    "",
+    "    USE_ORIGINAL_FILENAME=\"true\" fetch_and_deploy_gh_release \"plant-it\" \"MDeLuise/plant-it\" \"singlefile\" \"${RELEASE}\" \"/opt/plant-it/backend\" \"server.jar\"",
+    "    fetch_and_deploy_gh_release \"plant-it-front\" \"MDeLuise/plant-it\" \"prebuild\" \"${RELEASE}\" \"/opt/plant-it/frontend\" \"client.tar.gz\"",
+    "    msg_warn \"Application is updated to latest Web version (v0.10.0). There will be no more updates available.\"",
+    "    msg_warn \"Please read: https://github.com/MDeLuise/plant-it/releases/tag/1.0.0\"",
+    "",
+    "    msg_info \"Starting Service\"",
+    "    systemctl start plant-it",
+    "    msg_ok \"Started Service\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  exit",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 20,
+      "end_line": 107,
+      "name_span": {
+        "start_line": 20,
+        "start_col": 10,
+        "end_line": 20,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 109,
+      "end_line": 114,
+      "name_span": {
+        "start_line": 109,
+        "start_col": 10,
+        "end_line": 109,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 116,
+      "end_line": 142,
+      "name_span": {
+        "start_line": 116,
+        "start_col": 10,
+        "end_line": 116,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 10,
+      "start_col": 1,
+      "end_col": 15,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 11,
+      "start_col": 1,
+      "end_col": 38,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 26,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 36,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 36,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 58,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 37,
+        "end_line": 57
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 62,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 62,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 78,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 63,
+        "end_line": 77
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 81,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 81,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 104,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 82,
+        "end_line": 103
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 79
+    },
+    {
+      "kind": "comment",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 15
+    },
+    {
+      "kind": "var-name",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 10,
+      "start_col": 5,
+      "end_line": 10,
+      "end_col": 15
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 11,
+      "start_col": 10,
+      "end_line": 11,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 11,
+      "start_col": 11,
+      "end_line": 11,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 9,
+      "end_line": 12,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 12,
+      "start_col": 10,
+      "end_line": 12,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 9,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 11,
+      "end_line": 14,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 8,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 9,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 13,
+      "end_line": 16,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 14,
+      "end_line": 16,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 11,
+      "end_line": 17,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 12,
+      "end_line": 17,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 18,
+      "end_line": 18,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 19,
+      "end_line": 18,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 20,
+      "start_col": 10,
+      "end_line": 20,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 20,
+      "start_col": 27,
+      "end_line": 20,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 21,
+      "start_col": 3,
+      "end_line": 21,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 21,
+      "start_col": 12,
+      "end_line": 21,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 22,
+      "start_col": 3,
+      "end_line": 22,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 22,
+      "start_col": 8,
+      "end_line": 22,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 25,
+      "start_col": 3,
+      "end_line": 25,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 25,
+      "start_col": 10,
+      "end_line": 25,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 27,
+      "start_col": 3,
+      "end_line": 27,
+      "end_col": 16
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 28
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 19,
+      "end_line": 28,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 29,
+      "end_line": 28,
+      "end_col": 58
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 29,
+      "end_line": 28,
+      "end_col": 44
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 45,
+      "end_line": 28,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 28,
+      "start_col": 59,
+      "end_line": 28,
+      "end_col": 75
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 29,
+      "start_col": 3,
+      "end_line": 29,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 29,
+      "start_col": 3,
+      "end_line": 29,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 16,
+      "end_line": 29,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 29,
+      "start_col": 21,
+      "end_line": 29,
+      "end_col": 31
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 30,
+      "start_col": 3,
+      "end_line": 30,
+      "end_col": 31
+    },
+    {
+      "kind": "var-name",
+      "start_line": 30,
+      "start_col": 3,
+      "end_line": 30,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 25,
+      "end_line": 30,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 30,
+      "start_col": 32,
+      "end_line": 30,
+      "end_col": 59
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 60,
+      "end_line": 30,
+      "end_col": 70
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 71,
+      "end_line": 30,
+      "end_col": 90
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 91,
+      "end_line": 30,
+      "end_col": 103
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 104,
+      "end_line": 30,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 113,
+      "end_line": 30,
+      "end_col": 136
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 137,
+      "end_line": 30,
+      "end_col": 149
+    },
+    {
+      "kind": "command",
+      "start_line": 31,
+      "start_col": 3,
+      "end_line": 31,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 31,
+      "end_line": 31,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 48,
+      "end_line": 31,
+      "end_col": 67
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 68,
+      "end_line": 31,
+      "end_col": 78
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 79,
+      "end_line": 31,
+      "end_col": 87
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 88,
+      "end_line": 31,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 113,
+      "end_line": 31,
+      "end_col": 128
+    },
+    {
+      "kind": "command",
+      "start_line": 33,
+      "start_col": 3,
+      "end_line": 33,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 33,
+      "start_col": 12,
+      "end_line": 33,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 54
+    },
+    {
+      "kind": "var-name",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 34,
+      "start_col": 14,
+      "end_line": 34,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 16,
+      "end_line": 34,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 34,
+      "start_col": 40,
+      "end_line": 34,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 42,
+      "end_line": 34,
+      "end_col": 44
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 34,
+      "start_col": 48,
+      "end_line": 34,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 3,
+      "end_line": 35,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 36,
+      "start_col": 3,
+      "end_line": 36,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 36,
+      "start_col": 7,
+      "end_line": 36,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 36,
+      "start_col": 10,
+      "end_line": 36,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 36,
+      "start_col": 14,
+      "end_line": 36,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 39,
+      "start_col": 16,
+      "end_line": 39,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 40,
+      "start_col": 11,
+      "end_line": 40,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 41,
+      "start_col": 16,
+      "end_line": 41,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 42,
+      "start_col": 21,
+      "end_line": 42,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 12,
+      "end_line": 44,
+      "end_col": 23
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 58,
+      "start_col": 1,
+      "end_line": 58,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 59,
+      "start_col": 3,
+      "end_line": 59,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 59,
+      "start_col": 10,
+      "end_line": 59,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 61,
+      "start_col": 12,
+      "end_line": 61,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 62,
+      "start_col": 3,
+      "end_line": 62,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 62,
+      "start_col": 7,
+      "end_line": 62,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 62,
+      "start_col": 10,
+      "end_line": 62,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 62,
+      "start_col": 14,
+      "end_line": 62,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 78,
+      "start_col": 1,
+      "end_line": 78,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 81,
+      "start_col": 3,
+      "end_line": 81,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 81,
+      "start_col": 7,
+      "end_line": 81,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 81,
+      "start_col": 10,
+      "end_line": 81,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 81,
+      "start_col": 14,
+      "end_line": 81,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 104,
+      "start_col": 1,
+      "end_line": 104,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 3,
+      "end_line": 105,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 3,
+      "end_line": 106,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 106,
+      "start_col": 10,
+      "end_line": 106,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 107,
+      "start_col": 1,
+      "end_line": 107,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 109,
+      "start_col": 1,
+      "end_line": 109,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 109,
+      "start_col": 10,
+      "end_line": 109,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 109,
+      "start_col": 32,
+      "end_line": 109,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 110,
+      "start_col": 10,
+      "end_line": 110,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 111,
+      "start_col": 3,
+      "end_line": 111,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 111,
+      "start_col": 11,
+      "end_line": 111,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 12,
+      "end_line": 111,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 23,
+      "end_line": 111,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 28,
+      "end_line": 111,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 75,
+      "end_line": 111,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 11,
+      "end_line": 112,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 12,
+      "end_line": 112,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 19,
+      "end_line": 112,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 58,
+      "end_line": 112,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 3,
+      "end_line": 113,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 113,
+      "start_col": 11,
+      "end_line": 113,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 12,
+      "end_line": 113,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 22,
+      "end_line": 113,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 35,
+      "end_line": 113,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 45,
+      "end_line": 113,
+      "end_col": 50
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 114,
+      "start_col": 1,
+      "end_line": 114,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 116,
+      "start_col": 1,
+      "end_line": 116,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 116,
+      "start_col": 10,
+      "end_line": 116,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 116,
+      "start_col": 26,
+      "end_line": 116,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 119,
+      "start_col": 3,
+      "end_line": 119,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 19
+    },
+    {
+      "kind": "var-name",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 11,
+      "end_line": 120,
+      "end_col": 19
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 121,
+      "start_col": 3,
+      "end_line": 121,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 121,
+      "start_col": 6,
+      "end_line": 121,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 121,
+      "start_col": 9,
+      "end_line": 121,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 121,
+      "start_col": 11,
+      "end_line": 121,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 121,
+      "start_col": 28,
+      "end_line": 121,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 121,
+      "start_col": 30,
+      "end_line": 121,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 121,
+      "start_col": 32,
+      "end_line": 121,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 122,
+      "start_col": 5,
+      "end_line": 122,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 122,
+      "start_col": 15,
+      "end_line": 122,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 122,
+      "start_col": 19,
+      "end_line": 122,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 5,
+      "end_line": 123,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 124,
+      "start_col": 3,
+      "end_line": 124,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 3,
+      "end_line": 125,
+      "end_col": 16
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 6,
+      "end_line": 126,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 27,
+      "end_line": 126,
+      "end_col": 37
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 38,
+      "end_line": 126,
+      "end_col": 57
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 58,
+      "end_line": 126,
+      "end_col": 70
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 126,
+      "start_col": 59,
+      "end_line": 126,
+      "end_col": 69
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 71,
+      "end_line": 126,
+      "end_col": 116
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 126,
+      "start_col": 116,
+      "end_line": 126,
+      "end_col": 117
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 126,
+      "start_col": 118,
+      "end_line": 126,
+      "end_col": 122
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 5,
+      "end_line": 127,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 127,
+      "start_col": 14,
+      "end_line": 127,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 5,
+      "end_line": 128,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 129,
+      "start_col": 5,
+      "end_line": 129,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 12,
+      "end_line": 129,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 131,
+      "start_col": 5,
+      "end_line": 131,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 131,
+      "start_col": 5,
+      "end_line": 131,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 27,
+      "end_line": 131,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 34,
+      "end_line": 131,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 62,
+      "end_line": 131,
+      "end_col": 72
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 73,
+      "end_line": 131,
+      "end_col": 92
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 93,
+      "end_line": 131,
+      "end_col": 105
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 106,
+      "end_line": 131,
+      "end_col": 118
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 107,
+      "end_line": 131,
+      "end_col": 117
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 119,
+      "end_line": 131,
+      "end_col": 142
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 143,
+      "end_line": 131,
+      "end_col": 155
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 5,
+      "end_line": 132,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 33,
+      "end_line": 132,
+      "end_col": 49
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 50,
+      "end_line": 132,
+      "end_col": 69
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 70,
+      "end_line": 132,
+      "end_col": 80
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 81,
+      "end_line": 132,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 82,
+      "end_line": 132,
+      "end_col": 92
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 94,
+      "end_line": 132,
+      "end_col": 118
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 119,
+      "end_line": 132,
+      "end_col": 134
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 5,
+      "end_line": 133,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 14,
+      "end_line": 133,
+      "end_col": 112
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 134,
+      "start_col": 14,
+      "end_line": 134,
+      "end_col": 84
+    },
+    {
+      "kind": "command",
+      "start_line": 136,
+      "start_col": 5,
+      "end_line": 136,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 136,
+      "start_col": 14,
+      "end_line": 136,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 5,
+      "end_line": 137,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 5,
+      "end_line": 138,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 138,
+      "start_col": 12,
+      "end_line": 138,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 12,
+      "end_line": 139,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 140,
+      "start_col": 3,
+      "end_line": 140,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 3,
+      "end_line": 141,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 142,
+      "start_col": 1,
+      "end_line": 142,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 144,
+      "start_col": 1,
+      "end_line": 144,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 145,
+      "start_col": 1,
+      "end_line": 145,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 146,
+      "start_col": 1,
+      "end_line": 146,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 1,
+      "end_line": 147,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 147,
+      "start_col": 8,
+      "end_line": 147,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 21,
+      "end_line": 147,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 22,
+      "end_line": 147,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 147,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "plant-it.service",
+      "path": "/etc/systemd/system/plant-it.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}

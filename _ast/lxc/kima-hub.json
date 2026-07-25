@@ -1,0 +1,3311 @@
+{
+  "schema_version": 2,
+  "slug": "kima-hub",
+  "type": "lxc",
+  "total_lines": 281,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/Chevron7Locked/kima-hub\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Kima-Hub\"\nvar_tags=\"${var_tags:-music;streaming;media}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    git \\\n    openssl \\\n    ffmpeg \\\n    python3 \\\n    python3-pip \\\n    python3-dev \\\n    python3-numpy \\\n    redis-server\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"16\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"kima\" PG_DB_USER=\"kima\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n  NODE_VERSION=\"22\" setup_nodejs\n\n  msg_info \"Configuring Redis\"\n  systemctl enable -q --now redis-server\n  msg_ok \"Configured Redis\"\n\n  fetch_and_deploy_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\" \"tarball\"\n\n  msg_info \"Installing Python Dependencies\"\n  export PIP_BREAK_SYSTEM_PACKAGES=1\n  $STD pip3 install --no-cache-dir \\\n    tensorflow \\\n    essentia-tensorflow \\\n    redis \\\n    psycopg2-binary \\\n    laion-clap \\\n    torch \\\n    torchaudio \\\n    librosa \\\n    transformers \\\n    pgvector \\\n    python-dotenv \\\n    requests\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Downloading Essentia ML Models\"\n  mkdir -p /opt/kima-hub/models\n  cd /opt/kima-hub/models || exit\n  curl_with_retry \"https://essentia.upf.edu/models/autotagging/msd/msd-musicnn-1.pb\" \"msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-msd-musicnn-1.pb\" \"mood_happy-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-msd-musicnn-1.pb\" \"mood_sad-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-msd-musicnn-1.pb\" \"mood_relaxed-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-msd-musicnn-1.pb\" \"mood_aggressive-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-msd-musicnn-1.pb\" \"mood_party-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-msd-musicnn-1.pb\" \"mood_acoustic-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-msd-musicnn-1.pb\" \"mood_electronic-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/danceability/danceability-msd-musicnn-1.pb\" \"danceability-msd-musicnn-1.pb\"\n  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-msd-musicnn-1.pb\" \"voice_instrumental-msd-musicnn-1.pb\"\n  msg_ok \"Downloaded Essentia ML Models\"\n\n  msg_info \"Downloading CLAP Model\"\n  CURL_TIMEOUT=600 curl_with_retry \"https://huggingface.co/lukewys/laion_clap/resolve/main/music_audioset_epoch_15_esc_90.14.pt\" \"/opt/kima-hub/models/music_audioset_epoch_15_esc_90.14.pt\"\n  msg_ok \"Downloaded CLAP Model\"\n\n  msg_info \"Building Backend\"\n  cd /opt/kima-hub/backend || exit\n  $STD npm ci\n  $STD npm run build\n  msg_ok \"Built Backend\"\n\n  msg_info \"Configuring Backend\"\n  SESSION_SECRET=$(openssl rand -hex 32)\n  ENCRYPTION_KEY=$(openssl rand -hex 32)\n  cat \u003c\u003c EOF \u003e /opt/kima-hub/backend/.env\nNODE_ENV=production\nDATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nREDIS_URL=redis://localhost:6379\nPORT=3006\nMUSIC_PATH=/music\nTRANSCODE_CACHE_PATH=/opt/kima-hub/cache/transcodes\nSESSION_SECRET=${SESSION_SECRET}\nSETTINGS_ENCRYPTION_KEY=${ENCRYPTION_KEY}\nINTERNAL_API_SECRET=$(openssl rand -hex 16)\nEOF\n  msg_ok \"Configured Backend\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/kima-hub/backend || exit\n  $STD npx prisma generate\n  $STD npx prisma migrate deploy\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/kima-hub/frontend || exit\n  $STD npm ci\n  export NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3006\n  $STD npm run build\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Configuring Frontend\"\n  cat \u003c\u003c EOF \u003e /opt/kima-hub/frontend/.env\nNODE_ENV=production\nBACKEND_URL=http://localhost:3006\nPORT=3030\nEOF\n  msg_ok \"Configured Frontend\"\n\n  msg_info \"Creating Directories\"\n  mkdir -p /opt/kima-hub/cache/transcodes\n  mkdir -p /music\n  msg_ok \"Created Directories\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-backend.service\n[Unit]\nDescription=Kima Hub Backend\nAfter=network.target postgresql.service redis-server.service\nWants=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/kima-hub/backend\nEnvironmentFile=/opt/kima-hub/backend/.env\nExecStart=/usr/bin/node /opt/kima-hub/backend/dist/index.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-frontend.service\n[Unit]\nDescription=Kima Hub Frontend\nAfter=network.target kima-backend.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/kima-hub/frontend\nEnvironmentFile=/opt/kima-hub/frontend/.env\nExecStart=/usr/bin/npm start\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-analyzer.service\n[Unit]\nDescription=Kima Hub Audio Analyzer (Essentia)\nAfter=network.target postgresql.service redis-server.service kima-backend.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/kima-hub/services/audio-analyzer\nEnvironment=DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nEnvironment=REDIS_URL=redis://localhost:6379\nEnvironment=MUSIC_PATH=/music\nEnvironment=BATCH_SIZE=10\nEnvironment=SLEEP_INTERVAL=5\nEnvironment=NUM_WORKERS=2\nEnvironment=THREADS_PER_WORKER=1\nExecStart=/usr/bin/python3 /opt/kima-hub/services/audio-analyzer/analyzer.py\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-analyzer-clap.service\n[Unit]\nDescription=Kima Hub CLAP Audio Analyzer\nAfter=network.target postgresql.service redis-server.service kima-backend.service kima-analyzer.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/kima-hub/services/audio-analyzer-clap\nEnvironment=DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nEnvironment=REDIS_URL=redis://localhost:6379\nEnvironment=BACKEND_URL=http://localhost:3006\nEnvironment=MUSIC_PATH=/music\nEnvironment=SLEEP_INTERVAL=5\nEnvironment=NUM_WORKERS=1\nExecStart=/usr/bin/python3 /opt/kima-hub/services/audio-analyzer-clap/analyzer.py\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now kima-backend kima-frontend kima-analyzer kima-analyzer-clap\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:3030${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/kima-hub ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"22\" setup_nodejs\n\n  if check_for_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop kima-frontend kima-backend kima-analyzer kima-analyzer-clap\n    msg_ok \"Stopped Services\"\n\n    msg_info \"Backing up Data\"\n    cp /opt/kima-hub/backend/.env /opt/kima-hub-backend-env.bak\n    cp /opt/kima-hub/frontend/.env /opt/kima-hub-frontend-env.bak\n    msg_ok \"Backed up Data\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\" \"tarball\"\n\n    msg_info \"Restoring Data\"\n    cp /opt/kima-hub-backend-env.bak /opt/kima-hub/backend/.env\n    cp /opt/kima-hub-frontend-env.bak /opt/kima-hub/frontend/.env\n    rm -f /opt/kima-hub-backend-env.bak /opt/kima-hub-frontend-env.bak\n    msg_ok \"Restored Data\"\n\n    msg_info \"Rebuilding Backend\"\n    cd /opt/kima-hub/backend || exit\n    $STD npm install\n    $STD npm run build\n    $STD npx prisma generate\n    $STD npx prisma migrate deploy\n    msg_ok \"Rebuilt Backend\"\n\n    msg_info \"Rebuilding Frontend\"\n    cd /opt/kima-hub/frontend || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Rebuilt Frontend\"\n\n    msg_info \"Starting Services\"\n    systemctl start kima-backend kima-frontend kima-analyzer kima-analyzer-clap\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Sourced by lxc.bootstrap — never executed directly",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: MickLesk (CanbiZ)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://github.com/Chevron7Locked/kima-hub",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"Kima-Hub\"",
+    "var_tags=\"${var_tags:-music;streaming;media}\"",
+    "var_cpu=\"${var_cpu:-4}\"",
+    "var_ram=\"${var_ram:-8192}\"",
+    "var_disk=\"${var_disk:-20}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-no}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y \\",
+    "    build-essential \\",
+    "    git \\",
+    "    openssl \\",
+    "    ffmpeg \\",
+    "    python3 \\",
+    "    python3-pip \\",
+    "    python3-dev \\",
+    "    python3-numpy \\",
+    "    redis-server",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  PG_VERSION=\"16\" PG_MODULES=\"pgvector\" setup_postgresql",
+    "  PG_DB_NAME=\"kima\" PG_DB_USER=\"kima\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db",
+    "  NODE_VERSION=\"22\" setup_nodejs",
+    "",
+    "  msg_info \"Configuring Redis\"",
+    "  systemctl enable -q --now redis-server",
+    "  msg_ok \"Configured Redis\"",
+    "",
+    "  fetch_and_deploy_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\" \"tarball\"",
+    "",
+    "  msg_info \"Installing Python Dependencies\"",
+    "  export PIP_BREAK_SYSTEM_PACKAGES=1",
+    "  $STD pip3 install --no-cache-dir \\",
+    "    tensorflow \\",
+    "    essentia-tensorflow \\",
+    "    redis \\",
+    "    psycopg2-binary \\",
+    "    laion-clap \\",
+    "    torch \\",
+    "    torchaudio \\",
+    "    librosa \\",
+    "    transformers \\",
+    "    pgvector \\",
+    "    python-dotenv \\",
+    "    requests",
+    "  msg_ok \"Installed Python Dependencies\"",
+    "",
+    "  msg_info \"Downloading Essentia ML Models\"",
+    "  mkdir -p /opt/kima-hub/models",
+    "  cd /opt/kima-hub/models || exit",
+    "  curl_with_retry \"https://essentia.upf.edu/models/autotagging/msd/msd-musicnn-1.pb\" \"msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-msd-musicnn-1.pb\" \"mood_happy-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-msd-musicnn-1.pb\" \"mood_sad-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-msd-musicnn-1.pb\" \"mood_relaxed-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-msd-musicnn-1.pb\" \"mood_aggressive-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-msd-musicnn-1.pb\" \"mood_party-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-msd-musicnn-1.pb\" \"mood_acoustic-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-msd-musicnn-1.pb\" \"mood_electronic-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/danceability/danceability-msd-musicnn-1.pb\" \"danceability-msd-musicnn-1.pb\"",
+    "  curl_with_retry \"https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-msd-musicnn-1.pb\" \"voice_instrumental-msd-musicnn-1.pb\"",
+    "  msg_ok \"Downloaded Essentia ML Models\"",
+    "",
+    "  msg_info \"Downloading CLAP Model\"",
+    "  CURL_TIMEOUT=600 curl_with_retry \"https://huggingface.co/lukewys/laion_clap/resolve/main/music_audioset_epoch_15_esc_90.14.pt\" \"/opt/kima-hub/models/music_audioset_epoch_15_esc_90.14.pt\"",
+    "  msg_ok \"Downloaded CLAP Model\"",
+    "",
+    "  msg_info \"Building Backend\"",
+    "  cd /opt/kima-hub/backend || exit",
+    "  $STD npm ci",
+    "  $STD npm run build",
+    "  msg_ok \"Built Backend\"",
+    "",
+    "  msg_info \"Configuring Backend\"",
+    "  SESSION_SECRET=$(openssl rand -hex 32)",
+    "  ENCRYPTION_KEY=$(openssl rand -hex 32)",
+    "  cat \u003c\u003c EOF \u003e /opt/kima-hub/backend/.env",
+    "NODE_ENV=production",
+    "DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}",
+    "REDIS_URL=redis://localhost:6379",
+    "PORT=3006",
+    "MUSIC_PATH=/music",
+    "TRANSCODE_CACHE_PATH=/opt/kima-hub/cache/transcodes",
+    "SESSION_SECRET=${SESSION_SECRET}",
+    "SETTINGS_ENCRYPTION_KEY=${ENCRYPTION_KEY}",
+    "INTERNAL_API_SECRET=$(openssl rand -hex 16)",
+    "EOF",
+    "  msg_ok \"Configured Backend\"",
+    "",
+    "  msg_info \"Running Database Migrations\"",
+    "  cd /opt/kima-hub/backend || exit",
+    "  $STD npx prisma generate",
+    "  $STD npx prisma migrate deploy",
+    "  msg_ok \"Ran Database Migrations\"",
+    "",
+    "  msg_info \"Building Frontend\"",
+    "  cd /opt/kima-hub/frontend || exit",
+    "  $STD npm ci",
+    "  export NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3006",
+    "  $STD npm run build",
+    "  msg_ok \"Built Frontend\"",
+    "",
+    "  msg_info \"Configuring Frontend\"",
+    "  cat \u003c\u003c EOF \u003e /opt/kima-hub/frontend/.env",
+    "NODE_ENV=production",
+    "BACKEND_URL=http://localhost:3006",
+    "PORT=3030",
+    "EOF",
+    "  msg_ok \"Configured Frontend\"",
+    "",
+    "  msg_info \"Creating Directories\"",
+    "  mkdir -p /opt/kima-hub/cache/transcodes",
+    "  mkdir -p /music",
+    "  msg_ok \"Created Directories\"",
+    "",
+    "  msg_info \"Creating Services\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-backend.service",
+    "[Unit]",
+    "Description=Kima Hub Backend",
+    "After=network.target postgresql.service redis-server.service",
+    "Wants=postgresql.service redis-server.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "WorkingDirectory=/opt/kima-hub/backend",
+    "EnvironmentFile=/opt/kima-hub/backend/.env",
+    "ExecStart=/usr/bin/node /opt/kima-hub/backend/dist/index.js",
+    "Restart=on-failure",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-frontend.service",
+    "[Unit]",
+    "Description=Kima Hub Frontend",
+    "After=network.target kima-backend.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "WorkingDirectory=/opt/kima-hub/frontend",
+    "EnvironmentFile=/opt/kima-hub/frontend/.env",
+    "ExecStart=/usr/bin/npm start",
+    "Restart=on-failure",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-analyzer.service",
+    "[Unit]",
+    "Description=Kima Hub Audio Analyzer (Essentia)",
+    "After=network.target postgresql.service redis-server.service kima-backend.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "WorkingDirectory=/opt/kima-hub/services/audio-analyzer",
+    "Environment=DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}",
+    "Environment=REDIS_URL=redis://localhost:6379",
+    "Environment=MUSIC_PATH=/music",
+    "Environment=BATCH_SIZE=10",
+    "Environment=SLEEP_INTERVAL=5",
+    "Environment=NUM_WORKERS=2",
+    "Environment=THREADS_PER_WORKER=1",
+    "ExecStart=/usr/bin/python3 /opt/kima-hub/services/audio-analyzer/analyzer.py",
+    "Restart=on-failure",
+    "RestartSec=10",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/kima-analyzer-clap.service",
+    "[Unit]",
+    "Description=Kima Hub CLAP Audio Analyzer",
+    "After=network.target postgresql.service redis-server.service kima-backend.service kima-analyzer.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "WorkingDirectory=/opt/kima-hub/services/audio-analyzer-clap",
+    "Environment=DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}",
+    "Environment=REDIS_URL=redis://localhost:6379",
+    "Environment=BACKEND_URL=http://localhost:3006",
+    "Environment=MUSIC_PATH=/music",
+    "Environment=SLEEP_INTERVAL=5",
+    "Environment=NUM_WORKERS=1",
+    "ExecStart=/usr/bin/python3 /opt/kima-hub/services/audio-analyzer-clap/analyzer.py",
+    "Restart=on-failure",
+    "RestartSec=10",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now kima-backend kima-frontend kima-analyzer kima-analyzer-clap",
+    "  msg_ok \"Created Services\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed Successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}:3030${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "",
+    "  if [[ ! -d /opt/kima-hub ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "",
+    "  NODE_VERSION=\"22\" setup_nodejs",
+    "",
+    "  if check_for_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\"; then",
+    "    msg_info \"Stopping Services\"",
+    "    systemctl stop kima-frontend kima-backend kima-analyzer kima-analyzer-clap",
+    "    msg_ok \"Stopped Services\"",
+    "",
+    "    msg_info \"Backing up Data\"",
+    "    cp /opt/kima-hub/backend/.env /opt/kima-hub-backend-env.bak",
+    "    cp /opt/kima-hub/frontend/.env /opt/kima-hub-frontend-env.bak",
+    "    msg_ok \"Backed up Data\"",
+    "",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"kima-hub\" \"Chevron7Locked/kima-hub\" \"tarball\"",
+    "",
+    "    msg_info \"Restoring Data\"",
+    "    cp /opt/kima-hub-backend-env.bak /opt/kima-hub/backend/.env",
+    "    cp /opt/kima-hub-frontend-env.bak /opt/kima-hub/frontend/.env",
+    "    rm -f /opt/kima-hub-backend-env.bak /opt/kima-hub-frontend-env.bak",
+    "    msg_ok \"Restored Data\"",
+    "",
+    "    msg_info \"Rebuilding Backend\"",
+    "    cd /opt/kima-hub/backend || exit",
+    "    $STD npm install",
+    "    $STD npm run build",
+    "    $STD npx prisma generate",
+    "    $STD npx prisma migrate deploy",
+    "    msg_ok \"Rebuilt Backend\"",
+    "",
+    "    msg_info \"Rebuilding Frontend\"",
+    "    cd /opt/kima-hub/frontend || exit",
+    "    $STD npm install",
+    "    $STD npm run build",
+    "    msg_ok \"Rebuilt Frontend\"",
+    "",
+    "    msg_info \"Starting Services\"",
+    "    systemctl start kima-backend kima-frontend kima-analyzer kima-analyzer-clap",
+    "    msg_ok \"Started Services\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  exit",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 22,
+      "end_line": 216,
+      "name_span": {
+        "start_line": 22,
+        "start_col": 10,
+        "end_line": 22,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 218,
+      "end_line": 223,
+      "name_span": {
+        "start_line": 218,
+        "start_col": 10,
+        "end_line": 218,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 225,
+      "end_line": 275,
+      "name_span": {
+        "start_line": 225,
+        "start_col": 10,
+        "end_line": 225,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 15,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 46,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 19,
+      "start_col": 1,
+      "end_col": 29,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 20,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 91,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 91,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 101,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 92,
+        "end_line": 100
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 118,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 118,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 122,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 119,
+        "end_line": 121
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 131,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 131,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 148,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 132,
+        "end_line": 147
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 150,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 150,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 166,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 151,
+        "end_line": 165
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 168,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 168,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 190,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 169,
+        "end_line": 189
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 192,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 192,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 213,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 193,
+        "end_line": 212
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 53
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 8,
+      "start_col": 1,
+      "end_line": 8,
+      "end_col": 53
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 15
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 5,
+      "end_line": 12,
+      "end_col": 15
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 46
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 11,
+      "end_line": 13,
+      "end_col": 45
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 9,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 9,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 10,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 10,
+      "end_line": 16,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 11,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 8,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 9,
+      "end_line": 17,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 13,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 14,
+      "end_line": 18,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 19,
+      "start_col": 11,
+      "end_line": 19,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 19,
+      "start_col": 12,
+      "end_line": 19,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 20,
+      "start_col": 18,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 20,
+      "start_col": 19,
+      "end_line": 20,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 22,
+      "start_col": 10,
+      "end_line": 22,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 22,
+      "start_col": 27,
+      "end_line": 22,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 12,
+      "end_line": 23,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 24,
+      "start_col": 3,
+      "end_line": 24,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 24,
+      "start_col": 8,
+      "end_line": 24,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 34,
+      "start_col": 10,
+      "end_line": 34,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 36,
+      "start_col": 3,
+      "end_line": 36,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 36,
+      "start_col": 3,
+      "end_line": 36,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 14,
+      "end_line": 36,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 36,
+      "start_col": 19,
+      "end_line": 36,
+      "end_col": 40
+    },
+    {
+      "kind": "var-name",
+      "start_line": 36,
+      "start_col": 19,
+      "end_line": 36,
+      "end_col": 29
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 30,
+      "end_line": 36,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 36,
+      "start_col": 41,
+      "end_line": 36,
+      "end_col": 57
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 14,
+      "end_line": 37,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 37,
+      "start_col": 21,
+      "end_line": 37,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 37,
+      "start_col": 21,
+      "end_line": 37,
+      "end_col": 31
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 32,
+      "end_line": 37,
+      "end_col": 38
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 37,
+      "start_col": 39,
+      "end_line": 37,
+      "end_col": 67
+    },
+    {
+      "kind": "var-name",
+      "start_line": 37,
+      "start_col": 39,
+      "end_line": 37,
+      "end_col": 60
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 61,
+      "end_line": 37,
+      "end_col": 67
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 68,
+      "end_line": 37,
+      "end_col": 87
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 38,
+      "start_col": 16,
+      "end_line": 38,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 21,
+      "end_line": 38,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 40,
+      "start_col": 3,
+      "end_line": 40,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 40,
+      "start_col": 12,
+      "end_line": 40,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 42,
+      "start_col": 3,
+      "end_line": 42,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 42,
+      "start_col": 10,
+      "end_line": 42,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 31,
+      "end_line": 44,
+      "end_col": 41
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 42,
+      "end_line": 44,
+      "end_col": 67
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 68,
+      "end_line": 44,
+      "end_col": 77
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 12,
+      "end_line": 46,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 47,
+      "start_col": 10,
+      "end_line": 47,
+      "end_col": 37
+    },
+    {
+      "kind": "var-name",
+      "start_line": 47,
+      "start_col": 10,
+      "end_line": 47,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 8,
+      "end_line": 48,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 61,
+      "start_col": 10,
+      "end_line": 61,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 63,
+      "start_col": 12,
+      "end_line": 63,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 64,
+      "start_col": 3,
+      "end_line": 64,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 65,
+      "start_col": 3,
+      "end_line": 65,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 65,
+      "start_col": 27,
+      "end_line": 65,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 65,
+      "start_col": 30,
+      "end_line": 65,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 66,
+      "start_col": 3,
+      "end_line": 66,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 66,
+      "start_col": 19,
+      "end_line": 66,
+      "end_col": 85
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 66,
+      "start_col": 86,
+      "end_line": 66,
+      "end_col": 104
+    },
+    {
+      "kind": "command",
+      "start_line": 67,
+      "start_col": 3,
+      "end_line": 67,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 19,
+      "end_line": 67,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 113,
+      "end_line": 67,
+      "end_col": 142
+    },
+    {
+      "kind": "command",
+      "start_line": 68,
+      "start_col": 3,
+      "end_line": 68,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 68,
+      "start_col": 19,
+      "end_line": 68,
+      "end_col": 108
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 68,
+      "start_col": 109,
+      "end_line": 68,
+      "end_col": 136
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 3,
+      "end_line": 69,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 19,
+      "end_line": 69,
+      "end_col": 116
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 117,
+      "end_line": 69,
+      "end_col": 148
+    },
+    {
+      "kind": "command",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 70,
+      "start_col": 19,
+      "end_line": 70,
+      "end_col": 122
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 70,
+      "start_col": 123,
+      "end_line": 70,
+      "end_col": 157
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 71,
+      "start_col": 19,
+      "end_line": 71,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 71,
+      "start_col": 113,
+      "end_line": 71,
+      "end_col": 142
+    },
+    {
+      "kind": "command",
+      "start_line": 72,
+      "start_col": 3,
+      "end_line": 72,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 72,
+      "start_col": 19,
+      "end_line": 72,
+      "end_col": 118
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 72,
+      "start_col": 119,
+      "end_line": 72,
+      "end_col": 151
+    },
+    {
+      "kind": "command",
+      "start_line": 73,
+      "start_col": 3,
+      "end_line": 73,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 73,
+      "start_col": 19,
+      "end_line": 73,
+      "end_col": 122
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 73,
+      "start_col": 123,
+      "end_line": 73,
+      "end_col": 157
+    },
+    {
+      "kind": "command",
+      "start_line": 74,
+      "start_col": 3,
+      "end_line": 74,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 74,
+      "start_col": 19,
+      "end_line": 74,
+      "end_col": 116
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 74,
+      "start_col": 117,
+      "end_line": 74,
+      "end_col": 148
+    },
+    {
+      "kind": "command",
+      "start_line": 75,
+      "start_col": 3,
+      "end_line": 75,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 75,
+      "start_col": 19,
+      "end_line": 75,
+      "end_col": 128
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 75,
+      "start_col": 129,
+      "end_line": 75,
+      "end_col": 166
+    },
+    {
+      "kind": "command",
+      "start_line": 76,
+      "start_col": 3,
+      "end_line": 76,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 76,
+      "start_col": 10,
+      "end_line": 76,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 78,
+      "start_col": 3,
+      "end_line": 78,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 78,
+      "start_col": 12,
+      "end_line": 78,
+      "end_col": 36
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 19
+    },
+    {
+      "kind": "var-name",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 15
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 20,
+      "end_line": 79,
+      "end_col": 35
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 79,
+      "start_col": 36,
+      "end_line": 79,
+      "end_col": 129
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 79,
+      "start_col": 130,
+      "end_line": 79,
+      "end_col": 189
+    },
+    {
+      "kind": "command",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 80,
+      "start_col": 10,
+      "end_line": 80,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 82,
+      "start_col": 3,
+      "end_line": 82,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 82,
+      "start_col": 12,
+      "end_line": 82,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 83,
+      "start_col": 3,
+      "end_line": 83,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 83,
+      "start_col": 28,
+      "end_line": 83,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 83,
+      "start_col": 31,
+      "end_line": 83,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 3,
+      "end_line": 84,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 84,
+      "start_col": 8,
+      "end_line": 84,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 85,
+      "start_col": 3,
+      "end_line": 85,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 85,
+      "start_col": 8,
+      "end_line": 85,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 86,
+      "start_col": 3,
+      "end_line": 86,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 86,
+      "start_col": 10,
+      "end_line": 86,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 88,
+      "start_col": 12,
+      "end_line": 88,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 41
+    },
+    {
+      "kind": "var-name",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 89,
+      "start_col": 18,
+      "end_line": 89,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 20,
+      "end_line": 89,
+      "end_col": 27
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 41
+    },
+    {
+      "kind": "var-name",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 90,
+      "start_col": 18,
+      "end_line": 90,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 20,
+      "end_line": 90,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 3,
+      "end_line": 91,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 91,
+      "start_col": 7,
+      "end_line": 91,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 91,
+      "start_col": 10,
+      "end_line": 91,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 91,
+      "start_col": 14,
+      "end_line": 91,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 93,
+      "start_col": 27,
+      "end_line": 93,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 93,
+      "start_col": 41,
+      "end_line": 93,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 93,
+      "start_col": 70,
+      "end_line": 93,
+      "end_col": 83
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 16,
+      "end_line": 98,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 25,
+      "end_line": 99,
+      "end_col": 42
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 100,
+      "start_col": 21,
+      "end_line": 100,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 23,
+      "end_line": 100,
+      "end_col": 30
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 101,
+      "start_col": 1,
+      "end_line": 101,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 3,
+      "end_line": 102,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 10,
+      "end_line": 102,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 104,
+      "start_col": 3,
+      "end_line": 104,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 104,
+      "start_col": 12,
+      "end_line": 104,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 3,
+      "end_line": 105,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 105,
+      "start_col": 28,
+      "end_line": 105,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 31,
+      "end_line": 105,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 106,
+      "start_col": 3,
+      "end_line": 106,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 8,
+      "end_line": 106,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 107,
+      "start_col": 3,
+      "end_line": 107,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 8,
+      "end_line": 107,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 108,
+      "start_col": 3,
+      "end_line": 108,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 108,
+      "start_col": 10,
+      "end_line": 108,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 110,
+      "start_col": 12,
+      "end_line": 110,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 111,
+      "start_col": 3,
+      "end_line": 111,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 111,
+      "start_col": 29,
+      "end_line": 111,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 111,
+      "start_col": 32,
+      "end_line": 111,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 8,
+      "end_line": 112,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 113,
+      "start_col": 3,
+      "end_line": 113,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 113,
+      "start_col": 10,
+      "end_line": 113,
+      "end_col": 55
+    },
+    {
+      "kind": "var-name",
+      "start_line": 113,
+      "start_col": 10,
+      "end_line": 113,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 114,
+      "start_col": 3,
+      "end_line": 114,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 114,
+      "start_col": 8,
+      "end_line": 114,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 115,
+      "start_col": 3,
+      "end_line": 115,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 115,
+      "start_col": 10,
+      "end_line": 115,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 117,
+      "start_col": 12,
+      "end_line": 117,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 118,
+      "start_col": 7,
+      "end_line": 118,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 118,
+      "start_col": 10,
+      "end_line": 118,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 118,
+      "start_col": 14,
+      "end_line": 118,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 122,
+      "start_col": 1,
+      "end_line": 122,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 3,
+      "end_line": 123,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 123,
+      "start_col": 10,
+      "end_line": 123,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 3,
+      "end_line": 125,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 125,
+      "start_col": 12,
+      "end_line": 125,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 3,
+      "end_line": 128,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 128,
+      "start_col": 10,
+      "end_line": 128,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 3,
+      "end_line": 130,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 12,
+      "end_line": 130,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 3,
+      "end_line": 131,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 131,
+      "start_col": 7,
+      "end_line": 131,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 131,
+      "start_col": 10,
+      "end_line": 131,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 131,
+      "start_col": 14,
+      "end_line": 131,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 148,
+      "start_col": 1,
+      "end_line": 148,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 3,
+      "end_line": 150,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 150,
+      "start_col": 7,
+      "end_line": 150,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 150,
+      "start_col": 10,
+      "end_line": 150,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 150,
+      "start_col": 14,
+      "end_line": 150,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 166,
+      "start_col": 1,
+      "end_line": 166,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 168,
+      "start_col": 3,
+      "end_line": 168,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 168,
+      "start_col": 7,
+      "end_line": 168,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 168,
+      "start_col": 10,
+      "end_line": 168,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 168,
+      "start_col": 14,
+      "end_line": 168,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 177,
+      "start_col": 39,
+      "end_line": 177,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 177,
+      "start_col": 53,
+      "end_line": 177,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 177,
+      "start_col": 82,
+      "end_line": 177,
+      "end_col": 95
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 190,
+      "start_col": 1,
+      "end_line": 190,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 192,
+      "start_col": 3,
+      "end_line": 192,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 192,
+      "start_col": 7,
+      "end_line": 192,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 192,
+      "start_col": 10,
+      "end_line": 192,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 192,
+      "start_col": 14,
+      "end_line": 192,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 39,
+      "end_line": 201,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 53,
+      "end_line": 201,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 82,
+      "end_line": 201,
+      "end_col": 95
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 213,
+      "start_col": 1,
+      "end_line": 213,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 214,
+      "start_col": 3,
+      "end_line": 214,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 215,
+      "start_col": 3,
+      "end_line": 215,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 215,
+      "start_col": 10,
+      "end_line": 215,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 216,
+      "start_col": 1,
+      "end_line": 216,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 218,
+      "start_col": 1,
+      "end_line": 218,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 218,
+      "start_col": 10,
+      "end_line": 218,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 218,
+      "start_col": 32,
+      "end_line": 218,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 219,
+      "start_col": 3,
+      "end_line": 219,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 219,
+      "start_col": 10,
+      "end_line": 219,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 220,
+      "start_col": 3,
+      "end_line": 220,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 11,
+      "end_line": 220,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 220,
+      "start_col": 12,
+      "end_line": 220,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 220,
+      "start_col": 23,
+      "end_line": 220,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 220,
+      "start_col": 28,
+      "end_line": 220,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 220,
+      "start_col": 75,
+      "end_line": 220,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 3,
+      "end_line": 221,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 221,
+      "start_col": 11,
+      "end_line": 221,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 221,
+      "start_col": 12,
+      "end_line": 221,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 221,
+      "start_col": 19,
+      "end_line": 221,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 221,
+      "start_col": 59,
+      "end_line": 221,
+      "end_col": 64
+    },
+    {
+      "kind": "command",
+      "start_line": 222,
+      "start_col": 3,
+      "end_line": 222,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 222,
+      "start_col": 11,
+      "end_line": 222,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 222,
+      "start_col": 12,
+      "end_line": 222,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 222,
+      "start_col": 22,
+      "end_line": 222,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 222,
+      "start_col": 35,
+      "end_line": 222,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 222,
+      "start_col": 45,
+      "end_line": 222,
+      "end_col": 50
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 223,
+      "start_col": 1,
+      "end_line": 223,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 225,
+      "start_col": 1,
+      "end_line": 225,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 225,
+      "start_col": 10,
+      "end_line": 225,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 225,
+      "start_col": 26,
+      "end_line": 225,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 226,
+      "start_col": 3,
+      "end_line": 226,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 227,
+      "start_col": 3,
+      "end_line": 227,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 228,
+      "start_col": 3,
+      "end_line": 228,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 230,
+      "start_col": 3,
+      "end_line": 230,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 230,
+      "start_col": 6,
+      "end_line": 230,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 230,
+      "start_col": 9,
+      "end_line": 230,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 230,
+      "start_col": 11,
+      "end_line": 230,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 230,
+      "start_col": 28,
+      "end_line": 230,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 230,
+      "start_col": 30,
+      "end_line": 230,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 230,
+      "start_col": 32,
+      "end_line": 230,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 231,
+      "start_col": 5,
+      "end_line": 231,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 231,
+      "start_col": 15,
+      "end_line": 231,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 231,
+      "start_col": 19,
+      "end_line": 231,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 232,
+      "start_col": 5,
+      "end_line": 232,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 233,
+      "start_col": 3,
+      "end_line": 233,
+      "end_col": 5
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 235,
+      "start_col": 3,
+      "end_line": 235,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 235,
+      "start_col": 3,
+      "end_line": 235,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 235,
+      "start_col": 16,
+      "end_line": 235,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 235,
+      "start_col": 21,
+      "end_line": 235,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 237,
+      "start_col": 3,
+      "end_line": 237,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 237,
+      "start_col": 6,
+      "end_line": 237,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 237,
+      "start_col": 27,
+      "end_line": 237,
+      "end_col": 37
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 237,
+      "start_col": 38,
+      "end_line": 237,
+      "end_col": 63
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 237,
+      "start_col": 63,
+      "end_line": 237,
+      "end_col": 64
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 237,
+      "start_col": 65,
+      "end_line": 237,
+      "end_col": 69
+    },
+    {
+      "kind": "command",
+      "start_line": 238,
+      "start_col": 5,
+      "end_line": 238,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 238,
+      "start_col": 14,
+      "end_line": 238,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 239,
+      "start_col": 5,
+      "end_line": 239,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 240,
+      "start_col": 5,
+      "end_line": 240,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 240,
+      "start_col": 12,
+      "end_line": 240,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 242,
+      "start_col": 5,
+      "end_line": 242,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 242,
+      "start_col": 14,
+      "end_line": 242,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 243,
+      "start_col": 5,
+      "end_line": 243,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 244,
+      "start_col": 5,
+      "end_line": 244,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 245,
+      "start_col": 5,
+      "end_line": 245,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 245,
+      "start_col": 12,
+      "end_line": 245,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 247,
+      "start_col": 5,
+      "end_line": 247,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 247,
+      "start_col": 5,
+      "end_line": 247,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 247,
+      "start_col": 21,
+      "end_line": 247,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 247,
+      "start_col": 49,
+      "end_line": 247,
+      "end_col": 59
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 247,
+      "start_col": 60,
+      "end_line": 247,
+      "end_col": 85
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 247,
+      "start_col": 86,
+      "end_line": 247,
+      "end_col": 95
+    },
+    {
+      "kind": "command",
+      "start_line": 249,
+      "start_col": 5,
+      "end_line": 249,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 249,
+      "start_col": 14,
+      "end_line": 249,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 250,
+      "start_col": 5,
+      "end_line": 250,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 251,
+      "start_col": 5,
+      "end_line": 251,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 252,
+      "start_col": 5,
+      "end_line": 252,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 253,
+      "start_col": 5,
+      "end_line": 253,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 253,
+      "start_col": 12,
+      "end_line": 253,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 255,
+      "start_col": 5,
+      "end_line": 255,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 255,
+      "start_col": 14,
+      "end_line": 255,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 256,
+      "start_col": 5,
+      "end_line": 256,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 256,
+      "start_col": 30,
+      "end_line": 256,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 256,
+      "start_col": 33,
+      "end_line": 256,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 257,
+      "start_col": 5,
+      "end_line": 257,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 257,
+      "start_col": 10,
+      "end_line": 257,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 258,
+      "start_col": 5,
+      "end_line": 258,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 258,
+      "start_col": 10,
+      "end_line": 258,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 259,
+      "start_col": 5,
+      "end_line": 259,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 259,
+      "start_col": 10,
+      "end_line": 259,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 260,
+      "start_col": 5,
+      "end_line": 260,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 260,
+      "start_col": 10,
+      "end_line": 260,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 261,
+      "start_col": 5,
+      "end_line": 261,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 261,
+      "start_col": 12,
+      "end_line": 261,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 263,
+      "start_col": 5,
+      "end_line": 263,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 263,
+      "start_col": 14,
+      "end_line": 263,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 264,
+      "start_col": 5,
+      "end_line": 264,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 264,
+      "start_col": 31,
+      "end_line": 264,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 264,
+      "start_col": 34,
+      "end_line": 264,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 265,
+      "start_col": 5,
+      "end_line": 265,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 265,
+      "start_col": 10,
+      "end_line": 265,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 266,
+      "start_col": 5,
+      "end_line": 266,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 266,
+      "start_col": 10,
+      "end_line": 266,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 267,
+      "start_col": 5,
+      "end_line": 267,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 267,
+      "start_col": 12,
+      "end_line": 267,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 269,
+      "start_col": 5,
+      "end_line": 269,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 269,
+      "start_col": 14,
+      "end_line": 269,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 270,
+      "start_col": 5,
+      "end_line": 270,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 271,
+      "start_col": 5,
+      "end_line": 271,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 271,
+      "start_col": 12,
+      "end_line": 271,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 272,
+      "start_col": 5,
+      "end_line": 272,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 272,
+      "start_col": 12,
+      "end_line": 272,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 273,
+      "start_col": 3,
+      "end_line": 273,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 274,
+      "start_col": 3,
+      "end_line": 274,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 275,
+      "start_col": 1,
+      "end_line": 275,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 277,
+      "start_col": 1,
+      "end_line": 277,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 278,
+      "start_col": 1,
+      "end_line": 278,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 279,
+      "start_col": 1,
+      "end_line": 279,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 280,
+      "start_col": 1,
+      "end_line": 280,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 280,
+      "start_col": 8,
+      "end_line": 280,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 280,
+      "start_col": 10,
+      "end_line": 280,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 280,
+      "start_col": 21,
+      "end_line": 280,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 280,
+      "start_col": 22,
+      "end_line": 280,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 280,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": true,
+    "yarn": false,
+    "pnpm": false,
+    "pip": true,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "kima-backend.service",
+      "path": "/etc/systemd/system/kima-backend.service",
+      "user": "root",
+      "required": true
+    },
+    {
+      "name": "kima-frontend.service",
+      "path": "/etc/systemd/system/kima-frontend.service",
+      "user": "root",
+      "required": true
+    },
+    {
+      "name": "kima-analyzer.service",
+      "path": "/etc/systemd/system/kima-analyzer.service",
+      "user": "root",
+      "required": true
+    },
+    {
+      "name": "kima-analyzer-clap.service",
+      "path": "/etc/systemd/system/kima-analyzer-clap.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}

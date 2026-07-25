@@ -62,7 +62,7 @@ function update_script() {
     [[ "$ARCH" == "x86_64" ]] && ARCH="x64"
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Kavita" "Kareadita/Kavita" "prebuild" "latest" "/opt/Kavita" "kavita-linux-${ARCH}.tar.gz"
-  chmod +x /opt/Kavita/Kavita && chown root:root /opt/Kavita/Kavita
+    chmod +x /opt/Kavita/Kavita && chown root:root /opt/Kavita/Kavita
     msg_info "Starting Service"
     systemctl start kavita
     msg_ok "Started Service"

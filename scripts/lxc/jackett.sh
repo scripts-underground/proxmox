@@ -69,7 +69,7 @@ function update_script() {
     [[ "$ARCH" == "x86_64" ]] && ARCH="AMDx64"
     [[ "$ARCH" == "aarch64" ]] && ARCH="ARM64"
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jackett" "Jackett/Jackett" "prebuild" "latest" "/opt/Jackett" "Jackett.Binaries.Linux${ARCH}.tar.gz"
-  cat << EOF > /opt/.env
+    cat << EOF > /opt/.env
 DisableRootWarning=true
 EOF
     msg_info "Starting Service"

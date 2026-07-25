@@ -211,4 +211,3 @@ function main() {
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 main
-

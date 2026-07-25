@@ -46,4 +46,3 @@ function update_script() {
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
-

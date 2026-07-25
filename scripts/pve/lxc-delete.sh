@@ -154,4 +154,3 @@ done
 
 header_info
 echo -e "${GN}Deletion process completed.${CL}\n"
-
