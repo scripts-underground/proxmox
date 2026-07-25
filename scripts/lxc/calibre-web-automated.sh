@@ -96,6 +96,10 @@ function install_script() {
   $STD uv venv --clear "$VIRTUAL_ENV"
   $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir --upgrade pip setuptools wheel
   $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir -r requirements.txt -r optional-requirements.txt
+  # Force a compatible cryptography + pyOpenSSL pair — the requirements.txt
+  # range `cryptography>=39.0.0,<45.0.0` can resolve to a version whose FFI
+  # bindings lack X509_V_FLAG_NOTIFY_POLICY, which the resolved pyOpenSSL needs.
+  $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir --upgrade cryptography pyOpenSSL
 
   cat << EOF > "$INSTALL_DIR"/dirs.json
 {
@@ -365,6 +369,8 @@ function update_script() {
     fi
     $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir --upgrade pip setuptools wheel
     $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir -r requirements.txt -r optional-requirements.txt
+    # Match install_script() — force compatible cryptography + pyOpenSSL versions.
+    $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir --upgrade cryptography pyOpenSSL
 
     if [[ -d "$INSTALL_DIR"/koreader/plugins/cwasync.koplugin ]]; then
       cd "$INSTALL_DIR"/koreader/plugins || exit
