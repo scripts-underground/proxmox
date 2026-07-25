@@ -99,6 +99,32 @@ type Flags struct {
 	Eval   bool `json:"eval"`
 }
 
+type SystemdService struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	User     string `json:"user"`
+	Required bool   `json:"required"`
+}
+
+type OpenRCService struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	User     string `json:"user"`
+	Required bool   `json:"required"`
+}
+
+type ScriptUser struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	Line   int    `json:"line,omitempty"`
+}
+
+type InteractivePrompt struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+	Line int    `json:"line"`
+}
+
 // Token represents one parsable token from the bash AST.  Kinds are
 // documented alongside the struct.  Op carries the literal text for
 // operator / keyword / var-assign kinds.  Expand is set only for
@@ -144,6 +170,12 @@ type ASTOutput struct {
 	HasEval          bool `json:"has_eval"`
 	HasGlobal        bool `json:"has_global"`
 	HasBootstrap     bool `json:"has_bootstrap"`
+
+	SystemdServices     []SystemdService     `json:"systemd_services"`
+	OpenRCServices      []OpenRCService      `json:"openrc_services"`
+	ServiceManagers     []string             `json:"service_managers"`
+	Users               []ScriptUser         `json:"users"`
+	InteractivePrompts  []InteractivePrompt  `json:"interactive_prompts"`
 }
 
 var downloadCommands = map[string]bool{
@@ -211,6 +243,10 @@ type walker struct {
 	mainList     map[string]bool
 	scopeStack   []funcScope
 	dependentsOf map[string]map[string]bool
+
+	// Heredoc output path tracking
+	pendingOutputPath string
+	heredocOutputs    map[int]string
 }
 
 func (w *walker) posLine(p syntax.Pos) int { return int(p.Line()) }
@@ -321,6 +357,16 @@ func basename(p string) string {
 		return p[idx+1:]
 	}
 	return p
+}
+
+func redirectTargetWord(w *syntax.Word) string {
+	var parts []string
+	for _, p := range w.Parts {
+		if lit, ok := p.(*syntax.Lit); ok {
+			parts = append(parts, lit.Value)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // --- Token emission dispatch (per mvdan node type) --------------------------
@@ -779,6 +825,335 @@ func getCallExpr(stmt *syntax.Stmt) *syntax.CallExpr {
 	return nil
 }
 
+// --- Service / user extraction ------------------------------------------------
+
+var knownImplicitUsers = map[string]bool{
+	"root":     true,
+	"nobody":   true,
+	"nogroup":  true,
+	"daemon":   true,
+	"bin":      true,
+	"sys":      true,
+	"sync":     true,
+	"games":    true,
+	"man":      true,
+	"lp":       true,
+	"mail":     true,
+	"news":     true,
+	"uucp":     true,
+	"proxy":    true,
+	"www-data": true,
+	"postgres": true,
+	"mysql":    true,
+	"redis":    true,
+	"nginx":    true,
+	"mosquitto": true,
+	"prometheus": true,
+	"grafana":  true,
+	"caddy":    true,
+	"mongodb":  true,
+	"influxdb": true,
+	"tomcat":   true,
+	"jenkins":  true,
+	"sonarqube": true,
+	"mariadb":  true,
+}
+
+func pathFromSourceLine(line string) string {
+	for _, prefix := range []string{
+		"/etc/systemd/system/",
+		"/lib/systemd/system/",
+		"/usr/lib/systemd/system/",
+		"/etc/init.d/",
+		"/etc/sysusers.d/",
+	} {
+		idx := strings.Index(line, prefix)
+		if idx < 0 {
+			continue
+		}
+		rest := line[idx:]
+		end := strings.IndexAny(rest, " \t\n\"'")
+		if end < 0 {
+			end = len(rest)
+		}
+		return rest[:end]
+	}
+	return ""
+}
+
+func isSystemdBody(body string) bool {
+	return strings.Contains(body, "[Service]") || strings.Contains(body, "[Unit]")
+}
+
+func isOpenRCBody(body string) bool {
+	return strings.Contains(body, "#/sbin/openrc-run") ||
+		strings.Contains(body, "command_args") ||
+		strings.Contains(body, "command_user") ||
+		strings.Contains(body, "command_background")
+}
+
+func extractSystemdServices(heredocs []Heredoc, lines []string) []SystemdService {
+	seen := map[string]bool{}
+	services := []SystemdService{}
+	for _, hd := range heredocs {
+		body := strings.Join(lines[hd.Body.StartLine-1:hd.Body.EndLine], "\n")
+		if !isSystemdBody(body) {
+			continue
+		}
+		sourceLine := lines[hd.Op.Line-1]
+		path := pathFromSourceLine(sourceLine)
+		if path == "" {
+			continue
+		}
+		name := basename(path)
+		if !strings.HasSuffix(name, ".service") && !strings.HasSuffix(name, ".timer") && !strings.HasSuffix(name, ".socket") {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		user := "root"
+		for _, bline := range strings.Split(body, "\n") {
+			trimmed := strings.TrimSpace(bline)
+			if strings.HasPrefix(trimmed, "User=") {
+				user = strings.TrimPrefix(trimmed, "User=")
+				user = strings.TrimSpace(user)
+				break
+			}
+		}
+		services = append(services, SystemdService{
+			Name:     name,
+			Path:     path,
+			User:     user,
+			Required: true,
+		})
+	}
+	return services
+}
+
+func extractOpenRCServices(heredocs []Heredoc, lines []string) []OpenRCService {
+	seen := map[string]bool{}
+	services := []OpenRCService{}
+	for _, hd := range heredocs {
+		body := strings.Join(lines[hd.Body.StartLine-1:hd.Body.EndLine], "\n")
+		if !isOpenRCBody(body) {
+			continue
+		}
+		sourceLine := lines[hd.Op.Line-1]
+		path := pathFromSourceLine(sourceLine)
+		if path == "" {
+			continue
+		}
+		name := basename(path)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		user := "root"
+		for _, bline := range strings.Split(body, "\n") {
+			trimmed := strings.TrimSpace(bline)
+			if strings.HasPrefix(trimmed, "command_user") {
+				eqIdx := strings.Index(trimmed, "=")
+				if eqIdx >= 0 {
+					user = strings.TrimSpace(trimmed[eqIdx+1:])
+					if q := strings.Trim(user, `"'`); q != user {
+						user = q
+					}
+				}
+				break
+			}
+		}
+
+		services = append(services, OpenRCService{
+			Name:     name,
+			Path:     path,
+			User:     user,
+			Required: true,
+		})
+	}
+	return services
+}
+
+func extractUserCreations(lines []string) map[string]ScriptUser {
+	users := map[string]ScriptUser{}
+	for li, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+
+		for fi, f := range fields {
+			if f != "useradd" && f != "adduser" {
+				continue
+			}
+			// Skip Debian interactive adduser (no flags, first-arg-is-username mode) when it's
+			// clearly the system variant (has --system flag elsewhere)
+			if f == "adduser" {
+				hasSystem := false
+				for _, af := range fields {
+					if af == "--system" || af == "--group" || af == "-D" || af == "-H" {
+						hasSystem = true
+						break
+					}
+				}
+				if !hasSystem {
+					continue
+				}
+			}
+			// Find the username: for useradd/adduser --system, the
+			// username is the last positional argument. Scan from the end
+			// to skip flags/values/quoted-strings that may be split by spaces.
+			userName := ""
+			for ai := len(fields) - 1; ai > fi; ai-- {
+				arg := fields[ai]
+				userName = ""
+				if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "$") || arg == "STDL" {
+					continue
+				}
+				// Skip shell operators (continue past them in reverse)
+				if arg == "||" || arg == "&&" || arg == ";" || arg == "|" {
+					continue
+				}
+				// Skip quote fragments from split quoted strings
+				if strings.HasPrefix(arg, "'") || strings.HasPrefix(arg, "\"") {
+					continue
+				}
+				// Skip shell builtins and path-like tokens
+				if arg == "true" || arg == "false" {
+					continue
+				}
+				userName = strings.Trim(arg, `"'`)
+				userName = strings.TrimSuffix(userName, "`")
+				if userName != "" && !strings.Contains(userName, "/") {
+					break
+				}
+			}
+			if userName != "" {
+				if _, exists := users[userName]; !exists {
+					users[userName] = ScriptUser{
+						Name:   userName,
+						Source: f,
+						Line:   li + 1,
+					}
+				}
+			}
+			break
+		}
+	}
+	return users
+}
+
+func resolveUsers(userCreations map[string]ScriptUser, systemdSvcs []SystemdService, openrcSvcs []OpenRCService) []ScriptUser {
+	seen := map[string]bool{}
+	result := []ScriptUser{}
+
+	for name, u := range userCreations {
+		result = append(result, u)
+		seen[name] = true
+	}
+
+	for _, svc := range systemdSvcs {
+		if svc.User == "" || svc.User == "root" || seen[svc.User] {
+			continue
+		}
+		source := "unknown"
+		if knownImplicitUsers[svc.User] {
+			source = "implicit"
+		}
+		result = append(result, ScriptUser{
+			Name:   svc.User,
+			Source: source,
+		})
+		seen[svc.User] = true
+	}
+
+	for _, svc := range openrcSvcs {
+		if svc.User == "" || svc.User == "root" || seen[svc.User] {
+			continue
+		}
+		source := "unknown"
+		if knownImplicitUsers[svc.User] {
+			source = "implicit"
+		}
+		result = append(result, ScriptUser{
+			Name:   svc.User,
+			Source: source,
+		})
+		seen[svc.User] = true
+	}
+
+	// Ensure root is always in the list if any service references it or runs as root by default
+	hasRoot := false
+	for _, svc := range systemdSvcs {
+		if svc.User == "" || svc.User == "root" {
+			hasRoot = true
+			break
+		}
+	}
+	if !hasRoot {
+		for _, svc := range openrcSvcs {
+			if svc.User == "" || svc.User == "root" {
+				hasRoot = true
+				break
+			}
+		}
+	}
+	if hasRoot && !seen["root"] {
+		result = append(result, ScriptUser{Name: "root", Source: "implicit"})
+		seen["root"] = true
+	}
+
+	return result
+}
+
+func extractInteractivePrompts(lines []string) []InteractivePrompt {
+	prompts := []InteractivePrompt{}
+	whiptailCmds := map[string]bool{"whiptail": true, "dialog": true}
+
+	for li, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+		for fi, f := range fields {
+			if fi == 0 && whiptailCmds[f] {
+				kind := ""
+				var text string
+				for ai := fi + 1; ai < len(fields); ai++ {
+					arg := strings.Trim(fields[ai], `"'`)
+					before, _, _ := strings.Cut(fields[ai], "=")
+					if before == "--yesno" {
+						kind = "yesno"
+						continue
+					}
+					if before == "--menu" {
+						kind = "menu"
+						continue
+					}
+					if before == "--inputbox" {
+						kind = "inputbox"
+						continue
+					}
+					if before == "--passwordbox" {
+						kind = "passwordbox"
+						continue
+					}
+					if kind != "" && text == "" && !strings.HasPrefix(arg, "-") {
+						text = arg
+						break
+					}
+				}
+				if kind != "" {
+					prompts = append(prompts, InteractivePrompt{
+						Kind: kind,
+						Text: text,
+						Line: li + 1,
+					})
+				}
+				break
+			}
+		}
+	}
+	return prompts
+}
+
 // --- Analyze script ----------------------------------------------------------
 
 func analyzeScript(src string, scriptType ScriptType, slug string, violations *[]string) ASTOutput {
@@ -807,7 +1182,8 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		pipedDownloadSpans:  []Span{},
 		mainList:            map[string]bool{},
 		scopeStack:   []funcScope{},
-		dependentsOf: map[string]map[string]bool{},
+		dependentsOf:      map[string]map[string]bool{},
+		heredocOutputs:    map[int]string{},
 	}
 
 	// Bootstrap detection via source text scan
@@ -1014,7 +1390,21 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		}
 	}
 	w.globalRanges = merged
-	hasGlobal := len(w.globalRanges) > 0 
+	hasGlobal := len(w.globalRanges) > 0
+
+	systemdSvcs := extractSystemdServices(w.heredocs, lines)
+	openrcSvcs := extractOpenRCServices(w.heredocs, lines)
+	userCreations := extractUserCreations(lines)
+	users := resolveUsers(userCreations, systemdSvcs, openrcSvcs)
+	prompts := extractInteractivePrompts(lines)
+
+	serviceManagers := []string{}
+	if len(systemdSvcs) > 0 {
+		serviceManagers = append(serviceManagers, "systemd")
+	}
+	if len(openrcSvcs) > 0 {
+		serviceManagers = append(serviceManagers, "openrc")
+	}
 
 	return ASTOutput{
 		SchemaVersion: 2,
@@ -1041,6 +1431,43 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		HasEval:            w.flags.Eval,
 		HasGlobal:          hasGlobal,
 		HasBootstrap:       w.bootLine > 0,
+		SystemdServices:    systemdSvcs,
+		OpenRCServices:     openrcSvcs,
+		ServiceManagers:    serviceManagers,
+		Users:              users,
+		InteractivePrompts: prompts,
+	}
+
+	return ASTOutput{
+		SchemaVersion: 2,
+		Slug:         slug,
+		Type:         string(scriptType),
+		TotalLines:   totalLines,
+		Source:       src,
+		SourceLines:  lines,
+		Functions:    w.funcs,
+		Assigns:      w.assigns,
+		GlobalRanges:   w.globalRanges,
+		Heredocs:     w.heredocs,
+		DownloadSpans:       w.downloadSpans,
+		PipedDownloadSpans:  w.pipedDownloadSpans,
+		ExternalSpans:       w.extSpans,
+		Tokens:             w.tokens,
+		BootstrapLine:      w.bootLine,
+		Hooks:              hooks,
+		HookOrder:          hookOrder,
+		Flags:              w.flags,
+		HasDownload:        w.hasDownload,
+		HasPipedDownload:   len(w.pipedDownloadSpans) > 0,
+		HasExternal:        len(w.extSpans) > 0,
+		HasEval:            w.flags.Eval,
+		HasGlobal:          hasGlobal,
+		HasBootstrap:       w.bootLine > 0,
+		SystemdServices:    systemdSvcs,
+		OpenRCServices:     openrcSvcs,
+		ServiceManagers:    serviceManagers,
+		Users:              users,
+		InteractivePrompts: prompts,
 	}
 }
 
