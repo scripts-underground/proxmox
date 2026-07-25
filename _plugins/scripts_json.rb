@@ -195,6 +195,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
   })
 
   File.write(File.join(site.dest, 'scripts.json'), output)
+  File.write(File.join(site.source, 'scripts.json'), output)
 
   # Copy AST files for client-side consumption
   ast_src = File.join(root, '_ast')
