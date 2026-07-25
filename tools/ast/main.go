@@ -860,26 +860,17 @@ var knownImplicitUsers = map[string]bool{
 }
 
 func pathFromSourceLine(line string) string {
-	idx := strings.Index(line, "/etc/systemd/system/")
-	if idx >= 0 {
-		rest := line[idx:]
-		end := strings.IndexAny(rest, " \t\n\"'")
-		if end < 0 {
-			end = len(rest)
+	for _, prefix := range []string{
+		"/etc/systemd/system/",
+		"/lib/systemd/system/",
+		"/usr/lib/systemd/system/",
+		"/etc/init.d/",
+		"/etc/sysusers.d/",
+	} {
+		idx := strings.Index(line, prefix)
+		if idx < 0 {
+			continue
 		}
-		return rest[:end]
-	}
-	idx = strings.Index(line, "/etc/init.d/")
-	if idx >= 0 {
-		rest := line[idx:]
-		end := strings.IndexAny(rest, " \t\n\"'")
-		if end < 0 {
-			end = len(rest)
-		}
-		return rest[:end]
-	}
-	idx = strings.Index(line, "/etc/sysusers.d/")
-	if idx >= 0 {
 		rest := line[idx:]
 		end := strings.IndexAny(rest, " \t\n\"'")
 		if end < 0 {
