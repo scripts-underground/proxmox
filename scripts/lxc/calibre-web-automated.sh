@@ -253,8 +253,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
 Environment=CALIBRE_DBPATH=$CONFIG_DIR
 Environment=QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox
+Environment=CWA_PORT_OVERRIDE=80
 EnvironmentFile=$INSTALL_DIR/.env
 ExecStart=$VIRTUAL_ENV/bin/python $INSTALL_DIR/cps.py -p $CONFIG_DIR/app.db
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -329,7 +331,7 @@ function post_install_script() {
   msg_ok "Completed successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW}Access it using the following URL:${CL}"
-  echo -e "${GATEWAY}${BGN}http://${IP}:8083${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}${CL}"
 }
 
 function update_script() {
