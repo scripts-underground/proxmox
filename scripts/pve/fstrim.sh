@@ -193,4 +193,3 @@ header_info
 echo -e "${GN}Finished, LXC Containers Trimmed.${CL} \n"
 echo -e "${BL}If you want to see the complete log: cat $LOGFILE${CL}"
 exit 0
-

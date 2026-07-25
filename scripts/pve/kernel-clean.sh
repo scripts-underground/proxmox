@@ -103,4 +103,3 @@ done
 echo -e "${YW}Cleaning up...${CL}"
 apt-get autoremove -y > /dev/null 2>&1 && update-grub > /dev/null 2>&1
 echo -e "${GN}Cleanup and GRUB update complete.${CL}"
-

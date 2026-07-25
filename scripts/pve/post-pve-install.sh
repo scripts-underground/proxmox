@@ -670,4 +670,3 @@ After the upgrade or post-install routines, always clear your browser cache or p
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 main
-

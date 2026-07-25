@@ -1,0 +1,3232 @@
+{
+  "schema_version": 2,
+  "slug": "fireshare",
+  "type": "lxc",
+  "total_lines": 246,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Slaviša Arežina (tremor021)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/ShaneIsrael/fireshare\n\nAPP=\"Fireshare\"\nvar_tags=\"${var_tags:-sharing;video}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-10}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    git \\\n    build-essential \\\n    cmake \\\n    pkg-config \\\n    yasm \\\n    nasm \\\n    libx264-dev \\\n    libx265-dev \\\n    libvpx-dev \\\n    libaom-dev \\\n    libopus-dev \\\n    libvorbis-dev \\\n    libass-dev \\\n    libfreetype6-dev \\\n    libmp3lame-dev \\\n    nginx-extras \\\n    supervisor \\\n    libldap2-dev \\\n    libsasl2-dev \\\n    libssl-dev \\\n    libffi-dev \\\n    libc-dev\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=24 setup_nodejs\n  PYTHON_VERSION=3.14 setup_uv\n\n  fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n\n  msg_info \"Compiling SVT-AV1 (Patience)\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git\n  cd SVT-AV1/Build || exit\n  $STD cmake .. -G \"Unix Makefiles\" -DCMAKE_BUILD_TYPE=Release\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  msg_ok \"Compiled SVT-AV1\"\n\n  msg_info \"Installing NVDEC headers\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git\n  cd nv-codec-headers || exit\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Installed NVDEC headers\"\n\n  msg_info \"Compiling ffmpeg (Patience)\"\n  cd /tmp || exit\n  curl -fsSL https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz -o \"ffmpeg-6.1.tar.xz\"\n  $STD tar -xf ffmpeg-6.1.tar.xz\n  cd ffmpeg-6.1 || exit\n  $STD ./configure \\\n    --prefix=/usr/local \\\n    --enable-gpl \\\n    --enable-version3 \\\n    --enable-nonfree \\\n    --enable-ffnvcodec \\\n    --enable-libx264 \\\n    --enable-libx265 \\\n    --enable-libvpx \\\n    --enable-libaom \\\n    --enable-libopus \\\n    --enable-libvorbis \\\n    --enable-libmp3lame \\\n    --enable-libass \\\n    --enable-libfreetype \\\n    --enable-libsvtav1 \\\n    --disable-debug \\\n    --disable-doc\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Compiled ffmpeg\"\n\n  msg_info \"Configuring Fireshare (Patience)\"\n  ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  SECRET=$(openssl rand -base64 48)\n  mkdir -p /opt/fireshare-{data,videos,images,processed}\n  cd /opt/fireshare || exit\n  $STD uv venv\n  $STD .venv/bin/python -m ensurepip --upgrade\n  $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n  ln -sf /usr/local/bin/ffmpeg /usr/bin/ffmpeg\n  ln -sf /usr/local/bin/ffprobe /usr/bin/ffprobe\n  echo \"/usr/local/lib\" \u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/cuda/lib64\" \u003e\u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/nvidia/lib\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  echo \"/usr/local/nvidia/lib64\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  ldconfig\n  $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n  cp .venv/bin/fireshare /usr/local/bin/fireshare\n  export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n  export DATA_DIRECTORY=/opt/fireshare-data\n  export IMAGE_DIRECTORY=/opt/fireshare-images\n  export VIDEO_DIRECTORY=/opt/fireshare-videos\n  export PROCESSED_DIRECTORY=/opt/fireshare-processed\n  $STD uv run flask db upgrade\n\n  cat \u003c\u003c EOF \u003e /opt/fireshare/fireshare.env\nFLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\nDOMAIN=\nENVIRONMENT=production\nDATA_DIRECTORY=/opt/fireshare-data\nIMAGE_DIRECTORY=/opt/fireshare-images\nVIDEO_DIRECTORY=/opt/fireshare-videos\nPROCESSED_DIRECTORY=/opt/fireshare-processed\nTEMPLATE_PATH=/opt/fireshare/app/server/fireshare/templates\nSECRET_KEY=${SECRET}\nADMIN_PASSWORD=${ADMIN_PASSWORD}\nTZ=UTC\nLD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:\\$LD_LIBRARY_PATH\nPATH=/usr/local/bin:$PATH\nENABLE_TRANSCODING=\nTRANSCODE_GPU=\nNVIDIA_DRIVER_CAPABILITIES=\nEOF\n\n  cd /opt/fireshare/app/client || exit\n  $STD npm install\n  $STD npm run build\n  systemctl stop nginx\n  cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n  sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n  sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n  sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n  sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n  cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n  cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n  systemctl start nginx\n\n  cat \u003c\u003c EOF \u003e ~/fireshare.creds\nFireshare Admin Credentials\n========================\nUsername: admin\nPassword: ${ADMIN_PASSWORD}\nEOF\n  msg_ok \"Configured Fireshare\"\n\n  msg_info \"Creating services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/fireshare.service\n[Unit]\nDescription=Fireshare Service\nAfter=network.target\n\n[Service]\nWorkingDirectory=/opt/fireshare/app/server\nExecStart=/opt/fireshare/.venv/bin/gunicorn --bind=127.0.0.1:5000 \"fireshare:create_app(init_schedule=True)\" --workers 3 --threads 3 --preload\nRestart=always\nEnvironmentFile=/opt/fireshare/fireshare.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now fireshare\n  msg_ok \"Created services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/fireshare ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"fireshare\" \"ShaneIsrael/fireshare\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop fireshare\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/fireshare/fireshare.env\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n    restore_backup\n    rm -f /usr/local/bin/fireshare\n\n    if ! grep -q \"__FIRESHARE_PORT__\" /etc/nginx/nginx.conf; then\n      cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n      sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n      sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n      sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n      sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n      cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n      cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n    fi\n    msg_info \"Configuring Fireshare\"\n\n    cd /opt/fireshare || exit\n    $STD uv venv --clear\n    $STD .venv/bin/python -m ensurepip --upgrade\n    $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n    $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n    cp .venv/bin/fireshare /usr/local/bin/fireshare\n    export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n    export DATA_DIRECTORY=/opt/fireshare-data\n    export IMAGE_DIRECTORY=/opt/fireshare-images\n    export VIDEO_DIRECTORY=/opt/fireshare-videos\n    export PROCESSED_DIRECTORY=/opt/fireshare-processed\n    $STD uv run flask db upgrade\n    cd /opt/fireshare/app/client || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Configured Fireshare\"\n\n    msg_info \"Starting Service\"\n    systemctl start fireshare\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  cleanup_lxc\n\n  exit\n}\n\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: Slaviša Arežina (tremor021)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://github.com/ShaneIsrael/fireshare",
+    "",
+    "APP=\"Fireshare\"",
+    "var_tags=\"${var_tags:-sharing;video}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-2048}\"",
+    "var_disk=\"${var_disk:-10}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y \\",
+    "    git \\",
+    "    build-essential \\",
+    "    cmake \\",
+    "    pkg-config \\",
+    "    yasm \\",
+    "    nasm \\",
+    "    libx264-dev \\",
+    "    libx265-dev \\",
+    "    libvpx-dev \\",
+    "    libaom-dev \\",
+    "    libopus-dev \\",
+    "    libvorbis-dev \\",
+    "    libass-dev \\",
+    "    libfreetype6-dev \\",
+    "    libmp3lame-dev \\",
+    "    nginx-extras \\",
+    "    supervisor \\",
+    "    libldap2-dev \\",
+    "    libsasl2-dev \\",
+    "    libssl-dev \\",
+    "    libffi-dev \\",
+    "    libc-dev",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  NODE_VERSION=24 setup_nodejs",
+    "  PYTHON_VERSION=3.14 setup_uv",
+    "",
+    "  fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"",
+    "",
+    "  msg_info \"Compiling SVT-AV1 (Patience)\"",
+    "  cd /tmp || exit",
+    "  $STD git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+    "  cd SVT-AV1/Build || exit",
+    "  $STD cmake .. -G \"Unix Makefiles\" -DCMAKE_BUILD_TYPE=Release",
+    "  $STD make -j\"$(nproc)\"",
+    "  $STD make install",
+    "  msg_ok \"Compiled SVT-AV1\"",
+    "",
+    "  msg_info \"Installing NVDEC headers\"",
+    "  cd /tmp || exit",
+    "  $STD git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git",
+    "  cd nv-codec-headers || exit",
+    "  $STD make install",
+    "  $STD ldconfig",
+    "  msg_ok \"Installed NVDEC headers\"",
+    "",
+    "  msg_info \"Compiling ffmpeg (Patience)\"",
+    "  cd /tmp || exit",
+    "  curl -fsSL https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz -o \"ffmpeg-6.1.tar.xz\"",
+    "  $STD tar -xf ffmpeg-6.1.tar.xz",
+    "  cd ffmpeg-6.1 || exit",
+    "  $STD ./configure \\",
+    "    --prefix=/usr/local \\",
+    "    --enable-gpl \\",
+    "    --enable-version3 \\",
+    "    --enable-nonfree \\",
+    "    --enable-ffnvcodec \\",
+    "    --enable-libx264 \\",
+    "    --enable-libx265 \\",
+    "    --enable-libvpx \\",
+    "    --enable-libaom \\",
+    "    --enable-libopus \\",
+    "    --enable-libvorbis \\",
+    "    --enable-libmp3lame \\",
+    "    --enable-libass \\",
+    "    --enable-libfreetype \\",
+    "    --enable-libsvtav1 \\",
+    "    --disable-debug \\",
+    "    --disable-doc",
+    "  $STD make -j\"$(nproc)\"",
+    "  $STD make install",
+    "  $STD ldconfig",
+    "  msg_ok \"Compiled ffmpeg\"",
+    "",
+    "  msg_info \"Configuring Fireshare (Patience)\"",
+    "  ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)",
+    "  SECRET=$(openssl rand -base64 48)",
+    "  mkdir -p /opt/fireshare-{data,videos,images,processed}",
+    "  cd /opt/fireshare || exit",
+    "  $STD uv venv",
+    "  $STD .venv/bin/python -m ensurepip --upgrade",
+    "  $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip",
+    "  ln -sf /usr/local/bin/ffmpeg /usr/bin/ffmpeg",
+    "  ln -sf /usr/local/bin/ffprobe /usr/bin/ffprobe",
+    "  echo \"/usr/local/lib\" \u003e /etc/ld.so.conf.d/usr-local.conf",
+    "  echo \"/usr/local/cuda/lib64\" \u003e\u003e /etc/ld.so.conf.d/usr-local.conf",
+    "  echo \"/usr/local/nvidia/lib\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf",
+    "  echo \"/usr/local/nvidia/lib64\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf",
+    "  ldconfig",
+    "  $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server",
+    "  cp .venv/bin/fireshare /usr/local/bin/fireshare",
+    "  export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"",
+    "  export DATA_DIRECTORY=/opt/fireshare-data",
+    "  export IMAGE_DIRECTORY=/opt/fireshare-images",
+    "  export VIDEO_DIRECTORY=/opt/fireshare-videos",
+    "  export PROCESSED_DIRECTORY=/opt/fireshare-processed",
+    "  $STD uv run flask db upgrade",
+    "",
+    "  cat \u003c\u003c EOF \u003e /opt/fireshare/fireshare.env",
+    "FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"",
+    "DOMAIN=",
+    "ENVIRONMENT=production",
+    "DATA_DIRECTORY=/opt/fireshare-data",
+    "IMAGE_DIRECTORY=/opt/fireshare-images",
+    "VIDEO_DIRECTORY=/opt/fireshare-videos",
+    "PROCESSED_DIRECTORY=/opt/fireshare-processed",
+    "TEMPLATE_PATH=/opt/fireshare/app/server/fireshare/templates",
+    "SECRET_KEY=${SECRET}",
+    "ADMIN_PASSWORD=${ADMIN_PASSWORD}",
+    "TZ=UTC",
+    "LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:\\$LD_LIBRARY_PATH",
+    "PATH=/usr/local/bin:$PATH",
+    "ENABLE_TRANSCODING=",
+    "TRANSCODE_GPU=",
+    "NVIDIA_DRIVER_CAPABILITIES=",
+    "EOF",
+    "",
+    "  cd /opt/fireshare/app/client || exit",
+    "  $STD npm install",
+    "  $STD npm run build",
+    "  systemctl stop nginx",
+    "  cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf",
+    "  sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf",
+    "  sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf",
+    "  sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf",
+    "  sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf",
+    "  cp /opt/fireshare/app/nginx/error.html /etc/nginx/",
+    "  cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/",
+    "  systemctl start nginx",
+    "",
+    "  cat \u003c\u003c EOF \u003e ~/fireshare.creds",
+    "Fireshare Admin Credentials",
+    "========================",
+    "Username: admin",
+    "Password: ${ADMIN_PASSWORD}",
+    "EOF",
+    "  msg_ok \"Configured Fireshare\"",
+    "",
+    "  msg_info \"Creating services\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/fireshare.service",
+    "[Unit]",
+    "Description=Fireshare Service",
+    "After=network.target",
+    "",
+    "[Service]",
+    "WorkingDirectory=/opt/fireshare/app/server",
+    "ExecStart=/opt/fireshare/.venv/bin/gunicorn --bind=127.0.0.1:5000 \"fireshare:create_app(init_schedule=True)\" --workers 3 --threads 3 --preload",
+    "Restart=always",
+    "EnvironmentFile=/opt/fireshare/fireshare.env",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now fireshare",
+    "  msg_ok \"Created services\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "  if [[ ! -d /opt/fireshare ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "",
+    "  if check_for_gh_release \"fireshare\" \"ShaneIsrael/fireshare\"; then",
+    "    msg_info \"Stopping Service\"",
+    "    systemctl stop fireshare",
+    "    msg_ok \"Stopped Service\"",
+    "",
+    "    create_backup /opt/fireshare/fireshare.env",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"",
+    "    restore_backup",
+    "    rm -f /usr/local/bin/fireshare",
+    "",
+    "    if ! grep -q \"__FIRESHARE_PORT__\" /etc/nginx/nginx.conf; then",
+    "      cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf",
+    "      sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf",
+    "      sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf",
+    "      sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf",
+    "      sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf",
+    "      cp /opt/fireshare/app/nginx/error.html /etc/nginx/",
+    "      cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/",
+    "    fi",
+    "    msg_info \"Configuring Fireshare\"",
+    "",
+    "    cd /opt/fireshare || exit",
+    "    $STD uv venv --clear",
+    "    $STD .venv/bin/python -m ensurepip --upgrade",
+    "    $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip",
+    "    $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server",
+    "    cp .venv/bin/fireshare /usr/local/bin/fireshare",
+    "    export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"",
+    "    export DATA_DIRECTORY=/opt/fireshare-data",
+    "    export IMAGE_DIRECTORY=/opt/fireshare-images",
+    "    export VIDEO_DIRECTORY=/opt/fireshare-videos",
+    "    export PROCESSED_DIRECTORY=/opt/fireshare-processed",
+    "    $STD uv run flask db upgrade",
+    "    cd /opt/fireshare/app/client || exit",
+    "    $STD npm install",
+    "    $STD npm run build",
+    "    msg_ok \"Configured Fireshare\"",
+    "",
+    "    msg_info \"Starting Service\"",
+    "    systemctl start fireshare",
+    "    msg_ok \"Started Service\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  cleanup_lxc",
+    "",
+    "  exit",
+    "}",
+    "",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 19,
+      "end_line": 177,
+      "name_span": {
+        "start_line": 19,
+        "start_col": 10,
+        "end_line": 19,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 179,
+      "end_line": 184,
+      "name_span": {
+        "start_line": 179,
+        "start_col": 10,
+        "end_line": 179,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 186,
+      "end_line": 241,
+      "name_span": {
+        "start_line": 186,
+        "start_col": 10,
+        "end_line": 186,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 9,
+      "start_col": 1,
+      "end_col": 16,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 10,
+      "start_col": 1,
+      "end_col": 38,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 11,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 120,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 120,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 137,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 121,
+        "end_line": 136
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 152,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 152,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 157,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 153,
+        "end_line": 156
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 161,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 161,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 174,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 162,
+        "end_line": 173
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [
+    {
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 82,
+      "kind": "download"
+    }
+  ],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 38
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 51
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 16
+    },
+    {
+      "kind": "var-name",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 9,
+      "start_col": 5,
+      "end_line": 9,
+      "end_col": 16
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 10,
+      "start_col": 10,
+      "end_line": 10,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 10,
+      "start_col": 11,
+      "end_line": 10,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 11,
+      "start_col": 9,
+      "end_line": 11,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 11,
+      "start_col": 10,
+      "end_line": 11,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 9,
+      "end_line": 12,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 12,
+      "start_col": 10,
+      "end_line": 12,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 11,
+      "end_line": 13,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 8,
+      "end_line": 14,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 9,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 13,
+      "end_line": 15,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 14,
+      "end_line": 15,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 11,
+      "end_line": 16,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 12,
+      "end_line": 16,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 18,
+      "end_line": 17,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 19,
+      "end_line": 17,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 19,
+      "start_col": 10,
+      "end_line": 19,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 19,
+      "start_col": 27,
+      "end_line": 19,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 20,
+      "start_col": 3,
+      "end_line": 20,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 20,
+      "start_col": 12,
+      "end_line": 20,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 21,
+      "start_col": 3,
+      "end_line": 21,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 21,
+      "start_col": 8,
+      "end_line": 21,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 10,
+      "end_line": 44,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 15
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 19,
+      "end_line": 46,
+      "end_col": 31
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 17
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 23,
+      "end_line": 47,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 3,
+      "end_line": 49,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 31,
+      "end_line": 49,
+      "end_col": 42
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 43,
+      "end_line": 49,
+      "end_col": 66
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 67,
+      "end_line": 49,
+      "end_col": 76
+    },
+    {
+      "kind": "command",
+      "start_line": 51,
+      "start_col": 3,
+      "end_line": 51,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 12,
+      "end_line": 51,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 3,
+      "end_line": 52,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 52,
+      "start_col": 11,
+      "end_line": 52,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 14,
+      "end_line": 52,
+      "end_col": 18
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 53,
+      "start_col": 3,
+      "end_line": 53,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 53,
+      "start_col": 8,
+      "end_line": 53,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 54,
+      "start_col": 3,
+      "end_line": 54,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 54,
+      "start_col": 20,
+      "end_line": 54,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 54,
+      "start_col": 23,
+      "end_line": 54,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 55,
+      "start_col": 3,
+      "end_line": 55,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 55,
+      "start_col": 8,
+      "end_line": 55,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 55,
+      "start_col": 20,
+      "end_line": 55,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 56,
+      "start_col": 3,
+      "end_line": 56,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 8,
+      "end_line": 56,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 56,
+      "start_col": 15,
+      "end_line": 56,
+      "end_col": 25
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 56,
+      "start_col": 16,
+      "end_line": 56,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 18,
+      "end_line": 56,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 57,
+      "start_col": 3,
+      "end_line": 57,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 57,
+      "start_col": 8,
+      "end_line": 57,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 58,
+      "start_col": 3,
+      "end_line": 58,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 58,
+      "start_col": 10,
+      "end_line": 58,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 60,
+      "start_col": 3,
+      "end_line": 60,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 60,
+      "start_col": 12,
+      "end_line": 60,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 61,
+      "start_col": 11,
+      "end_line": 61,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 14,
+      "end_line": 61,
+      "end_col": 18
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 3,
+      "end_line": 62,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 62,
+      "start_col": 8,
+      "end_line": 62,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 63,
+      "start_col": 23,
+      "end_line": 63,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 26,
+      "end_line": 63,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 64,
+      "start_col": 3,
+      "end_line": 64,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 64,
+      "start_col": 8,
+      "end_line": 64,
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 65,
+      "start_col": 3,
+      "end_line": 65,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 65,
+      "start_col": 8,
+      "end_line": 65,
+      "end_col": 16
+    },
+    {
+      "kind": "command",
+      "start_line": 66,
+      "start_col": 3,
+      "end_line": 66,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 66,
+      "start_col": 10,
+      "end_line": 66,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 68,
+      "start_col": 3,
+      "end_line": 68,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 68,
+      "start_col": 12,
+      "end_line": 68,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 3,
+      "end_line": 69,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 69,
+      "start_col": 11,
+      "end_line": 69,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 14,
+      "end_line": 69,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 70,
+      "start_col": 63,
+      "end_line": 70,
+      "end_col": 82
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 8,
+      "end_line": 71,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 72,
+      "start_col": 3,
+      "end_line": 72,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 72,
+      "start_col": 17,
+      "end_line": 72,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 72,
+      "start_col": 20,
+      "end_line": 72,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 73,
+      "start_col": 3,
+      "end_line": 73,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 73,
+      "start_col": 8,
+      "end_line": 73,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 91,
+      "start_col": 3,
+      "end_line": 91,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 8,
+      "end_line": 91,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 91,
+      "start_col": 15,
+      "end_line": 91,
+      "end_col": 25
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 91,
+      "start_col": 16,
+      "end_line": 91,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 18,
+      "end_line": 91,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 92,
+      "start_col": 3,
+      "end_line": 92,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 92,
+      "start_col": 8,
+      "end_line": 92,
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 93,
+      "start_col": 3,
+      "end_line": 93,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 93,
+      "start_col": 8,
+      "end_line": 93,
+      "end_col": 16
+    },
+    {
+      "kind": "command",
+      "start_line": 94,
+      "start_col": 3,
+      "end_line": 94,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 94,
+      "start_col": 10,
+      "end_line": 94,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 96,
+      "start_col": 3,
+      "end_line": 96,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 96,
+      "start_col": 12,
+      "end_line": 96,
+      "end_col": 46
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 97,
+      "start_col": 3,
+      "end_line": 97,
+      "end_col": 77
+    },
+    {
+      "kind": "var-name",
+      "start_line": 97,
+      "start_col": 3,
+      "end_line": 97,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 97,
+      "start_col": 18,
+      "end_line": 97,
+      "end_col": 77
+    },
+    {
+      "kind": "command",
+      "start_line": 97,
+      "start_col": 20,
+      "end_line": 97,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 97,
+      "start_col": 44,
+      "end_line": 97,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 97,
+      "start_col": 46,
+      "end_line": 97,
+      "end_col": 48
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 97,
+      "start_col": 53,
+      "end_line": 97,
+      "end_col": 64
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 97,
+      "start_col": 65,
+      "end_line": 97,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
+      "start_line": 97,
+      "start_col": 67,
+      "end_line": 97,
+      "end_col": 71
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 98,
+      "start_col": 3,
+      "end_line": 98,
+      "end_col": 36
+    },
+    {
+      "kind": "var-name",
+      "start_line": 98,
+      "start_col": 3,
+      "end_line": 98,
+      "end_col": 9
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 98,
+      "start_col": 10,
+      "end_line": 98,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 98,
+      "start_col": 12,
+      "end_line": 98,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 99,
+      "start_col": 3,
+      "end_line": 99,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 3,
+      "end_line": 100,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 100,
+      "start_col": 21,
+      "end_line": 100,
+      "end_col": 23
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 24,
+      "end_line": 100,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 3,
+      "end_line": 101,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 101,
+      "start_col": 8,
+      "end_line": 101,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 3,
+      "end_line": 102,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 8,
+      "end_line": 102,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 3,
+      "end_line": 103,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 103,
+      "start_col": 8,
+      "end_line": 103,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 104,
+      "start_col": 3,
+      "end_line": 104,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 3,
+      "end_line": 105,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 3,
+      "end_line": 106,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 106,
+      "start_col": 8,
+      "end_line": 106,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 106,
+      "start_col": 25,
+      "end_line": 106,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 3,
+      "end_line": 107,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 8,
+      "end_line": 107,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 107,
+      "start_col": 32,
+      "end_line": 107,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 108,
+      "start_col": 3,
+      "end_line": 108,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 108,
+      "start_col": 8,
+      "end_line": 108,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 108,
+      "start_col": 32,
+      "end_line": 108,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 109,
+      "start_col": 3,
+      "end_line": 109,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 109,
+      "start_col": 8,
+      "end_line": 109,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 109,
+      "start_col": 34,
+      "end_line": 109,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 3,
+      "end_line": 111,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 111,
+      "start_col": 8,
+      "end_line": 111,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 113,
+      "start_col": 3,
+      "end_line": 113,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 113,
+      "start_col": 10,
+      "end_line": 113,
+      "end_col": 70
+    },
+    {
+      "kind": "var-name",
+      "start_line": 113,
+      "start_col": 10,
+      "end_line": 113,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 113,
+      "start_col": 20,
+      "end_line": 113,
+      "end_col": 70
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 114,
+      "start_col": 3,
+      "end_line": 114,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 114,
+      "start_col": 10,
+      "end_line": 114,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 114,
+      "start_col": 10,
+      "end_line": 114,
+      "end_col": 24
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 115,
+      "start_col": 3,
+      "end_line": 115,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 115,
+      "start_col": 10,
+      "end_line": 115,
+      "end_col": 47
+    },
+    {
+      "kind": "var-name",
+      "start_line": 115,
+      "start_col": 10,
+      "end_line": 115,
+      "end_col": 25
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 116,
+      "start_col": 3,
+      "end_line": 116,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 116,
+      "start_col": 10,
+      "end_line": 116,
+      "end_col": 47
+    },
+    {
+      "kind": "var-name",
+      "start_line": 116,
+      "start_col": 10,
+      "end_line": 116,
+      "end_col": 25
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 117,
+      "start_col": 10,
+      "end_line": 117,
+      "end_col": 54
+    },
+    {
+      "kind": "var-name",
+      "start_line": 117,
+      "start_col": 10,
+      "end_line": 117,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 8,
+      "end_line": 118,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 120,
+      "start_col": 7,
+      "end_line": 120,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 120,
+      "start_col": 10,
+      "end_line": 120,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 120,
+      "start_col": 14,
+      "end_line": 120,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 129,
+      "start_col": 12,
+      "end_line": 129,
+      "end_col": 21
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 130,
+      "start_col": 16,
+      "end_line": 130,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 133,
+      "start_col": 21,
+      "end_line": 133,
+      "end_col": 26
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 137,
+      "start_col": 1,
+      "end_line": 137,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 3,
+      "end_line": 139,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 139,
+      "start_col": 32,
+      "end_line": 139,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 35,
+      "end_line": 139,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 140,
+      "start_col": 3,
+      "end_line": 140,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 140,
+      "start_col": 8,
+      "end_line": 140,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 141,
+      "start_col": 3,
+      "end_line": 141,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 8,
+      "end_line": 141,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 142,
+      "start_col": 3,
+      "end_line": 142,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 143,
+      "start_col": 3,
+      "end_line": 143,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 3,
+      "end_line": 144,
+      "end_col": 6
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 144,
+      "start_col": 10,
+      "end_line": 144,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 145,
+      "start_col": 3,
+      "end_line": 145,
+      "end_col": 6
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 145,
+      "start_col": 10,
+      "end_line": 145,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 3,
+      "end_line": 146,
+      "end_col": 6
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 146,
+      "start_col": 10,
+      "end_line": 146,
+      "end_col": 81
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 3,
+      "end_line": 147,
+      "end_col": 6
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 148,
+      "start_col": 3,
+      "end_line": 148,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 149,
+      "start_col": 3,
+      "end_line": 149,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 3,
+      "end_line": 150,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 3,
+      "end_line": 152,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 152,
+      "start_col": 7,
+      "end_line": 152,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 152,
+      "start_col": 10,
+      "end_line": 152,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 152,
+      "start_col": 14,
+      "end_line": 152,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 156,
+      "start_col": 11,
+      "end_line": 156,
+      "end_col": 28
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 157,
+      "start_col": 1,
+      "end_line": 157,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
+      "start_col": 3,
+      "end_line": 158,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 158,
+      "start_col": 10,
+      "end_line": 158,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 160,
+      "start_col": 3,
+      "end_line": 160,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 160,
+      "start_col": 12,
+      "end_line": 160,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 161,
+      "start_col": 3,
+      "end_line": 161,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 161,
+      "start_col": 7,
+      "end_line": 161,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 161,
+      "start_col": 10,
+      "end_line": 161,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 161,
+      "start_col": 14,
+      "end_line": 161,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 174,
+      "start_col": 1,
+      "end_line": 174,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 175,
+      "start_col": 3,
+      "end_line": 175,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 176,
+      "start_col": 3,
+      "end_line": 176,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 176,
+      "start_col": 10,
+      "end_line": 176,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 177,
+      "start_col": 1,
+      "end_line": 177,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 179,
+      "start_col": 1,
+      "end_line": 179,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 179,
+      "start_col": 10,
+      "end_line": 179,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 179,
+      "start_col": 32,
+      "end_line": 179,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 180,
+      "start_col": 3,
+      "end_line": 180,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 180,
+      "start_col": 10,
+      "end_line": 180,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 181,
+      "start_col": 3,
+      "end_line": 181,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 181,
+      "start_col": 11,
+      "end_line": 181,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 181,
+      "start_col": 12,
+      "end_line": 181,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 181,
+      "start_col": 23,
+      "end_line": 181,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 181,
+      "start_col": 28,
+      "end_line": 181,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 181,
+      "start_col": 75,
+      "end_line": 181,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 182,
+      "start_col": 3,
+      "end_line": 182,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 182,
+      "start_col": 11,
+      "end_line": 182,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 12,
+      "end_line": 182,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 19,
+      "end_line": 182,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 58,
+      "end_line": 182,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 183,
+      "start_col": 3,
+      "end_line": 183,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 183,
+      "start_col": 11,
+      "end_line": 183,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 12,
+      "end_line": 183,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 22,
+      "end_line": 183,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 35,
+      "end_line": 183,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 40,
+      "end_line": 183,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 184,
+      "start_col": 1,
+      "end_line": 184,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 186,
+      "start_col": 1,
+      "end_line": 186,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 186,
+      "start_col": 10,
+      "end_line": 186,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 186,
+      "start_col": 26,
+      "end_line": 186,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 187,
+      "start_col": 3,
+      "end_line": 187,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 188,
+      "start_col": 3,
+      "end_line": 188,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 3,
+      "end_line": 189,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 190,
+      "start_col": 3,
+      "end_line": 190,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 190,
+      "start_col": 6,
+      "end_line": 190,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 190,
+      "start_col": 9,
+      "end_line": 190,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 190,
+      "start_col": 11,
+      "end_line": 190,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 190,
+      "start_col": 29,
+      "end_line": 190,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 190,
+      "start_col": 31,
+      "end_line": 190,
+      "end_col": 32
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 190,
+      "start_col": 33,
+      "end_line": 190,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 191,
+      "start_col": 5,
+      "end_line": 191,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 191,
+      "start_col": 15,
+      "end_line": 191,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 191,
+      "start_col": 19,
+      "end_line": 191,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 192,
+      "start_col": 5,
+      "end_line": 192,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 193,
+      "start_col": 3,
+      "end_line": 193,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 195,
+      "start_col": 3,
+      "end_line": 195,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 195,
+      "start_col": 6,
+      "end_line": 195,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 27,
+      "end_line": 195,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 39,
+      "end_line": 195,
+      "end_col": 62
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 195,
+      "start_col": 62,
+      "end_line": 195,
+      "end_col": 63
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 195,
+      "start_col": 64,
+      "end_line": 195,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 196,
+      "start_col": 5,
+      "end_line": 196,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 196,
+      "start_col": 14,
+      "end_line": 196,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 197,
+      "start_col": 5,
+      "end_line": 197,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 5,
+      "end_line": 198,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 198,
+      "start_col": 12,
+      "end_line": 198,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 200,
+      "start_col": 5,
+      "end_line": 200,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 201,
+      "start_col": 5,
+      "end_line": 201,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 201,
+      "start_col": 5,
+      "end_line": 201,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 201,
+      "start_col": 21,
+      "end_line": 201,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 49,
+      "end_line": 201,
+      "end_col": 60
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 61,
+      "end_line": 201,
+      "end_col": 84
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 85,
+      "end_line": 201,
+      "end_col": 94
+    },
+    {
+      "kind": "command",
+      "start_line": 202,
+      "start_col": 5,
+      "end_line": 202,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 5,
+      "end_line": 203,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 205,
+      "start_col": 5,
+      "end_line": 205,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 205,
+      "start_col": 8,
+      "end_line": 205,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 205,
+      "start_col": 10,
+      "end_line": 205,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 205,
+      "start_col": 18,
+      "end_line": 205,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 205,
+      "start_col": 60,
+      "end_line": 205,
+      "end_col": 61
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 205,
+      "start_col": 62,
+      "end_line": 205,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
+      "start_line": 206,
+      "start_col": 7,
+      "end_line": 206,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 207,
+      "start_col": 7,
+      "end_line": 207,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 207,
+      "start_col": 14,
+      "end_line": 207,
+      "end_col": 67
+    },
+    {
+      "kind": "command",
+      "start_line": 208,
+      "start_col": 7,
+      "end_line": 208,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 208,
+      "start_col": 14,
+      "end_line": 208,
+      "end_col": 55
+    },
+    {
+      "kind": "command",
+      "start_line": 209,
+      "start_col": 7,
+      "end_line": 209,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 209,
+      "start_col": 14,
+      "end_line": 209,
+      "end_col": 85
+    },
+    {
+      "kind": "command",
+      "start_line": 210,
+      "start_col": 7,
+      "end_line": 210,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 210,
+      "start_col": 14,
+      "end_line": 210,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 211,
+      "start_col": 7,
+      "end_line": 211,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 212,
+      "start_col": 7,
+      "end_line": 212,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 213,
+      "start_col": 5,
+      "end_line": 213,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 214,
+      "start_col": 5,
+      "end_line": 214,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 214,
+      "start_col": 14,
+      "end_line": 214,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 216,
+      "start_col": 5,
+      "end_line": 216,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 216,
+      "start_col": 23,
+      "end_line": 216,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 216,
+      "start_col": 26,
+      "end_line": 216,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 217,
+      "start_col": 5,
+      "end_line": 217,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 217,
+      "start_col": 10,
+      "end_line": 217,
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 218,
+      "start_col": 5,
+      "end_line": 218,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 218,
+      "start_col": 10,
+      "end_line": 218,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 219,
+      "start_col": 5,
+      "end_line": 219,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 219,
+      "start_col": 10,
+      "end_line": 219,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 220,
+      "start_col": 5,
+      "end_line": 220,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 220,
+      "start_col": 10,
+      "end_line": 220,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 5,
+      "end_line": 221,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 222,
+      "start_col": 5,
+      "end_line": 222,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 222,
+      "start_col": 12,
+      "end_line": 222,
+      "end_col": 72
+    },
+    {
+      "kind": "var-name",
+      "start_line": 222,
+      "start_col": 12,
+      "end_line": 222,
+      "end_col": 21
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 222,
+      "start_col": 22,
+      "end_line": 222,
+      "end_col": 72
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 223,
+      "start_col": 5,
+      "end_line": 223,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 223,
+      "start_col": 12,
+      "end_line": 223,
+      "end_col": 46
+    },
+    {
+      "kind": "var-name",
+      "start_line": 223,
+      "start_col": 12,
+      "end_line": 223,
+      "end_col": 26
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 224,
+      "start_col": 5,
+      "end_line": 224,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 224,
+      "start_col": 12,
+      "end_line": 224,
+      "end_col": 49
+    },
+    {
+      "kind": "var-name",
+      "start_line": 224,
+      "start_col": 12,
+      "end_line": 224,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 225,
+      "start_col": 5,
+      "end_line": 225,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 225,
+      "start_col": 12,
+      "end_line": 225,
+      "end_col": 49
+    },
+    {
+      "kind": "var-name",
+      "start_line": 225,
+      "start_col": 12,
+      "end_line": 225,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 226,
+      "start_col": 5,
+      "end_line": 226,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 226,
+      "start_col": 12,
+      "end_line": 226,
+      "end_col": 56
+    },
+    {
+      "kind": "var-name",
+      "start_line": 226,
+      "start_col": 12,
+      "end_line": 226,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 227,
+      "start_col": 5,
+      "end_line": 227,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 227,
+      "start_col": 10,
+      "end_line": 227,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 228,
+      "start_col": 5,
+      "end_line": 228,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 228,
+      "start_col": 34,
+      "end_line": 228,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 228,
+      "start_col": 37,
+      "end_line": 228,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 229,
+      "start_col": 5,
+      "end_line": 229,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 229,
+      "start_col": 10,
+      "end_line": 229,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 230,
+      "start_col": 5,
+      "end_line": 230,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 230,
+      "start_col": 10,
+      "end_line": 230,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 231,
+      "start_col": 5,
+      "end_line": 231,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 231,
+      "start_col": 12,
+      "end_line": 231,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 233,
+      "start_col": 5,
+      "end_line": 233,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 233,
+      "start_col": 14,
+      "end_line": 233,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 234,
+      "start_col": 5,
+      "end_line": 234,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 235,
+      "start_col": 5,
+      "end_line": 235,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 235,
+      "start_col": 12,
+      "end_line": 235,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 236,
+      "start_col": 5,
+      "end_line": 236,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 236,
+      "start_col": 12,
+      "end_line": 236,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 237,
+      "start_col": 3,
+      "end_line": 237,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 238,
+      "start_col": 3,
+      "end_line": 238,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 240,
+      "start_col": 3,
+      "end_line": 240,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 241,
+      "start_col": 1,
+      "end_line": 241,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 243,
+      "start_col": 1,
+      "end_line": 243,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 244,
+      "start_col": 1,
+      "end_line": 244,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 245,
+      "start_col": 1,
+      "end_line": 245,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 245,
+      "start_col": 8,
+      "end_line": 245,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 245,
+      "start_col": 10,
+      "end_line": 245,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 245,
+      "start_col": 21,
+      "end_line": 245,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 245,
+      "start_col": 22,
+      "end_line": 245,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 245,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": true,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": true,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": true,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "fireshare.service",
+      "path": "/etc/systemd/system/fireshare.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}

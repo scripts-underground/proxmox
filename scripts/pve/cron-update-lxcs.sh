@@ -351,4 +351,3 @@ case $CHOICE in
   "View") view_script ;;
   "Rotate") rotate_log ;;
 esac
-

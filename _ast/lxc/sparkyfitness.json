@@ -1,0 +1,2890 @@
+{
+  "schema_version": 2,
+  "slug": "sparkyfitness",
+  "type": "lxc",
+  "total_lines": 204,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Tom Frenzel (tomfrenzel)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/CodeWithCJ/SparkyFitness\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"SparkyFitness\"\nvar_tags=\"${var_tags:-health;fitness}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-7}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y nginx\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"18\" setup_postgresql\n  PG_DB_NAME=\"sparkyfitness\" PG_DB_USER=\"sparky\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  fetch_and_deploy_gh_release sparkyfitness \"CodeWithCJ/SparkyFitness\" \"tarball\" \"latest\"\n\n  PNPM_VERSION=\"$(jq -r '.packageManager | split(\"@\")[1]' /opt/sparkyfitness/package.json)\"\n  NODE_VERSION=\"25\" NODE_MODULE=\"pnpm@${PNPM_VERSION}\" setup_nodejs\n\n  msg_info \"Configuring Sparky Fitness\"\n  mkdir -p \"/etc/sparkyfitness\" \"/var/lib/sparkyfitness/uploads\" \"/var/lib/sparkyfitness/backup\" \"/var/www/sparkyfitness\"\n  cp \"/opt/sparkyfitness/docker/.env.example\" \"/etc/sparkyfitness/.env\"\n  sed \\\n    -i \\\n    -e \"s|^#\\?SPARKY_FITNESS_DB_HOST=.*|SPARKY_FITNESS_DB_HOST=localhost|\" \\\n    -e \"s|^#\\?SPARKY_FITNESS_DB_PORT=.*|SPARKY_FITNESS_DB_PORT=5432|\" \\\n    -e \"s|^SPARKY_FITNESS_DB_NAME=.*|SPARKY_FITNESS_DB_NAME=sparkyfitness|\" \\\n    -e \"s|^SPARKY_FITNESS_DB_USER=.*|SPARKY_FITNESS_DB_USER=sparky|\" \\\n    -e \"s|^SPARKY_FITNESS_DB_PASSWORD=.*|SPARKY_FITNESS_DB_PASSWORD=${PG_DB_PASS}|\" \\\n    -e \"s|^SPARKY_FITNESS_APP_DB_USER=.*|SPARKY_FITNESS_APP_DB_USER=sparky_app|\" \\\n    -e \"s|^SPARKY_FITNESS_APP_DB_PASSWORD=.*|SPARKY_FITNESS_APP_DB_PASSWORD=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c20)|\" \\\n    -e \"s|^SPARKY_FITNESS_SERVER_HOST=.*|SPARKY_FITNESS_SERVER_HOST=localhost|\" \\\n    -e \"s|^SPARKY_FITNESS_SERVER_PORT=.*|SPARKY_FITNESS_SERVER_PORT=3010|\" \\\n    -e \"s|^SPARKY_FITNESS_FRONTEND_URL=.*|SPARKY_FITNESS_FRONTEND_URL=http://${LOCAL_IP}:80|\" \\\n    -e \"s|^GARMIN_MICROSERVICE_URL=.*|GARMIN_MICROSERVICE_URL=http://${LOCAL_IP}:8000|\" \\\n    -e \"s|^SPARKY_FITNESS_API_ENCRYPTION_KEY=.*|SPARKY_FITNESS_API_ENCRYPTION_KEY=$(openssl rand -hex 32)|\" \\\n    -e \"s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(openssl rand -hex 32)|\" \\\n    \"/etc/sparkyfitness/.env\"\n  msg_ok \"Configured Sparky Fitness\"\n\n  msg_info \"Building Backend\"\n  cd /opt/sparkyfitness/SparkyFitnessServer || exit\n  $STD pnpm install\n  msg_ok \"Built Backend\"\n\n  msg_info \"Building Frontend (Patience)\"\n  cd /opt/sparkyfitness || exit\n  $STD pnpm install\n  cd /opt/sparkyfitness/SparkyFitnessFrontend || exit\n  $STD pnpm run build\n  cp -a /opt/sparkyfitness/SparkyFitnessFrontend/dist/. /var/www/sparkyfitness/\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Creating SparkyFitness Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/sparkyfitness-server.service\n[Unit]\nDescription=SparkyFitness Backend Service\nAfter=network.target postgresql.service\nRequires=postgresql.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sparkyfitness/SparkyFitnessServer\nEnvironmentFile=/etc/sparkyfitness/.env\nExecStart=/opt/sparkyfitness/SparkyFitnessServer/node_modules/.bin/tsx SparkyFitnessServer.js\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now sparkyfitness-server\n  msg_ok \"Created SparkyFitness Service\"\n\n  msg_info \"Configuring Nginx\"\n  sed \\\n    -e 's|${SPARKY_FITNESS_SERVER_HOST}|127.0.0.1|g' \\\n    -e 's|${SPARKY_FITNESS_SERVER_PORT}|3010|g' \\\n    -e 's|${NGINX_LISTEN_PORT}|80|g' \\\n    -e 's|${NGINX_ACCESS_LOG}|/var/log/nginx/sparkyfitness.access.log|g' \\\n    -e 's|${NGINX_ERROR_LOG}|/var/log/nginx/sparkyfitness.error.log|g' \\\n    -e 's|root /usr/share/nginx/html;|root /var/www/sparkyfitness;|g' \\\n    -e 's|server_name localhost;|server_name _;|g' \\\n    \"/opt/sparkyfitness/docker/nginx.conf\" \u003e /etc/nginx/sites-available/sparkyfitness\n  ln -sf /etc/nginx/sites-available/sparkyfitness /etc/nginx/sites-enabled/sparkyfitness\n  rm -f /etc/nginx/sites-enabled/default\n  $STD nginx -t\n  $STD systemctl enable -q --now nginx\n  $STD systemctl reload nginx\n  msg_ok \"Configured Nginx\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/sparkyfitness ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"sparkyfitness\" \"CodeWithCJ/SparkyFitness\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop sparkyfitness-server nginx\n    msg_ok \"Stopped Services\"\n\n    msg_info \"Creating Backup\"\n    cp -a /opt/sparkyfitness/SparkyFitnessServer/uploads /opt/sparkyfitness_uploads_backup\n    cp -a /opt/sparkyfitness/SparkyFitnessServer/backup /opt/sparkyfitness_backup_backup\n    msg_ok \"Created Backup\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"sparkyfitness\" \"CodeWithCJ/SparkyFitness\" \"tarball\"\n\n    msg_info \"Restoring Backup\"\n    rm -rf /opt/sparkyfitness/SparkyFitnessServer/uploads /opt/sparkyfitness/SparkyFitnessServer/backup\n    mv /opt/sparkyfitness_uploads_backup /opt/sparkyfitness/SparkyFitnessServer/uploads\n    mv /opt/sparkyfitness_backup_backup /opt/sparkyfitness/SparkyFitnessServer/backup\n    msg_ok \"Restored Backup\"\n\n    PNPM_VERSION=\"$(jq -r '.packageManager | split(\"@\")[1]' /opt/sparkyfitness/package.json)\"\n    NODE_VERSION=\"25\" NODE_MODULE=\"pnpm@${PNPM_VERSION}\" setup_nodejs\n\n    msg_info \"Updating Sparky Fitness Backend\"\n    cd /opt/sparkyfitness/SparkyFitnessServer || exit\n    $STD pnpm install\n    msg_ok \"Updated Sparky Fitness Backend\"\n\n    msg_info \"Updating Sparky Fitness Frontend (Patience)\"\n    cd /opt/sparkyfitness || exit\n    $STD pnpm install\n    cd /opt/sparkyfitness/SparkyFitnessFrontend || exit\n    $STD pnpm run build\n    cp -a /opt/sparkyfitness/SparkyFitnessFrontend/dist/. /var/www/sparkyfitness/\n    msg_ok \"Updated Sparky Fitness Frontend\"\n\n    msg_info \"Refreshing Nginx Config\"\n    sed \\\n      -e 's|${SPARKY_FITNESS_SERVER_HOST}|127.0.0.1|g' \\\n      -e 's|${SPARKY_FITNESS_SERVER_PORT}|3010|g' \\\n      -e 's|${NGINX_LISTEN_PORT}|80|g' \\\n      -e 's|${NGINX_ACCESS_LOG}|/var/log/nginx/sparkyfitness.access.log|g' \\\n      -e 's|${NGINX_ERROR_LOG}|/var/log/nginx/sparkyfitness.error.log|g' \\\n      -e 's|root /usr/share/nginx/html;|root /var/www/sparkyfitness;|g' \\\n      -e 's|server_name localhost;|server_name _;|g' \\\n      \"/opt/sparkyfitness/docker/nginx.conf\" \u003e /etc/nginx/sites-available/sparkyfitness\n    msg_ok \"Refreshed Nginx Config\"\n\n    msg_info \"Refreshing SparkyFitness Service\"\n    cat \u003c\u003c EOF \u003e /etc/systemd/system/sparkyfitness-server.service\n[Unit]\nDescription=SparkyFitness Backend Service\nAfter=network.target postgresql.service\nRequires=postgresql.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sparkyfitness/SparkyFitnessServer\nEnvironmentFile=/etc/sparkyfitness/.env\nExecStart=/opt/sparkyfitness/SparkyFitnessServer/node_modules/.bin/tsx SparkyFitnessServer.js\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl daemon-reload\n    msg_ok \"Refreshed SparkyFitness Service\"\n\n    msg_info \"Starting Services\"\n    $STD systemctl start sparkyfitness-server nginx\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Sourced by lxc.bootstrap — never executed directly",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: Tom Frenzel (tomfrenzel)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://github.com/CodeWithCJ/SparkyFitness",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"SparkyFitness\"",
+    "var_tags=\"${var_tags:-health;fitness}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-2048}\"",
+    "var_disk=\"${var_disk:-7}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y nginx",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  PG_VERSION=\"18\" setup_postgresql",
+    "  PG_DB_NAME=\"sparkyfitness\" PG_DB_USER=\"sparky\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db",
+    "",
+    "  fetch_and_deploy_gh_release sparkyfitness \"CodeWithCJ/SparkyFitness\" \"tarball\" \"latest\"",
+    "",
+    "  PNPM_VERSION=\"$(jq -r '.packageManager | split(\"@\")[1]' /opt/sparkyfitness/package.json)\"",
+    "  NODE_VERSION=\"25\" NODE_MODULE=\"pnpm@${PNPM_VERSION}\" setup_nodejs",
+    "",
+    "  msg_info \"Configuring Sparky Fitness\"",
+    "  mkdir -p \"/etc/sparkyfitness\" \"/var/lib/sparkyfitness/uploads\" \"/var/lib/sparkyfitness/backup\" \"/var/www/sparkyfitness\"",
+    "  cp \"/opt/sparkyfitness/docker/.env.example\" \"/etc/sparkyfitness/.env\"",
+    "  sed \\",
+    "    -i \\",
+    "    -e \"s|^#\\?SPARKY_FITNESS_DB_HOST=.*|SPARKY_FITNESS_DB_HOST=localhost|\" \\",
+    "    -e \"s|^#\\?SPARKY_FITNESS_DB_PORT=.*|SPARKY_FITNESS_DB_PORT=5432|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_DB_NAME=.*|SPARKY_FITNESS_DB_NAME=sparkyfitness|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_DB_USER=.*|SPARKY_FITNESS_DB_USER=sparky|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_DB_PASSWORD=.*|SPARKY_FITNESS_DB_PASSWORD=${PG_DB_PASS}|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_APP_DB_USER=.*|SPARKY_FITNESS_APP_DB_USER=sparky_app|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_APP_DB_PASSWORD=.*|SPARKY_FITNESS_APP_DB_PASSWORD=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c20)|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_SERVER_HOST=.*|SPARKY_FITNESS_SERVER_HOST=localhost|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_SERVER_PORT=.*|SPARKY_FITNESS_SERVER_PORT=3010|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_FRONTEND_URL=.*|SPARKY_FITNESS_FRONTEND_URL=http://${LOCAL_IP}:80|\" \\",
+    "    -e \"s|^GARMIN_MICROSERVICE_URL=.*|GARMIN_MICROSERVICE_URL=http://${LOCAL_IP}:8000|\" \\",
+    "    -e \"s|^SPARKY_FITNESS_API_ENCRYPTION_KEY=.*|SPARKY_FITNESS_API_ENCRYPTION_KEY=$(openssl rand -hex 32)|\" \\",
+    "    -e \"s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(openssl rand -hex 32)|\" \\",
+    "    \"/etc/sparkyfitness/.env\"",
+    "  msg_ok \"Configured Sparky Fitness\"",
+    "",
+    "  msg_info \"Building Backend\"",
+    "  cd /opt/sparkyfitness/SparkyFitnessServer || exit",
+    "  $STD pnpm install",
+    "  msg_ok \"Built Backend\"",
+    "",
+    "  msg_info \"Building Frontend (Patience)\"",
+    "  cd /opt/sparkyfitness || exit",
+    "  $STD pnpm install",
+    "  cd /opt/sparkyfitness/SparkyFitnessFrontend || exit",
+    "  $STD pnpm run build",
+    "  cp -a /opt/sparkyfitness/SparkyFitnessFrontend/dist/. /var/www/sparkyfitness/",
+    "  msg_ok \"Built Frontend\"",
+    "",
+    "  msg_info \"Creating SparkyFitness Service\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/sparkyfitness-server.service",
+    "[Unit]",
+    "Description=SparkyFitness Backend Service",
+    "After=network.target postgresql.service",
+    "Requires=postgresql.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "WorkingDirectory=/opt/sparkyfitness/SparkyFitnessServer",
+    "EnvironmentFile=/etc/sparkyfitness/.env",
+    "ExecStart=/opt/sparkyfitness/SparkyFitnessServer/node_modules/.bin/tsx SparkyFitnessServer.js",
+    "Restart=always",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now sparkyfitness-server",
+    "  msg_ok \"Created SparkyFitness Service\"",
+    "",
+    "  msg_info \"Configuring Nginx\"",
+    "  sed \\",
+    "    -e 's|${SPARKY_FITNESS_SERVER_HOST}|127.0.0.1|g' \\",
+    "    -e 's|${SPARKY_FITNESS_SERVER_PORT}|3010|g' \\",
+    "    -e 's|${NGINX_LISTEN_PORT}|80|g' \\",
+    "    -e 's|${NGINX_ACCESS_LOG}|/var/log/nginx/sparkyfitness.access.log|g' \\",
+    "    -e 's|${NGINX_ERROR_LOG}|/var/log/nginx/sparkyfitness.error.log|g' \\",
+    "    -e 's|root /usr/share/nginx/html;|root /var/www/sparkyfitness;|g' \\",
+    "    -e 's|server_name localhost;|server_name _;|g' \\",
+    "    \"/opt/sparkyfitness/docker/nginx.conf\" \u003e /etc/nginx/sites-available/sparkyfitness",
+    "  ln -sf /etc/nginx/sites-available/sparkyfitness /etc/nginx/sites-enabled/sparkyfitness",
+    "  rm -f /etc/nginx/sites-enabled/default",
+    "  $STD nginx -t",
+    "  $STD systemctl enable -q --now nginx",
+    "  $STD systemctl reload nginx",
+    "  msg_ok \"Configured Nginx\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "",
+    "  if [[ ! -d /opt/sparkyfitness ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "",
+    "  if check_for_gh_release \"sparkyfitness\" \"CodeWithCJ/SparkyFitness\"; then",
+    "    msg_info \"Stopping Services\"",
+    "    systemctl stop sparkyfitness-server nginx",
+    "    msg_ok \"Stopped Services\"",
+    "",
+    "    msg_info \"Creating Backup\"",
+    "    cp -a /opt/sparkyfitness/SparkyFitnessServer/uploads /opt/sparkyfitness_uploads_backup",
+    "    cp -a /opt/sparkyfitness/SparkyFitnessServer/backup /opt/sparkyfitness_backup_backup",
+    "    msg_ok \"Created Backup\"",
+    "",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"sparkyfitness\" \"CodeWithCJ/SparkyFitness\" \"tarball\"",
+    "",
+    "    msg_info \"Restoring Backup\"",
+    "    rm -rf /opt/sparkyfitness/SparkyFitnessServer/uploads /opt/sparkyfitness/SparkyFitnessServer/backup",
+    "    mv /opt/sparkyfitness_uploads_backup /opt/sparkyfitness/SparkyFitnessServer/uploads",
+    "    mv /opt/sparkyfitness_backup_backup /opt/sparkyfitness/SparkyFitnessServer/backup",
+    "    msg_ok \"Restored Backup\"",
+    "",
+    "    PNPM_VERSION=\"$(jq -r '.packageManager | split(\"@\")[1]' /opt/sparkyfitness/package.json)\"",
+    "    NODE_VERSION=\"25\" NODE_MODULE=\"pnpm@${PNPM_VERSION}\" setup_nodejs",
+    "",
+    "    msg_info \"Updating Sparky Fitness Backend\"",
+    "    cd /opt/sparkyfitness/SparkyFitnessServer || exit",
+    "    $STD pnpm install",
+    "    msg_ok \"Updated Sparky Fitness Backend\"",
+    "",
+    "    msg_info \"Updating Sparky Fitness Frontend (Patience)\"",
+    "    cd /opt/sparkyfitness || exit",
+    "    $STD pnpm install",
+    "    cd /opt/sparkyfitness/SparkyFitnessFrontend || exit",
+    "    $STD pnpm run build",
+    "    cp -a /opt/sparkyfitness/SparkyFitnessFrontend/dist/. /var/www/sparkyfitness/",
+    "    msg_ok \"Updated Sparky Fitness Frontend\"",
+    "",
+    "    msg_info \"Refreshing Nginx Config\"",
+    "    sed \\",
+    "      -e 's|${SPARKY_FITNESS_SERVER_HOST}|127.0.0.1|g' \\",
+    "      -e 's|${SPARKY_FITNESS_SERVER_PORT}|3010|g' \\",
+    "      -e 's|${NGINX_LISTEN_PORT}|80|g' \\",
+    "      -e 's|${NGINX_ACCESS_LOG}|/var/log/nginx/sparkyfitness.access.log|g' \\",
+    "      -e 's|${NGINX_ERROR_LOG}|/var/log/nginx/sparkyfitness.error.log|g' \\",
+    "      -e 's|root /usr/share/nginx/html;|root /var/www/sparkyfitness;|g' \\",
+    "      -e 's|server_name localhost;|server_name _;|g' \\",
+    "      \"/opt/sparkyfitness/docker/nginx.conf\" \u003e /etc/nginx/sites-available/sparkyfitness",
+    "    msg_ok \"Refreshed Nginx Config\"",
+    "",
+    "    msg_info \"Refreshing SparkyFitness Service\"",
+    "    cat \u003c\u003c EOF \u003e /etc/systemd/system/sparkyfitness-server.service",
+    "[Unit]",
+    "Description=SparkyFitness Backend Service",
+    "After=network.target postgresql.service",
+    "Requires=postgresql.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "WorkingDirectory=/opt/sparkyfitness/SparkyFitnessServer",
+    "EnvironmentFile=/etc/sparkyfitness/.env",
+    "ExecStart=/opt/sparkyfitness/SparkyFitnessServer/node_modules/.bin/tsx SparkyFitnessServer.js",
+    "Restart=always",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "    systemctl daemon-reload",
+    "    msg_ok \"Refreshed SparkyFitness Service\"",
+    "",
+    "    msg_info \"Starting Services\"",
+    "    $STD systemctl start sparkyfitness-server nginx",
+    "    msg_ok \"Started Services\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  exit",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 22,
+      "end_line": 106,
+      "name_span": {
+        "start_line": 22,
+        "start_col": 10,
+        "end_line": 22,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 108,
+      "end_line": 113,
+      "name_span": {
+        "start_line": 108,
+        "start_col": 10,
+        "end_line": 108,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 115,
+      "end_line": 198,
+      "name_span": {
+        "start_line": 115,
+        "start_col": 10,
+        "end_line": 115,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 20,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 39,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 26,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 19,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 20,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 70,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 70,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 86,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 71,
+        "end_line": 85
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 172,
+        "col": 9,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 172,
+        "start_col": 12,
+        "end_col": 15,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 188,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 173,
+        "end_line": 187
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 53
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 35
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 8,
+      "start_col": 1,
+      "end_line": 8,
+      "end_col": 54
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 5,
+      "end_line": 12,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 39
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 11,
+      "end_line": 13,
+      "end_col": 38
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 9,
+      "end_line": 14,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 9,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 10,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 10,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 11,
+      "end_line": 16,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 8,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 9,
+      "end_line": 17,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 13,
+      "end_line": 18,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 14,
+      "end_line": 18,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 19,
+      "start_col": 11,
+      "end_line": 19,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 19,
+      "start_col": 12,
+      "end_line": 19,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 20,
+      "start_col": 18,
+      "end_line": 20,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 20,
+      "start_col": 19,
+      "end_line": 20,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 22,
+      "start_col": 10,
+      "end_line": 22,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 22,
+      "start_col": 27,
+      "end_line": 22,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 12,
+      "end_line": 23,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 24,
+      "start_col": 3,
+      "end_line": 24,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 24,
+      "start_col": 8,
+      "end_line": 24,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 25,
+      "start_col": 3,
+      "end_line": 25,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 25,
+      "start_col": 10,
+      "end_line": 25,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 27,
+      "start_col": 3,
+      "end_line": 27,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 27,
+      "start_col": 3,
+      "end_line": 27,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 27,
+      "start_col": 14,
+      "end_line": 27,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 27,
+      "start_col": 19,
+      "end_line": 27,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 14,
+      "end_line": 28,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 30,
+      "end_line": 28,
+      "end_col": 49
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 30,
+      "end_line": 28,
+      "end_col": 40
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 41,
+      "end_line": 28,
+      "end_col": 49
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 50,
+      "end_line": 28,
+      "end_col": 78
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 50,
+      "end_line": 28,
+      "end_col": 71
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 72,
+      "end_line": 28,
+      "end_col": 78
+    },
+    {
+      "kind": "command",
+      "start_line": 28,
+      "start_col": 79,
+      "end_line": 28,
+      "end_col": 98
+    },
+    {
+      "kind": "command",
+      "start_line": 30,
+      "start_col": 3,
+      "end_line": 30,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 45,
+      "end_line": 30,
+      "end_col": 71
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 72,
+      "end_line": 30,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 82,
+      "end_line": 30,
+      "end_col": 90
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 32,
+      "start_col": 3,
+      "end_line": 32,
+      "end_col": 92
+    },
+    {
+      "kind": "var-name",
+      "start_line": 32,
+      "start_col": 3,
+      "end_line": 32,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 32,
+      "start_col": 16,
+      "end_line": 32,
+      "end_col": 92
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 32,
+      "start_col": 17,
+      "end_line": 32,
+      "end_col": 91
+    },
+    {
+      "kind": "command",
+      "start_line": 32,
+      "start_col": 19,
+      "end_line": 32,
+      "end_col": 21
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 32,
+      "start_col": 25,
+      "end_line": 32,
+      "end_col": 58
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 33,
+      "start_col": 3,
+      "end_line": 33,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 33,
+      "start_col": 3,
+      "end_line": 33,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 33,
+      "start_col": 16,
+      "end_line": 33,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 33,
+      "start_col": 21,
+      "end_line": 33,
+      "end_col": 55
+    },
+    {
+      "kind": "var-name",
+      "start_line": 33,
+      "start_col": 21,
+      "end_line": 33,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 33,
+      "start_col": 33,
+      "end_line": 33,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 33,
+      "start_col": 39,
+      "end_line": 33,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 33,
+      "start_col": 56,
+      "end_line": 33,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 3,
+      "end_line": 35,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 35,
+      "start_col": 12,
+      "end_line": 35,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 36,
+      "start_col": 3,
+      "end_line": 36,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 12,
+      "end_line": 36,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 33,
+      "end_line": 36,
+      "end_col": 65
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 66,
+      "end_line": 36,
+      "end_col": 97
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 98,
+      "end_line": 36,
+      "end_col": 122
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 6,
+      "end_line": 37,
+      "end_col": 46
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 47,
+      "end_line": 37,
+      "end_col": 72
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 40,
+      "start_col": 8,
+      "end_line": 40,
+      "end_col": 75
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 41,
+      "start_col": 8,
+      "end_line": 41,
+      "end_col": 70
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 42,
+      "start_col": 8,
+      "end_line": 42,
+      "end_col": 76
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 8,
+      "end_line": 43,
+      "end_col": 69
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 8,
+      "end_line": 44,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 69,
+      "end_line": 44,
+      "end_col": 82
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 8,
+      "end_line": 45,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 8,
+      "end_line": 46,
+      "end_col": 138
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 46,
+      "start_col": 77,
+      "end_line": 46,
+      "end_col": 136
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 79,
+      "end_line": 46,
+      "end_col": 86
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 46,
+      "start_col": 103,
+      "end_line": 46,
+      "end_col": 104
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 105,
+      "end_line": 46,
+      "end_col": 107
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 46,
+      "start_col": 112,
+      "end_line": 46,
+      "end_col": 123
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 46,
+      "start_col": 124,
+      "end_line": 46,
+      "end_col": 125
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 126,
+      "end_line": 46,
+      "end_col": 130
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 8,
+      "end_line": 47,
+      "end_col": 80
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 48,
+      "start_col": 8,
+      "end_line": 48,
+      "end_col": 75
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 8,
+      "end_line": 49,
+      "end_col": 94
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 49,
+      "start_col": 78,
+      "end_line": 49,
+      "end_col": 89
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 50,
+      "start_col": 8,
+      "end_line": 50,
+      "end_col": 88
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 50,
+      "start_col": 70,
+      "end_line": 50,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 8,
+      "end_line": 51,
+      "end_col": 108
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 51,
+      "start_col": 83,
+      "end_line": 51,
+      "end_col": 106
+    },
+    {
+      "kind": "command",
+      "start_line": 51,
+      "start_col": 85,
+      "end_line": 51,
+      "end_col": 92
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 8,
+      "end_line": 52,
+      "end_col": 78
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 52,
+      "start_col": 53,
+      "end_line": 52,
+      "end_col": 76
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 55,
+      "end_line": 52,
+      "end_col": 62
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 53,
+      "start_col": 5,
+      "end_line": 53,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 54,
+      "start_col": 3,
+      "end_line": 54,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 54,
+      "start_col": 10,
+      "end_line": 54,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 3,
+      "end_line": 56,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 56,
+      "start_col": 12,
+      "end_line": 56,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 57,
+      "start_col": 3,
+      "end_line": 57,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 57,
+      "start_col": 45,
+      "end_line": 57,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 57,
+      "start_col": 48,
+      "end_line": 57,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 58,
+      "start_col": 3,
+      "end_line": 58,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 58,
+      "start_col": 8,
+      "end_line": 58,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 59,
+      "start_col": 3,
+      "end_line": 59,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 59,
+      "start_col": 10,
+      "end_line": 59,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 61,
+      "start_col": 12,
+      "end_line": 61,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 62,
+      "start_col": 3,
+      "end_line": 62,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 62,
+      "start_col": 25,
+      "end_line": 62,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 62,
+      "start_col": 28,
+      "end_line": 62,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 8,
+      "end_line": 63,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 64,
+      "start_col": 3,
+      "end_line": 64,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 64,
+      "start_col": 47,
+      "end_line": 64,
+      "end_col": 49
+    },
+    {
+      "kind": "command",
+      "start_line": 64,
+      "start_col": 50,
+      "end_line": 64,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 65,
+      "start_col": 3,
+      "end_line": 65,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 65,
+      "start_col": 8,
+      "end_line": 65,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 66,
+      "start_col": 3,
+      "end_line": 66,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 67,
+      "start_col": 3,
+      "end_line": 67,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 10,
+      "end_line": 67,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 3,
+      "end_line": 69,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 12,
+      "end_line": 69,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 70,
+      "start_col": 7,
+      "end_line": 70,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 70,
+      "start_col": 10,
+      "end_line": 70,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 70,
+      "start_col": 14,
+      "end_line": 70,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 86,
+      "start_col": 1,
+      "end_line": 86,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 88,
+      "start_col": 10,
+      "end_line": 88,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 90,
+      "start_col": 12,
+      "end_line": 90,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 3,
+      "end_line": 91,
+      "end_col": 6
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 92,
+      "start_col": 8,
+      "end_line": 92,
+      "end_col": 53
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 93,
+      "start_col": 8,
+      "end_line": 93,
+      "end_col": 48
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 94,
+      "start_col": 8,
+      "end_line": 94,
+      "end_col": 37
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 95,
+      "start_col": 8,
+      "end_line": 95,
+      "end_col": 73
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 96,
+      "start_col": 8,
+      "end_line": 96,
+      "end_col": 71
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 97,
+      "start_col": 8,
+      "end_line": 97,
+      "end_col": 70
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 98,
+      "start_col": 8,
+      "end_line": 98,
+      "end_col": 51
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 99,
+      "start_col": 5,
+      "end_line": 99,
+      "end_col": 43
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 99,
+      "start_col": 44,
+      "end_line": 99,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 3,
+      "end_line": 100,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 101,
+      "start_col": 3,
+      "end_line": 101,
+      "end_col": 5
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 3,
+      "end_line": 102,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 8,
+      "end_line": 102,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 3,
+      "end_line": 103,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 103,
+      "start_col": 8,
+      "end_line": 103,
+      "end_col": 17
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 104,
+      "start_col": 3,
+      "end_line": 104,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 104,
+      "start_col": 8,
+      "end_line": 104,
+      "end_col": 17
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 3,
+      "end_line": 105,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 105,
+      "start_col": 10,
+      "end_line": 105,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 106,
+      "start_col": 1,
+      "end_line": 106,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 108,
+      "start_col": 1,
+      "end_line": 108,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 108,
+      "start_col": 10,
+      "end_line": 108,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 108,
+      "start_col": 32,
+      "end_line": 108,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 109,
+      "start_col": 3,
+      "end_line": 109,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 109,
+      "start_col": 10,
+      "end_line": 109,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 110,
+      "start_col": 11,
+      "end_line": 110,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 110,
+      "start_col": 12,
+      "end_line": 110,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 110,
+      "start_col": 23,
+      "end_line": 110,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 110,
+      "start_col": 28,
+      "end_line": 110,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 110,
+      "start_col": 75,
+      "end_line": 110,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 111,
+      "start_col": 3,
+      "end_line": 111,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 111,
+      "start_col": 11,
+      "end_line": 111,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 12,
+      "end_line": 111,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 19,
+      "end_line": 111,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 111,
+      "start_col": 58,
+      "end_line": 111,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 11,
+      "end_line": 112,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 12,
+      "end_line": 112,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 22,
+      "end_line": 112,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 35,
+      "end_line": 112,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 40,
+      "end_line": 112,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 113,
+      "start_col": 1,
+      "end_line": 113,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 115,
+      "start_col": 1,
+      "end_line": 115,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 115,
+      "start_col": 10,
+      "end_line": 115,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 115,
+      "start_col": 26,
+      "end_line": 115,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 116,
+      "start_col": 3,
+      "end_line": 116,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 120,
+      "start_col": 6,
+      "end_line": 120,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 120,
+      "start_col": 9,
+      "end_line": 120,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 120,
+      "start_col": 11,
+      "end_line": 120,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 120,
+      "start_col": 33,
+      "end_line": 120,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 120,
+      "start_col": 35,
+      "end_line": 120,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 120,
+      "start_col": 37,
+      "end_line": 120,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 121,
+      "start_col": 5,
+      "end_line": 121,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 121,
+      "start_col": 15,
+      "end_line": 121,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 19,
+      "end_line": 121,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 122,
+      "start_col": 5,
+      "end_line": 122,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 123,
+      "start_col": 3,
+      "end_line": 123,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 125,
+      "start_col": 3,
+      "end_line": 125,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 6,
+      "end_line": 125,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 125,
+      "start_col": 27,
+      "end_line": 125,
+      "end_col": 42
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 125,
+      "start_col": 43,
+      "end_line": 125,
+      "end_col": 69
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 125,
+      "start_col": 69,
+      "end_line": 125,
+      "end_col": 70
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 125,
+      "start_col": 71,
+      "end_line": 125,
+      "end_col": 75
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 5,
+      "end_line": 126,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 14,
+      "end_line": 126,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 5,
+      "end_line": 127,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 5,
+      "end_line": 128,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 128,
+      "start_col": 12,
+      "end_line": 128,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 5,
+      "end_line": 130,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 14,
+      "end_line": 130,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 5,
+      "end_line": 131,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 5,
+      "end_line": 132,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 5,
+      "end_line": 133,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 12,
+      "end_line": 133,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 135,
+      "start_col": 5,
+      "end_line": 135,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 135,
+      "start_col": 5,
+      "end_line": 135,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 21,
+      "end_line": 135,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 49,
+      "end_line": 135,
+      "end_col": 64
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 65,
+      "end_line": 135,
+      "end_col": 91
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 92,
+      "end_line": 135,
+      "end_col": 101
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 5,
+      "end_line": 137,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 137,
+      "start_col": 14,
+      "end_line": 137,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 5,
+      "end_line": 138,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 140,
+      "start_col": 5,
+      "end_line": 140,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 5,
+      "end_line": 141,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 141,
+      "start_col": 12,
+      "end_line": 141,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 143,
+      "start_col": 5,
+      "end_line": 143,
+      "end_col": 94
+    },
+    {
+      "kind": "var-name",
+      "start_line": 143,
+      "start_col": 5,
+      "end_line": 143,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 143,
+      "start_col": 18,
+      "end_line": 143,
+      "end_col": 94
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 143,
+      "start_col": 19,
+      "end_line": 143,
+      "end_col": 93
+    },
+    {
+      "kind": "command",
+      "start_line": 143,
+      "start_col": 21,
+      "end_line": 143,
+      "end_col": 23
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 143,
+      "start_col": 27,
+      "end_line": 143,
+      "end_col": 60
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 18,
+      "end_line": 144,
+      "end_col": 22
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 144,
+      "start_col": 23,
+      "end_line": 144,
+      "end_col": 57
+    },
+    {
+      "kind": "var-name",
+      "start_line": 144,
+      "start_col": 23,
+      "end_line": 144,
+      "end_col": 34
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 35,
+      "end_line": 144,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 144,
+      "start_col": 41,
+      "end_line": 144,
+      "end_col": 56
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 58,
+      "end_line": 144,
+      "end_col": 70
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 5,
+      "end_line": 146,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 146,
+      "start_col": 14,
+      "end_line": 146,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 5,
+      "end_line": 147,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 147,
+      "start_col": 47,
+      "end_line": 147,
+      "end_col": 49
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 50,
+      "end_line": 147,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 148,
+      "start_col": 5,
+      "end_line": 148,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 148,
+      "start_col": 10,
+      "end_line": 148,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 149,
+      "start_col": 5,
+      "end_line": 149,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 149,
+      "start_col": 12,
+      "end_line": 149,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 151,
+      "start_col": 5,
+      "end_line": 151,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 151,
+      "start_col": 14,
+      "end_line": 151,
+      "end_col": 59
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 5,
+      "end_line": 152,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 152,
+      "start_col": 27,
+      "end_line": 152,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 30,
+      "end_line": 152,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 153,
+      "start_col": 5,
+      "end_line": 153,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 153,
+      "start_col": 10,
+      "end_line": 153,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 5,
+      "end_line": 154,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 154,
+      "start_col": 49,
+      "end_line": 154,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 52,
+      "end_line": 154,
+      "end_col": 56
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 155,
+      "start_col": 5,
+      "end_line": 155,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 155,
+      "start_col": 10,
+      "end_line": 155,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
+      "start_col": 5,
+      "end_line": 156,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 157,
+      "start_col": 5,
+      "end_line": 157,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 157,
+      "start_col": 12,
+      "end_line": 157,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 159,
+      "start_col": 5,
+      "end_line": 159,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 159,
+      "start_col": 14,
+      "end_line": 159,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 160,
+      "start_col": 5,
+      "end_line": 160,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 161,
+      "start_col": 10,
+      "end_line": 161,
+      "end_col": 55
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 162,
+      "start_col": 10,
+      "end_line": 162,
+      "end_col": 50
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 163,
+      "start_col": 10,
+      "end_line": 163,
+      "end_col": 39
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 164,
+      "start_col": 10,
+      "end_line": 164,
+      "end_col": 75
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 165,
+      "start_col": 10,
+      "end_line": 165,
+      "end_col": 73
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 166,
+      "start_col": 10,
+      "end_line": 166,
+      "end_col": 72
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 167,
+      "start_col": 10,
+      "end_line": 167,
+      "end_col": 53
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 168,
+      "start_col": 7,
+      "end_line": 168,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 168,
+      "start_col": 46,
+      "end_line": 168,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 169,
+      "start_col": 5,
+      "end_line": 169,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 169,
+      "start_col": 12,
+      "end_line": 169,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 171,
+      "start_col": 5,
+      "end_line": 171,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 171,
+      "start_col": 14,
+      "end_line": 171,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 5,
+      "end_line": 172,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 172,
+      "start_col": 9,
+      "end_line": 172,
+      "end_col": 11
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 172,
+      "start_col": 12,
+      "end_line": 172,
+      "end_col": 15,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 172,
+      "start_col": 16,
+      "end_line": 172,
+      "end_col": 17
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 188,
+      "start_col": 1,
+      "end_line": 188,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 5,
+      "end_line": 189,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 5,
+      "end_line": 190,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 12,
+      "end_line": 190,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 192,
+      "start_col": 5,
+      "end_line": 192,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 192,
+      "start_col": 14,
+      "end_line": 192,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 193,
+      "start_col": 5,
+      "end_line": 193,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 10,
+      "end_line": 193,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 194,
+      "start_col": 5,
+      "end_line": 194,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 194,
+      "start_col": 12,
+      "end_line": 194,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 195,
+      "start_col": 5,
+      "end_line": 195,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 12,
+      "end_line": 195,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 196,
+      "start_col": 3,
+      "end_line": 196,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 197,
+      "start_col": 3,
+      "end_line": 197,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 198,
+      "start_col": 1,
+      "end_line": 198,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 200,
+      "start_col": 1,
+      "end_line": 200,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 201,
+      "start_col": 1,
+      "end_line": 201,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 202,
+      "start_col": 1,
+      "end_line": 202,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 1,
+      "end_line": 203,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 203,
+      "start_col": 8,
+      "end_line": 203,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 10,
+      "end_line": 203,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 203,
+      "start_col": 21,
+      "end_line": 203,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 203,
+      "start_col": 22,
+      "end_line": 203,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 203,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": true,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "sparkyfitness-server.service",
+      "path": "/etc/systemd/system/sparkyfitness-server.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}

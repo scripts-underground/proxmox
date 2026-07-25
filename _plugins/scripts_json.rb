@@ -116,6 +116,11 @@ Jekyll::Hooks.register :site, :post_write do |site|
         overrides = (ast['assigns'] || []).select { |a|
           a['name'].start_with?('var_') && a['value_is_param_default']
         }.map { |a| a['name'] }.uniq.sort
+        systemd_services = ast['systemd_services']
+        openrc_services = ast['openrc_services']
+        service_managers = ast['service_managers']
+        users = ast['users']
+        interactive_prompts = ast['interactive_prompts']
       end
 
       created = begin
@@ -173,7 +178,12 @@ Jekyll::Hooks.register :site, :post_write do |site|
         has_cargo: has_cargo,
         has_go: has_go,
         has_global: has_global,
-        overrides: overrides
+        overrides: overrides,
+        systemd_services: systemd_services,
+        openrc_services: openrc_services,
+        service_managers: service_managers,
+        users: users,
+        interactive_prompts: interactive_prompts
       }
     end
   end
@@ -185,6 +195,7 @@ Jekyll::Hooks.register :site, :post_write do |site|
   })
 
   File.write(File.join(site.dest, 'scripts.json'), output)
+  File.write(File.join(site.source, 'scripts.json'), output)
 
   # Copy AST files for client-side consumption
   ast_src = File.join(root, '_ast')

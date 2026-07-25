@@ -1,0 +1,2553 @@
+{
+  "schema_version": 2,
+  "slug": "endurain",
+  "type": "lxc",
+  "total_lines": 171,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: johanngrobe\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://codeberg.org/endurain-project/endurain\n\n# shellcheck disable=SC2034\nAPP=\"Endurain\"\nvar_tags=\"${var_tags:-sport;social-media}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y build-essential\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db\n  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n  msg_info \"Setting up Endurain\"\n  cd /opt/endurain || exit\n  rm -rf \\\n    /opt/endurain/{docs,example.env,screenshot_01.png} \\\n    /opt/endurain/docker* \\\n    /opt/endurain/*.yml\n  mkdir -p /opt/endurain_data/{data,logs}\n  SECRET_KEY=$(openssl rand -hex 32)\n  FERNET_KEY=$(openssl rand -base64 32)\n  ENDURAIN_HOST=http://${LOCAL_IP}:8080\n  cat \u003c\u003c EOF \u003e /opt/endurain/.env\nDB_PASSWORD=${PG_DB_PASS}\n\nSECRET_KEY=${SECRET_KEY}\nFERNET_KEY=${FERNET_KEY}\n\nTZ=Europe/Berlin\nENDURAIN_HOST=${ENDURAIN_HOST}\nBEHIND_PROXY=false\n\nPOSTGRES_DB=${PG_DB_NAME}\nPOSTGRES_USER=${PG_DB_USER}\nPGDATA=/var/lib/postgresql/${PG_DB_NAME}\n\nDB_DATABASE=${PG_DB_NAME}\nDB_USER=${PG_DB_USER}\nDB_PORT=5432\nDB_HOST=localhost\n\nDATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\n\nBACKEND_DIR=\"/opt/endurain/backend/app\"\nFRONTEND_DIR=\"/opt/endurain/frontend/dist\"\nDATA_DIR=\"/opt/endurain_data/data\"\nLOGS_DIR=\"/opt/endurain_data/logs\"\n\n#SMTP_HOST=smtp.protonmail.ch\n#SMTP_PORT=587\n#SMTP_USERNAME=your-email@example.com\n#SMTP_PASSWORD=your-app-password\n#SMTP_SECURE=true\n#SMTP_SECURE_TYPE=starttls\nEOF\n  msg_ok \"Setup Endurain\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/endurain/frontend || exit\n  $STD npm ci --prefer-offline\n  $STD npm run build\n  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js\nwindow.env = {\n  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"\n}\nEOF\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Setting up Backend\"\n  cd /opt/endurain/backend || exit\n  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n  UV_VERSION=\"$UV_VERSION\" setup_uv\n  $STD uv sync --frozen --no-dev\n  msg_ok \"Setup Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service\n[Unit]\nDescription=Endurain FastAPI Backend\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/endurain/backend/app\nEnvironmentFile=/opt/endurain/.env\nExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080\nRestart=always\nRestartSec=5\nUser=root\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now endurain\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/endurain ]]; then\n    msg_error \"No ${APP} installation found!\"\n    exit\n  fi\n  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop endurain\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js\n    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n    msg_info \"Preparing Update\"\n    cd /opt/endurain || exit\n    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml\n    msg_ok \"Prepared Update\"\n\n    msg_info \"Updating Frontend\"\n    cd /opt/endurain/frontend || exit\n    $STD npm ci\n    $STD npm run build\n    msg_ok \"Updated Frontend\"\n\n    restore_backup\n\n    msg_info \"Updating Backend\"\n    cd /opt/endurain/backend || exit\n    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n    UV_VERSION=\"$UV_VERSION\" setup_uv\n    $STD uv sync --frozen --no-dev\n    msg_ok \"Backend Updated\"\n\n    msg_info \"Starting Service\"\n    systemctl start endurain\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: johanngrobe",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://codeberg.org/endurain-project/endurain",
+    "",
+    "# shellcheck disable=SC2034",
+    "APP=\"Endurain\"",
+    "var_tags=\"${var_tags:-sport;social-media}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-4096}\"",
+    "var_disk=\"${var_disk:-5}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies\"",
+    "  $STD apt install -y build-essential",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  PYTHON_VERSION=\"3.13\" setup_uv",
+    "  NODE_VERSION=\"24\" setup_nodejs",
+    "  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql",
+    "  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db",
+    "  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
+    "",
+    "  msg_info \"Setting up Endurain\"",
+    "  cd /opt/endurain || exit",
+    "  rm -rf \\",
+    "    /opt/endurain/{docs,example.env,screenshot_01.png} \\",
+    "    /opt/endurain/docker* \\",
+    "    /opt/endurain/*.yml",
+    "  mkdir -p /opt/endurain_data/{data,logs}",
+    "  SECRET_KEY=$(openssl rand -hex 32)",
+    "  FERNET_KEY=$(openssl rand -base64 32)",
+    "  ENDURAIN_HOST=http://${LOCAL_IP}:8080",
+    "  cat \u003c\u003c EOF \u003e /opt/endurain/.env",
+    "DB_PASSWORD=${PG_DB_PASS}",
+    "",
+    "SECRET_KEY=${SECRET_KEY}",
+    "FERNET_KEY=${FERNET_KEY}",
+    "",
+    "TZ=Europe/Berlin",
+    "ENDURAIN_HOST=${ENDURAIN_HOST}",
+    "BEHIND_PROXY=false",
+    "",
+    "POSTGRES_DB=${PG_DB_NAME}",
+    "POSTGRES_USER=${PG_DB_USER}",
+    "PGDATA=/var/lib/postgresql/${PG_DB_NAME}",
+    "",
+    "DB_DATABASE=${PG_DB_NAME}",
+    "DB_USER=${PG_DB_USER}",
+    "DB_PORT=5432",
+    "DB_HOST=localhost",
+    "",
+    "DATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}",
+    "",
+    "BACKEND_DIR=\"/opt/endurain/backend/app\"",
+    "FRONTEND_DIR=\"/opt/endurain/frontend/dist\"",
+    "DATA_DIR=\"/opt/endurain_data/data\"",
+    "LOGS_DIR=\"/opt/endurain_data/logs\"",
+    "",
+    "#SMTP_HOST=smtp.protonmail.ch",
+    "#SMTP_PORT=587",
+    "#SMTP_USERNAME=your-email@example.com",
+    "#SMTP_PASSWORD=your-app-password",
+    "#SMTP_SECURE=true",
+    "#SMTP_SECURE_TYPE=starttls",
+    "EOF",
+    "  msg_ok \"Setup Endurain\"",
+    "",
+    "  msg_info \"Building Frontend\"",
+    "  cd /opt/endurain/frontend || exit",
+    "  $STD npm ci --prefer-offline",
+    "  $STD npm run build",
+    "  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js",
+    "window.env = {",
+    "  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"",
+    "}",
+    "EOF",
+    "  msg_ok \"Built Frontend\"",
+    "",
+    "  msg_info \"Setting up Backend\"",
+    "  cd /opt/endurain/backend || exit",
+    "  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")",
+    "  UV_VERSION=\"$UV_VERSION\" setup_uv",
+    "  $STD uv sync --frozen --no-dev",
+    "  msg_ok \"Setup Backend\"",
+    "",
+    "  msg_info \"Creating Service\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service",
+    "[Unit]",
+    "Description=Endurain FastAPI Backend",
+    "After=network.target postgresql.service",
+    "",
+    "[Service]",
+    "WorkingDirectory=/opt/endurain/backend/app",
+    "EnvironmentFile=/opt/endurain/.env",
+    "ExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080",
+    "Restart=always",
+    "RestartSec=5",
+    "User=root",
+    "StandardOutput=journal",
+    "StandardError=journal",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now endurain",
+    "  msg_ok \"Created Service\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed Successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "",
+    "  if [[ ! -d /opt/endurain ]]; then",
+    "    msg_error \"No ${APP} installation found!\"",
+    "    exit",
+    "  fi",
+    "  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then",
+    "    msg_info \"Stopping Service\"",
+    "    systemctl stop endurain",
+    "    msg_ok \"Stopped Service\"",
+    "",
+    "    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
+    "",
+    "    msg_info \"Preparing Update\"",
+    "    cd /opt/endurain || exit",
+    "    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml",
+    "    msg_ok \"Prepared Update\"",
+    "",
+    "    msg_info \"Updating Frontend\"",
+    "    cd /opt/endurain/frontend || exit",
+    "    $STD npm ci",
+    "    $STD npm run build",
+    "    msg_ok \"Updated Frontend\"",
+    "",
+    "    restore_backup",
+    "",
+    "    msg_info \"Updating Backend\"",
+    "    cd /opt/endurain/backend || exit",
+    "    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")",
+    "    UV_VERSION=\"$UV_VERSION\" setup_uv",
+    "    $STD uv sync --frozen --no-dev",
+    "    msg_ok \"Backend Updated\"",
+    "",
+    "    msg_info \"Starting Service\"",
+    "    systemctl start endurain",
+    "    msg_ok \"Started Service\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  exit",
+    "}",
+    "",
+    "# shellcheck disable=SC1090",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 20,
+      "end_line": 115,
+      "name_span": {
+        "start_line": 20,
+        "start_col": 10,
+        "end_line": 20,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 117,
+      "end_line": 122,
+      "name_span": {
+        "start_line": 117,
+        "start_col": 10,
+        "end_line": 117,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 124,
+      "end_line": 167,
+      "name_span": {
+        "start_line": 124,
+        "start_col": 10,
+        "end_line": 124,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 10,
+      "start_col": 1,
+      "end_col": 15,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 11,
+      "start_col": 1,
+      "end_col": 43,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 26,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 41,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 41,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 73,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 42,
+        "end_line": 72
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 80,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 80,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 84,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 81,
+        "end_line": 83
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 95,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 95,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 112,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 96,
+        "end_line": 111
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 57
+    },
+    {
+      "kind": "comment",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 15
+    },
+    {
+      "kind": "var-name",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 10,
+      "start_col": 5,
+      "end_line": 10,
+      "end_col": 15
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 43
+    },
+    {
+      "kind": "var-name",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 11,
+      "start_col": 10,
+      "end_line": 11,
+      "end_col": 43
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 11,
+      "start_col": 11,
+      "end_line": 11,
+      "end_col": 42
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 9,
+      "end_line": 12,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 12,
+      "start_col": 10,
+      "end_line": 12,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 9,
+      "end_line": 13,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 11,
+      "end_line": 14,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 8,
+      "end_line": 15,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 9,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 13,
+      "end_line": 16,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 14,
+      "end_line": 16,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 11,
+      "end_line": 17,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 12,
+      "end_line": 17,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 18,
+      "end_line": 18,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 19,
+      "end_line": 18,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 20,
+      "start_col": 10,
+      "end_line": 20,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 20,
+      "start_col": 27,
+      "end_line": 20,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 21,
+      "start_col": 3,
+      "end_line": 21,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 21,
+      "start_col": 12,
+      "end_line": 21,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 22,
+      "start_col": 3,
+      "end_line": 22,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 22,
+      "start_col": 8,
+      "end_line": 22,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 10,
+      "end_line": 23,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 25,
+      "start_col": 3,
+      "end_line": 25,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 25,
+      "start_col": 3,
+      "end_line": 25,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 25,
+      "start_col": 18,
+      "end_line": 25,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 25,
+      "start_col": 25,
+      "end_line": 25,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 26,
+      "start_col": 3,
+      "end_line": 26,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 26,
+      "start_col": 3,
+      "end_line": 26,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 26,
+      "start_col": 16,
+      "end_line": 26,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 26,
+      "start_col": 21,
+      "end_line": 26,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 27,
+      "start_col": 3,
+      "end_line": 27,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 27,
+      "start_col": 3,
+      "end_line": 27,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 27,
+      "start_col": 14,
+      "end_line": 27,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 27,
+      "start_col": 19,
+      "end_line": 27,
+      "end_col": 39
+    },
+    {
+      "kind": "var-name",
+      "start_line": 27,
+      "start_col": 19,
+      "end_line": 27,
+      "end_col": 29
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 27,
+      "start_col": 30,
+      "end_line": 27,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 27,
+      "start_col": 40,
+      "end_line": 27,
+      "end_col": 56
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 3,
+      "end_line": 28,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 14,
+      "end_line": 28,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 27,
+      "end_line": 28,
+      "end_col": 48
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 27,
+      "end_line": 28,
+      "end_col": 37
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 28,
+      "start_col": 38,
+      "end_line": 28,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 28,
+      "start_col": 49,
+      "end_line": 28,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 29,
+      "start_col": 3,
+      "end_line": 29,
+      "end_col": 36
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 37,
+      "end_line": 29,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 48,
+      "end_line": 29,
+      "end_col": 75
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 76,
+      "end_line": 29,
+      "end_col": 85
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 86,
+      "end_line": 29,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 95,
+      "end_line": 29,
+      "end_col": 110
+    },
+    {
+      "kind": "command",
+      "start_line": 31,
+      "start_col": 3,
+      "end_line": 31,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 31,
+      "start_col": 12,
+      "end_line": 31,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 32,
+      "start_col": 3,
+      "end_line": 32,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 32,
+      "start_col": 20,
+      "end_line": 32,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 32,
+      "start_col": 23,
+      "end_line": 32,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 33,
+      "start_col": 3,
+      "end_line": 33,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 37
+    },
+    {
+      "kind": "var-name",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 38,
+      "start_col": 14,
+      "end_line": 38,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 16,
+      "end_line": 38,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 39,
+      "start_col": 3,
+      "end_line": 39,
+      "end_col": 40
+    },
+    {
+      "kind": "var-name",
+      "start_line": 39,
+      "start_col": 3,
+      "end_line": 39,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 39,
+      "start_col": 14,
+      "end_line": 39,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 39,
+      "start_col": 16,
+      "end_line": 39,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 40,
+      "start_col": 3,
+      "end_line": 40,
+      "end_col": 40
+    },
+    {
+      "kind": "var-name",
+      "start_line": 40,
+      "start_col": 3,
+      "end_line": 40,
+      "end_col": 16
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 40,
+      "start_col": 24,
+      "end_line": 40,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 41,
+      "start_col": 7,
+      "end_line": 41,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 41,
+      "start_col": 10,
+      "end_line": 41,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 41,
+      "start_col": 14,
+      "end_line": 41,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 42,
+      "start_col": 13,
+      "end_line": 42,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 12,
+      "end_line": 44,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 45,
+      "start_col": 12,
+      "end_line": 45,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 48,
+      "start_col": 15,
+      "end_line": 48,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 51,
+      "start_col": 13,
+      "end_line": 51,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 52,
+      "start_col": 15,
+      "end_line": 52,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 53,
+      "start_col": 28,
+      "end_line": 53,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 55,
+      "start_col": 13,
+      "end_line": 55,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 56,
+      "start_col": 9,
+      "end_line": 56,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 60,
+      "start_col": 35,
+      "end_line": 60,
+      "end_col": 48
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 60,
+      "start_col": 49,
+      "end_line": 60,
+      "end_col": 62
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 60,
+      "start_col": 78,
+      "end_line": 60,
+      "end_col": 91
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 73,
+      "start_col": 1,
+      "end_line": 73,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 74,
+      "start_col": 3,
+      "end_line": 74,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 74,
+      "start_col": 10,
+      "end_line": 74,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 76,
+      "start_col": 3,
+      "end_line": 76,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 76,
+      "start_col": 12,
+      "end_line": 76,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 77,
+      "start_col": 3,
+      "end_line": 77,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 77,
+      "start_col": 29,
+      "end_line": 77,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 77,
+      "start_col": 32,
+      "end_line": 77,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 78,
+      "start_col": 3,
+      "end_line": 78,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 78,
+      "start_col": 8,
+      "end_line": 78,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 8,
+      "end_line": 79,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 80,
+      "start_col": 7,
+      "end_line": 80,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 80,
+      "start_col": 10,
+      "end_line": 80,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 80,
+      "start_col": 14,
+      "end_line": 80,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 82,
+      "start_col": 19,
+      "end_line": 82,
+      "end_col": 35
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 84,
+      "start_col": 1,
+      "end_line": 84,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 85,
+      "start_col": 3,
+      "end_line": 85,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 85,
+      "start_col": 10,
+      "end_line": 85,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 87,
+      "start_col": 12,
+      "end_line": 87,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 88,
+      "start_col": 28,
+      "end_line": 88,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 31,
+      "end_line": 88,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 105
+    },
+    {
+      "kind": "var-name",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 89,
+      "start_col": 14,
+      "end_line": 89,
+      "end_col": 105
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 16,
+      "end_line": 89,
+      "end_col": 20
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 89,
+      "start_col": 25,
+      "end_line": 89,
+      "end_col": 58
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 89,
+      "start_col": 75,
+      "end_line": 89,
+      "end_col": 76
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 89,
+      "start_col": 87,
+      "end_line": 89,
+      "end_col": 89
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 90,
+      "end_line": 89,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 89,
+      "start_col": 95,
+      "end_line": 89,
+      "end_col": 104
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 90,
+      "start_col": 14,
+      "end_line": 90,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 90,
+      "start_col": 15,
+      "end_line": 90,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 28,
+      "end_line": 90,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 91,
+      "start_col": 3,
+      "end_line": 91,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 8,
+      "end_line": 91,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 92,
+      "start_col": 3,
+      "end_line": 92,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 92,
+      "start_col": 10,
+      "end_line": 92,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 94,
+      "start_col": 3,
+      "end_line": 94,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 94,
+      "start_col": 12,
+      "end_line": 94,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 95,
+      "start_col": 3,
+      "end_line": 95,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 95,
+      "start_col": 7,
+      "end_line": 95,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 95,
+      "start_col": 10,
+      "end_line": 95,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 95,
+      "start_col": 14,
+      "end_line": 95,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 112,
+      "start_col": 1,
+      "end_line": 112,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 3,
+      "end_line": 113,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 114,
+      "start_col": 3,
+      "end_line": 114,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 114,
+      "start_col": 10,
+      "end_line": 114,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 115,
+      "start_col": 1,
+      "end_line": 115,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 117,
+      "start_col": 1,
+      "end_line": 117,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 117,
+      "start_col": 10,
+      "end_line": 117,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 117,
+      "start_col": 32,
+      "end_line": 117,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 3,
+      "end_line": 118,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 118,
+      "start_col": 10,
+      "end_line": 118,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 119,
+      "start_col": 3,
+      "end_line": 119,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 119,
+      "start_col": 11,
+      "end_line": 119,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 12,
+      "end_line": 119,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 23,
+      "end_line": 119,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 28,
+      "end_line": 119,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 75,
+      "end_line": 119,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 11,
+      "end_line": 120,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 12,
+      "end_line": 120,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 19,
+      "end_line": 120,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 58,
+      "end_line": 120,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 121,
+      "start_col": 3,
+      "end_line": 121,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 121,
+      "start_col": 11,
+      "end_line": 121,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 12,
+      "end_line": 121,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 22,
+      "end_line": 121,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 35,
+      "end_line": 121,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 45,
+      "end_line": 121,
+      "end_col": 50
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 122,
+      "start_col": 1,
+      "end_line": 122,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 124,
+      "start_col": 1,
+      "end_line": 124,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 124,
+      "start_col": 10,
+      "end_line": 124,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 124,
+      "start_col": 26,
+      "end_line": 124,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 3,
+      "end_line": 125,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 129,
+      "start_col": 3,
+      "end_line": 129,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 129,
+      "start_col": 6,
+      "end_line": 129,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 129,
+      "start_col": 9,
+      "end_line": 129,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 129,
+      "start_col": 11,
+      "end_line": 129,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 129,
+      "start_col": 28,
+      "end_line": 129,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 129,
+      "start_col": 30,
+      "end_line": 129,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 129,
+      "start_col": 32,
+      "end_line": 129,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 5,
+      "end_line": 130,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 15,
+      "end_line": 130,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 130,
+      "start_col": 19,
+      "end_line": 130,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 5,
+      "end_line": 131,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 132,
+      "start_col": 3,
+      "end_line": 132,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 133,
+      "start_col": 3,
+      "end_line": 133,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 6,
+      "end_line": 133,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 33,
+      "end_line": 133,
+      "end_col": 43
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 44,
+      "end_line": 133,
+      "end_col": 71
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 133,
+      "start_col": 71,
+      "end_line": 133,
+      "end_col": 72
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 133,
+      "start_col": 73,
+      "end_line": 133,
+      "end_col": 77
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 134,
+      "start_col": 14,
+      "end_line": 134,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 5,
+      "end_line": 135,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 136,
+      "start_col": 5,
+      "end_line": 136,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 136,
+      "start_col": 12,
+      "end_line": 136,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 5,
+      "end_line": 138,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 21,
+      "end_line": 139,
+      "end_col": 54
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 55,
+      "end_line": 139,
+      "end_col": 65
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 66,
+      "end_line": 139,
+      "end_col": 93
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 94,
+      "end_line": 139,
+      "end_col": 103
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 104,
+      "end_line": 139,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 113,
+      "end_line": 139,
+      "end_col": 128
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 5,
+      "end_line": 141,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 141,
+      "start_col": 14,
+      "end_line": 141,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 142,
+      "start_col": 5,
+      "end_line": 142,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 142,
+      "start_col": 22,
+      "end_line": 142,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 142,
+      "start_col": 25,
+      "end_line": 142,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 143,
+      "start_col": 5,
+      "end_line": 143,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 12,
+      "end_line": 144,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 5,
+      "end_line": 146,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 146,
+      "start_col": 14,
+      "end_line": 146,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 5,
+      "end_line": 147,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 147,
+      "start_col": 31,
+      "end_line": 147,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 34,
+      "end_line": 147,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 148,
+      "start_col": 5,
+      "end_line": 148,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 148,
+      "start_col": 10,
+      "end_line": 148,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 149,
+      "start_col": 5,
+      "end_line": 149,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 149,
+      "start_col": 10,
+      "end_line": 149,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 5,
+      "end_line": 150,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 150,
+      "start_col": 12,
+      "end_line": 150,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 5,
+      "end_line": 152,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 5,
+      "end_line": 154,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 154,
+      "start_col": 14,
+      "end_line": 154,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 155,
+      "start_col": 5,
+      "end_line": 155,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 155,
+      "start_col": 30,
+      "end_line": 155,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 155,
+      "start_col": 33,
+      "end_line": 155,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 156,
+      "start_col": 5,
+      "end_line": 156,
+      "end_col": 107
+    },
+    {
+      "kind": "var-name",
+      "start_line": 156,
+      "start_col": 5,
+      "end_line": 156,
+      "end_col": 15
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 156,
+      "start_col": 16,
+      "end_line": 156,
+      "end_col": 107
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
+      "start_col": 18,
+      "end_line": 156,
+      "end_col": 22
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 156,
+      "start_col": 27,
+      "end_line": 156,
+      "end_col": 60
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 156,
+      "start_col": 77,
+      "end_line": 156,
+      "end_col": 78
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 156,
+      "start_col": 89,
+      "end_line": 156,
+      "end_col": 91
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
+      "start_col": 92,
+      "end_line": 156,
+      "end_col": 96
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 156,
+      "start_col": 97,
+      "end_line": 156,
+      "end_col": 106
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 157,
+      "start_col": 5,
+      "end_line": 157,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 157,
+      "start_col": 5,
+      "end_line": 157,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 157,
+      "start_col": 16,
+      "end_line": 157,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 157,
+      "start_col": 17,
+      "end_line": 157,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 157,
+      "start_col": 30,
+      "end_line": 157,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 158,
+      "start_col": 5,
+      "end_line": 158,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
+      "start_col": 10,
+      "end_line": 158,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 159,
+      "start_col": 5,
+      "end_line": 159,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 159,
+      "start_col": 12,
+      "end_line": 159,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 161,
+      "start_col": 5,
+      "end_line": 161,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 161,
+      "start_col": 14,
+      "end_line": 161,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 162,
+      "start_col": 5,
+      "end_line": 162,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 163,
+      "start_col": 5,
+      "end_line": 163,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 163,
+      "start_col": 12,
+      "end_line": 163,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 164,
+      "start_col": 5,
+      "end_line": 164,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 164,
+      "start_col": 12,
+      "end_line": 164,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 165,
+      "start_col": 3,
+      "end_line": 165,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 166,
+      "start_col": 3,
+      "end_line": 166,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 167,
+      "start_col": 1,
+      "end_line": 167,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 169,
+      "start_col": 1,
+      "end_line": 169,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 1,
+      "end_line": 170,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 170,
+      "start_col": 8,
+      "end_line": 170,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 10,
+      "end_line": 170,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 21,
+      "end_line": 170,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 22,
+      "end_line": 170,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 170,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": true,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "endurain.service",
+      "path": "/etc/systemd/system/endurain.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}

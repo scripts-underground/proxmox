@@ -223,10 +223,16 @@ pre-commit install            # wires .git/hooks/pre-commit
 
 ## Regenerating AST files
 
-`_ast/` is gitignored. Generate it locally with:
+`_ast/` is committed. CI regenerates on every PR and auto-commits any diff
+back to the PR branch so the committed copy always matches the current
+extractor.
+
+Regenerate locally with:
 
     go run ./tools/ast/.
 
-CI regenerates on every build. If `go run ./tools/ast/.` exits non-zero,
-it's reporting a REPO_BASE policy violation. Read the stderr report and
-fix the offending script before committing.
+Local edits to `_ast/` are fine — CI overwrites them on the next PR run
+if they don't match what the extractor produces from source. If
+`go run ./tools/ast/.` exits non-zero, it's reporting a REPO_BASE policy
+violation. Read the stderr report and fix the offending script before
+committing.

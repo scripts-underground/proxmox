@@ -115,4 +115,3 @@ done
 wait
 header_info
 echo -e "${GN} Finished, Selected Containers Cleaned. ${CL} \n"
-

@@ -449,4 +449,3 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
     done
   fi
 fi
-

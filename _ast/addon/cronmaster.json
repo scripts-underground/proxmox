@@ -1,0 +1,2449 @@
+{
+  "schema_version": 2,
+  "slug": "cronmaster",
+  "type": "addon",
+  "total_lines": 155,
+  "source": "#!/usr/bin/env bash\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/fccview/cronmaster\n\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"CronMaster\"\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP_TYPE=\"addon\"\nINSTALL_PATH=\"/opt/cronmaster\"\nCONFIG_PATH=\"/opt/cronmaster/.env\"\nSERVICE_PATH=\"/etc/systemd/system/cronmaster.service\"\nDEFAULT_PORT=3000\n\nfunction header_info {\n  clear\n  cat \u003c\u003c \"EOF\"\n   ______                __  ___           __\n  / ____/________  ____ /  |/  /___ ______/ /____  _____\n / /   / ___/ __ \\/ __ \\/ /|_/ / __ `/ ___/ __/ _ \\/ ___/\n/ /___/ /  / /_/ / / / / /  / / /_/ (__  ) /_/  __/ /\n\\____/_/   \\____/_/ /_/_/  /_/\\__,_/____/\\__/\\___/_/\n\nEOF\n}\n\nif ! grep -qE 'ID=debian|ID=ubuntu' /etc/os-release 2\u003e /dev/null; then\n  echo -e \"${CROSS} Unsupported OS detected. This script only supports Debian and Ubuntu.\"\n  exit 238\nfi\n\nfunction install_script() {\n  if command -v node \u0026\u003e /dev/null; then\n    msg_ok \"Node.js already installed ($(node -v))\"\n  else\n    NODE_VERSION=\"22\" setup_nodejs\n  fi\n\n  fetch_and_deploy_gh_release \"cronmaster\" \"fccview/cronmaster\" \"prebuild\" \"latest\" \"$INSTALL_PATH\" \"cronmaster_*_prebuild.tar.gz\"\n\n  local AUTH_PASS\n  AUTH_PASS=\"$(openssl rand -base64 18 | cut -c1-13)\"\n\n  msg_info \"Creating configuration\"\n  cat \u003c\u003c EOF \u003e \"$CONFIG_PATH\"\nNODE_ENV=production\nAUTH_PASSWORD=${AUTH_PASS}\nPORT=${DEFAULT_PORT}\nHOSTNAME=0.0.0.0\nNEXT_TELEMETRY_DISABLED=1\nEOF\n  chmod 600 \"$CONFIG_PATH\"\n  msg_ok \"Created configuration\"\n\n  msg_info \"Creating service\"\n  cat \u003c\u003c EOF \u003e \"$SERVICE_PATH\"\n[Unit]\nDescription=CronMaster Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=${INSTALL_PATH}\nEnvironmentFile=${CONFIG_PATH}\nExecStart=/usr/bin/node ${INSTALL_PATH}/server.js\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now cronmaster\n  msg_ok \"Created and started service\"\n\n  msg_info \"Creating update script\"\n  cat \u003c\u003c 'UPDATEEOF' \u003e /usr/local/bin/update_cronmaster\n#!/usr/bin/env bash\n# CronMaster Update Script\nCRONMASTER_ACTION=update bash -c \"$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/cronmaster.sh)\"\nUPDATEEOF\n  chmod +x /usr/local/bin/update_cronmaster\n  msg_ok \"Created update script (/usr/local/bin/update_cronmaster)\"\n}\n\nfunction update_script() {\n  if check_for_gh_release \"cronmaster\" \"fccview/cronmaster\"; then\n    msg_info \"Stopping service\"\n    systemctl stop cronmaster.service \u0026\u003e /dev/null || true\n    msg_ok \"Stopped service\"\n\n    msg_info \"Backing up configuration\"\n    cp \"$CONFIG_PATH\" /tmp/cronmaster.env.bak 2\u003e /dev/null || true\n    msg_ok \"Backed up configuration\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"cronmaster\" \"fccview/cronmaster\" \"prebuild\" \"latest\" \"$INSTALL_PATH\" \"cronmaster_*_prebuild.tar.gz\"\n\n    msg_info \"Restoring configuration\"\n    cp /tmp/cronmaster.env.bak \"$CONFIG_PATH\" 2\u003e /dev/null || true\n    rm -f /tmp/cronmaster.env.bak\n    msg_ok \"Restored configuration\"\n\n    msg_info \"Updating update script\"\n    cat \u003c\u003c 'UPDATEEOF' \u003e /usr/local/bin/update_cronmaster\n#!/usr/bin/env bash\n# CronMaster Update Script\nCRONMASTER_ACTION=update bash -c \"$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/cronmaster.sh)\"\nUPDATEEOF\n    chmod +x /usr/local/bin/update_cronmaster\n    msg_ok \"Updated update script\"\n\n    msg_info \"Starting service\"\n    systemctl start cronmaster\n    msg_ok \"Started service\"\n    msg_ok \"Updated successfully\"\n  fi\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  systemctl disable --now cronmaster.service \u0026\u003e /dev/null || true\n  rm -f \"$SERVICE_PATH\"\n  rm -rf \"$INSTALL_PATH\"\n  rm -f \"/usr/local/bin/update_cronmaster\"\n  rm -f \"$HOME/.cronmaster\"\n  rm -f \"/root/cronmaster.creds\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\nfunction post_install_script() {\n  local CREDS_FILE=\"/root/cronmaster.creds\"\n  cat \u003c\u003c EOF \u003e \"$CREDS_FILE\"\nCronMaster Credentials\n======================\nPassword: ${AUTH_PASS}\n\nWeb UI: http://${LOCAL_IP}:${DEFAULT_PORT}\nEOF\n  echo \"\"\n  msg_ok \"${APP} is reachable at: ${BL}http://${LOCAL_IP}:${DEFAULT_PORT}${CL}\"\n  msg_ok \"Credentials saved to: ${BL}${CREDS_FILE}${CL}\"\n  echo \"\"\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: MickLesk (CanbiZ)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://github.com/fccview/cronmaster",
+    "",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"CronMaster\"",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP_TYPE=\"addon\"",
+    "INSTALL_PATH=\"/opt/cronmaster\"",
+    "CONFIG_PATH=\"/opt/cronmaster/.env\"",
+    "SERVICE_PATH=\"/etc/systemd/system/cronmaster.service\"",
+    "DEFAULT_PORT=3000",
+    "",
+    "function header_info {",
+    "  clear",
+    "  cat \u003c\u003c \"EOF\"",
+    "   ______                __  ___           __",
+    "  / ____/________  ____ /  |/  /___ ______/ /____  _____",
+    " / /   / ___/ __ \\/ __ \\/ /|_/ / __ `/ ___/ __/ _ \\/ ___/",
+    "/ /___/ /  / /_/ / / / / /  / / /_/ (__  ) /_/  __/ /",
+    "\\____/_/   \\____/_/ /_/_/  /_/\\__,_/____/\\__/\\___/_/",
+    "",
+    "EOF",
+    "}",
+    "",
+    "if ! grep -qE 'ID=debian|ID=ubuntu' /etc/os-release 2\u003e /dev/null; then",
+    "  echo -e \"${CROSS} Unsupported OS detected. This script only supports Debian and Ubuntu.\"",
+    "  exit 238",
+    "fi",
+    "",
+    "function install_script() {",
+    "  if command -v node \u0026\u003e /dev/null; then",
+    "    msg_ok \"Node.js already installed ($(node -v))\"",
+    "  else",
+    "    NODE_VERSION=\"22\" setup_nodejs",
+    "  fi",
+    "",
+    "  fetch_and_deploy_gh_release \"cronmaster\" \"fccview/cronmaster\" \"prebuild\" \"latest\" \"$INSTALL_PATH\" \"cronmaster_*_prebuild.tar.gz\"",
+    "",
+    "  local AUTH_PASS",
+    "  AUTH_PASS=\"$(openssl rand -base64 18 | cut -c1-13)\"",
+    "",
+    "  msg_info \"Creating configuration\"",
+    "  cat \u003c\u003c EOF \u003e \"$CONFIG_PATH\"",
+    "NODE_ENV=production",
+    "AUTH_PASSWORD=${AUTH_PASS}",
+    "PORT=${DEFAULT_PORT}",
+    "HOSTNAME=0.0.0.0",
+    "NEXT_TELEMETRY_DISABLED=1",
+    "EOF",
+    "  chmod 600 \"$CONFIG_PATH\"",
+    "  msg_ok \"Created configuration\"",
+    "",
+    "  msg_info \"Creating service\"",
+    "  cat \u003c\u003c EOF \u003e \"$SERVICE_PATH\"",
+    "[Unit]",
+    "Description=CronMaster Service",
+    "After=network.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "WorkingDirectory=${INSTALL_PATH}",
+    "EnvironmentFile=${CONFIG_PATH}",
+    "ExecStart=/usr/bin/node ${INSTALL_PATH}/server.js",
+    "Restart=always",
+    "RestartSec=10",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "  systemctl enable -q --now cronmaster",
+    "  msg_ok \"Created and started service\"",
+    "",
+    "  msg_info \"Creating update script\"",
+    "  cat \u003c\u003c 'UPDATEEOF' \u003e /usr/local/bin/update_cronmaster",
+    "#!/usr/bin/env bash",
+    "# CronMaster Update Script",
+    "CRONMASTER_ACTION=update bash -c \"$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/cronmaster.sh)\"",
+    "UPDATEEOF",
+    "  chmod +x /usr/local/bin/update_cronmaster",
+    "  msg_ok \"Created update script (/usr/local/bin/update_cronmaster)\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  if check_for_gh_release \"cronmaster\" \"fccview/cronmaster\"; then",
+    "    msg_info \"Stopping service\"",
+    "    systemctl stop cronmaster.service \u0026\u003e /dev/null || true",
+    "    msg_ok \"Stopped service\"",
+    "",
+    "    msg_info \"Backing up configuration\"",
+    "    cp \"$CONFIG_PATH\" /tmp/cronmaster.env.bak 2\u003e /dev/null || true",
+    "    msg_ok \"Backed up configuration\"",
+    "",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"cronmaster\" \"fccview/cronmaster\" \"prebuild\" \"latest\" \"$INSTALL_PATH\" \"cronmaster_*_prebuild.tar.gz\"",
+    "",
+    "    msg_info \"Restoring configuration\"",
+    "    cp /tmp/cronmaster.env.bak \"$CONFIG_PATH\" 2\u003e /dev/null || true",
+    "    rm -f /tmp/cronmaster.env.bak",
+    "    msg_ok \"Restored configuration\"",
+    "",
+    "    msg_info \"Updating update script\"",
+    "    cat \u003c\u003c 'UPDATEEOF' \u003e /usr/local/bin/update_cronmaster",
+    "#!/usr/bin/env bash",
+    "# CronMaster Update Script",
+    "CRONMASTER_ACTION=update bash -c \"$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/cronmaster.sh)\"",
+    "UPDATEEOF",
+    "    chmod +x /usr/local/bin/update_cronmaster",
+    "    msg_ok \"Updated update script\"",
+    "",
+    "    msg_info \"Starting service\"",
+    "    systemctl start cronmaster",
+    "    msg_ok \"Started service\"",
+    "    msg_ok \"Updated successfully\"",
+    "  fi",
+    "}",
+    "",
+    "function uninstall_script() {",
+    "  msg_info \"Uninstalling ${APP}\"",
+    "  systemctl disable --now cronmaster.service \u0026\u003e /dev/null || true",
+    "  rm -f \"$SERVICE_PATH\"",
+    "  rm -rf \"$INSTALL_PATH\"",
+    "  rm -f \"/usr/local/bin/update_cronmaster\"",
+    "  rm -f \"$HOME/.cronmaster\"",
+    "  rm -f \"/root/cronmaster.creds\"",
+    "  msg_ok \"${APP} has been uninstalled\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  local CREDS_FILE=\"/root/cronmaster.creds\"",
+    "  cat \u003c\u003c EOF \u003e \"$CREDS_FILE\"",
+    "CronMaster Credentials",
+    "======================",
+    "Password: ${AUTH_PASS}",
+    "",
+    "Web UI: http://${LOCAL_IP}:${DEFAULT_PORT}",
+    "EOF",
+    "  echo \"\"",
+    "  msg_ok \"${APP} is reachable at: ${BL}http://${LOCAL_IP}:${DEFAULT_PORT}${CL}\"",
+    "  msg_ok \"Credentials saved to: ${BL}${CREDS_FILE}${CL}\"",
+    "  echo \"\"",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "header_info",
+      "start_line": 21,
+      "end_line": 31,
+      "name_span": {
+        "start_line": 21,
+        "start_col": 10,
+        "end_line": 21,
+        "end_col": 21,
+        "kind": ""
+      }
+    },
+    {
+      "name": "install_script",
+      "start_line": 38,
+      "end_line": 90,
+      "name_span": {
+        "start_line": 38,
+        "start_col": 10,
+        "end_line": 38,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 92,
+      "end_line": 123,
+      "name_span": {
+        "start_line": 92,
+        "start_col": 10,
+        "end_line": 92,
+        "end_col": 23,
+        "kind": ""
+      }
+    },
+    {
+      "name": "uninstall_script",
+      "start_line": 125,
+      "end_line": 134,
+      "name_span": {
+        "start_line": 125,
+        "start_col": 10,
+        "end_line": 125,
+        "end_col": 26,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 136,
+      "end_line": 149,
+      "name_span": {
+        "start_line": 136,
+        "start_col": 10,
+        "end_line": 136,
+        "end_col": 29,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 8,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 17,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP_TYPE",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 17,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "INSTALL_PATH",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 31,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "CONFIG_PATH",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 35,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "SERVICE_PATH",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 54,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "DEFAULT_PORT",
+      "line": 19,
+      "start_col": 1,
+      "end_col": 18,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [
+    {
+      "start_line": 33,
+      "end_line": 33
+    }
+  ],
+  "heredocs": [
+    {
+      "op": {
+        "line": 23,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 23,
+        "start_col": 10,
+        "end_col": 15,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 30,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 24,
+        "end_line": 29
+      },
+      "expand": false,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 51,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 51,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 57,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 52,
+        "end_line": 56
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 62,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 62,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 78,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 63,
+        "end_line": 77
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 83,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 83,
+        "start_col": 10,
+        "end_col": 21,
+        "text": "UPDATEEOF"
+      },
+      "marker_end": {
+        "line": 87,
+        "start_col": 1,
+        "end_col": 10,
+        "text": "UPDATEEOF"
+      },
+      "body": {
+        "start_line": 84,
+        "end_line": 86
+      },
+      "expand": false,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 110,
+        "col": 9,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 110,
+        "start_col": 12,
+        "end_col": 23,
+        "text": "UPDATEEOF"
+      },
+      "marker_end": {
+        "line": 114,
+        "start_col": 1,
+        "end_col": 10,
+        "text": "UPDATEEOF"
+      },
+      "body": {
+        "start_line": 111,
+        "end_line": 113
+      },
+      "expand": false,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 138,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 138,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 144,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 139,
+        "end_line": 143
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "comment",
+      "start_line": 3,
+      "start_col": 1,
+      "end_line": 3,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 48
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 8,
+      "start_col": 1,
+      "end_line": 8,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 8,
+      "start_col": 1,
+      "end_line": 8,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 8,
+      "start_col": 11,
+      "end_line": 8,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 8,
+      "start_col": 12,
+      "end_line": 8,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 17
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 5,
+      "end_line": 12,
+      "end_col": 17
+    },
+    {
+      "kind": "comment",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 17
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 10,
+      "end_line": 15,
+      "end_col": 17
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 31
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 14,
+      "end_line": 16,
+      "end_col": 31
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 13,
+      "end_line": 17,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 54
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 14,
+      "end_line": 18,
+      "end_col": 54
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 13
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 21,
+      "start_col": 1,
+      "end_line": 21,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 21,
+      "start_col": 10,
+      "end_line": 21,
+      "end_col": 21
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 21,
+      "start_col": 22,
+      "end_line": 21,
+      "end_col": 23
+    },
+    {
+      "kind": "command",
+      "start_line": 22,
+      "start_col": 3,
+      "end_line": 22,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 23,
+      "start_col": 7,
+      "end_line": 23,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 23,
+      "start_col": 10,
+      "end_line": 23,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 10,
+      "end_line": 23,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 30,
+      "start_col": 1,
+      "end_line": 30,
+      "end_col": 4
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 31,
+      "start_col": 1,
+      "end_line": 31,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 33,
+      "start_col": 1,
+      "end_line": 33,
+      "end_col": 3
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 33,
+      "start_col": 4,
+      "end_line": 33,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 33,
+      "start_col": 6,
+      "end_line": 33,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 33,
+      "start_col": 15,
+      "end_line": 33,
+      "end_col": 36
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 33,
+      "start_col": 54,
+      "end_line": 33,
+      "end_col": 55
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 33,
+      "start_col": 65,
+      "end_line": 33,
+      "end_col": 66
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 33,
+      "start_col": 67,
+      "end_line": 33,
+      "end_col": 71
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 34,
+      "start_col": 11,
+      "end_line": 34,
+      "end_col": 91
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 34,
+      "start_col": 12,
+      "end_line": 34,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 3,
+      "end_line": 35,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 36,
+      "start_col": 1,
+      "end_line": 36,
+      "end_col": 3
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 38,
+      "start_col": 1,
+      "end_line": 38,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 38,
+      "start_col": 10,
+      "end_line": 38,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 38,
+      "start_col": 27,
+      "end_line": 38,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 39,
+      "start_col": 3,
+      "end_line": 39,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 39,
+      "start_col": 6,
+      "end_line": 39,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 39,
+      "start_col": 22,
+      "end_line": 39,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 39,
+      "start_col": 34,
+      "end_line": 39,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 39,
+      "start_col": 36,
+      "end_line": 39,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 40,
+      "start_col": 5,
+      "end_line": 40,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 40,
+      "start_col": 12,
+      "end_line": 40,
+      "end_col": 52
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 40,
+      "start_col": 40,
+      "end_line": 40,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 40,
+      "start_col": 42,
+      "end_line": 40,
+      "end_col": 46
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 7
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 42,
+      "start_col": 5,
+      "end_line": 42,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
+      "start_line": 42,
+      "start_col": 5,
+      "end_line": 42,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 42,
+      "start_col": 18,
+      "end_line": 42,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 42,
+      "start_col": 23,
+      "end_line": 42,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 43,
+      "start_col": 3,
+      "end_line": 43,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 31,
+      "end_line": 45,
+      "end_col": 43
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 44,
+      "end_line": 45,
+      "end_col": 64
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 65,
+      "end_line": 45,
+      "end_col": 75
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 76,
+      "end_line": 45,
+      "end_col": 84
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 85,
+      "end_line": 45,
+      "end_col": 100
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 45,
+      "start_col": 86,
+      "end_line": 45,
+      "end_col": 99
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 101,
+      "end_line": 45,
+      "end_col": 131
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 47,
+      "start_col": 9,
+      "end_line": 47,
+      "end_col": 18
+    },
+    {
+      "kind": "var-name",
+      "start_line": 47,
+      "start_col": 9,
+      "end_line": 47,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 54
+    },
+    {
+      "kind": "var-name",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 48,
+      "start_col": 13,
+      "end_line": 48,
+      "end_col": 54
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 48,
+      "start_col": 14,
+      "end_line": 48,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 16,
+      "end_line": 48,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 48,
+      "start_col": 40,
+      "end_line": 48,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 42,
+      "end_line": 48,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 50,
+      "start_col": 3,
+      "end_line": 50,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 50,
+      "start_col": 12,
+      "end_line": 50,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 51,
+      "start_col": 3,
+      "end_line": 51,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 51,
+      "start_col": 7,
+      "end_line": 51,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 51,
+      "start_col": 10,
+      "end_line": 51,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 51,
+      "start_col": 14,
+      "end_line": 51,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 16,
+      "end_line": 51,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 51,
+      "start_col": 17,
+      "end_line": 51,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 53,
+      "start_col": 15,
+      "end_line": 53,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 54,
+      "start_col": 6,
+      "end_line": 54,
+      "end_col": 21
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 57,
+      "start_col": 1,
+      "end_line": 57,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 58,
+      "start_col": 3,
+      "end_line": 58,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 58,
+      "start_col": 13,
+      "end_line": 58,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 58,
+      "start_col": 14,
+      "end_line": 58,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 59,
+      "start_col": 3,
+      "end_line": 59,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 59,
+      "start_col": 10,
+      "end_line": 59,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 61,
+      "start_col": 12,
+      "end_line": 61,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 62,
+      "start_col": 3,
+      "end_line": 62,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 62,
+      "start_col": 7,
+      "end_line": 62,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 62,
+      "start_col": 10,
+      "end_line": 62,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 62,
+      "start_col": 14,
+      "end_line": 62,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 62,
+      "start_col": 16,
+      "end_line": 62,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 17,
+      "end_line": 62,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 70,
+      "start_col": 18,
+      "end_line": 70,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 71,
+      "start_col": 17,
+      "end_line": 71,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 72,
+      "start_col": 25,
+      "end_line": 72,
+      "end_col": 40
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 78,
+      "start_col": 1,
+      "end_line": 78,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 80,
+      "start_col": 10,
+      "end_line": 80,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 82,
+      "start_col": 3,
+      "end_line": 82,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 82,
+      "start_col": 12,
+      "end_line": 82,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 83,
+      "start_col": 3,
+      "end_line": 83,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 83,
+      "start_col": 7,
+      "end_line": 83,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 83,
+      "start_col": 10,
+      "end_line": 83,
+      "end_col": 21
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 83,
+      "start_col": 10,
+      "end_line": 83,
+      "end_col": 21
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 83,
+      "start_col": 22,
+      "end_line": 83,
+      "end_col": 23
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 87,
+      "start_col": 1,
+      "end_line": 87,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 89,
+      "start_col": 10,
+      "end_line": 89,
+      "end_col": 68
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 90,
+      "start_col": 1,
+      "end_line": 90,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 92,
+      "start_col": 1,
+      "end_line": 92,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 92,
+      "start_col": 10,
+      "end_line": 92,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 92,
+      "start_col": 26,
+      "end_line": 92,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 93,
+      "start_col": 3,
+      "end_line": 93,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 93,
+      "start_col": 6,
+      "end_line": 93,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 93,
+      "start_col": 27,
+      "end_line": 93,
+      "end_col": 39
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 93,
+      "start_col": 40,
+      "end_line": 93,
+      "end_col": 60
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 93,
+      "start_col": 60,
+      "end_line": 93,
+      "end_col": 61
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 93,
+      "start_col": 62,
+      "end_line": 93,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
+      "start_line": 94,
+      "start_col": 5,
+      "end_line": 94,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 94,
+      "start_col": 14,
+      "end_line": 94,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 95,
+      "start_col": 5,
+      "end_line": 95,
+      "end_col": 14
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 95,
+      "start_col": 39,
+      "end_line": 95,
+      "end_col": 41
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 95,
+      "start_col": 52,
+      "end_line": 95,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 95,
+      "start_col": 55,
+      "end_line": 95,
+      "end_col": 59
+    },
+    {
+      "kind": "command",
+      "start_line": 96,
+      "start_col": 5,
+      "end_line": 96,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 96,
+      "start_col": 12,
+      "end_line": 96,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 98,
+      "start_col": 5,
+      "end_line": 98,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 98,
+      "start_col": 14,
+      "end_line": 98,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 99,
+      "start_col": 5,
+      "end_line": 99,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 99,
+      "start_col": 8,
+      "end_line": 99,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 9,
+      "end_line": 99,
+      "end_col": 21
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 99,
+      "start_col": 48,
+      "end_line": 99,
+      "end_col": 49
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 99,
+      "start_col": 60,
+      "end_line": 99,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 99,
+      "start_col": 63,
+      "end_line": 99,
+      "end_col": 67
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 5,
+      "end_line": 100,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 100,
+      "start_col": 12,
+      "end_line": 100,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 102,
+      "start_col": 5,
+      "end_line": 102,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 102,
+      "start_col": 5,
+      "end_line": 102,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 21,
+      "end_line": 102,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 49,
+      "end_line": 102,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 62,
+      "end_line": 102,
+      "end_col": 82
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 83,
+      "end_line": 102,
+      "end_col": 93
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 94,
+      "end_line": 102,
+      "end_col": 102
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 103,
+      "end_line": 102,
+      "end_col": 118
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 102,
+      "start_col": 104,
+      "end_line": 102,
+      "end_col": 117
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 102,
+      "start_col": 119,
+      "end_line": 102,
+      "end_col": 149
+    },
+    {
+      "kind": "command",
+      "start_line": 104,
+      "start_col": 5,
+      "end_line": 104,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 104,
+      "start_col": 14,
+      "end_line": 104,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 5,
+      "end_line": 105,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 105,
+      "start_col": 32,
+      "end_line": 105,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 105,
+      "start_col": 33,
+      "end_line": 105,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 105,
+      "start_col": 48,
+      "end_line": 105,
+      "end_col": 49
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 105,
+      "start_col": 60,
+      "end_line": 105,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 105,
+      "start_col": 63,
+      "end_line": 105,
+      "end_col": 67
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 5,
+      "end_line": 106,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 5,
+      "end_line": 107,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 12,
+      "end_line": 107,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 109,
+      "start_col": 5,
+      "end_line": 109,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 109,
+      "start_col": 14,
+      "end_line": 109,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 5,
+      "end_line": 110,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 110,
+      "start_col": 9,
+      "end_line": 110,
+      "end_col": 11
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 110,
+      "start_col": 12,
+      "end_line": 110,
+      "end_col": 23
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 110,
+      "start_col": 12,
+      "end_line": 110,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 110,
+      "start_col": 24,
+      "end_line": 110,
+      "end_col": 25
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 114,
+      "start_col": 1,
+      "end_line": 114,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 115,
+      "start_col": 5,
+      "end_line": 115,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 116,
+      "start_col": 5,
+      "end_line": 116,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 116,
+      "start_col": 12,
+      "end_line": 116,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 5,
+      "end_line": 118,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 118,
+      "start_col": 14,
+      "end_line": 118,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 119,
+      "start_col": 5,
+      "end_line": 119,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 5,
+      "end_line": 120,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 12,
+      "end_line": 120,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 121,
+      "start_col": 5,
+      "end_line": 121,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 121,
+      "start_col": 12,
+      "end_line": 121,
+      "end_col": 34
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 122,
+      "start_col": 3,
+      "end_line": 122,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 123,
+      "start_col": 1,
+      "end_line": 123,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 125,
+      "start_col": 1,
+      "end_line": 125,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 125,
+      "start_col": 10,
+      "end_line": 125,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 125,
+      "start_col": 29,
+      "end_line": 125,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 12,
+      "end_line": 126,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 126,
+      "start_col": 26,
+      "end_line": 126,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 12
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 127,
+      "start_col": 46,
+      "end_line": 127,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 127,
+      "start_col": 59,
+      "end_line": 127,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 62,
+      "end_line": 127,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 3,
+      "end_line": 128,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 128,
+      "start_col": 9,
+      "end_line": 128,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 128,
+      "start_col": 10,
+      "end_line": 128,
+      "end_col": 23
+    },
+    {
+      "kind": "command",
+      "start_line": 129,
+      "start_col": 3,
+      "end_line": 129,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 10,
+      "end_line": 129,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 129,
+      "start_col": 11,
+      "end_line": 129,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 3,
+      "end_line": 130,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 9,
+      "end_line": 130,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 3,
+      "end_line": 131,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 9,
+      "end_line": 131,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 10,
+      "end_line": 131,
+      "end_col": 15
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 3,
+      "end_line": 132,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 9,
+      "end_line": 132,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 3,
+      "end_line": 133,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 10,
+      "end_line": 133,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 133,
+      "start_col": 11,
+      "end_line": 133,
+      "end_col": 17
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 134,
+      "start_col": 1,
+      "end_line": 134,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 136,
+      "start_col": 1,
+      "end_line": 136,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 136,
+      "start_col": 10,
+      "end_line": 136,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 136,
+      "start_col": 32,
+      "end_line": 136,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 137,
+      "start_col": 3,
+      "end_line": 137,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 137,
+      "start_col": 9,
+      "end_line": 137,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 137,
+      "start_col": 9,
+      "end_line": 137,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 137,
+      "start_col": 20,
+      "end_line": 137,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 3,
+      "end_line": 138,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 138,
+      "start_col": 7,
+      "end_line": 138,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 138,
+      "start_col": 10,
+      "end_line": 138,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 138,
+      "start_col": 14,
+      "end_line": 138,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 138,
+      "start_col": 16,
+      "end_line": 138,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 138,
+      "start_col": 17,
+      "end_line": 138,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 141,
+      "start_col": 11,
+      "end_line": 141,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 143,
+      "start_col": 16,
+      "end_line": 143,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 143,
+      "start_col": 28,
+      "end_line": 143,
+      "end_col": 43
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 144,
+      "start_col": 1,
+      "end_line": 144,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 145,
+      "start_col": 3,
+      "end_line": 145,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 145,
+      "start_col": 8,
+      "end_line": 145,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 3,
+      "end_line": 146,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 146,
+      "start_col": 10,
+      "end_line": 146,
+      "end_col": 80
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 11,
+      "end_line": 146,
+      "end_col": 17
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 35,
+      "end_line": 146,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 47,
+      "end_line": 146,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 59,
+      "end_line": 146,
+      "end_col": 74
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 74,
+      "end_line": 146,
+      "end_col": 79
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 3,
+      "end_line": 147,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 33,
+      "end_line": 147,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 38,
+      "end_line": 147,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 51,
+      "end_line": 147,
+      "end_col": 56
+    },
+    {
+      "kind": "command",
+      "start_line": 148,
+      "start_col": 3,
+      "end_line": 148,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 148,
+      "start_col": 8,
+      "end_line": 148,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 149,
+      "start_col": 1,
+      "end_line": 149,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 151,
+      "start_col": 1,
+      "end_line": 151,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 152,
+      "start_col": 1,
+      "end_line": 152,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 153,
+      "start_col": 1,
+      "end_line": 153,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 1,
+      "end_line": 154,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 154,
+      "start_col": 8,
+      "end_line": 154,
+      "end_col": 55
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 10,
+      "end_line": 154,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 154,
+      "start_col": 21,
+      "end_line": 154,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 154,
+      "start_col": 22,
+      "end_line": 154,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 154,
+  "hooks": {
+    "header_info": true,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": true,
+    "update_script": true
+  },
+  "hook_order": [
+    "header_info",
+    "install_script",
+    "update_script",
+    "uninstall_script",
+    "post_install_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": true,
+  "has_bootstrap": true,
+  "systemd_services": [],
+  "openrc_services": [],
+  "service_managers": [],
+  "users": [],
+  "interactive_prompts": []
+}

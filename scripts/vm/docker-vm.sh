@@ -391,4 +391,3 @@ function post_install_script() {
 # framework bootstrap
 # shellcheck disable=SC1090
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/vm")
-

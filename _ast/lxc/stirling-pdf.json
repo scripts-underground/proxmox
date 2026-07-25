@@ -1,0 +1,3121 @@
+{
+  "schema_version": 2,
+  "slug": "stirling-pdf",
+  "type": "lxc",
+  "total_lines": 251,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: tteck (tteckster)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://www.stirlingpdf.com/ | Github: https://github.com/Stirling-Tools/Stirling-PDF\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Stirling-PDF\"\nvar_tags=\"${var_tags:-pdf-editor}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies (Patience)\"\n  $STD apt install -y \\\n    automake \\\n    autoconf \\\n    libtool \\\n    libleptonica-dev \\\n    pkg-config \\\n    zlib1g-dev \\\n    make \\\n    g++ \\\n    unpaper \\\n    fonts-urw-base35 \\\n    qpdf \\\n    poppler-utils \\\n    jbig2 \\\n    patchelf\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.12\" setup_uv\n  JAVA_VERSION=\"25\" setup_java\n\n  read -r -p \"${TAB3}Do you want to use Stirling-PDF with Login? (no/n = without Login) [Y/n] \" response\n  response=${response,,}\n  login_mode=\"false\"\n  if [[ \"$response\" == \"y\" || \"$response\" == \"yes\" || -z \"$response\" ]]; then\n    USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF-with-login.jar\"\n    mv /opt/Stirling-PDF/Stirling-PDF-with-login.jar /opt/Stirling-PDF/Stirling-PDF.jar\n    touch ~/.Stirling-PDF-login\n    login_mode=\"true\"\n  else\n    USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF.jar\"\n  fi\n\n  msg_info \"Installing LibreOffice Components\"\n  $STD apt install -y \\\n    libreoffice-writer \\\n    libreoffice-calc \\\n    libreoffice-impress \\\n    libreoffice-core \\\n    libreoffice-common \\\n    libreoffice-base-core \\\n    libreoffice-script-provider-python \\\n    libreoffice-java-common \\\n    pngquant \\\n    weasyprint\n  msg_ok \"Installed LibreOffice Components\"\n\n  msg_info \"Installing Python Dependencies\"\n  mkdir -p /tmp/stirling-pdf\n  $STD uv venv --clear /opt/.venv\n  export PATH=\"/opt/.venv/bin:$PATH\"\n  source /opt/.venv/bin/activate\n  $STD uv pip install --upgrade pip\n  $STD uv pip install \\\n    opencv-python-headless \\\n    ocrmypdf \\\n    pillow \\\n    pdf2image\n  $STD apt install -y python3-uno python3-pip\n  $STD pip3 install --break-system-packages --timeout=120 unoserver\n  ln -sf /opt/.venv/bin/python3 /usr/local/bin/python3\n  ln -sf /opt/.venv/bin/pip /usr/local/bin/pip\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Installing Language Packs (Patience)\"\n  $STD apt install -y 'tesseract-ocr-*'\n  msg_ok \"Installed Language Packs\"\n\n  msg_info \"Creating Environment Variables\"\n  cat \u003c\u003c EOF \u003e /opt/Stirling-PDF/.env\n# Java tuning\nJAVA_BASE_OPTS=\"-XX:+UnlockExperimentalVMOptions -XX:MaxRAMPercentage=75 -XX:InitiatingHeapOccupancyPercent=20 -XX:+G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=10000 -XX:+UseStringDeduplication -XX:G1PeriodicGCSystemLoadThreshold=70\"\nJAVA_CUSTOM_OPTS=\"\"\n\n# LibreOffice\nPATH=/opt/.venv/bin:/usr/lib/libreoffice/program:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nUNO_PATH=/usr/lib/libreoffice/program\nURE_BOOTSTRAP=file:///usr/lib/libreoffice/program/fundamentalrc\nPYTHONPATH=/usr/lib/libreoffice/program:/opt/.venv/lib/python3.12/site-packages\nLD_LIBRARY_PATH=/usr/lib/libreoffice/program\n\nSTIRLING_TEMPFILES_DIRECTORY=/tmp/stirling-pdf\nTMPDIR=/tmp/stirling-pdf\nTEMP=/tmp/stirling-pdf\nTMP=/tmp/stirling-pdf\n\n# Paths\nPATH=/opt/.venv/bin:/usr/lib/libreoffice/program:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nEOF\n\n  if [[ \"$login_mode\" == \"true\" ]]; then\n    cat \u003c\u003c EOF \u003e /opt/Stirling-PDF/.env\n# activate Login\nDISABLE_ADDITIONAL_FEATURES=false\nSECURITY_ENABLELOGIN=true\n\n# login credentials\nSECURITY_INITIALLOGIN_USERNAME=admin\nSECURITY_INITIALLOGIN_PASSWORD=stirling\nEOF\n  fi\n  msg_ok \"Created Environment Variables\"\n\n  msg_info \"Patching Native Libraries for LXC Compatibility\"\n  find /usr/lib -name \"libicudata.so.*\" -exec patchelf --clear-execstack {} \\; || true\n  msg_ok \"Patched Native Libraries\"\n\n  msg_info \"Refreshing Font Cache\"\n  $STD fc-cache -fv\n  msg_ok \"Font Cache Updated\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/libreoffice-listener.service\n[Unit]\nDescription=LibreOffice Headless Listener Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nExecStart=/usr/lib/libreoffice/program/soffice --headless --invisible --nodefault --nofirststartwizard --nolockcheck --nologo --accept=\"socket,host=127.0.0.1,port=2002;urp;StarOffice.ComponentContext\"\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/stirlingpdf.service\n[Unit]\nDescription=Stirling-PDF service\nAfter=syslog.target network.target libreoffice-listener.service\nRequires=libreoffice-listener.service\n\n[Service]\nSuccessExitStatus=143\nType=simple\nUser=root\nGroup=root\nEnvironmentFile=/opt/Stirling-PDF/.env\nWorkingDirectory=/opt/Stirling-PDF\nExecStart=/usr/bin/java -jar Stirling-PDF.jar\nExecStop=/bin/kill -15 %n\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/unoserver.service\n[Unit]\nDescription=UnoServer RPC Interface\nAfter=libreoffice-listener.service\nRequires=libreoffice-listener.service\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/unoserver --port 2003 --interface 127.0.0.1\nRestart=always\nEnvironmentFile=/opt/Stirling-PDF/.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  systemctl enable -q --now libreoffice-listener\n  systemctl enable -q --now stirlingpdf\n  systemctl enable -q --now unoserver\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/Stirling-PDF ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\"; then\n    if [[ ! -f /etc/systemd/system/unoserver.service ]]; then\n      msg_custom \"\\u26A0\\ufe0f \" \"\\e[33m\" \"Legacy installation detected \\u2013 please recreate the container using the latest install script.\"\n      exit 0\n    fi\n\n    PYTHON_VERSION=\"3.12\" setup_uv\n    JAVA_VERSION=\"25\" setup_java\n\n    msg_info \"Patching Native Libraries for LXC Compatibility\"\n    ensure_dependencies patchelf\n    find /usr/lib -name \"libicudata.so.*\" -exec patchelf --clear-execstack {} \\; || true\n    msg_ok \"Patched Native Libraries\"\n\n    msg_info \"Stopping Services\"\n    systemctl stop stirlingpdf libreoffice-listener unoserver\n    msg_ok \"Stopped Services\"\n\n    if [[ -f ~/.Stirling-PDF-login ]]; then\n      USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF-with-login.jar\"\n      mv /opt/Stirling-PDF/Stirling-PDF-with-login.jar /opt/Stirling-PDF/Stirling-PDF.jar\n    else\n      USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF.jar\"\n    fi\n\n    msg_info \"Refreshing Font Cache\"\n    $STD fc-cache -fv\n    msg_ok \"Font Cache Updated\"\n\n    msg_info \"Starting Services\"\n    systemctl start stirlingpdf libreoffice-listener unoserver\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: tteck (tteckster)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://www.stirlingpdf.com/ | Github: https://github.com/Stirling-Tools/Stirling-PDF",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"Stirling-PDF\"",
+    "var_tags=\"${var_tags:-pdf-editor}\"",
+    "var_cpu=\"${var_cpu:-2}\"",
+    "var_ram=\"${var_ram:-2048}\"",
+    "var_disk=\"${var_disk:-8}\"",
+    "var_os=\"${var_os:-debian}\"",
+    "var_version=\"${var_version:-13}\"",
+    "var_arm64=\"${var_arm64:-yes}\"",
+    "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "",
+    "function install_script() {",
+    "  msg_info \"Installing Dependencies (Patience)\"",
+    "  $STD apt install -y \\",
+    "    automake \\",
+    "    autoconf \\",
+    "    libtool \\",
+    "    libleptonica-dev \\",
+    "    pkg-config \\",
+    "    zlib1g-dev \\",
+    "    make \\",
+    "    g++ \\",
+    "    unpaper \\",
+    "    fonts-urw-base35 \\",
+    "    qpdf \\",
+    "    poppler-utils \\",
+    "    jbig2 \\",
+    "    patchelf",
+    "  msg_ok \"Installed Dependencies\"",
+    "",
+    "  PYTHON_VERSION=\"3.12\" setup_uv",
+    "  JAVA_VERSION=\"25\" setup_java",
+    "",
+    "  read -r -p \"${TAB3}Do you want to use Stirling-PDF with Login? (no/n = without Login) [Y/n] \" response",
+    "  response=${response,,}",
+    "  login_mode=\"false\"",
+    "  if [[ \"$response\" == \"y\" || \"$response\" == \"yes\" || -z \"$response\" ]]; then",
+    "    USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF-with-login.jar\"",
+    "    mv /opt/Stirling-PDF/Stirling-PDF-with-login.jar /opt/Stirling-PDF/Stirling-PDF.jar",
+    "    touch ~/.Stirling-PDF-login",
+    "    login_mode=\"true\"",
+    "  else",
+    "    USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF.jar\"",
+    "  fi",
+    "",
+    "  msg_info \"Installing LibreOffice Components\"",
+    "  $STD apt install -y \\",
+    "    libreoffice-writer \\",
+    "    libreoffice-calc \\",
+    "    libreoffice-impress \\",
+    "    libreoffice-core \\",
+    "    libreoffice-common \\",
+    "    libreoffice-base-core \\",
+    "    libreoffice-script-provider-python \\",
+    "    libreoffice-java-common \\",
+    "    pngquant \\",
+    "    weasyprint",
+    "  msg_ok \"Installed LibreOffice Components\"",
+    "",
+    "  msg_info \"Installing Python Dependencies\"",
+    "  mkdir -p /tmp/stirling-pdf",
+    "  $STD uv venv --clear /opt/.venv",
+    "  export PATH=\"/opt/.venv/bin:$PATH\"",
+    "  source /opt/.venv/bin/activate",
+    "  $STD uv pip install --upgrade pip",
+    "  $STD uv pip install \\",
+    "    opencv-python-headless \\",
+    "    ocrmypdf \\",
+    "    pillow \\",
+    "    pdf2image",
+    "  $STD apt install -y python3-uno python3-pip",
+    "  $STD pip3 install --break-system-packages --timeout=120 unoserver",
+    "  ln -sf /opt/.venv/bin/python3 /usr/local/bin/python3",
+    "  ln -sf /opt/.venv/bin/pip /usr/local/bin/pip",
+    "  msg_ok \"Installed Python Dependencies\"",
+    "",
+    "  msg_info \"Installing Language Packs (Patience)\"",
+    "  $STD apt install -y 'tesseract-ocr-*'",
+    "  msg_ok \"Installed Language Packs\"",
+    "",
+    "  msg_info \"Creating Environment Variables\"",
+    "  cat \u003c\u003c EOF \u003e /opt/Stirling-PDF/.env",
+    "# Java tuning",
+    "JAVA_BASE_OPTS=\"-XX:+UnlockExperimentalVMOptions -XX:MaxRAMPercentage=75 -XX:InitiatingHeapOccupancyPercent=20 -XX:+G1PeriodicGCInvokesConcurrent -XX:G1PeriodicGCInterval=10000 -XX:+UseStringDeduplication -XX:G1PeriodicGCSystemLoadThreshold=70\"",
+    "JAVA_CUSTOM_OPTS=\"\"",
+    "",
+    "# LibreOffice",
+    "PATH=/opt/.venv/bin:/usr/lib/libreoffice/program:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "UNO_PATH=/usr/lib/libreoffice/program",
+    "URE_BOOTSTRAP=file:///usr/lib/libreoffice/program/fundamentalrc",
+    "PYTHONPATH=/usr/lib/libreoffice/program:/opt/.venv/lib/python3.12/site-packages",
+    "LD_LIBRARY_PATH=/usr/lib/libreoffice/program",
+    "",
+    "STIRLING_TEMPFILES_DIRECTORY=/tmp/stirling-pdf",
+    "TMPDIR=/tmp/stirling-pdf",
+    "TEMP=/tmp/stirling-pdf",
+    "TMP=/tmp/stirling-pdf",
+    "",
+    "# Paths",
+    "PATH=/opt/.venv/bin:/usr/lib/libreoffice/program:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "EOF",
+    "",
+    "  if [[ \"$login_mode\" == \"true\" ]]; then",
+    "    cat \u003c\u003c EOF \u003e /opt/Stirling-PDF/.env",
+    "# activate Login",
+    "DISABLE_ADDITIONAL_FEATURES=false",
+    "SECURITY_ENABLELOGIN=true",
+    "",
+    "# login credentials",
+    "SECURITY_INITIALLOGIN_USERNAME=admin",
+    "SECURITY_INITIALLOGIN_PASSWORD=stirling",
+    "EOF",
+    "  fi",
+    "  msg_ok \"Created Environment Variables\"",
+    "",
+    "  msg_info \"Patching Native Libraries for LXC Compatibility\"",
+    "  find /usr/lib -name \"libicudata.so.*\" -exec patchelf --clear-execstack {} \\; || true",
+    "  msg_ok \"Patched Native Libraries\"",
+    "",
+    "  msg_info \"Refreshing Font Cache\"",
+    "  $STD fc-cache -fv",
+    "  msg_ok \"Font Cache Updated\"",
+    "",
+    "  msg_info \"Creating Service\"",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/libreoffice-listener.service",
+    "[Unit]",
+    "Description=LibreOffice Headless Listener Service",
+    "After=network.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    "User=root",
+    "Group=root",
+    "ExecStart=/usr/lib/libreoffice/program/soffice --headless --invisible --nodefault --nofirststartwizard --nolockcheck --nologo --accept=\"socket,host=127.0.0.1,port=2002;urp;StarOffice.ComponentContext\"",
+    "Restart=always",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/stirlingpdf.service",
+    "[Unit]",
+    "Description=Stirling-PDF service",
+    "After=syslog.target network.target libreoffice-listener.service",
+    "Requires=libreoffice-listener.service",
+    "",
+    "[Service]",
+    "SuccessExitStatus=143",
+    "Type=simple",
+    "User=root",
+    "Group=root",
+    "EnvironmentFile=/opt/Stirling-PDF/.env",
+    "WorkingDirectory=/opt/Stirling-PDF",
+    "ExecStart=/usr/bin/java -jar Stirling-PDF.jar",
+    "ExecStop=/bin/kill -15 %n",
+    "Restart=always",
+    "RestartSec=10",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  cat \u003c\u003c EOF \u003e /etc/systemd/system/unoserver.service",
+    "[Unit]",
+    "Description=UnoServer RPC Interface",
+    "After=libreoffice-listener.service",
+    "Requires=libreoffice-listener.service",
+    "",
+    "[Service]",
+    "Type=simple",
+    "ExecStart=/usr/local/bin/unoserver --port 2003 --interface 127.0.0.1",
+    "Restart=always",
+    "EnvironmentFile=/opt/Stirling-PDF/.env",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "EOF",
+    "",
+    "  systemctl enable -q --now libreoffice-listener",
+    "  systemctl enable -q --now stirlingpdf",
+    "  systemctl enable -q --now unoserver",
+    "  msg_ok \"Created Service\"",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  msg_ok \"Completed successfully!\\n\"",
+    "  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"",
+    "  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"",
+    "  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:8080${CL}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  header_info",
+    "  check_container_storage",
+    "  check_container_resources",
+    "  if [[ ! -d /opt/Stirling-PDF ]]; then",
+    "    msg_error \"No ${APP} Installation Found!\"",
+    "    exit",
+    "  fi",
+    "",
+    "  if check_for_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\"; then",
+    "    if [[ ! -f /etc/systemd/system/unoserver.service ]]; then",
+    "      msg_custom \"\\u26A0\\ufe0f \" \"\\e[33m\" \"Legacy installation detected \\u2013 please recreate the container using the latest install script.\"",
+    "      exit 0",
+    "    fi",
+    "",
+    "    PYTHON_VERSION=\"3.12\" setup_uv",
+    "    JAVA_VERSION=\"25\" setup_java",
+    "",
+    "    msg_info \"Patching Native Libraries for LXC Compatibility\"",
+    "    ensure_dependencies patchelf",
+    "    find /usr/lib -name \"libicudata.so.*\" -exec patchelf --clear-execstack {} \\; || true",
+    "    msg_ok \"Patched Native Libraries\"",
+    "",
+    "    msg_info \"Stopping Services\"",
+    "    systemctl stop stirlingpdf libreoffice-listener unoserver",
+    "    msg_ok \"Stopped Services\"",
+    "",
+    "    if [[ -f ~/.Stirling-PDF-login ]]; then",
+    "      USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF-with-login.jar\"",
+    "      mv /opt/Stirling-PDF/Stirling-PDF-with-login.jar /opt/Stirling-PDF/Stirling-PDF.jar",
+    "    else",
+    "      USE_ORIGINAL_FILENAME=true fetch_and_deploy_gh_release \"stirling-pdf\" \"Stirling-Tools/Stirling-PDF\" \"singlefile\" \"latest\" \"/opt/Stirling-PDF\" \"Stirling-PDF.jar\"",
+    "    fi",
+    "",
+    "    msg_info \"Refreshing Font Cache\"",
+    "    $STD fc-cache -fv",
+    "    msg_ok \"Font Cache Updated\"",
+    "",
+    "    msg_info \"Starting Services\"",
+    "    systemctl start stirlingpdf libreoffice-listener unoserver",
+    "    msg_ok \"Started Services\"",
+    "    msg_ok \"Updated successfully!\"",
+    "  fi",
+    "  exit",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 21,
+      "end_line": 192,
+      "name_span": {
+        "start_line": 21,
+        "start_col": 10,
+        "end_line": 21,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 194,
+      "end_line": 199,
+      "name_span": {
+        "start_line": 194,
+        "start_col": 10,
+        "end_line": 194,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 201,
+      "end_line": 245,
+      "name_span": {
+        "start_line": 201,
+        "start_col": 10,
+        "end_line": 201,
+        "end_col": 23,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 11,
+      "start_col": 1,
+      "end_col": 19,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_tags",
+      "line": 12,
+      "start_col": 1,
+      "end_col": 35,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_cpu",
+      "line": 13,
+      "start_col": 1,
+      "end_col": 24,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_ram",
+      "line": 14,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_disk",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 26,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_os",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_version",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 33,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_arm64",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 30,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_unprivileged",
+      "line": 19,
+      "start_col": 1,
+      "end_col": 42,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [],
+  "heredocs": [
+    {
+      "op": {
+        "line": 91,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 91,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 110,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 92,
+        "end_line": 109
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 113,
+        "col": 9,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 113,
+        "start_col": 12,
+        "end_col": 15,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 121,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 114,
+        "end_line": 120
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 134,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 134,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 148,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 135,
+        "end_line": 147
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 150,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 150,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 170,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 151,
+        "end_line": 169
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 172,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 172,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 186,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 173,
+        "end_line": 185
+      },
+      "expand": true,
+      "strip_tabs": false
+    }
+  ],
+  "download_spans": [],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 96
+    },
+    {
+      "kind": "comment",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 19
+    },
+    {
+      "kind": "var-name",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 11,
+      "start_col": 5,
+      "end_line": 11,
+      "end_col": 19
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 12,
+      "start_col": 1,
+      "end_line": 12,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 12,
+      "start_col": 10,
+      "end_line": 12,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 12,
+      "start_col": 11,
+      "end_line": 12,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 13,
+      "start_col": 9,
+      "end_line": 13,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 13,
+      "start_col": 10,
+      "end_line": 13,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 14,
+      "start_col": 9,
+      "end_line": 14,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 14,
+      "start_col": 10,
+      "end_line": 14,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 10,
+      "end_line": 15,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 11,
+      "end_line": 15,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 8,
+      "end_line": 16,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 9,
+      "end_line": 16,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 13,
+      "end_line": 17,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 14,
+      "end_line": 17,
+      "end_col": 32
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 11,
+      "end_line": 18,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 12,
+      "end_line": 18,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
+      "start_line": 19,
+      "start_col": 1,
+      "end_line": 19,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 19,
+      "start_col": 18,
+      "end_line": 19,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 19,
+      "start_col": 19,
+      "end_line": 19,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 21,
+      "start_col": 1,
+      "end_line": 21,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 21,
+      "start_col": 10,
+      "end_line": 21,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 21,
+      "start_col": 27,
+      "end_line": 21,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 22,
+      "start_col": 3,
+      "end_line": 22,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 22,
+      "start_col": 12,
+      "end_line": 22,
+      "end_col": 48
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 23,
+      "start_col": 3,
+      "end_line": 23,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 8,
+      "end_line": 23,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 3,
+      "end_line": 38,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 38,
+      "start_col": 10,
+      "end_line": 38,
+      "end_col": 34
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 40,
+      "start_col": 3,
+      "end_line": 40,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 40,
+      "start_col": 3,
+      "end_line": 40,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 40,
+      "start_col": 18,
+      "end_line": 40,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 40,
+      "start_col": 25,
+      "end_line": 40,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 41,
+      "start_col": 16,
+      "end_line": 41,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 21,
+      "end_line": 41,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 43,
+      "start_col": 3,
+      "end_line": 43,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 14,
+      "end_line": 43,
+      "end_col": 96
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 43,
+      "start_col": 15,
+      "end_line": 43,
+      "end_col": 22
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 25
+    },
+    {
+      "kind": "var-name",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 12,
+      "end_line": 44,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 21
+    },
+    {
+      "kind": "var-name",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 14,
+      "end_line": 45,
+      "end_col": 21
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 46,
+      "start_col": 6,
+      "end_line": 46,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 9,
+      "end_line": 46,
+      "end_col": 20
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 10,
+      "end_line": 46,
+      "end_col": 19
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 46,
+      "start_col": 21,
+      "end_line": 46,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 24,
+      "end_line": 46,
+      "end_col": 27
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 46,
+      "start_col": 28,
+      "end_line": 46,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 31,
+      "end_line": 46,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 32,
+      "end_line": 46,
+      "end_col": 41
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 46,
+      "start_col": 43,
+      "end_line": 46,
+      "end_col": 45
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 46,
+      "end_line": 46,
+      "end_col": 51
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 46,
+      "start_col": 52,
+      "end_line": 46,
+      "end_col": 54
+    },
+    {
+      "kind": "test-operator",
+      "op": "-z",
+      "start_line": 46,
+      "start_col": 55,
+      "end_line": 46,
+      "end_col": 57
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 58,
+      "end_line": 46,
+      "end_col": 69
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 59,
+      "end_line": 46,
+      "end_col": 68
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 46,
+      "start_col": 70,
+      "end_line": 46,
+      "end_col": 72
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 46,
+      "start_col": 72,
+      "end_line": 46,
+      "end_col": 73
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 46,
+      "start_col": 74,
+      "end_line": 46,
+      "end_col": 78
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 47,
+      "start_col": 5,
+      "end_line": 47,
+      "end_col": 31
+    },
+    {
+      "kind": "var-name",
+      "start_line": 47,
+      "start_col": 5,
+      "end_line": 47,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 32,
+      "end_line": 47,
+      "end_col": 59
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 60,
+      "end_line": 47,
+      "end_col": 74
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 75,
+      "end_line": 47,
+      "end_col": 104
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 105,
+      "end_line": 47,
+      "end_col": 117
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 118,
+      "end_line": 47,
+      "end_col": 126
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 127,
+      "end_line": 47,
+      "end_col": 146
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 147,
+      "end_line": 47,
+      "end_col": 176
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 5,
+      "end_line": 48,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 5,
+      "end_line": 49,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 50,
+      "start_col": 5,
+      "end_line": 50,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
+      "start_line": 50,
+      "start_col": 5,
+      "end_line": 50,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 50,
+      "start_col": 16,
+      "end_line": 50,
+      "end_col": 22
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 51,
+      "start_col": 3,
+      "end_line": 51,
+      "end_col": 7
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 52,
+      "start_col": 5,
+      "end_line": 52,
+      "end_col": 31
+    },
+    {
+      "kind": "var-name",
+      "start_line": 52,
+      "start_col": 5,
+      "end_line": 52,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 32,
+      "end_line": 52,
+      "end_col": 59
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 60,
+      "end_line": 52,
+      "end_col": 74
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 75,
+      "end_line": 52,
+      "end_col": 104
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 105,
+      "end_line": 52,
+      "end_col": 117
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 118,
+      "end_line": 52,
+      "end_col": 126
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 127,
+      "end_line": 52,
+      "end_col": 146
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 147,
+      "end_line": 52,
+      "end_col": 165
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 53,
+      "start_col": 3,
+      "end_line": 53,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 55,
+      "start_col": 3,
+      "end_line": 55,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 55,
+      "start_col": 12,
+      "end_line": 55,
+      "end_col": 47
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 56,
+      "start_col": 3,
+      "end_line": 56,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 8,
+      "end_line": 56,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 67,
+      "start_col": 3,
+      "end_line": 67,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 10,
+      "end_line": 67,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 3,
+      "end_line": 69,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 12,
+      "end_line": 69,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 8
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 8,
+      "end_line": 71,
+      "end_col": 10
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 72,
+      "start_col": 3,
+      "end_line": 72,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 72,
+      "start_col": 10,
+      "end_line": 72,
+      "end_col": 37
+    },
+    {
+      "kind": "var-name",
+      "start_line": 72,
+      "start_col": 10,
+      "end_line": 72,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 72,
+      "start_col": 15,
+      "end_line": 72,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 72,
+      "start_col": 31,
+      "end_line": 72,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 73,
+      "start_col": 3,
+      "end_line": 73,
+      "end_col": 9
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 74,
+      "start_col": 3,
+      "end_line": 74,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 74,
+      "start_col": 8,
+      "end_line": 74,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 75,
+      "start_col": 3,
+      "end_line": 75,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 75,
+      "start_col": 8,
+      "end_line": 75,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 80,
+      "start_col": 8,
+      "end_line": 80,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 81,
+      "start_col": 3,
+      "end_line": 81,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 81,
+      "start_col": 8,
+      "end_line": 81,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 82,
+      "start_col": 3,
+      "end_line": 82,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 83,
+      "start_col": 3,
+      "end_line": 83,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 84,
+      "start_col": 3,
+      "end_line": 84,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 84,
+      "start_col": 10,
+      "end_line": 84,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 86,
+      "start_col": 3,
+      "end_line": 86,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 86,
+      "start_col": 12,
+      "end_line": 86,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 87,
+      "start_col": 8,
+      "end_line": 87,
+      "end_col": 11
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 87,
+      "start_col": 23,
+      "end_line": 87,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 88,
+      "start_col": 10,
+      "end_line": 88,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 90,
+      "start_col": 12,
+      "end_line": 90,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 3,
+      "end_line": 91,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 91,
+      "start_col": 7,
+      "end_line": 91,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 91,
+      "start_col": 10,
+      "end_line": 91,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 91,
+      "start_col": 14,
+      "end_line": 91,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 110,
+      "start_col": 1,
+      "end_line": 110,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 112,
+      "start_col": 6,
+      "end_line": 112,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 9,
+      "end_line": 112,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 10,
+      "end_line": 112,
+      "end_col": 21
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 112,
+      "start_col": 23,
+      "end_line": 112,
+      "end_col": 25
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 26,
+      "end_line": 112,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 112,
+      "start_col": 33,
+      "end_line": 112,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 112,
+      "start_col": 35,
+      "end_line": 112,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 112,
+      "start_col": 37,
+      "end_line": 112,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 5,
+      "end_line": 113,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 113,
+      "start_col": 9,
+      "end_line": 113,
+      "end_col": 11
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 113,
+      "start_col": 12,
+      "end_line": 113,
+      "end_col": 15,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 113,
+      "start_col": 16,
+      "end_line": 113,
+      "end_col": 17
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 121,
+      "start_col": 1,
+      "end_line": 121,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 122,
+      "start_col": 3,
+      "end_line": 122,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 3,
+      "end_line": 123,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 123,
+      "start_col": 10,
+      "end_line": 123,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 3,
+      "end_line": 125,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 125,
+      "start_col": 12,
+      "end_line": 125,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 23,
+      "end_line": 126,
+      "end_col": 40
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 126,
+      "start_col": 80,
+      "end_line": 126,
+      "end_col": 82
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 83,
+      "end_line": 126,
+      "end_col": 87
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 127,
+      "start_col": 10,
+      "end_line": 127,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 129,
+      "start_col": 3,
+      "end_line": 129,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 12,
+      "end_line": 129,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 130,
+      "start_col": 3,
+      "end_line": 130,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 8,
+      "end_line": 130,
+      "end_col": 16
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 3,
+      "end_line": 131,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 10,
+      "end_line": 131,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 3,
+      "end_line": 133,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 12,
+      "end_line": 133,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 3,
+      "end_line": 134,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 134,
+      "start_col": 7,
+      "end_line": 134,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 134,
+      "start_col": 10,
+      "end_line": 134,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 134,
+      "start_col": 14,
+      "end_line": 134,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 148,
+      "start_col": 1,
+      "end_line": 148,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 3,
+      "end_line": 150,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 150,
+      "start_col": 7,
+      "end_line": 150,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 150,
+      "start_col": 10,
+      "end_line": 150,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 150,
+      "start_col": 14,
+      "end_line": 150,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 170,
+      "start_col": 1,
+      "end_line": 170,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 3,
+      "end_line": 172,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 172,
+      "start_col": 7,
+      "end_line": 172,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 172,
+      "start_col": 10,
+      "end_line": 172,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 172,
+      "start_col": 14,
+      "end_line": 172,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 186,
+      "start_col": 1,
+      "end_line": 186,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 188,
+      "start_col": 3,
+      "end_line": 188,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 3,
+      "end_line": 189,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 3,
+      "end_line": 190,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 191,
+      "start_col": 3,
+      "end_line": 191,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 191,
+      "start_col": 10,
+      "end_line": 191,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 192,
+      "start_col": 1,
+      "end_line": 192,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 194,
+      "start_col": 1,
+      "end_line": 194,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 194,
+      "start_col": 10,
+      "end_line": 194,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 194,
+      "start_col": 32,
+      "end_line": 194,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 195,
+      "start_col": 3,
+      "end_line": 195,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 10,
+      "end_line": 195,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 196,
+      "start_col": 3,
+      "end_line": 196,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 196,
+      "start_col": 11,
+      "end_line": 196,
+      "end_col": 81
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 12,
+      "end_line": 196,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 23,
+      "end_line": 196,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 28,
+      "end_line": 196,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 75,
+      "end_line": 196,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 197,
+      "start_col": 3,
+      "end_line": 197,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 197,
+      "start_col": 11,
+      "end_line": 197,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 197,
+      "start_col": 12,
+      "end_line": 197,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 197,
+      "start_col": 19,
+      "end_line": 197,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 197,
+      "start_col": 58,
+      "end_line": 197,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 3,
+      "end_line": 198,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 198,
+      "start_col": 11,
+      "end_line": 198,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 12,
+      "end_line": 198,
+      "end_col": 18
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 18,
+      "end_line": 198,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 28,
+      "end_line": 198,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 41,
+      "end_line": 198,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 51,
+      "end_line": 198,
+      "end_col": 56
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 199,
+      "start_col": 1,
+      "end_line": 199,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 201,
+      "start_col": 1,
+      "end_line": 201,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 201,
+      "start_col": 10,
+      "end_line": 201,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 201,
+      "start_col": 26,
+      "end_line": 201,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 202,
+      "start_col": 3,
+      "end_line": 202,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 3,
+      "end_line": 203,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 204,
+      "start_col": 3,
+      "end_line": 204,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 205,
+      "start_col": 3,
+      "end_line": 205,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 205,
+      "start_col": 6,
+      "end_line": 205,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 205,
+      "start_col": 9,
+      "end_line": 205,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 205,
+      "start_col": 11,
+      "end_line": 205,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 205,
+      "start_col": 32,
+      "end_line": 205,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 205,
+      "start_col": 34,
+      "end_line": 205,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 205,
+      "start_col": 36,
+      "end_line": 205,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 206,
+      "start_col": 5,
+      "end_line": 206,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 15,
+      "end_line": 206,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 206,
+      "start_col": 19,
+      "end_line": 206,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 207,
+      "start_col": 5,
+      "end_line": 207,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 208,
+      "start_col": 3,
+      "end_line": 208,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 210,
+      "start_col": 3,
+      "end_line": 210,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 210,
+      "start_col": 6,
+      "end_line": 210,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 210,
+      "start_col": 27,
+      "end_line": 210,
+      "end_col": 41
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 210,
+      "start_col": 42,
+      "end_line": 210,
+      "end_col": 71
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 210,
+      "start_col": 71,
+      "end_line": 210,
+      "end_col": 72
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 210,
+      "start_col": 73,
+      "end_line": 210,
+      "end_col": 77
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 211,
+      "start_col": 5,
+      "end_line": 211,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 211,
+      "start_col": 8,
+      "end_line": 211,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 211,
+      "start_col": 11,
+      "end_line": 211,
+      "end_col": 12
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 211,
+      "start_col": 13,
+      "end_line": 211,
+      "end_col": 15
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 211,
+      "start_col": 54,
+      "end_line": 211,
+      "end_col": 56
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 211,
+      "start_col": 56,
+      "end_line": 211,
+      "end_col": 57
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 211,
+      "start_col": 58,
+      "end_line": 211,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 212,
+      "start_col": 7,
+      "end_line": 212,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 212,
+      "start_col": 18,
+      "end_line": 212,
+      "end_col": 33
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 212,
+      "start_col": 34,
+      "end_line": 212,
+      "end_col": 42
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 212,
+      "start_col": 43,
+      "end_line": 212,
+      "end_col": 143
+    },
+    {
+      "kind": "command",
+      "start_line": 213,
+      "start_col": 7,
+      "end_line": 213,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 214,
+      "start_col": 5,
+      "end_line": 214,
+      "end_col": 7
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 216,
+      "start_col": 5,
+      "end_line": 216,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 216,
+      "start_col": 5,
+      "end_line": 216,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 216,
+      "start_col": 20,
+      "end_line": 216,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 216,
+      "start_col": 27,
+      "end_line": 216,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 217,
+      "start_col": 5,
+      "end_line": 217,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
+      "start_line": 217,
+      "start_col": 5,
+      "end_line": 217,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 217,
+      "start_col": 18,
+      "end_line": 217,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 217,
+      "start_col": 23,
+      "end_line": 217,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 219,
+      "start_col": 5,
+      "end_line": 219,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 219,
+      "start_col": 14,
+      "end_line": 219,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 220,
+      "start_col": 5,
+      "end_line": 220,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 5,
+      "end_line": 221,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 221,
+      "start_col": 25,
+      "end_line": 221,
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 221,
+      "start_col": 82,
+      "end_line": 221,
+      "end_col": 84
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 85,
+      "end_line": 221,
+      "end_col": 89
+    },
+    {
+      "kind": "command",
+      "start_line": 222,
+      "start_col": 5,
+      "end_line": 222,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 222,
+      "start_col": 12,
+      "end_line": 222,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 224,
+      "start_col": 5,
+      "end_line": 224,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 224,
+      "start_col": 14,
+      "end_line": 224,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 225,
+      "start_col": 5,
+      "end_line": 225,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 226,
+      "start_col": 5,
+      "end_line": 226,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 226,
+      "start_col": 12,
+      "end_line": 226,
+      "end_col": 30
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 228,
+      "start_col": 5,
+      "end_line": 228,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 228,
+      "start_col": 8,
+      "end_line": 228,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 228,
+      "start_col": 11,
+      "end_line": 228,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 228,
+      "start_col": 36,
+      "end_line": 228,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 228,
+      "start_col": 38,
+      "end_line": 228,
+      "end_col": 39
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 228,
+      "start_col": 40,
+      "end_line": 228,
+      "end_col": 44
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 229,
+      "start_col": 7,
+      "end_line": 229,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 229,
+      "start_col": 7,
+      "end_line": 229,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 229,
+      "start_col": 34,
+      "end_line": 229,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 62,
+      "end_line": 229,
+      "end_col": 76
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 77,
+      "end_line": 229,
+      "end_col": 106
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 107,
+      "end_line": 229,
+      "end_col": 119
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 120,
+      "end_line": 229,
+      "end_col": 128
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 129,
+      "end_line": 229,
+      "end_col": 148
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 149,
+      "end_line": 229,
+      "end_col": 178
+    },
+    {
+      "kind": "command",
+      "start_line": 230,
+      "start_col": 7,
+      "end_line": 230,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 231,
+      "start_col": 5,
+      "end_line": 231,
+      "end_col": 9
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 232,
+      "start_col": 7,
+      "end_line": 232,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 232,
+      "start_col": 7,
+      "end_line": 232,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 232,
+      "start_col": 34,
+      "end_line": 232,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 62,
+      "end_line": 232,
+      "end_col": 76
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 77,
+      "end_line": 232,
+      "end_col": 106
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 107,
+      "end_line": 232,
+      "end_col": 119
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 120,
+      "end_line": 232,
+      "end_col": 128
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 129,
+      "end_line": 232,
+      "end_col": 148
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 149,
+      "end_line": 232,
+      "end_col": 167
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 233,
+      "start_col": 5,
+      "end_line": 233,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 235,
+      "start_col": 5,
+      "end_line": 235,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 235,
+      "start_col": 14,
+      "end_line": 235,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 236,
+      "start_col": 5,
+      "end_line": 236,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 236,
+      "start_col": 10,
+      "end_line": 236,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 237,
+      "start_col": 5,
+      "end_line": 237,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 237,
+      "start_col": 12,
+      "end_line": 237,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 239,
+      "start_col": 5,
+      "end_line": 239,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 239,
+      "start_col": 14,
+      "end_line": 239,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 240,
+      "start_col": 5,
+      "end_line": 240,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 241,
+      "start_col": 5,
+      "end_line": 241,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 241,
+      "start_col": 12,
+      "end_line": 241,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 242,
+      "start_col": 5,
+      "end_line": 242,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 242,
+      "start_col": 12,
+      "end_line": 242,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 243,
+      "start_col": 3,
+      "end_line": 243,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 244,
+      "start_col": 3,
+      "end_line": 244,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 245,
+      "start_col": 1,
+      "end_line": 245,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 247,
+      "start_col": 1,
+      "end_line": 247,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 248,
+      "start_col": 1,
+      "end_line": 248,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 249,
+      "start_col": 1,
+      "end_line": 249,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 250,
+      "start_col": 1,
+      "end_line": 250,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 250,
+      "start_col": 8,
+      "end_line": 250,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 250,
+      "start_col": 10,
+      "end_line": 250,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 250,
+      "start_col": 21,
+      "end_line": 250,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 250,
+      "start_col": 22,
+      "end_line": 250,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 250,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": false,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script"
+  ],
+  "flags": {
+    "docker": false,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": false,
+    "pip": true,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": false,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": false,
+  "has_bootstrap": true,
+  "systemd_services": [
+    {
+      "name": "libreoffice-listener.service",
+      "path": "/etc/systemd/system/libreoffice-listener.service",
+      "user": "root",
+      "required": true
+    },
+    {
+      "name": "stirlingpdf.service",
+      "path": "/etc/systemd/system/stirlingpdf.service",
+      "user": "root",
+      "required": true
+    },
+    {
+      "name": "unoserver.service",
+      "path": "/etc/systemd/system/unoserver.service",
+      "user": "root",
+      "required": true
+    }
+  ],
+  "openrc_services": [],
+  "service_managers": [
+    "systemd"
+  ],
+  "users": [
+    {
+      "name": "root",
+      "source": "implicit"
+    }
+  ],
+  "interactive_prompts": []
+}
