@@ -16,6 +16,7 @@ COLLECTIONS = {
 LOGOS_DIR = 'assets/logos'
 MAX_FILE_SIZE = 10 * 1024 * 1024
 TIMEOUT_SECONDS = 5
+MAX_REDIRECTS = 5
 
 pr_dir = ENV['PR_DIR'] || '.'
 logos_dir = File.join(pr_dir, LOGOS_DIR)
@@ -29,24 +30,42 @@ def slug_safe(name)
 end
 
 def download_remote(url)
-  uri = URI.parse(url)
-  raise "Invalid protocol" unless %w[http https].include?(uri.scheme)
+  # TODO(security): revisit whether to reject HTTPS->HTTP downgrades on redirect.
+  # Currently permissive to match curl -L; threat surface is bounded to logo bytes.
+  current = url
+  MAX_REDIRECTS.times do
+    uri = URI.parse(current)
+    raise "Invalid protocol" unless %w[http https].include?(uri.scheme)
 
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = (uri.scheme == 'https')
-  http.open_timeout = TIMEOUT_SECONDS
-  http.read_timeout = TIMEOUT_SECONDS
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = (uri.scheme == 'https')
+    http.open_timeout = TIMEOUT_SECONDS
+    http.read_timeout = TIMEOUT_SECONDS
 
-  request = Net::HTTP::Get.new(uri)
-  buffer = String.new
-  http.request(request) do |response|
-    raise "HTTP #{response.code}" unless response.code == '200'
-    response.read_body do |chunk|
-      buffer << chunk
-      raise "File too large (>10MB)" if buffer.bytesize > MAX_FILE_SIZE
+    body = nil
+    redirect_to = nil
+    http.request(Net::HTTP::Get.new(uri)) do |response|
+      case response.code
+      when '200'
+        buffer = String.new
+        response.read_body do |chunk|
+          buffer << chunk
+          raise "File too large (>10MB)" if buffer.bytesize > MAX_FILE_SIZE
+        end
+        body = buffer
+      when '301', '302', '303', '307', '308'
+        loc = response['location']
+        raise "Redirect without Location" if loc.nil? || loc.empty?
+        redirect_to = URI.join(current, loc).to_s
+      else
+        raise "HTTP #{response.code}"
+      end
     end
+
+    return body if body
+    current = redirect_to if redirect_to
   end
-  buffer
+  raise "Too many redirects (#{MAX_REDIRECTS})"
 end
 
 COLLECTIONS.each_value do |dir|
