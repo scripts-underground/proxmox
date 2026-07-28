@@ -1,14 +1,28 @@
 #!/bin/sh.real
+JEKYLL_LOCK=/tmp/jekyll.lock
+JEKYLL_LOG=/tmp/jekyll.log
+
+# Bind-mounted repo is owned by host user, not container user.
+# Tell git to trust it so plugins that shell out to git don't fail.
+git config --global --add safe.directory /workspaces/scripts-underground-proxmox 2>/dev/null || true
+
 if [ -f /workspaces/scripts-underground-proxmox/_config.yml ]; then
-  curl -sf http://localhost:4000 > /dev/null 2>&1 || {
-    tini -s -- jekyll serve \
-      --config /workspaces/scripts-underground-proxmox/_config.yml,/workspaces/scripts-underground-proxmox/_config.dev.yml \
-      --host 0.0.0.0 \
-      --livereload \
-      > /tmp/jekyll.log 2>&1 &
-    TINI_PID=$!
-  }
+  # Quick check: is Jekyll already listening? (with timeout — no Jekyll
+  # means curl would hang indefinitely otherwise)
+  if ! curl -sf --connect-timeout 2 --max-time 5 http://localhost:4000 > /dev/null 2>&1; then
+    # Port not responding. Only start if we don't already have a lock
+    # (prevents duplicate Jekyll processes on concurrent sh invocations).
+    if [ ! -f "$JEKYLL_LOCK" ]; then
+      touch "$JEKYLL_LOCK"
+      tini -s -- jekyll serve \
+        --config /workspaces/scripts-underground-proxmox/_config.yml,/workspaces/scripts-underground-proxmox/_config.dev.yml \
+        --host 0.0.0.0 \
+        --livereload \
+        > "$JEKYLL_LOG" 2>&1 &
+      JLPID=$!
+    fi
+  fi
 fi
 
-trap 'kill $TINI_PID 2>/dev/null; exit 0' TERM
+trap 'rm -f "$JEKYLL_LOCK" 2>/dev/null; [ -n "${JLPID:-}" ] && kill "$JLPID" 2>/dev/null; exit 0' TERM
 exec /bin/sh.real "$@"

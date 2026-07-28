@@ -212,6 +212,16 @@ The devcontainer under `.devcontainer/` is the primary contribution environment.
 
 Open the devcontainer via VS Code's "Reopen in Container", GitHub Codespaces, or [DevPod](https://devpod.sh/). See `README.md` for details.
 
+For manual / scripted use without an IDE, `.devcontainer/dev.sh` starts the container (building the image on first run) and runs a command inside it:
+
+```bash
+.devcontainer/dev.sh bundle exec jekyll build
+.devcontainer/dev.sh go run ./tools/ast/.
+.devcontainer/dev.sh bash                       # interactive shell
+```
+
+The container persists between invocations so Jekyll's live-reload server stays available at http://localhost:4000.
+
 Host-only setups skip the automatic hook installation. If contributing without the devcontainer, install pre-commit manually before your first commit:
 
 ```bash
