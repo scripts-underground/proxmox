@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/devcontainers/ruby:3.3-bookworm
 
-RUN apt-get update && apt-get install -y tini shellcheck shfmt python3-pip && \
+RUN apt-get update && apt-get install -y tini shellcheck shfmt python3-pip imagemagick librsvg2-bin && \
     gem install bundler webrick && \
     bundle config set path.system true && \
     pip3 install pre-commit --break-system-packages

@@ -2,6 +2,7 @@
 require 'yaml'
 require 'fileutils'
 require 'base64'
+require 'tempfile'
 require 'mini_magick'
 require 'net/http'
 require 'uri'
@@ -68,6 +69,25 @@ def download_remote(url)
   raise "Too many redirects (#{MAX_REDIRECTS})"
 end
 
+def looks_like_svg?(bytes)
+  head = bytes.byteslice(0, 512).to_s
+  head.include?('<svg')
+end
+
+def rasterize_svg(svg_bytes)
+  # ImageMagick's SVG delegate is disabled by Ubuntu's policy.xml, so
+  # rasterize with librsvg first and hand the PNG to MiniMagick.
+  # rsvg-convert doesn't fetch remote resources or execute embedded JS.
+  Tempfile.create(['logo', '.svg']) do |tmp|
+    tmp.binmode
+    tmp.write(svg_bytes)
+    tmp.flush
+    png = IO.popen(['rsvg-convert', '-w', '1024', '-h', '1024', '-a', tmp.path], 'rb', &:read)
+    raise "rsvg-convert failed (exit #{$?.exitstatus})" unless $?&.success?
+    png
+  end
+end
+
 COLLECTIONS.each_value do |dir|
   full_dir = File.join(pr_dir, dir)
   next unless Dir.exist?(full_dir)
@@ -107,6 +127,16 @@ COLLECTIONS.each_value do |dir|
       end
     else
       next
+    end
+
+    if looks_like_svg?(image_data)
+      puts "    rasterizing SVG via rsvg-convert"
+      begin
+        image_data = rasterize_svg(image_data)
+      rescue => e
+        puts "    SVG rasterization failed: #{e.message}"
+        next
+      end
     end
 
     begin
