@@ -115,19 +115,39 @@ setting_up_container → network_check → update_os → install_script() → mo
 
 ## Copyright Header
 
-Every script must include a copyright header after the REPO_BASE line:
+Every script must include a copyright header after the REPO_BASE line.
+The form depends on whether the script is a migration from upstream or
+authored fresh in this repo.
+
+### Migrated scripts (from `community-scripts/ProxmoxVE`)
 
 ```bash
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: OriginalAuthor (GitHubUsername)
+# Author: YourName (GitHubUsername)     # only if you significantly modified the script
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://application-url.com
 ```
 
-- `Copyright` — keep original upstream attribution
-- `Author` — original author from upstream. If the script header has `| Co-Author:`, use the `co_author` field in metadata
+- `Copyright` — preserve original upstream attribution
+- First `Author` — the original author from upstream
+- Second `Author` (optional) — the migrator, added only when the migration involved significant changes to the script (rewrites, non-trivial adaptations, major refactors). Skip for straightforward line-by-line ports.
 - `License` — must point to **our** repo's LICENSE file, not upstream
 - `Source` — application/project URL
+
+### Net-new scripts (authored in this repo, no upstream ancestry)
+
+```bash
+# Copyright (c) 2026 scripts-underground.org
+# Author: YourName (GitHubUsername)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://application-url.com
+```
+
+- `Copyright` — this repo, current year
+- `Author` — you, in `Full Name (github-handle)` form
+- `License` — same as migrated
+- `Source` — same as migrated
 
 ## Metadata (`_lxc/appname.md`)
 
@@ -155,6 +175,21 @@ maintainer: GitHubUsername
 - **repo** — upstream repo URL
 - **site** — project website (prefer the JSON `website` field over the `# Source:` line when they differ)
 - **port**, **cpu**, **ram**, **disk** — must match the `var_*` defaults in the script
+- **logo** — either a repo-relative path (`/assets/logos/appname.webp`) or a remote URL. Remote URLs run through the fetch-logos pipeline which fits them into a 512×512 canvas.
+
+When sourcing a logo from the upstream project, prefer in this order:
+
+1. **Filename contains `logo` or `icon`** — banners (`banner`, `hero`, `header` in the filename) are wide and crop poorly.
+2. **Square aspect ratio** — round variants are typically inscribed in a square and work well.
+3. **Format: SVG > PNG > JPG.**
+4. **Prefer light-background variants** when both `-dark` and `-light` exist — the site default theme is light.
+
+Common upstream locations to check, in order:
+
+- `README_images/`, `docs/images/`, `.github/`
+- `assets/`, `public/`, `static/`, `cps/static/`, `logos/`
+- Site favicon (`<link rel="icon">`) as fallback
+- OpenGraph banner or the first README hero image only as last resort — they are almost always wide.
 
 ## OS Template Scripts
 
