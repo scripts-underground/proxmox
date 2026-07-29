@@ -181,7 +181,7 @@ When sourcing a logo from the upstream project, prefer in this order:
 
 1. **Filename contains `logo` or `icon`** — banners (`banner`, `hero`, `header` in the filename) are wide and crop poorly.
 2. **Square aspect ratio** — round variants are typically inscribed in a square and work well.
-3. **Format: SVG > PNG > JPG.**
+3. **Format: PNG > SVG > JPG.**
 4. **Prefer light-background variants** when both `-dark` and `-light` exist — the site default theme is light.
 
 Common upstream locations to check, in order:
