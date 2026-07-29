@@ -2,7 +2,7 @@
 slug: calibre-web-automated
 title: Calibre-Web-Automated
 tags: [media, books]
-logo: https://github.com/crocodilestick/Calibre-Web-Automated/raw/main/README_images/cwa-logo-round-light.png
+logo: /assets/logos/calibre-web-automated.webp
 by: alexindigo
 repo: https://github.com/crocodilestick/Calibre-Web-Automated
 site: https://github.com/crocodilestick/Calibre-Web-Automated
