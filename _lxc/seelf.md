@@ -17,7 +17,7 @@ Painless self-hosted deployment platform. Send your Docker Compose files to seel
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080` to complete setup.
+- Access the web UI at `http://<ip>:8080` to complete setup.
 - Admin credentials are written to `~/seelf.creds` inside the container.
 - The app is built from source using Go during installation; the first install may take several minutes.
 

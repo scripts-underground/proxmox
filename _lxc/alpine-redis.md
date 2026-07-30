@@ -14,7 +14,7 @@ maintainer: MickLesk
 ---
 Redis database on Alpine Linux. In-memory data structure store.
 ## Notes
-- Access at `http://{ip}:6379`.
+- Access at `http://<ip>:6379`.
 - Bound to all interfaces.
 ## Links
 - [Website](https://redis.io/)

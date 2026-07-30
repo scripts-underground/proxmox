@@ -20,7 +20,7 @@ providing centralized management for UniFi access points, switches, and gateways
 
 - Requires a **privileged** container with TUN/TAP enabled.
 - The installer takes several minutes to complete - do not interrupt.
-- Access the web UI at `https://{ip}:11443` using a modern browser.
+- Access the web UI at `https://<ip>:11443` using a modern browser.
 
 ## Links
 

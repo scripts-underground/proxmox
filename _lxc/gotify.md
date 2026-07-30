@@ -17,7 +17,7 @@ A simple server for sending and receiving messages in real-time per WebSocket (i
 
 ## Notes
 
-- Access the web UI at `http://{ip}:80` to get started.
+- Access the web UI at `http://<ip>:80` to get started.
 - Default credentials are admin:admin — change them on first login.
 - Configuration is done via environment variables. See [gotify.net/docs/config](https://gotify.net/docs/config) for details.
 

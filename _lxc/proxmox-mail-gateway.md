@@ -17,7 +17,7 @@ Enterprise-grade mail gateway with spam filtering, virus scanning, and policy-ba
 
 ## Notes
 
-- Access the web UI at `https://{ip}:8006` to complete setup.
+- Access the web UI at `https://<ip>:8006` to complete setup.
 - Installed via the official Proxmox apt repository (pmg-no-subscription).
 - Updates are handled via `apt upgrade`.
 - Login using the `root` user with your Proxmox server password.

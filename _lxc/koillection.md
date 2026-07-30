@@ -17,7 +17,7 @@ Koillection is a self-hosted service allowing users to manage any kind of collec
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - Koillection uses Apache, PostgreSQL, PHP, and Yarn assets.
 - The `.env.local` file is located at `/opt/koillection/.env.local`.
 

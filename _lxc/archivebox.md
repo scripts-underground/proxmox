@@ -17,7 +17,7 @@ Self-hosted internet archiving solution. Save web pages, PDFs, screenshots, and 
 
 ## Notes
 
-- Access the admin UI at `http://{ip}:8000/admin/login` to manage archives.
+- Access the admin UI at `http://<ip>:8000/admin/login` to manage archives.
 - Default credentials are set during install (username/email are empty, password is `community-scripts.org`).
 - Uses Chromium for full page rendering and screenshots.
 

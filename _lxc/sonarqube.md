@@ -17,7 +17,7 @@ SonarQube is a self-managed tool that systematically helps teams deliver clean c
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9000` to log in.
+- Access the web UI at `http://<ip>:9000` to log in.
 - Default admin credentials: `admin` / `admin` (change on first login).
 - SonarQube requires Java 21 and PostgreSQL 17.
 - The update script creates a full backup of `/opt/sonarqube` before applying updates.

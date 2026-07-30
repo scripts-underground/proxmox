@@ -18,7 +18,7 @@ Unbound is a validating, recursive, caching DNS resolver designed to be fast and
 ## Notes
 
 - Unbound runs as a recursive DNS resolver on port 5335.
-- Access the service at `http://{ip}:5335`.
+- Access the service at `http://<ip>:5335`.
 - Configure your client devices or router to use the container's IP as the DNS server for local network filtering.
 - The log file is located at `/var/log/unbound.log` with daily logrotate configured.
 

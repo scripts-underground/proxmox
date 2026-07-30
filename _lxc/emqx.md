@@ -17,7 +17,7 @@ EMQX is the world's most scalable MQTT broker for IoT, designed for massive IoT 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:18083` to complete setup.
+- Access the web UI at `http://<ip>:18083` to complete setup.
 - Default credentials: admin / public
 - The MQ feature can be disabled during install to reduce disk and CPU usage.
 

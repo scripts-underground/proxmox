@@ -14,6 +14,6 @@ maintainer: MickLesk
 ---
 Cloud file storage and sharing platform. Supports multiple storage policies with web UI.
 ## Notes
-- Access at `http://{ip}:5212`.
+- Access at `http://<ip>:5212`.
 ## Links
 - [Website](https://cloudreve.org/)

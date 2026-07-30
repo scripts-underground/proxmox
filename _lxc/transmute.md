@@ -17,7 +17,7 @@ Transmute is a file conversion web application supporting documents, images, aud
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3313` to upload and convert files.
+- Access the web UI at `http://<ip>:3313` to upload and convert files.
 - Supports conversion between hundreds of formats including PDF, DOCX, EPUB, images, and more.
 - Update via the script's built-in updater (no in-app update mechanism).
 

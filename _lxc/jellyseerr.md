@@ -17,7 +17,7 @@ Media request management for Jellyfin. Built on Overseerr, Jellyseerr enables us
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5055`
+- Access the web UI at `http://<ip>:5055`
 - Jellyseerr has been rebranded to Seerr (unified with Overseerr)
 - v2.7.3+ offers a built-in migration path to Seerr
 - Requires building from source (pnpm + Node.js)

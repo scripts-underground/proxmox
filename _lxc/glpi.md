@@ -17,7 +17,7 @@ GLPI is a free asset and IT management software package, providing ITIL Service 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:80` to complete setup.
+- Access the web UI at `http://<ip>:80` to complete setup.
 - Update is not currently provided for GLPI; a fresh install is required for upgrades.
 
 ## Links

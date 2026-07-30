@@ -17,7 +17,7 @@ Open-source password manager designed for teams and businesses.
 
 ## Notes
 
-- Access the web UI at `https://{ip}` to complete setup.
+- Access the web UI at `https://<ip>` to complete setup.
 - A self-signed SSL certificate is generated automatically. You can replace it with a proper certificate using certbot.
 - MariaDB is configured automatically with a `passboltdb` database and `passbolt` user.
 - Updates are handled via `apt update && apt upgrade`.

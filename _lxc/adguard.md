@@ -17,7 +17,7 @@ Network-wide software for blocking ads and tracking. Runs its own DNS server tha
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete the initial setup wizard.
+- Access the web UI at `http://<ip>:3000` to complete the initial setup wizard.
 - Updates are handled from the AdGuard Home web UI, not via this script.
 - Point your router's DNS (or individual device DNS) at the container's IP to enable network-wide filtering.
 

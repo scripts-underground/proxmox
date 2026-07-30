@@ -17,7 +17,7 @@ LinkStack is a self-hosted link management and sharing platform.
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - LinkStack should be updated via the user interface.
 
 ## Links

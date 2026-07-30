@@ -17,7 +17,7 @@ Adult content collection manager forked from Radarr. Automates downloading and o
 
 ## Notes
 
-- Access the web UI at `http://{ip}:6969` to complete setup.
+- Access the web UI at `http://<ip>:6969` to complete setup.
 - Updates are handled from the Whisparr web UI, not via this script.
 
 ## Links

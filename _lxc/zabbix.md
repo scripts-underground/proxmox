@@ -17,7 +17,7 @@ An enterprise-class open-source distributed monitoring solution for networks and
 
 ## Notes
 
-- Access the web UI at `http://{ip}/zabbix` to complete setup.
+- Access the web UI at `http://<ip>/zabbix` to complete setup.
 - The installer will prompt for Zabbix version (7.0 LTS, 7.4 Stable, or Latest).
 - Choose between Zabbix Agent (classic) or Zabbix Agent2 (modern).
 - Agent2 can optionally install all plugins.

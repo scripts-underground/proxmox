@@ -17,7 +17,7 @@ openHAB is a vendor and technology agnostic open source automation software for 
 
 ## Notes
 
-- Access via `https://{ip}:8443` or `http://{ip}:8080`.
+- Access via `https://<ip>:8443` or `http://<ip>:8080`.
 - Initial setup may take a few minutes while openHAB downloads add-ons and prepares the runtime.
 - Configuration files live under `/etc/openhab`.
 

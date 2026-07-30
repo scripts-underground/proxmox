@@ -16,7 +16,7 @@ Self-hosted coding activity tracker compatible with WakaTime.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 - Configure your API key and editor plugins to start tracking coding activity.
 
 ## Links

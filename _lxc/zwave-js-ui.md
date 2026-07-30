@@ -17,7 +17,7 @@ Z-Wave JS UI is a full-featured Z-Wave control interface that integrates with Ho
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8091` to configure your Z-Wave controller.
+- Access the web UI at `http://<ip>:8091` to configure your Z-Wave controller.
 - A Z-Wave USB stick (e.g., Zooz, Aeotec, GoControl) must be passed through to the container.
 - The container stores persistent data in `/opt/zwave_store`.
 

@@ -18,7 +18,7 @@ IronClaw is an Agent OS focused on privacy, security and extensibility.
 ## Notes
 
 - Complete initial setup by running: `/usr/local/bin/ironclaw onboard`
-- Access the Web UI at `http://{ip}:3000`
+- Access the Web UI at `http://<ip>:3000`
 - Use the Gateway Authentication Token to log in: `cat /root/.ironclaw/gateway.creds`
 
 ## Links

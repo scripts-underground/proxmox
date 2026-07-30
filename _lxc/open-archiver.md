@@ -17,7 +17,7 @@ Open Archiver is a secure, self-hosted email archiving solution. Enables full-te
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 - PostgreSQL is used as the primary database for metadata and email content.
 - Meilisearch provides full-text search capabilities.
 - Valkey (Redis-compatible) is used for job queues and caching.

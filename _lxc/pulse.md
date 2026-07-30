@@ -18,7 +18,7 @@ Real-time monitoring for Proxmox, Docker, and Kubernetes infrastructure with AI-
 
 ## Notes
 
-- All configuration is done through the web UI setup wizard on first access at `http://{ip}:7655`.
+- All configuration is done through the web UI setup wizard on first access at `http://<ip>:7655`.
 - No manual `.env` file editing is required.
 
 ## Links

@@ -17,7 +17,7 @@ Frigate is an open-source NVR built around AI object detection that processes re
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5000` to complete setup.
+- Access the web UI at `http://<ip>:5000` to complete setup.
 - This script requires Debian 12 (Bookworm) due to Python 3.11 build dependencies.
 - To update Frigate, create a new container and transfer your configuration.
 

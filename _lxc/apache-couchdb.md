@@ -17,7 +17,7 @@ Apache CouchDB is a document-oriented NoSQL database that uses JSON for document
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5984/_utils/` to manage your databases.
+- Access the web UI at `http://<ip>:5984/_utils/` to manage your databases.
 - Credentials are stored in `~/couchdb.creds` inside the container.
 - CouchDB is configured to bind to `0.0.0.0` for external access.
 - Updates are handled via the official CouchDB APT repository.

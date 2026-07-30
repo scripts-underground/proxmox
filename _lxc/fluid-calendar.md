@@ -17,7 +17,7 @@ Open-source alternative to Motion for intelligent task scheduling and calendar m
 
 ## Notes
 
-- Access the app at `http://{ip}:3000`.
+- Access the app at `http://<ip>:3000`.
 - Uses SQLite for metadata — no external database needed.
 - Google Calendar and Outlook Calendar integration can be configured in Settings > System.
 - First user to register becomes the admin.

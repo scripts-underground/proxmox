@@ -17,7 +17,7 @@ Open-source time-tracking application for freelancers and teams. Track project h
 
 ## Notes
 
-- Access the web UI at `http://{ip}`.
+- Access the web UI at `http://<ip>`.
 - Default admin credentials: `admin@community-scripts.org` / `community-scripts.org`
 - Runs on Apache with PHP 8.4 and MariaDB.
 

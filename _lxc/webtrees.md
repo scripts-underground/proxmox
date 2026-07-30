@@ -17,7 +17,7 @@ Online genealogy application for managing and sharing family tree data. Supports
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to get started.
+- Access the web UI at `http://<ip>` to get started.
 - Admin credentials are stored in `~/webtrees.creds` on the container.
 - Default admin username is `Admin` with a random password generated during install.
 - Make sure to change the admin email and password after first login.

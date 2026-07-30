@@ -14,6 +14,6 @@ maintainer: enirys31
 ---
 Backup management with web UI. Built on restic for deduplicated encrypted backups.
 ## Notes
-- Access at `http://{ip}:9898`.
+- Access at `http://<ip>:9898`.
 ## Links
 - [Website](https://garethgeorge.github.io/backrest/)

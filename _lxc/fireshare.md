@@ -19,7 +19,7 @@ Fireshare lets you share your video content using unique links. Upload videos, g
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to get started
+- Access the web UI at `http://<ip>` to get started
 - Admin credentials are saved to `~/fireshare.creds` inside the container
 - For GPU transcoding, set `var_gpu="yes"` before installation and pass through the NVIDIA GPU
 

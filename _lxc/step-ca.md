@@ -17,7 +17,7 @@ step-ca is an online certificate authority for secure, automated X.509 and SSH c
 
 ## Notes
 
-- Access the provisioners dashboard at `https://{ip}/provisioners`.
+- Access the provisioners dashboard at `https://<ip>/provisioners`.
 - The CA listens on port 443 and an insecure port 80.
 - Certificates, keys, and configuration are stored in `/etc/step-ca/`.
 - A step-badger web UI is installed alongside step-ca.

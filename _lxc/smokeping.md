@@ -17,7 +17,7 @@ Latency measurement tool. Measures, stores and displays latency, latency distrib
 
 ## Notes
 
-- Access the web UI at `http://{ip}/smokeping`
+- Access the web UI at `http://<ip>/smokeping`
 - Edit targets in `/etc/smokeping/config.d/Targets`
 - Default targets include localhost, Google DNS (8.8.8.8), and Cloudflare DNS (1.1.1.1)
 - Add custom targets by editing the Targets file and restarting SmokePing with `systemctl restart smokeping`

@@ -17,7 +17,7 @@ Authelia is an open-source authentication and authorization server providing 2FA
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9091` to complete setup.
+- Access the web UI at `http://<ip>:9091` to complete setup.
 - Default credentials: username `authelia`, password can be found in the configuration or reset via the web UI.
 - The configuration is stored in `/etc/authelia/configuration.yml`.
 

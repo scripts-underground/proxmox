@@ -18,7 +18,7 @@ n8n is a workflow automation platform that connects with any service to build au
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5678` to configure n8n.
+- Access the web UI at `http://<ip>:5678` to configure n8n.
 - Environment configuration is stored in `/opt/n8n.env`.
 - n8n runs as a systemd service.
 

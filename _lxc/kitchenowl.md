@@ -17,7 +17,7 @@ Smart self-hosted grocery list and recipe manager with real-time synchronization
 
 ## Notes
 
-- Access the web UI at `http://{ip}:80`.
+- Access the web UI at `http://<ip>:80`.
 - Nginx reverse proxy fronts the Flask backend on port 5000.
 - JWT secret is auto-generated on install.
 - Update from the LXC console via the helper.

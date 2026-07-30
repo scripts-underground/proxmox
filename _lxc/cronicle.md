@@ -17,7 +17,7 @@ Multi-server task scheduler and job runner with a web UI. Schedule, monitor, and
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3012`
+- Access the web UI at `http://<ip>:3012`
 - Default port is 3012 (HTTP)
 - Worker installation is available via the update menu after primary setup
 

@@ -17,7 +17,7 @@ Free and open source wiki-style knowledge management platform. Organize your doc
 
 ## Notes
 
-- Access the web UI at `http://{ip}` (port 80).
+- Access the web UI at `http://<ip>` (port 80).
 - Default credentials are created during first-run setup.
 
 ## Links

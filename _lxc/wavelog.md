@@ -15,7 +15,7 @@ maintainer: DonLocke
 Self-hosted PHP application for logging amateur radio contacts. All you need is a web browser and active internet connection.
 ## Notes
 - Database credentials: `cat ~/wavelog.creds`
-- Complete the setup via the web installer at `http://{ip}`.
+- Complete the setup via the web installer at `http://<ip>`.
 ## Links
 - [Website](https://www.wavelog.org/)
 - [Documentation](https://docs.wavelog.org/)

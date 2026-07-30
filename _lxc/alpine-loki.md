@@ -14,7 +14,7 @@ maintainer: hoholms
 ---
 Loki log aggregation system on Alpine Linux. Prometheus-compatible log aggregation with Grafana integration.
 ## Notes
-- Access the API at `http://{ip}:3100`.
+- Access the API at `http://<ip>:3100`.
 - Based on Alpine Linux 3.23.
 ## Links
 - [GitHub](https://github.com/grafana/loki)

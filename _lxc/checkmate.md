@@ -17,7 +17,7 @@ Open-source, self-hosted tool for tracking server hardware, uptime, response tim
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete initial setup.
+- Access the web UI at `http://<ip>` to complete initial setup.
 - A JWT secret is auto-generated during installation.
 - MongoDB (included) stores all monitoring data.
 

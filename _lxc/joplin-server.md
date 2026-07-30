@@ -17,7 +17,7 @@ Self-hosted sync server for Joplin, the open-source note-taking and to-do applic
 
 ## Notes
 
-- Web UI is available at `http://{ip}:22300`.
+- Web UI is available at `http://<ip>:22300`.
 - PostgreSQL 17 is used as the database backend.
 - Joplin clients should use the Synchronisation tab to point to this server URL.
 

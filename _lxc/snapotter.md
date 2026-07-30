@@ -18,7 +18,7 @@ SnapOtter is a self-hosted media processing and image manipulation platform.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:1349` to complete setup.
+- Access the web UI at `http://<ip>:1349` to complete setup.
 - Default credentials: `admin` / `admin`.
 - Requires PostgreSQL 17 and Redis for full functionality.
 - The service uses pnpm workspaces — the API runs via `@snapotter/api`.

@@ -17,7 +17,7 @@ Full-featured and highly configurable event-driven file transfer solution. Serve
 
 ## Notes
 
-- Access the web admin UI at `http://{ip}:8080/web/admin` to complete setup.
+- Access the web admin UI at `http://<ip>:8080/web/admin` to complete setup.
 - Default credentials are set during first login.
 
 ## Links

@@ -19,7 +19,7 @@ ioBroker is an open-source IoT automation platform for connecting various smart 
 
 - ioBroker runs a third-party installer from https://iobroker.net/install.sh — review before proceeding.
 - Node.js 24 is installed as the runtime.
-- Access the web UI at `http://{ip}:8081`.
+- Access the web UI at `http://<ip>:8081`.
 - Default login credentials are set during initial setup in the web UI.
 
 ## Links

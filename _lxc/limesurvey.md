@@ -17,7 +17,7 @@ Open-source survey platform. Create online surveys, polls, and forms with condit
 
 ## Notes
 
-- Access the web interface at `http://{ip}` to complete the setup.
+- Access the web interface at `http://<ip>` to complete the setup.
 - Database credentials are stored in `~/limesurvey.creds` inside the container.
 - Updates are handled through the LimeSurvey web interface.
 

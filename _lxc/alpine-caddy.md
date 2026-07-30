@@ -17,7 +17,7 @@ Web server on Alpine Linux. Automatic HTTPS, reverse proxy, and static file serv
 
 ## Notes
 
-- Access the web server at `http://{ip}:80`.
+- Access the web server at `http://<ip>:80`.
 - Based on Alpine Linux 3.23 with only 256 MB RAM.
 - xCaddy addon installer available during initial setup.
 

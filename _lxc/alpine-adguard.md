@@ -17,7 +17,7 @@ AdGuard Home on Alpine Linux. Lightweight network-wide ad and tracker blocker us
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000`.
+- Access the web UI at `http://<ip>:3000`.
 - Based on Alpine Linux 3.23 for minimal resource usage (256 MB RAM, 1 GB disk).
 - Updates are handled via the AdGuard Home CLI (`--update` flag).
 

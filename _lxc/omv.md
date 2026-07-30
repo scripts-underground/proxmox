@@ -17,7 +17,7 @@ Network-attached storage (NAS) solution based on Debian. Provides a web-based in
 
 ## Notes
 
-- Access the web UI at `http://{ip}` (port 80) with default credentials `admin` / `openmediavault`.
+- Access the web UI at `http://<ip>` (port 80) with default credentials `admin` / `openmediavault`.
 - Initial setup may take several minutes as it installs the full LAMP stack and OMV packages.
 - OMV manages its own services — do not manually configure nginx, php, or other system services.
 

@@ -17,7 +17,7 @@ Indexer manager and proxy for Sonarr, Radarr, Lidarr, and Readarr. Aggregates an
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9696` to configure indexers.
+- Access the web UI at `http://<ip>:9696` to configure indexers.
 - Add indexers in Prowlarr and they sync automatically to connected Arr apps.
 - Connect to Sonarr/Radarr/Lidarr/Readarr via Settings → Apps.
 

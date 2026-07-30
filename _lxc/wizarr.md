@@ -17,7 +17,7 @@ Automated user invitation system for Plex, Jellyfin, and Emby. Wizarr handles th
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5690` to configure invitation settings.
+- Access the web UI at `http://<ip>:5690` to configure invitation settings.
 - Integrates with Plex, Jellyfin, and Emby media servers.
 - Supports custom invitation codes, expiration, and automated provisioning.
 

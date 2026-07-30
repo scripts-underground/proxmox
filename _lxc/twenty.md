@@ -19,7 +19,7 @@ Open-source CRM platform for managing business relationships and contacts with a
 
 - Initial build takes 10-20 minutes due to frontend and server compilation.
 - Requires at least 10GB RAM for building and 4GB for runtime.
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 
 ## Links
 

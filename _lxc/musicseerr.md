@@ -17,7 +17,7 @@ Music request and discovery platform. Connects Lidarr, Jellyfin, Navidrome, Plex
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8688`
+- Access the web UI at `http://<ip>:8688`
 - Requires a running Lidarr instance
 - On first launch, create an admin account and connect Lidarr in Settings
 

@@ -17,7 +17,7 @@ Teleport is a secure access platform that provides identity-aware proxy, SSH acc
 
 ## Notes
 
-- Access the web UI at `https://{ip}:3080` to log in.
+- Access the web UI at `https://<ip>:3080` to log in.
 - Admin credentials (invite link) are stored at `~/teleportadmin.txt` inside the container.
 - Teleport updates are managed via the system package manager (`apt upgrade`).
 

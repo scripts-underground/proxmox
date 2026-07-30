@@ -17,7 +17,7 @@ Omada Software Controller is a web-based management platform by TP-Link for cent
 
 ## Notes
 
-- Access the web UI at `https://{ip}:8043` to complete the initial setup.
+- Access the web UI at `https://<ip>:8043` to complete the initial setup.
 - Requires MongoDB 8.0 and Java 21 — installed automatically.
 - The controller installation is detected via `/opt/tplink`.
 - Updates check tp-link.com for new `.deb` releases.

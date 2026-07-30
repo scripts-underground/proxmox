@@ -17,7 +17,7 @@ Dedicated backup solution for Proxmox VE environments. Provides efficient, dedup
 
 ## Notes
 
-- Access the web UI at `https://{ip}:8007` to complete setup.
+- Access the web UI at `https://<ip>:8007` to complete setup.
 - Installed via the official Proxmox apt repository (pbs-no-subscription) on x86_64, or via unofficial arm64 builds on ARM.
 - Updates are handled via `apt upgrade`.
 - Login using the `root` user with your Proxmox server password.

@@ -19,7 +19,7 @@ WireGuard is a fast, modern VPN tunnel designed with security and simplicity in 
 
 - TUN device is required — enable it during container creation.
 - Optionally installs WGDashboard (web UI) during setup.
-- Access WGDashboard at `http://{ip}:10086` if installed.
+- Access WGDashboard at `http://<ip>:10086` if installed.
 - WireGuard listens on UDP port 51820 by default.
 
 ## Links

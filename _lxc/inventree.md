@@ -17,7 +17,7 @@ Open-source inventory management system. Track parts, stock, suppliers, and buil
 
 ## Notes
 
-- Access the web UI at `http://{ip}`.
+- Access the web UI at `http://<ip>`.
 - Default port is 80 (nginx reverse proxy to Gunicorn on port 6000).
 - Uses Ubuntu 24.04 and packager.io InvenTree package.
 

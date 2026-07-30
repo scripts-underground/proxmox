@@ -14,6 +14,6 @@ maintainer: MickLesk
 ---
 Syncthing on Alpine Linux. Continuous file synchronization between devices.
 ## Notes
-- Access the web UI at `http://{ip}:8384`.
+- Access the web UI at `http://<ip>:8384`.
 ## Links
 - [Website](https://syncthing.net/)

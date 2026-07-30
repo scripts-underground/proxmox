@@ -17,7 +17,7 @@ Komodo is a tool to build and deploy software on many servers, providing a web U
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9120` to log in.
+- Access the web UI at `http://<ip>:9120` to log in.
 - Default credentials: username `admin`, password saved to `~/komodo.creds` inside the container.
 - Komodo runs via Docker Compose with MongoDB.
 

@@ -17,7 +17,7 @@ iGotify is a notification assistant for Gotify that receives and forwards notifi
 
 ## Notes
 
-- Access the web UI at `http://{ip}:80` to complete setup.
+- Access the web UI at `http://<ip>:80` to complete setup.
 - Configure Gotify connection details via the web interface.
 
 ## Links

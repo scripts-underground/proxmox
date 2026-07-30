@@ -17,7 +17,7 @@ Bitmagnet is a self-hosted BitTorrent indexer manager and DHT crawler with a web
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3333` to complete setup.
+- Access the web UI at `http://<ip>:3333` to complete setup.
 - Requires PostgreSQL 16 and Go installed during initial setup.
 - Optional TMDB API key can be configured during installation for enhanced metadata.
 

@@ -17,7 +17,7 @@ Open-source identity infrastructure platform. Provides authentication, authoriza
 
 ## Notes
 
-- Access the web console at `http://{ip}:8080/ui/console`.
+- Access the web console at `http://<ip>:8080/ui/console`.
 - PostgreSQL database and credentials are stored in `~/zitadel.creds`.
 - After changing `config.yaml`, run `~/zitadel-rerun.sh` to re-apply with the new config.
 - Zitadel runs as the `zitadel` user for security.

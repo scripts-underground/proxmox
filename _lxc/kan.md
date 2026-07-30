@@ -17,7 +17,7 @@ Open-source project management alternative to Trello. Features board visibility 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to log in or sign up.
+- Access the web UI at `http://<ip>:3000` to log in or sign up.
 - The first user to sign up becomes the admin.
 - Requires PostgreSQL and Node.js 22 with pnpm.
 - Redis is optional (for rate limiting).

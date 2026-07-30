@@ -17,7 +17,7 @@ BentoPDF is an in-browser PDF & document editor powered by LibreOffice WASM, all
 
 ## Notes
 
-- Access the web UI at `https://{ip}:8443` to get started.
+- Access the web UI at `https://<ip>:8443` to get started.
 - Self-signed SSL certificate is generated during installation — expect a browser warning.
 - Document conversion (Word/Excel/PowerPoint to PDF) happens entirely in the browser via WebAssembly.
 

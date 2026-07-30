@@ -17,7 +17,7 @@ Self-hosted personal finance and wealth management application. Track accounts, 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 - Built with Ruby on Rails with PostgreSQL and Redis.
 - Background processing via Sidekiq worker.
 - Uses Plaid for financial institution connections.

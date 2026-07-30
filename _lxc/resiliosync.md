@@ -14,6 +14,6 @@ maintainer: dbinit
 ---
 Proprietary peer-to-peer file synchronization tool. Syncs files between devices directly with no cloud storage.
 ## Notes
-- Access at `https://{ip}:8888`.
+- Access at `https://<ip>:8888`.
 ## Links
 - [Website](https://www.resilio.com/)

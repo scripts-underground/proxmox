@@ -14,7 +14,7 @@ maintainer: Marfnl
 ---
 Prometheus Blackbox Exporter probes endpoints over HTTP, HTTPS, DNS, TCP, ICMP, and gRPC.
 ## Notes
-- Access the web UI at `http://{ip}:9115`.
+- Access the web UI at `http://<ip>:9115`.
 - Edit blackbox.yml configuration at `/opt/blackbox-exporter/blackbox.yml`.
 ## Links
 - [Website](https://github.com/prometheus/blackbox_exporter)

@@ -17,7 +17,7 @@ grocy is a web-based self-hosted groceries & household management solution for y
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - grocy runs on Apache with PHP 8.5.
 - SQLite is used as the database backend by default.
 

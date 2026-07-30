@@ -17,7 +17,7 @@ Network discovery and analytics platform. Scanopy helps you map, monitor, and an
 
 ## Notes
 
-- Access the web UI at `http://{ip}:60072` to set up your account.
+- Access the web UI at `http://<ip>:60072` to set up your account.
 - After account creation, generate a daemon API key in the UI and configure a daemon for network discovery.
 - Uses PostgreSQL for data storage and Rust for high-performance backend processing.
 - The integrated daemon runs on port 60073 (internal).

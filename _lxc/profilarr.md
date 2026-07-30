@@ -17,7 +17,7 @@ Configuration Management Platform for Radarr/Sonarr. Manage quality profiles, cu
 
 ## Notes
 
-- Access the web UI at `http://{ip}:6868` to complete setup.
+- Access the web UI at `http://<ip>:6868` to complete setup.
 - Profilarr v2 is a complete rewrite and NOT compatible with v1. There is no migration path.
 - The app is built from source using Deno during installation; the first install may take several minutes.
 

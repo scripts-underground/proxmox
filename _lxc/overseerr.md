@@ -17,7 +17,7 @@ Media request management and discovery tool for the Plex ecosystem. Allows users
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5055`
+- Access the web UI at `http://<ip>:5055`
 - Requires a running Plex instance to function
 - Configuration is stored in `/opt/overseerr/config`
 

@@ -17,7 +17,7 @@ A goals-focused project management system for non-project managers. Combines str
 
 ## Notes
 
-- Access the web UI at `http://{ip}/install` to complete the initial setup.
+- Access the web UI at `http://<ip>/install` to complete the initial setup.
 - Runs on Apache with PHP 8.4 FPM and MariaDB.
 - Supports LDAP/SSO/OIDC, 2FA, and integrations via API.
 

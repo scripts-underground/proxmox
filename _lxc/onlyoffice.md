@@ -17,7 +17,7 @@ ONLYOFFICE Document Server is an online office suite with a collaborative editor
 
 ## Notes
 
-- Access the web UI at `http://{ip}` after installation completes.
+- Access the web UI at `http://<ip>` after installation completes.
 - Requires PostgreSQL 16 and RabbitMQ — both installed automatically.
 - Credentials are stored in `/root/onlyoffice.creds` within the container.
 - Updates use `apt --only-upgrade` on the `onlyoffice-documentserver` package.

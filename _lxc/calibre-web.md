@@ -17,7 +17,7 @@ Calibre-Web is a web app providing a clean interface for browsing, reading and d
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8083` to complete setup.
+- Access the web UI at `http://<ip>:8083` to complete setup.
 - Calibre is installed for eBook conversion support.
 - The application data is stored in `/opt/calibre-web/data`.
 - The Calibre-Web service runs under the `root` user.

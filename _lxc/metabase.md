@@ -17,7 +17,7 @@ Business intelligence and analytics platform. Create dashboards, run queries, an
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000`
+- Access the web UI at `http://<ip>:3000`
 - Uses PostgreSQL for metadata storage (auto-configured)
 - Higher ram requirement (2 GB) for the Java runtime
 

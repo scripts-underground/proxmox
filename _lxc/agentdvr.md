@@ -17,7 +17,7 @@ AgentDVR is a cross-platform video surveillance application from iSpyConnect tha
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8090` to complete the initial setup.
+- Access the web UI at `http://<ip>:8090` to complete the initial setup.
 - GPU hardware acceleration is enabled by default for supported devices.
 - The application checks for updates on each script run and applies them automatically.
 - Configuration is stored under `/opt/agentdvr/agent/`.

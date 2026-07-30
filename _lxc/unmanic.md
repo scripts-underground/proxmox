@@ -17,7 +17,7 @@ Unmanic is a media library optimiser that helps organise and optimise media file
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8888` to complete setup.
+- Access the web UI at `http://<ip>:8888` to complete setup.
 - Supports hardware acceleration for transcoding.
 - Container must run as privileged for GPU passthrough.
 

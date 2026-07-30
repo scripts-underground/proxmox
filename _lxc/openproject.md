@@ -17,7 +17,7 @@ OpenProject is an open-source project management software with collaboration fea
 
 ## Notes
 
-- The web interface is available at `http://{ip}/openproject`.
+- The web interface is available at `http://<ip>/openproject`.
 - Default admin credentials are `admin` / `admin`. Change the password after first login.
 - Initial configuration may take several minutes to complete.
 

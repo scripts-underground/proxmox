@@ -18,7 +18,7 @@ All-in-one solution for managing your cocktail bar. Bar Assistant is built from 
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - The frontend (Salt Rim) and API (Bar Assistant) are served via nginx on port 80.
 - Meilisearch provides full-text search capabilities.
 - Redis is used for caching and sessions.

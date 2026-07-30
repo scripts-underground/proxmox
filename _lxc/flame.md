@@ -17,7 +17,7 @@ Self-hosted startpage dashboard. Organize bookmarks, apps, and services in a cle
 
 ## Notes
 
-- Access at `http://{ip}:5005`
+- Access at `http://<ip>:5005`
 - Add links, notes, and widgets
 - Customizable with colors and layouts
 

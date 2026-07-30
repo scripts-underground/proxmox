@@ -17,7 +17,7 @@ Open source, self-hostable watched list for all your content (movies, tv series,
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3080` to sign up and start tracking content.
+- Access the web UI at `http://<ip>:3080` to sign up and start tracking content.
 - First registered account automatically becomes admin.
 - Uses SQLite for storage — no external database required.
 - Built with Go and SvelteKit.

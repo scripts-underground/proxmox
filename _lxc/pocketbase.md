@@ -17,7 +17,7 @@ Open-source backend for your next SaaS and mobile app in one file. PocketBase pr
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080/_/` to open the admin dashboard.
+- Access the web UI at `http://<ip>:8080/_/` to open the admin dashboard.
 - The first account you create in the admin UI becomes the superadmin.
 - PocketBase can update itself via its built-in updater (triggered during script updates).
 

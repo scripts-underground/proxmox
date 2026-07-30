@@ -17,7 +17,7 @@ Forgejo Git service on Alpine Linux. Self-hosted lightweight Git repository mana
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000`.
+- Access the web UI at `http://<ip>:3000`.
 - Based on Alpine Linux 3.23.
 - Installed via Alpine package manager.
 

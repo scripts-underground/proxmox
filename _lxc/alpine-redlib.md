@@ -17,7 +17,7 @@ Redlib on Alpine Linux. A private front-end to Reddit with a focus on privacy an
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5252`.
+- Access the web UI at `http://<ip>:5252`.
 - Based on Alpine Linux 3.23 for minimal resource usage (512 MB RAM, 1 GB disk).
 - Configuration is managed via `/opt/redlib/redlib.conf`.
 

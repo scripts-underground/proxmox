@@ -17,7 +17,7 @@ A simple, self-hosted file sharing server written in Go.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9090` to upload and share files.
+- Access the web UI at `http://<ip>:9090` to upload and share files.
 - Files are stored in `/opt/upgopher/uploads`.
 - Update via the script's update function (check_for_gh_release).
 

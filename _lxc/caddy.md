@@ -18,7 +18,7 @@ Web server with automatic HTTPS on Debian 13. Reverse proxy, static file serving
 
 ## Notes
 
-- Access the web server at `http://{ip}:80`.
+- Access the web server at `http://<ip>:80`.
 - Based on Debian 13 with Caddy installed from Cloudsmith apt repository.
 - xCaddy addon installer available during initial setup for building Caddy with custom plugins.
 

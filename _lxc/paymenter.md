@@ -19,7 +19,7 @@ Paymenter is an open-source webshop solution for hosting companies, designed to 
 
 - Admin user: `admin@paymenter.org` / `paymenter`
 - Database credentials saved to `/root/paymenter_db.creds`
-- Access the web UI at `http://{ip}:80` to complete setup.
+- Access the web UI at `http://<ip>:80` to complete setup.
 
 ## Links
 

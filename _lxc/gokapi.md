@@ -17,7 +17,7 @@ Lightweight selfhosted Firefox Send alternative without public upload. AWS S3 su
 
 ## Notes
 
-- First-time setup requires visiting `http://{ip}:53842/setup`
+- First-time setup requires visiting `http://<ip>:53842/setup`
 - Config is stored in `/opt/gokapi/config`
 - File data is stored in `/opt/gokapi/data`
 

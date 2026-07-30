@@ -17,7 +17,7 @@ All-in-one open-source business management suite. Includes CRM, e-commerce, acco
 
 ## Notes
 
-- Access at `http://{ip}:8069`
+- Access at `http://<ip>:8069`
 - Credentials stored in `~/odoo.creds`
 - First start may take a while — Odoo initializes the database
 

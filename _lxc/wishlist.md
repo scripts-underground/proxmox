@@ -17,7 +17,7 @@ A self-hosted wishlist app for sharing gift ideas with friends and family.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3280` to complete setup.
+- Access the web UI at `http://<ip>:3280` to complete setup.
 - The app uses Caddy as a reverse proxy by default.
 - Environment configuration is in `/opt/wishlist/.env`.
 

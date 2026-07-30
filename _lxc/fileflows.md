@@ -19,7 +19,7 @@ FileFlows lets you design, schedule, and run automated file processing pipelines
 
 ## Notes
 
-- Access the web UI at `http://{ip}:19200` to configure flows
+- Access the web UI at `http://<ip>:19200` to configure flows
 - FFmpeg is required for video processing — install it and add the path under Variables in the web console
 - Data directory is at `/opt/fileflows/Data`
 

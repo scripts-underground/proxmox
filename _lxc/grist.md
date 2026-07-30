@@ -18,7 +18,7 @@ Grist is a modern relational spreadsheet that combines the flexibility of spread
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8484` to complete setup.
+- Access the web UI at `http://<ip>:8484` to complete setup.
 - Initial setup will prompt you to create an admin account.
 - Data and configuration persist in /opt/grist.
 

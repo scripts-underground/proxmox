@@ -17,7 +17,7 @@ Gitea Git service on Alpine Linux. Lightweight self-hosted Git service.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000`.
+- Access the web UI at `http://<ip>:3000`.
 - Extremely lightweight (256 MB RAM, 1 GB disk).
 - Installed via Alpine package manager.
 

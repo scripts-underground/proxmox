@@ -18,7 +18,7 @@ custom [Tasmota](https://tasmota.github.io/docs/) firmware.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to start compiling custom Tasmota firmware.
+- Access the web UI at `http://<ip>:3000` to start compiling custom Tasmota firmware.
 - The PlatformIO environment is set up during installation for compiling firmware.
 - Updates fetch the latest release from GitHub and rebuild the application.
 

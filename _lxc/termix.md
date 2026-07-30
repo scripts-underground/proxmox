@@ -17,7 +17,7 @@ A web-based SSH terminal and management tool with Guacamole-based remote desktop
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - Termix provides SSH terminal access and VNC/RDP connections via Guacamole.
 - Nginx serves the frontend and reverse proxies to the Termix backend.
 

@@ -18,7 +18,7 @@ xyOps is a task scheduler and server monitoring tool. It allows you to automate 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5522` to configure tasks and monitoring.
+- Access the web UI at `http://<ip>:5522` to configure tasks and monitoring.
 - Requires Node.js 22 (installed automatically).
 - Includes the xySat satellite module for distributed monitoring.
 

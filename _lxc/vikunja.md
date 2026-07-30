@@ -18,7 +18,7 @@ Vikunja is a self-hosted to-do list application.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3456` to complete setup.
+- Access the web UI at `http://<ip>:3456` to complete setup.
 - Configuration file is located at `/etc/vikunja/config.yml`.
 
 ## Links

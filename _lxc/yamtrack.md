@@ -19,7 +19,7 @@ Yamtrack is a self-hosted media tracker for movies, TV shows, anime, manga, vide
 
 - Set API keys (TMDB_API, MAL_API, IGDB_ID, IGDB_SECRET) in `/opt/yamtrack/src/.env` to enable media search from external providers.
 - If using a reverse proxy, set the `URLS` variable in `.env` to your external URL (e.g., `URLS=https://yamtrack.example.com`).
-- Access the Django admin at `http://{ip}:8000/admin/`.
+- Access the Django admin at `http://<ip>:8000/admin/`.
 - The first registered account automatically becomes the admin user.
 
 ## Links

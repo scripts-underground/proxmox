@@ -17,7 +17,7 @@ Technitium DNS Server is an open source authoritative and recursive DNS server w
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5380` to complete setup.
+- Access the web UI at `http://<ip>:5380` to complete setup.
 - The default login credentials are displayed on first access.
 - The service runs on port 5380 (HTTP) and 53 (DNS).
 

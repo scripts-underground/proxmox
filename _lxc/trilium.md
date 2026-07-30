@@ -17,7 +17,7 @@ Trilium is an open-source hierarchical note-taking application with focus on bui
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080` to start using Trilium.
+- Access the web UI at `http://<ip>:8080` to start using Trilium.
 - The database is backed up automatically during updates.
 - This is the TriliumNext fork of the original Trilium Notes.
 

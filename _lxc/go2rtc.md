@@ -17,7 +17,7 @@ go2rtc is the ultimate camera streaming application with support for RTSP, WebRT
 
 ## Notes
 
-- Access the web UI at `http://{ip}:1984`
+- Access the web UI at `http://<ip>:1984`
 - Config file is located at `/opt/go2rtc/go2rtc.yaml`
 - Supports hardware acceleration for Intel iGPU, AMD GPU, and NVidia GPU
 

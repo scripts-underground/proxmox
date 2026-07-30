@@ -18,7 +18,7 @@ Open source web-based music collection server and streamer. A modern, self-hoste
 
 ## Notes
 
-- Access the web UI at `http://{ip}:4533`.
+- Access the web UI at `http://<ip>:4533`.
 - Runs on port 4533 with a built-in web server.
 - Music files should be placed in `/var/lib/navidrome/music`.
 - Supports Subsonic API for mobile clients (Ultrasonic, DSub, Play:Sub, etc.).

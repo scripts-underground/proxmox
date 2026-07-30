@@ -17,7 +17,7 @@ Yubal is a music streaming server built with FastAPI and React.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8000` to start using Yubal.
+- Access the web UI at `http://<ip>:8000` to start using Yubal.
 - Data is stored in `/opt/yubal_data` and configuration in `/opt/yubal_config`.
 
 ## Links

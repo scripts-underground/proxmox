@@ -18,7 +18,7 @@ RomM is a game library manager focused on retro gaming. Emulators, and performan
 
 ## Notes
 
-- Access at `http://{ip}`
+- Access at `http://<ip>`
 - Default credentials: register a new admin user at first launch (/login)
 - Library path: `/var/lib/romm/library/`
 - Place BIOS files in `/var/lib/romm/library/bios/`

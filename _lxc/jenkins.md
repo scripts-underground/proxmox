@@ -19,7 +19,7 @@ Jenkins is the leading open source automation server. It provides hundreds of pl
 
 - Jenkins is installed from the official Jenkins package repository.
 - Java 21 is installed automatically as a dependency.
-- Access the web UI at `http://{IP}:8080` after installation.
+- Access the web UI at `http://<IP>:8080` after installation.
 - The initial admin password can be found in `/var/lib/jenkins/secrets/initialAdminPassword`.
 
 ## Links

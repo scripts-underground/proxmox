@@ -14,6 +14,6 @@ maintainer: tremor021
 ---
 Transmission BitTorrent client on Alpine Linux.
 ## Notes
-- Access the web UI at `http://{ip}:9091`.
+- Access the web UI at `http://<ip>:9091`.
 ## Links
 - [Website](https://transmissionbt.com/)

@@ -17,7 +17,7 @@ Self-hosted web application that allows you to track your location history, impo
 
 ## Notes
 
-- Access the application at `http://{ip}:3000`.
+- Access the application at `http://<ip>:3000`.
 - Data is stored in PostgreSQL with PostGIS extension.
 - Background processing via Redis and Sidekiq.
 - Supports importing from Google Maps, OwnTracks, GPX, and more.

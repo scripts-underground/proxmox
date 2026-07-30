@@ -17,7 +17,7 @@ Minimalist, open-source online pastebin with end-to-end encryption. Data is encr
 
 ## Notes
 
-- Access the web UI at `https://{ip}` (HTTPS with self-signed certificate).
+- Access the web UI at `https://<ip>` (HTTPS with self-signed certificate).
 - Pastes are encrypted client-side; the server never sees the plaintext content.
 - Supports discussion mode, file uploads, and expiration settings.
 

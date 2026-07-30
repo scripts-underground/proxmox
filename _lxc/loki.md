@@ -17,7 +17,7 @@ Loki log aggregation system on Debian. Prometheus-compatible log aggregation wit
 
 ## Notes
 
-- Access the API at `http://{ip}:3100`.
+- Access the API at `http://<ip>:3100`.
 - Based on Debian 13.
 
 ## Links

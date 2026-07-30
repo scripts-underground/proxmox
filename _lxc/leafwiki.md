@@ -17,7 +17,7 @@ Self-hosted wiki. Single Go binary. SQLite + Markdown on disk. No external datab
 
 ## Notes
 
-- Access the wiki at `http://{ip}:8080`.
+- Access the wiki at `http://<ip>:8080`.
 - Admin password is set in `/etc/leafwiki/.env`.
 - No Node.js, Redis, or Postgres needed — just a binary and a data directory.
 

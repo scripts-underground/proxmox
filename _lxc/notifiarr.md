@@ -17,7 +17,7 @@ Unified notification and monitoring platform for your media server stack. Integr
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5454` to complete setup.
+- Access the web UI at `http://<ip>:5454` to complete setup.
 - Installed via the official golift apt repository.
 - Updates are handled via `apt upgrade`.
 

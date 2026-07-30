@@ -17,7 +17,7 @@ Open-source, web-based control system for streamers, broadcasters, and live prod
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8000` to configure buttons and actions.
+- Access the web UI at `http://<ip>:8000` to configure buttons and actions.
 - Bitfocus Companion offers a built-in updater — alternatiely, use the update function from the Proxmox UI to update via this script.
 - udev rules are installed automatically for USB device support.
 

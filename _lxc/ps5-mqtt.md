@@ -18,7 +18,7 @@ Integrate your Sony Playstation 5 devices with Home Assistant using MQTT. Suppor
 ## Notes
 
 - Requires an MQTT broker (e.g. Mosquitto) — configure `config.json` at `/opt/.config/ps5-mqtt/config.json` with your MQTT credentials before starting.
-- Use the web UI at `http://{ip}:8645` to authenticate with each PlayStation device.
+- Use the web UI at `http://<ip>:8645` to authenticate with each PlayStation device.
 - Ensure all required remote play features are enabled on your PS5 (Settings > System > Remote Play > Enable Remote Play).
 
 ## Links

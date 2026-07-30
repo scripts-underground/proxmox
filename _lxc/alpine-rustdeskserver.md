@@ -17,7 +17,7 @@ RustDesk Server on Alpine Linux. Self-hosted remote desktop server with web mana
 
 ## Notes
 
-- Access the web UI at `http://{ip}:21114`.
+- Access the web UI at `http://<ip>:21114`.
 - Default credentials: `admin` / auto-generated password (shown on install).
 - Credentials are saved to `~/rustdesk.creds` inside the container.
 - Both RustDesk Server (hbbs/hbbr) and RustDesk API are installed and updated.

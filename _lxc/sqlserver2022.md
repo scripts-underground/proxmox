@@ -17,7 +17,7 @@ Microsoft SQL Server 2022 relational database management system.
 
 ## Notes
 
-- Access SQL Server at `tcp://{ip}:1433`
+- Access SQL Server at `tcp://<ip>:1433`
 - Run SQL Server setup after installation: `/opt/mssql/bin/mssql-conf setup`
 - SQL Server tools are available at `/opt/mssql-tools18/bin/`
 - This container requires privileged mode (`unprivileged: 0`)

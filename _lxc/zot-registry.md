@@ -17,7 +17,7 @@ OCI Distribution Registry with a web UI for browsing and managing container imag
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080` to browse container images.
+- Access the web UI at `http://<ip>:8080` to browse container images.
 - Default admin credentials are stored in `~/zot.creds` inside the container.
 - Resource limits: 2 GB memory soft limit, 4 GB hard limit.
 

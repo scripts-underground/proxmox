@@ -17,7 +17,7 @@ Monitor websites for changes and get notifications when content is updated. Supp
 
 ## Notes
 
-- Web UI is available at `http://{ip}:5000`.
+- Web UI is available at `http://<ip>:5000`.
 - Browserless service runs alongside for JavaScript-rendered page monitoring.
 - Update both **Change Detection** and **Browserless** via the update helper.
 - Font and X11 packages are pre-installed for full browser rendering support.

@@ -17,7 +17,7 @@ Yuvomi is a modern family planner and calendar application.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 - Data and backups are stored in `/opt/yuvomi/data` and `/opt/yuvomi/backups`.
 - Updates are handled via the script's built-in update mechanism.
 

@@ -17,7 +17,7 @@ Storybook is a frontend workshop for building UI components and pages in isolati
 
 ## Notes
 
-- Access the web UI at `http://{ip}:6006` to view the storybook.
+- Access the web UI at `http://<ip>:6006` to view the storybook.
 - The first install runs `npx storybook@latest init` which may take a few minutes.
 - Configuration details or important caveats.
 - Update behavior notes.

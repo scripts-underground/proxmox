@@ -17,7 +17,7 @@ Self-hosted RSS reader inspired by Google Reader. Subscribe to feeds, organize w
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8082`.
+- Access the web UI at `http://<ip>:8082`.
 - Default admin account is created via a setup wizard on first visit.
 - Data is stored in `/opt/commafeed/data` using an embedded H2 database.
 - Requires Java 25+ runtime.

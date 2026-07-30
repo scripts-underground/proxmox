@@ -17,7 +17,7 @@ ACW (Autocaliweb) is a web-based ebook management and conversion server with KOR
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8083` to complete setup.
+- Access the web UI at `http://<ip>:8083` to complete setup.
 - Default configuration uses `/opt/calibre-library` for Calibre library and `/opt/acw-book-ingest` for ingest directory.
 - Four systemd services are created: `autocaliweb`, `acw-ingest-service`, `acw-auto-zipper`, and `metadata-change-detector`.
 

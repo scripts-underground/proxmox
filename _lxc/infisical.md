@@ -14,7 +14,7 @@ maintainer: tremor021
 ---
 Open-source secret management platform for teams. Securely manage secrets, environment variables, and configuration across your infrastructure.
 ## Notes
-- Access at `http://{ip}:8080`
+- Access at `http://<ip>:8080`
 - Uses bundled PostgreSQL and Redis
 ## Links
 - [Website](https://infisical.com/)

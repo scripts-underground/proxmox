@@ -17,7 +17,7 @@ Nexterm is an open-source server management software for SSH, VNC and RDP. It bu
 
 ## Notes
 
-- Access the web UI at `http://{ip}:6989`.
+- Access the web UI at `http://<ip>:6989`.
 - The first boot may take a moment while the server initializes.
 
 ## Links

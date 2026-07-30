@@ -17,7 +17,7 @@ The tiniest OpenID Certified authorization and authentication server. Lightweigh
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to log in.
+- Access the web UI at `http://<ip>:3000` to log in.
 - Default credentials: username `tinyauth`, password auto-generated during install (saved to `/opt/tinyauth/credentials.txt`).
 - You will be prompted for a subdomain URL during installation.
 

@@ -17,7 +17,7 @@ Media request management platform. Streamline requests for movies and TV shows w
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5055` to complete setup.
+- Access the web UI at `http://<ip>:5055` to complete setup.
 - Node.js source build — may take several minutes during initial install.
 - Higher resource requirements (4 GB RAM recommended) due to Node.js build process.
 

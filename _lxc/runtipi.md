@@ -17,7 +17,7 @@ Runtipi is a self-hosted PaaS solution for deploying and managing applications w
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to get started.
+- Access the web UI at `http://<ip>` to get started.
 - Runtipi uses Docker to manage deployments. The `setup_docker` function handles Docker installation.
 - The installer pulls an external script from https://runtipi.io/ which is not maintained or audited by our repository.
 

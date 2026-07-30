@@ -17,7 +17,7 @@ Book and audiobook collection manager. Automates downloading and organizing eboo
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8787` to configure download clients and indexers.
+- Access the web UI at `http://<ip>:8787` to configure download clients and indexers.
 - Downloaded via Servarr's update API (not GitHub releases).
 - Updates are handled via the Readarr web UI's built-in updater, not by this script.
 

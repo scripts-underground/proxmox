@@ -17,7 +17,7 @@ TV series download manager. Automates downloading and organizing TV shows via Us
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8989`
+- Access the web UI at `http://<ip>:8989`
 - Automatically monitors and downloads new episodes
 - Integrates with download clients like SABnzbd, qBittorrent, etc.
 

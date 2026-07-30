@@ -17,7 +17,7 @@ Auto-match torrents across trackers. Finds cross-seedable torrents by matching t
 
 ## Notes
 
-- Access the web UI at `http://{ip}:2468` to configure trackers and download clients.
+- Access the web UI at `http://<ip>:2468` to configure trackers and download clients.
 - Requires Node.js 24 (installed automatically).
 - Use `cross-seed gen-config` to regenerate the configuration if needed.
 

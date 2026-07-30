@@ -15,6 +15,6 @@ maintainer: MickLesk
 Enterprise-class monitoring and alerting system. Tracks infrastructure, services, and network health.
 ## Notes
 - Default web login: `nagiosadmin` / `nagiosadmin`
-- Access at `http://{ip}/nagios`
+- Access at `http://<ip>/nagios`
 ## Links
 - [Website](https://www.nagios.org/)

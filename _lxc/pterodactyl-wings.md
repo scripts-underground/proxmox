@@ -19,7 +19,7 @@ Docker containers.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080` to complete setup.
+- Access the web UI at `http://<ip>:8080` to complete setup.
 - Requires a running Pterodactyl Panel instance to connect to.
 
 ## Links

@@ -17,7 +17,7 @@ Network-wide ad blocking via your own DNS server. Blocks ads and trackers across
 
 ## Notes
 
-- Access the web admin interface at `http://{ip}/admin`
+- Access the web admin interface at `http://<ip>/admin`
 - The web interface password is stored in `/etc/pihole/setupVars.conf` on the container
 - Point your router's DNS (or individual device DNS) at the container's IP to enable network-wide filtering
 - To update, run the Update option from the Proxmox helper script interface

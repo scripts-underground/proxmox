@@ -17,7 +17,7 @@ Vaultwarden is an alternative implementation of the Bitwarden server API written
 
 ## Notes
 
-- Access the web UI at `https://{ip}:8000` using a self-signed certificate.
+- Access the web UI at `https://<ip>:8000` using a self-signed certificate.
 - Default self-signed TLS certificate is configured automatically.
 - Admin token can be set via the update menu option.
 - Supports SQLite, MySQL, and PostgreSQL (SQLite is default).

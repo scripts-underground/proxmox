@@ -17,7 +17,7 @@ Open source, self-hostable warranty tracker to monitor expirations, store receip
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to get started.
+- Access the web UI at `http://<ip>` to get started.
 - Database credentials are stored in `/root/warracker.creds` inside the container.
 - The app uses PostgreSQL for data storage and Nginx as a reverse proxy.
 

@@ -17,7 +17,7 @@ M3U proxy for Plex DVR and Emby/Jellyfin Live TV based on xTeVe. Provides channe
 
 ## Notes
 
-- Access the web UI at `http://{ip}:34400/web` after installation.
+- Access the web UI at `http://<ip>:34400/web` after installation.
 - Requires GPU passthrough for hardware-accelerated transcoding.
 - Binary is architecture-specific — amd64 and arm64 are supported.
 - `ffmpeg` and `vlc` are installed as dependencies for stream processing.

@@ -17,7 +17,7 @@ Self-hosted all-in-one OSINT tool for analyzing websites. Check a website's IP a
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000`.
+- Access the web UI at `http://<ip>:3000`.
 - Uses Chromium (headless via Xvfb) for screenshot capture.
 - API keys for various services (Shodan, SecurityTrails, etc.) can be configured in `/opt/web-check/.env`.
 

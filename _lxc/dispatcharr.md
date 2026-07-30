@@ -18,7 +18,7 @@ Dispatcharr is an open-source powerhouse for managing IPTV streams and EPG data 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9191` to configure providers and channels.
+- Access the web UI at `http://<ip>:9191` to configure providers and channels.
 - Uses PostgreSQL for data storage and Redis for Celery task queue.
 - Supports hardware acceleration for transcoding when available.
 - Config files and data stored at `/opt/dispatcharr/.env` and `/data/`.

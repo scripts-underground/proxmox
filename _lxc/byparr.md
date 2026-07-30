@@ -17,8 +17,8 @@ Drop-in FlareSolverr replacement using camoufox and FastAPI. Bypasses Cloudflare
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8191/docs` for the API documentation.
-- Configure your \*arr apps to use `http://{ip}:8191/v1` as the FlareSolverr URL.
+- Access the web UI at `http://<ip>:8191/docs` for the API documentation.
+- Configure your \*arr apps to use `http://<ip>:8191/v1` as the FlareSolverr URL.
 - Updates are handled via the script's update mechanism.
 
 ## Links

@@ -18,7 +18,7 @@ schedules against Ookla's Speedtest CLI and graphs the results.
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to view speedtest results.
+- Access the web UI at `http://<ip>` to view speedtest results.
 - Speedtests run automatically every 6 hours by default.
 - Configuration is stored in `/opt/speedtest-tracker/.env`.
 

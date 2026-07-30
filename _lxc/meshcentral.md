@@ -14,7 +14,7 @@ maintainer: tteck
 ---
 Remote computer management and monitoring. Access and control computers behind firewalls.
 ## Notes
-- Access at `https://{ip}`.
+- Access at `https://<ip>`.
 - Self-signed certificate by default.
 ## Links
 - [Website](https://meshcentral.com/)

@@ -15,7 +15,7 @@ maintainer: tteckster
 ---
 Open source modular smart mirror platform.
 ## Notes
-- Access at `http://{ip}:8080`.
+- Access at `http://<ip>:8080`.
 - Default configuration includes clock, calendar, weather, newsfeed modules.
 - Requires OpenWeatherMap API key for weather features.
 ## Links

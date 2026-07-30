@@ -20,7 +20,7 @@ Configure your music backend URL (`SERVER_URL`) in `/opt/feishin/.env`, then res
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9180` to start playing
+- Access the web UI at `http://<ip>:9180` to start playing
 - Default backend is set to Jellyfin at `http://localhost:8096` — edit `/opt/feishin/.env` to change
 - After changing `.env`, run `systemctl restart nginx` to apply
 

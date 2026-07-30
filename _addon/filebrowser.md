@@ -14,7 +14,7 @@ Web-based file manager. Upload, delete, preview, rename, and edit files in your 
 
 ## Notes
 
-- Access at `http://{ip}:8080`
+- Access at `http://<ip>:8080`
 - Default credentials: `admin` / `helper-scripts.com`
 - Supports no-auth mode for local networks
 

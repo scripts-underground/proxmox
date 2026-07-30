@@ -17,7 +17,7 @@ SigNoz is an open-source observability platform for monitoring applications, met
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080` to sign in and configure.
+- Access the web UI at `http://<ip>:8080` to sign in and configure.
 - SigNoz uses ClickHouse as its telemetry store and Zookeeper for orchestration.
 - Updates are handled via the update script, which runs schema migrations automatically.
 

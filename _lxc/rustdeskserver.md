@@ -17,7 +17,7 @@ RustDesk is a full-featured open source remote control alternative for self-host
 
 ## Notes
 
-- Access the web UI at `http://{ip}:21114`.
+- Access the web UI at `http://<ip>:21114`.
 - To set the admin password, run `cd /var/lib/rustdesk-api && rustdesk-api reset-admin-pwd <yournewpasswordhere>` inside the LXC.
 - This install uses hbbs/hbbr builds from `lejianwen/rustdesk-server` for full compatibility with the RustDesk API (SSO/OAuth).
 

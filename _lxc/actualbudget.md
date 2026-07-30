@@ -17,7 +17,7 @@ Personal finance and budgeting application. Track spending, manage budgets, and 
 
 ## Notes
 
-- Access the web UI at `https://{ip}:5006` (HTTPS with self-signed certificate).
+- Access the web UI at `https://<ip>:5006` (HTTPS with self-signed certificate).
 - Higher ram requirement (2 GB) for the Node.js sync server.
 - Configure by uploading an Actual Budget backup or starting fresh.
 

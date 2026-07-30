@@ -14,7 +14,7 @@ Cross-platform system monitoring tool. Web UI with CPU, memory, disk, network, a
 
 ## Notes
 
-- Access at `http://{ip}:61208`
+- Access at `http://<ip>:61208`
 - Supports both Debian/Ubuntu and Alpine
 - Install/Update/Uninstall via interactive menu
 

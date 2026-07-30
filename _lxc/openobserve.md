@@ -17,7 +17,7 @@ OpenObserve is a simple yet sophisticated log search, infrastructure monitoring,
 
 ## Notes
 
-- Access the web UI at `http://{ip}:5080` to complete setup.
+- Access the web UI at `http://<ip>:5080` to complete setup.
 - Show Login Credentials: `cat /opt/openobserve/data/.env`
 - Configuration is stored in `/opt/openobserve/data/.env`.
 

@@ -17,7 +17,7 @@ VictoriaMetrics is a free, open-source time series database and monitoring solut
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8428/vmui` for Prometheus-style querying and visualization.
+- Access the web UI at `http://<ip>:8428/vmui` for Prometheus-style querying and visualization.
 - Data is stored at `/opt/victoriametrics/data`.
 - Updates are handled via the script's update function.
 

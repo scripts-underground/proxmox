@@ -17,7 +17,7 @@ Centralized log management platform for collecting, indexing, and analyzing log 
 
 ## Notes
 
-- Access the web UI at `http://{ip}:9000`
+- Access the web UI at `http://<ip>:9000`
 - Admin credentials are stored in `~/graylog.creds` inside the container
 - Default admin user: `admin`, password: see `~/graylog.creds`
 - Requires significant RAM — 8 GB minimum recommended

@@ -17,7 +17,7 @@ Open-source game server management panel built with PHP.
 
 ## Notes
 
-- Access the web UI at `http://{ip}` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - Credentials are saved to `~/pterodactyl-panel.creds` inside the container.
 - A cron schedule is configured for the queue worker.
 

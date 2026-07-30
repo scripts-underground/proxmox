@@ -17,7 +17,7 @@ Self-hosted location tracking and analysis platform. Detects significant places,
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8080`.
+- Access the web UI at `http://<ip>:8080`.
 - Default credentials: `admin` / `admin`.
 - Configuration file is at `/opt/reitti/application.properties`.
 - Nginx tile cache is configured and running on port 80.

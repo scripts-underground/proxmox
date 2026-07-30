@@ -17,7 +17,7 @@ A modern, lightweight, and powerful wiki app built on Node.js.
 
 ## Notes
 
-- Access the web UI at `http://{ip}:3000` to complete setup.
+- Access the web UI at `http://<ip>:3000` to complete setup.
 - Uses PostgreSQL as the database backend by default.
 - Wiki.js v3.x drops support for SQLite — update only from v2.x if using SQLite.
 

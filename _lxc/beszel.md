@@ -14,6 +14,6 @@ maintainer: Sinofage
 ---
 Lightweight server monitoring agent. Collects CPU, memory, disk, and network metrics.
 ## Notes
-- Access at `http://{ip}:8090` (hub) or connect as agent to an existing hub.
+- Access at `http://<ip>:8090` (hub) or connect as agent to an existing hub.
 ## Links
 - [Website](https://beszel.dev/)

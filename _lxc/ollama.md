@@ -18,7 +18,7 @@ Ollama allows you to run large language models locally.
 
 ## Notes
 
-- Access the API at `http://{ip}:11434`
+- Access the API at `http://<ip>:11434`
 - GPU passthrough is configured automatically when a GPU is detected on the host.
 - Pull models with `ollama pull <model>` inside the container.
 

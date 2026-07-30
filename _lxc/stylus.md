@@ -17,7 +17,7 @@ High-performance, self-hosted HTTP reverse proxy and load balancer with live rel
 
 ## Notes
 
-- Access the web UI at `http://{ip}:8000` to complete setup.
+- Access the web UI at `http://<ip>:8000` to complete setup.
 - Configuration is stored in `/opt/stylus/`.
 - Uses FUSE for file system operations.
 

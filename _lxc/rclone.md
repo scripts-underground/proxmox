@@ -14,7 +14,7 @@ maintainer: tremor021
 ---
 rclone on Debian Linux. Cloud storage sync with web UI.
 ## Notes
-- Access web UI at `http://{ip}:3000`.
+- Access web UI at `http://<ip>:3000`.
 - Credentials saved to ~/rclone.creds.
 ## Links
 - [Website](https://rclone.org/)
