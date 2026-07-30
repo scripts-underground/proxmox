@@ -9,7 +9,7 @@ Jekyll::Hooks.register :site, :post_read do |site|
   scripts_path = File.join(site.source, 'scripts.json')
   unless File.exist?(scripts_path)
     raise Jekyll::Errors::FatalException,
-      "scripts.json missing. Run: ruby tools/regen-scripts-json.rb"
+      "scripts.json not found"
   end
 
   data = JSON.parse(File.read(scripts_path))

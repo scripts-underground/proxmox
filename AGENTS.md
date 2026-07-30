@@ -281,15 +281,3 @@ if they don't match what the extractor produces from source. If
 `go run ./tools/ast/.` exits non-zero, it's reporting a REPO_BASE policy
 violation. Read the stderr report and fix the offending script before
 committing.
-
-## Regenerating scripts.json
-
-After adding or editing files in `_lxc/`, `_addon/`, `_pve/`,
-or `_vm/` (or the corresponding `scripts/<type>/*.sh`), run:
-
-    ruby tools/regen-scripts-json.rb
-
-This is a single-process regen that walks git history once and produces
-`scripts.json` with alphabetically-sorted entries in ~1s. CI validates
-the committed copy matches what the tool produces; stale commits fail PR
-validation.
