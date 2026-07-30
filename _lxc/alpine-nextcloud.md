@@ -17,7 +17,7 @@ Nextcloud is a suite of client-server software for creating and using file hosti
 
 ## Notes
 
-- Access the web UI at `https://<ip>` to manage your cloud storage.
+- Access the web UI at `https://{ip}` to manage your cloud storage.
 - The connection uses a self-signed certificate — your browser will show a security warning.
 - Admin and database credentials are stored in `~/nextcloud.creds` inside the container.
 - Update the container via the update menu to renew the self-signed certificate if needed.

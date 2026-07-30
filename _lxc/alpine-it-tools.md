@@ -17,7 +17,7 @@ A collection of handy online tools for developers, including JSON formatting, ha
 
 ## Notes
 
-- Access the web UI at `http://<ip>:80` to use the tools.
+- Access the web UI at `http://{ip}:80` to use the tools.
 - All tools run client-side in the browser — no backend required.
 - Update behavior: checks GitHub releases for new versions and downloads updates automatically.
 

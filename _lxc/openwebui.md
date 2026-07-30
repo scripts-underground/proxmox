@@ -18,7 +18,7 @@ Open WebUI is a user-friendly web interface for interacting with Large Language 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080`
+- Access the web UI at `http://{ip}:8080`
 - Supports Ollama integration for local LLM inference
 - GPU passthrough is configured automatically when a GPU is detected on the host
 - Ollama installation is optional and prompted during initial setup

@@ -15,6 +15,6 @@ maintainer: tteck
 ---
 iVentoy PXE booting tool. Boot ISO/WIM/IMG/VHD(x)/EFI files over the network.
 ## Notes
-- Access at `http://<ip>:26000`
+- Access at `http://{ip}:26000`
 ## Links
 - [Website](https://www.iventoy.com/en/index.html)

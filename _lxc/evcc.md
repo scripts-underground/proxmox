@@ -19,7 +19,7 @@ EVCC is an open-source tool that manages EV charging, prioritizing solar energy 
 ## Notes
 
 - To configure evcc, place a `evcc.yaml` config file in `/etc`
-- Access the web UI at `http://<ip>:7070`
+- Access the web UI at `http://{ip}:7070`
 
 ## Links
 

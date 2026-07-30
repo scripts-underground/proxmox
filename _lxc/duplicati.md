@@ -14,7 +14,7 @@ maintainer: tremor021
 ---
 Free backup software to store encrypted backups online. Works with FTP, SSH, WebDAV, S3, Backblaze B2, and more.
 ## Notes
-- Access at `http://<ip>:8200`.
+- Access at `http://{ip}:8200`.
 - Credentials saved to `/root/duplicati.creds`.
 ## Links
 - [Website](https://www.duplicati.com)

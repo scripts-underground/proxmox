@@ -17,7 +17,7 @@ Self-hosted folder-based Instagram-style photo and video gallery app. Point it a
 
 ## Notes
 
-- Access the app at `http://<ip>:4141`.
+- Access the app at `http://{ip}:4141`.
 - Place media files in `/opt/foldergram/data/gallery/` and run a scan from Settings.
 - Supports JPEG, PNG, WebP, GIF, AVIF, MP4, MOV, M4V, WebM, and MKV.
 - Uses SQLite for metadata — no external database needed.

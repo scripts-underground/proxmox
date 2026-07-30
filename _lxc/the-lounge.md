@@ -17,7 +17,7 @@ Modern, responsive, cross-platform, self-hosted web IRC client. Connect to IRC n
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9000` to complete setup.
+- Access the web UI at `http://{ip}:9000` to complete setup.
 - The deb package provides the systemd service automatically.
 - First launch requires creating a user via `thelounge add <username>` inside the container.
 

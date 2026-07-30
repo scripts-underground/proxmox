@@ -17,7 +17,7 @@ Squid is a caching proxy for the Web supporting HTTP, HTTPS, FTP, and more. It r
 
 ## Notes
 
-- Access the proxy at `http://<ip>:3128`
+- Access the proxy at `http://{ip}:3128`
 - Authentication is configured via basic auth — manage users with `htpasswd`
 
 ## Links

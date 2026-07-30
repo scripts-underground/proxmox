@@ -17,7 +17,7 @@ Plex media server monitoring and management tool. Track viewer activity, manage 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - The frontend and backend run as separate systemd services (`guardian-backend`, `guardian-frontend`).
 - Database is stored at `/opt/guardian/backend/plex-guard.db`.
 - Configuration is stored in `/opt/guardian/.env`.

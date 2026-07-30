@@ -17,7 +17,7 @@ Open source gardening companion app. Track your plants, watering schedules, and 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`
+- Access the web UI at `http://{ip}:3000`
 - The backend API runs on port 8080 and is proxied through nginx on port 3000
 - Uploads are stored in `/opt/plant-it-data`
 - This is the last version (0.10.0) that includes the web frontend. See the [1.0.0 release notes](https://github.com/MDeLuise/plant-it/releases/tag/1.0.0) for more details.

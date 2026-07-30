@@ -17,7 +17,7 @@ IP address management (IPAM) and data center infrastructure management (DCIM) to
 
 ## Notes
 
-Note: Access the web UI at `https://<ip>` (HTTPS with self-signed certificate).
+Note: Access the web UI at `https://{ip}` (HTTPS with self-signed certificate).
 
 Credentials are stored in `~/netbox.creds` inside the container.
 

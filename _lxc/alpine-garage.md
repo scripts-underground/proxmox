@@ -17,7 +17,7 @@ Garage object storage server on Alpine Linux. Lightweight S3-compatible distribu
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3903`.
+- Access the web UI at `http://{ip}:3903`.
 - Based on Alpine Linux 3.23.
 - Single-binary installation from official releases.
 

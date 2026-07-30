@@ -17,7 +17,7 @@ Web interface to manage your torrents on Real-Debrid, AllDebrid or Premiumize.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:6500`
+- Access the web UI at `http://{ip}:6500`
 - Config file located at `/opt/rdtc/appsettings.json`
 - Installed via the official GitHub releases (pre-built .NET binaries)
 

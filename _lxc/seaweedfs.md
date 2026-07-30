@@ -17,7 +17,7 @@ Distributed file system for storing and serving billions of files quickly and ef
 
 ## Notes
 
-- Access the master UI at `http://<ip>:9333`.
+- Access the master UI at `http://{ip}:9333`.
 - The volume server runs on port `8080` and S3-compatible API on port `8333`.
 - Files are stored under `/opt/seaweedfs-data`.
 - The `weed` CLI is symlinked to `/usr/local/bin/weed` for administration.

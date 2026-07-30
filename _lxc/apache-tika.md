@@ -17,7 +17,7 @@ Apache Tika is a content analysis toolkit for detecting and extracting metadata 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9998` to interact with the Tika API.
+- Access the web UI at `http://{ip}:9998` to interact with the Tika API.
 - Apache Tika supports OCR via Tesseract for image-based documents (Italian, French, Spanish, and German language packs are pre-installed).
 - Updates are fetched from the Apache download mirrors and applied automatically when available.
 

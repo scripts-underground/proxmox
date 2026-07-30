@@ -18,7 +18,7 @@ lldap is a lightweight authentication server that provides an opinionated, simpl
 
 ## Notes
 - Default admin credentials are configured during first setup.
-- Access the web UI at `http://<ip>:17170`.
+- Access the web UI at `http://{ip}:17170`.
 
 ## Links
 - [GitHub](https://github.com/lldap/lldap)

@@ -17,7 +17,7 @@ Dolibarr ERP CRM is a modern software package to manage your company or foundati
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete setup.
+- Access the web UI at `http://{ip}` to complete setup.
 - Database credentials are stored in `~/dolibarr.creds`.
 - Config file: `/usr/share/dolibarr/htdocs/conf/conf.php.example`.
 

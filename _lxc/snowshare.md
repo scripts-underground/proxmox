@@ -17,7 +17,7 @@ SnowShare is a modern file sharing platform built with Next.js and PostgreSQL.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - Files are stored in `/opt/snowshare_data`.
 - A cron job runs daily at 2 AM to clean up expired files.
 

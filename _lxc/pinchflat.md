@@ -17,7 +17,7 @@ A self-hosted YouTube downloader built with Elixir. Automatically monitors chann
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8945` to manage subscriptions and downloads.
+- Access the web UI at `http://{ip}:8945` to manage subscriptions and downloads.
 - Configure YouTube channel/playlist URLs in the web UI to start downloading.
 - Media is downloaded to `/opt/pinchflat/downloads` by default.
 

@@ -17,7 +17,7 @@ Minimal bookmark manager designed to be self-hosted, fast, and easy to set up.
 
 ## Notes
 
-- Access the web interface at `http://<ip>:9090`
+- Access the web interface at `http://{ip}:9090`
 - Login credentials (stored at `/opt/linkding/.env`): user `admin`, password auto-generated on first install
 
 ## Links

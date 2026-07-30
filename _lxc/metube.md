@@ -17,7 +17,7 @@ Web GUI for yt-dlp. Download videos from YouTube, Twitter, TikTok, and many othe
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8081` to start adding downloads.
+- Access the web UI at `http://{ip}:8081` to start adding downloads.
 - Downloads are stored in `/opt/metube_downloads`.
 - Default download mode is "limited" with max 3 concurrent downloads.
 

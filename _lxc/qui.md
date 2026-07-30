@@ -17,7 +17,7 @@ A fast, modern web interface for qBittorrent. Supports managing multiple qBittor
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7476` to complete setup.
+- Access the web UI at `http://{ip}:7476` to complete setup.
 - Qui runs as a single binary — no additional dependencies required.
 - Configuration is stored at `/root/.config/qui/config.toml`.
 

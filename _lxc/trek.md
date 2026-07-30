@@ -17,7 +17,7 @@ TREK is a self-hosted travel planner for organizing trips, itineraries, and coll
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`.
+- Access the web UI at `http://{ip}:3000`.
 - Default admin email: `admin@trek.local` (password generated at install and stored in `/opt/trek/server/.env`).
 - Requires Node.js 24 (installed automatically).
 

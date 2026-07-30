@@ -17,7 +17,7 @@ Gatus is a health monitoring dashboard that monitors your services via HTTP, ICM
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080` to view the dashboard.
+- Access the web UI at `http://{ip}:8080` to view the dashboard.
 - Configuration is stored in `/opt/gatus/config/config.yaml`.
 - Gatus is built from source on initial install and on each update — updates may take a few minutes.
 

@@ -17,7 +17,7 @@ ESPConnect is a web-based tool for flashing ESP32/ESP8266 devices directly from 
 
 ## Notes
 
-- Access the web UI at `https://<ip>` to flash firmware.
+- Access the web UI at `https://{ip}` to flash firmware.
 - Self-signed SSL certificate is generated automatically.
 
 ## Links

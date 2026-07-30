@@ -17,7 +17,7 @@ A free, self-hostable RSS feed aggregator. FreshRSS is a lightweight RSS reader 
 
 ## Notes
 
-- Access the web UI at `http://<ip>` (port 80).
+- Access the web UI at `http://{ip}` (port 80).
 - Runs on Apache with PHP 8.4 and PostgreSQL 16.
 - Feed refresh happens via cron every 15 minutes — edit `/etc/cron.d/freshrss-actualize` to change.
 - First-time setup is done through the web UI.

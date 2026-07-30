@@ -17,7 +17,7 @@ Open-source NVR and video surveillance system. Supports RTSP, ONVIF, and local c
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080/super` to complete setup.
+- Access the web UI at `http://{ip}:8080/super` to complete setup.
 - Default super user credentials are created on first login.
 - Requires a dedicated LXC with GPU passthrough for optimal performance.
 

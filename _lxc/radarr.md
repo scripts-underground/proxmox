@@ -17,7 +17,7 @@ Movie collection manager. Automates downloading, renaming, and organizing movies
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7878` to configure download clients and indexers.
+- Access the web UI at `http://{ip}:7878` to configure download clients and indexers.
 - Automatically monitors for new releases and upgrades quality over time.
 - Integrates with Prowlarr for centralized indexer management.
 

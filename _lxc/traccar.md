@@ -17,7 +17,7 @@ GPS tracking server that supports a wide variety of devices and protocols. Real-
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8082`.
+- Access the web UI at `http://{ip}:8082`.
 - Default login credentials are `admin` / `admin`.
 - The `.run` installer bundles its own Java runtime — no separate Java installation needed.
 

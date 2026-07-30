@@ -17,7 +17,7 @@ Node-RED on Alpine Linux. A flow-based visual programming tool for wiring togeth
 
 ## Notes
 
-- Access the web UI at `http://<ip>:1880` to start building flows.
+- Access the web UI at `http://{ip}:1880` to start building flows.
 - Node-RED runs as the `nodered` user for security isolation.
 
 ## Links

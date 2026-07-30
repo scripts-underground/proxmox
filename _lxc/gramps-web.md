@@ -18,7 +18,7 @@ Genealogy system for collaborative family tree building, with companion for Gram
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5000` to get started.
+- Access the web UI at `http://{ip}:5000` to get started.
 - Medias can be imported from gramps family trees.
 - First user registration creates the admin account.
 

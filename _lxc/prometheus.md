@@ -17,7 +17,7 @@ Prometheus monitoring system and time series database.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9090` to browse metrics and configure queries.
+- Access the web UI at `http://{ip}:9090` to browse metrics and configure queries.
 - Configuration file is at `/etc/prometheus/prometheus.yml`.
 - Data is stored in `/var/lib/prometheus/`.
 

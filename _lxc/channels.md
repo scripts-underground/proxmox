@@ -17,7 +17,7 @@ Channels DVR Server runs on your computer or NAS device at home. There's no clou
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8089` to complete the initial setup.
+- Access the web UI at `http://{ip}:8089` to complete the initial setup.
 - GPU hardware acceleration is enabled by default for supported devices.
 - The installer sources scripts from a third-party URL (https://getchannels.com/dvr/setup.sh). Please review before proceeding.
 - Configuration is stored under `/opt/channels-dvr/`.

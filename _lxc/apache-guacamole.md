@@ -18,7 +18,7 @@ Apache Guacamole is a clientless remote desktop gateway. It supports standard pr
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080/guacamole` to log in.
+- Access the web UI at `http://{ip}:8080/guacamole` to log in.
 - Default credentials are configured during MySQL setup via `guacamole.properties`.
 - Guacamole Server (guacd) is built from source. Updates via this script rebuild from the latest upstream tag.
 - Tomcat and the Guacamole Client WAR are updated separately by the update script.

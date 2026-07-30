@@ -17,7 +17,7 @@ ITSM-NG is a fork of GLPI focused on IT asset management, incident tracking, and
 
 ## Notes
 
-- Access the web UI at `http://<ip>:80` to complete setup.
+- Access the web UI at `http://{ip}:80` to complete setup.
 - Updates are handled via apt (deb package).
 
 ## Links

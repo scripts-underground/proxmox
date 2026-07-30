@@ -17,7 +17,7 @@ Self-hosted Find My Device server. Track and manage Apple device locations using
 
 ## Notes
 
-- Access the web UI at `https://<ip>:8443` (HTTPS with self-signed certificate).
+- Access the web UI at `https://{ip}:8443` (HTTPS with self-signed certificate).
 - Low resource requirements (512 MB RAM, 1 CPU).
 
 ## Links

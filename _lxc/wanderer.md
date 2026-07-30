@@ -17,7 +17,7 @@ Wanderer is a decentralized, self-hosted trail database for uploading GPS tracks
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to get started.
+- Access the web UI at `http://{ip}:3000` to get started.
 - Use `wanderer-pb` instead of `./pocketbase` directly for CLI commands — it ensures environment variables like the encryption key are loaded.
 - The first admin user must be created via `wanderer-pb superuser upsert email@example.com password`.
 

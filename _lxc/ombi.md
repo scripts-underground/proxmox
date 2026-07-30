@@ -17,7 +17,7 @@ Ombi is a self-hosted web application that gives your shared Plex or Emby users 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5000` to complete setup.
+- Access the web UI at `http://{ip}:5000` to complete setup.
 - Configuration is stored in `/opt/ombi/` (Ombi.db, OmbiSettings.db).
 - The update script backs up database files before replacing the install.
 

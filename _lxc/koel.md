@@ -18,7 +18,7 @@ Personal music streaming server. A web-based personal audio streaming service wr
 
 ## Notes
 
-- Access the web UI at `http://<ip>` (port 80).
+- Access the web UI at `http://{ip}` (port 80).
 - Runs on Nginx with PHP 8.4 FPM and PostgreSQL 16.
 - Media files go in `/opt/koel_media`; scanning runs hourly via cron.
 - Supports MusicBrainz, Last.fm, Spotify, and YouTube metadata lookups.

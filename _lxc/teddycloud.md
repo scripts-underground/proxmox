@@ -17,7 +17,7 @@ teddyCloud is an open source server replacement for the Boxine Cloud.
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete setup.
+- Access the web UI at `http://{ip}` to complete setup.
 - The service manages its own TLS certificates in `/opt/teddycloud/certs`.
 
 ## Links

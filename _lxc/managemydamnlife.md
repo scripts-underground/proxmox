@@ -17,7 +17,7 @@ Manage My Damn Life is a self-hosted front-end for managing your daily tasks and
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - Database credentials are stored in `/root/mmdl.creds` inside the container.
 - Uses MariaDB as the database backend.
 

@@ -17,7 +17,7 @@ Baikal is a CalDAV and CardDAV server for managing calendars and contacts.
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete setup.
+- Access the web UI at `http://{ip}` to complete setup.
 - PostgreSQL is used as the database backend.
 - Baikal runs on Apache with PHP 8.3.
 

@@ -17,7 +17,7 @@ An AI-powered assistant for Paperless-NGX that uses GPT models to automatically 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080`
+- Access the web UI at `http://{ip}:8080`
 - Configure your Paperless-NGX connection and API token in `/opt/paperless-gpt-data/.env`
 - Update occurs via the container's update menu option
 

@@ -17,7 +17,7 @@ VPN client tunnel for Lightweight LXC containers. Routes container traffic throu
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000`
+- Access the web UI at `http://{ip}:8000`
 - Supports both WireGuard and OpenVPN protocols
 - Routes all container traffic through the VPN tunnel
 

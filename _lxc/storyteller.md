@@ -18,7 +18,7 @@ Storyteller is a self-hosted media platform for managing and reading ebooks and 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8001` to get started.
+- Access the web UI at `http://{ip}:8001` to get started.
 - The secret key is stored at `/root/storyteller.creds` on first install.
 - Readium CLI is installed for ebook processing capabilities.
 

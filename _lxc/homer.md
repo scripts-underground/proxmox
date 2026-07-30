@@ -17,7 +17,7 @@ Homer is a very simple static homepage for your server.
 
 ## Notes
 
-- Access the dashboard at `http://<ip>:8010`
+- Access the dashboard at `http://{ip}:8010`
 - Configuration is stored in `/opt/homer/assets/config.yml`
 - Homer runs via Python's built-in HTTP server
 

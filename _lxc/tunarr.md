@@ -17,7 +17,7 @@ Tunarr is a fork / rewrite / rebrand of dizqueTV. Create live TV channels from y
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to complete setup.
+- Access the web UI at `http://{ip}:8000` to complete setup.
 - Hardware acceleration is automatically detected and configured for supported GPUs (Intel/AMD/NVIDIA).
 - Set `var_gpu="yes"` before installation to enable GPU passthrough.
 

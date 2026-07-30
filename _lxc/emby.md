@@ -18,7 +18,7 @@ Emby is a media server designed to organize, manage, and stream personal media l
 ## Notes
 
 - With Privileged/Unprivileged Hardware Acceleration Support
-- Access the web UI at `http://<ip>:8096` to complete setup.
+- Access the web UI at `http://{ip}:8096` to complete setup.
 
 ## Links
 

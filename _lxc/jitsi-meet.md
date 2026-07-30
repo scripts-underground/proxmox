@@ -17,7 +17,7 @@ Secure, Simple and Scalable Video Conferences that you use as a standalone app o
 
 ## Notes
 
-- Access the web UI at `https://<ip>` to start or join meetings.
+- Access the web UI at `https://{ip}` to start or join meetings.
 - A self-signed certificate is generated during installation.
 - Installed via the official Jitsi apt repository (debian packages).
 - Updates are handled via `apt update && apt install --only-upgrade`.

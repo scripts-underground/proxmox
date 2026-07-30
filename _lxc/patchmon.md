@@ -21,7 +21,7 @@ Enterprise-grade Linux patch and server management platform with real-time visib
 - Server binary is a single Go binary with embedded React frontend.
 - Agent binaries for multiple platforms are downloaded during installation.
 - Credentials (REDIS_PASSWORD, JWT_SECRET, SESSION_SECRET, AI_ENCRYPTION_KEY) are stored in `/opt/patchmon/.env`.
-- Access the web UI at `http://<ip>:3000` and complete the first-time admin setup.
+- Access the web UI at `http://{ip}:3000` and complete the first-time admin setup.
 
 ## Links
 

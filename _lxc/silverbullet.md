@@ -17,7 +17,7 @@ A note-taking application that runs as a single binary, with a markdown editor, 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to start using SilverBullet.
+- Access the web UI at `http://{ip}:3000` to start using SilverBullet.
 - By default, Chromium (for the Runtime API) is not installed. To enable it, SSH into the container and run: `apt install -y chromium` then add `Environment=SB_CHROME_PATH=/usr/bin/chromium` and `Environment=SB_CHROME_DATA_DIR=/opt/silverbullet/space/.chrome-data` to the service file, followed by `systemctl daemon-reload && systemctl restart silverbullet`.
 - Data is stored in `/opt/silverbullet/space`.
 

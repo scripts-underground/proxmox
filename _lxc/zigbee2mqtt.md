@@ -19,7 +19,7 @@ Zigbee2MQTT bridges Zigbee devices to MQTT, allowing you to control your Zigbee 
 
 - Requires a Zigbee coordinator (USB dongle).
 - The container must be **privileged** for USB/serial access (`var_unprivileged=0`).
-- Access the web UI at `http://<ip>:9442` to complete setup.
+- Access the web UI at `http://{ip}:9442` to complete setup.
 
 ## Links
 

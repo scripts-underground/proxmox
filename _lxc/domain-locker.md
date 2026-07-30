@@ -18,7 +18,7 @@ monitoring, and organizing your domain portfolio.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - PostgreSQL and Node.js are installed and configured during setup.
 - The service uses an environment file at `/opt/domain-locker.env` for configuration.
 

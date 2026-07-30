@@ -20,7 +20,7 @@ Shelfmark is a self-hosted ebook management and automation platform that can sea
 - Uses Python (uv) for the backend and Node.js for the frontend build.
 - Configuration is stored in `/etc/shelfmark/.env`.
 - Supports four deployment modes for captcha bypass: internal Chromium-based bypasser (default), FlareSolverr installed in the same LXC, external FlareSolverr/Byparr instance, or disabled bypassing.
-- Access the web UI at `http://<ip>:8084`.
+- Access the web UI at `http://{ip}:8084`.
 
 ## Links
 

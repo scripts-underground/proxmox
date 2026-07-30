@@ -17,7 +17,7 @@ YOURLS is a self-hosted URL shortener that lets you run your own link shortening
 
 ## Notes
 
-- Complete the setup wizard at `http://<ip>/admin/install.php` on first access.
+- Complete the setup wizard at `http://{ip}/admin/install.php` on first access.
 - Admin credentials are generated automatically and stored in `/opt/yourls/user/config.php`.
 
 ## Links

@@ -17,7 +17,7 @@ Rackula is a lightweight homelab management tool with a web-based UI powered by 
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to get started.
+- Access the web UI at `http://{ip}` to get started.
 - Rackula uses nginx as a reverse proxy and Bun as the runtime.
 
 ## Links

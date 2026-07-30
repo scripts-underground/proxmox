@@ -17,7 +17,7 @@ Zerobyte is a web-based backup management tool that integrates with restic, rclo
 
 ## Notes
 
-- Access the web UI at `http://<ip>:4096` to complete setup.
+- Access the web UI at `http://{ip}:4096` to complete setup.
 - The app manages restic and rclone configuration through its web interface.
 - Updates are handled via the script's built-in update mechanism.
 

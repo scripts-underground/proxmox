@@ -17,7 +17,7 @@ Grafana monitoring dashboard on Alpine Linux. Analytics and monitoring platform 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`.
+- Access the web UI at `http://{ip}:3000`.
 - Default credentials: admin/admin.
 - Based on Alpine Linux 3.23.
 

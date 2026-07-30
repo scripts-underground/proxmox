@@ -17,7 +17,7 @@ VersityGW is a high-performance S3-compatible gateway service that translates S3
 
 ## Notes
 
-- Access the S3 Gateway at `http://<ip>:7070` and the WebUI at `http://<ip>:7071`
+- Access the S3 Gateway at `http://{ip}:7070` and the WebUI at `http://{ip}:7071`
 - Root access and secret keys are auto-generated and stored in `/etc/versitygw.d/gateway.conf`
 - The WebUI (Beta) is enabled by default on port 7071
 - Multiple gateway instances can run concurrently with unique config files in `/etc/versitygw.d/`

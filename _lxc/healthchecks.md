@@ -17,7 +17,7 @@ Open source cron monitoring and alerting service. Monitor cron jobs, scheduled t
 
 ## Notes
 
-- Access the dashboard at `https://<ip>` (via Caddy reverse proxy).
+- Access the dashboard at `https://{ip}` (via Caddy reverse proxy).
 - Healthchecks runs on port 8000 internally, proxied through Caddy on port 443.
 - Uses PostgreSQL 16 as the database backend.
 - Admin credentials saved to `~/healthchecks.creds`.

@@ -17,7 +17,7 @@ Self-hosted audiobook and podcast server.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:13378` to complete setup.
+- Access the web UI at `http://{ip}:13378` to complete setup.
 
 ## Links
 

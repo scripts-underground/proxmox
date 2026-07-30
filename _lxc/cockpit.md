@@ -18,7 +18,7 @@ Cockpit is a web-based graphical interface for servers, intended for everyone, e
 
 ## Notes
 
-- Access the web UI at `https://<ip>:9090`.
+- Access the web UI at `https://{ip}:9090`.
 - Cockpit uses your system's normal user logins and privileges.
 - Optionally install 45Drives' cockpit-file-sharing, cockpit-identities, and cockpit-navigator extensions for additional functionality.
 

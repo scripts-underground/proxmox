@@ -17,7 +17,7 @@ Sportarr - Sports PVR for usenet and torrents. Like Sonarr & Radarr but for spor
 
 ## Notes
 
-- Access the web UI at `http://<ip>:1867` to complete setup.
+- Access the web UI at `http://{ip}:1867` to complete setup.
 - Monitors sports leagues, searches indexers for releases, handles file renaming, organization, and media server integration.
 
 ## Links

@@ -14,7 +14,7 @@ maintainer: MickLesk
 ---
 Real-time bird species identification using AI. Analyzes audio from microphones to identify bird calls.
 ## Notes
-- Web UI at `http://<ip>:8080`.
+- Web UI at `http://{ip}:8080`.
 - Requires audio input device (USB microphone or ALSA).
 - High resource requirements for AI inference.
 ## Links

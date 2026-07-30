@@ -17,7 +17,7 @@ Open source wealth management platform. Track your stock portfolio, cryptocurren
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3333`
+- Access the web UI at `http://{ip}:3333`
 - CoinGecko API keys are optional but provide better cryptocurrency data.
 - Credentials are stored in `~/ghostfolio.creds` inside the container.
 

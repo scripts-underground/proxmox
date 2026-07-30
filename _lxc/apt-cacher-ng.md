@@ -17,8 +17,8 @@ Caching proxy for Debian/Ubuntu apt packages. Reduces bandwidth usage and speeds
 
 ## Notes
 
-- Access the web report at `http://<ip>:3142/acng-report.html`.
-- Configure clients to use this container as their apt proxy by pointing to `http://<ip>:3142`.
+- Access the web report at `http://{ip}:3142/acng-report.html`.
+- Configure clients to use this container as their apt proxy by pointing to `http://{ip}:3142`.
 - The container automatically proxies its own apt traffic through localhost.
 
 ## Links

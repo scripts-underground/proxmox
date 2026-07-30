@@ -17,7 +17,7 @@ Open-source document management system for organizing and processing your docume
 
 ## Notes
 
-- Access the web UI at `http://<ip>:1221` to complete setup.
+- Access the web UI at `http://{ip}:1221` to complete setup.
 - Papra uses OCR (Tesseract) for document text extraction.
 - Database and documents are stored under `/opt/papra_data/`.
 - PNG (`pnpm`) is bundled with Node.js via corepack.

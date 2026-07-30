@@ -17,7 +17,7 @@ Local web UI for managing PVE community scripts. Provides a dashboard to browse,
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to manage community scripts.
+- Access the web UI at `http://{ip}:3000` to manage community scripts.
 - Requires Node.js 24 (installed automatically).
 - The app offers a built-in updater for self-update.
 

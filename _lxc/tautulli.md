@@ -17,7 +17,7 @@ Plex monitoring and analytics tool. Tracks what is being watched, by whom, and p
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8181` to complete setup.
+- Access the web UI at `http://{ip}:8181` to complete setup.
 - The application runs as a Python service under uv-managed virtual environment.
 - Backups of config and database are created during updates at `/opt/`.
 

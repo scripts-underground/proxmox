@@ -17,7 +17,7 @@ Recipe management platform. Self-host your recipes, meal plans, and shopping lis
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9000`
+- Access the web UI at `http://{ip}:9000`
 - Default database is PostgreSQL (auto-configured).
 - First visit prompts admin account creation.
 

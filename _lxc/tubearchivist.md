@@ -18,7 +18,7 @@ A self-hosted YouTube archiving solution. Automatically downloads your favorite 
 ## Notes
 
 - Credentials are stored in `~/tubearchivist.creds` inside the container.
-- Web UI available at `http://<ip>:8000` after installation completes.
+- Web UI available at `http://{ip}:8000` after installation completes.
 
 ## Links
 

@@ -19,7 +19,7 @@ A media server for your comics, mangas, BDs, magazines and eBooks.
 ## Notes
 
 - The web UI may take up to 2 minutes to start after initial installation.
-- Access the web UI at `http://<ip>:25600`.
+- Access the web UI at `http://{ip}:25600`.
 
 ## Links
 

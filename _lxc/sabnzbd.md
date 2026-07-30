@@ -18,7 +18,7 @@ SABnzbd is a free, open-source binary newsreader that simplifies downloading fro
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7777`
+- Access the web UI at `http://{ip}:7777`
 - Configuration file: `~/.sabnzbd/sabnzbd.ini`
 - Integrates with Sonarr, Radarr, and other *arr applications
 - Default web UI available immediately after installation

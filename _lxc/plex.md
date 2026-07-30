@@ -19,7 +19,7 @@ Plex Media Server is a media streaming platform that organizes and streams your 
 ## Notes
 
 - With Privileged/Unprivileged Hardware Acceleration Support
-- Access the web UI at `http://<ip>:32400/web` to complete initial setup
+- Access the web UI at `http://{ip}:32400/web` to complete initial setup
 - Plex Media Server updates are handled via apt — the update script will also migrate from legacy repository configurations
 
 ## Links

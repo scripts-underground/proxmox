@@ -17,7 +17,7 @@ Outline is an open-source knowledge base and wiki for growing teams. It features
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete the initial setup.
+- Access the web UI at `http://{ip}:3000` to complete the initial setup.
 - Requires PostgreSQL 16 and Redis — installed automatically.
 - Node.js 24 with Corepack/Yarn is configured during installation.
 - Updates preserve the `.env` configuration file.

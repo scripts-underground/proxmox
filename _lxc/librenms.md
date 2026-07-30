@@ -20,7 +20,7 @@ Network monitoring platform with auto-discovery, alerting, and extensive device 
 - Admin credentials saved to `~/librenms.creds` inside the container.
 - Default admin user: `admin` with auto-generated password.
 - SNMP community string is randomized during installation.
-- Access the web UI at `http://<ip>`.
+- Access the web UI at `http://{ip}`.
 
 ## Links
 

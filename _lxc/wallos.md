@@ -17,7 +17,7 @@ Wallos is a personal finance and budgeting tool that provides an intuitive inter
 
 ## Notes
 
-- Access the web UI at `http://<ip>:80`.
+- Access the web UI at `http://{ip}:80`.
 - Database migration runs automatically on install.
 - Cron jobs handle payment updates, exchange rates, and notifications.
 

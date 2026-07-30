@@ -17,7 +17,7 @@ Cloud-based CGM (Continuous Glucose Monitor) remote monitoring platform. Allows 
 
 ## Notes
 
-- Access the dashboard at `http://<ip>:1337`.
+- Access the dashboard at `http://{ip}:1337`.
 - Requires MongoDB — installed automatically.
 - API_SECRET saved to `/opt/nightscout/my.env` and `~/nightscout.creds`.
 - Customize the ENABLE plugins list post-installation to tailor features.

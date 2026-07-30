@@ -17,7 +17,7 @@ Calibre-Web-Automated (CWA) is a heavily extended fork of Calibre-Web that turns
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete setup. Default admin login is `admin` / `admin123`.
+- Access the web UI at `http://{ip}` to complete setup. Default admin login is `admin` / `admin123`.
 - The Calibre library lives at `/opt/calibre-library`; drop new books into `/opt/cwa-book-ingest` and they will be ingested automatically.
 - Configuration (including `app.db`) lives at `/etc/calibre-web-automated`.
 - Four systemd services are created: `calibre-web-automated`, `cwa-ingest`, `cwa-metadata-detector`, and `cwa-auto-zipper`.

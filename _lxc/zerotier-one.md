@@ -17,7 +17,7 @@ ZeroTier is a smart programmable Ethernet switch for all of your devices. This L
 
 ## Notes
 
-- Access the web UI at `https://<ip>:3443` to manage your ZeroTier network.
+- Access the web UI at `https://{ip}:3443` to manage your ZeroTier network.
 - Default login credentials for ztncui are `admin` / `password` (change on first login).
 - ZeroTier client is installed directly from the official script at `install.zerotier.com`.
 - On arm64, the ztncui UI is built from source (Node.js). On amd64, a prebuilt .deb is used.

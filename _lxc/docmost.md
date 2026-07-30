@@ -17,7 +17,7 @@ Collaborative documentation and wiki platform. Write, organize, and share docume
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete the initial setup.
+- Access the web UI at `http://{ip}:3000` to complete the initial setup.
 - The first user to sign up becomes the admin.
 - Requires PostgreSQL 16 and Redis.
 - Built with Node.js 22 and pnpm.

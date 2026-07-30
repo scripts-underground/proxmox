@@ -17,7 +17,7 @@ Modern, extensible forum software built on Node.js. Features real-time streaming
 
 ## Notes
 
-- Access the forum at `http://<ip>:4567` to complete initial setup.
+- Access the forum at `http://{ip}:4567` to complete initial setup.
 - MongoDB (included) stores all forum data.
 - Default admin: `community-scripts` / `community-scripts` — change immediately after first login.
 - Database credentials saved to `~/nodebb.creds`.

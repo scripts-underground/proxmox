@@ -17,7 +17,7 @@ Argus is a lightweight watcher that monitors GitHub repositories and sends notif
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080` to configure services.
+- Access the web UI at `http://{ip}:8080` to configure services.
 - Argus can monitor any public GitHub repository for new releases.
 - The service supports webhooks, notifications, and dashboard integration.
 

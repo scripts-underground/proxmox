@@ -17,7 +17,7 @@ Grafana monitoring dashboard on Debian. Analytics and monitoring platform with b
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`.
+- Access the web UI at `http://{ip}:3000`.
 - Default credentials: admin/admin.
 - Based on Debian 13.
 

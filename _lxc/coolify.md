@@ -17,7 +17,7 @@ Self-hostable PaaS solution for hosting applications, databases, and services. D
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to complete setup.
+- Access the web UI at `http://{ip}:8000` to complete setup.
 - Coolify uses Docker to manage deployments. The `setup_docker` function handles Docker installation.
 - Higher resource requirements (4 GB RAM, 30 GB disk) for running multiple applications.
 

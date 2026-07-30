@@ -17,7 +17,7 @@ A lightweight REST framework that wraps the Apprise Notification Library.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to send notifications via API.
+- Access the web UI at `http://{ip}:8000` to send notifications via API.
 - Configuration is stored in `/config` directory.
 - Attachments are stored in `/attach` directory.
 

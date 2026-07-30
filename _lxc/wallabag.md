@@ -17,7 +17,7 @@ Wallabag is a self-hosted read-it-later application that allows you to save web 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to complete setup.
+- Access the web UI at `http://{ip}:8000` to complete setup.
 - Default credentials are set during installation.
 
 ## Links

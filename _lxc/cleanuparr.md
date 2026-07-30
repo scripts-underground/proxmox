@@ -14,6 +14,6 @@ maintainer: zampierilucas
 ---
 Automated media cleanup tool for the Arr stack. Deletes stale or unwanted media files.
 ## Notes
-- Access at `http://<ip>:11011`.
+- Access at `http://{ip}:11011`.
 ## Links
 - [GitHub](https://github.com/Cleanuparr/Cleanuparr)

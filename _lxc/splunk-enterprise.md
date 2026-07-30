@@ -19,7 +19,7 @@ Log analysis and monitoring platform for searching, analyzing, and visualizing m
 
 - You must accept the Splunk General Terms during installation.
 - Admin credentials (username/password) are saved to `~/splunk.creds` inside the container.
-- Access the web UI at `http://<ip>:8000` and log in with the admin credentials.
+- Access the web UI at `http://{ip}:8000` and log in with the admin credentials.
 - Upstream does not provide an automated update path; updates should be performed manually.
 
 ## Links

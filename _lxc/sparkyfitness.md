@@ -17,7 +17,7 @@ A self-hosted, privacy-first alternative to MyFitnessPal. Track nutrition, exerc
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to register and start tracking.
+- Access the web UI at `http://{ip}` to register and start tracking.
 - Requires PostgreSQL 18 and Node.js 25 (installed automatically).
 - The backend API runs on port 3010 with Nginx as a reverse proxy.
 - Configuration file is at `/etc/sparkyfitness/.env`.

@@ -17,7 +17,7 @@ Travel tracking and logging application. Document trips, mark visited locations,
 
 ## Notes
 
-- Access the frontend at `http://<ip>:3000`.
+- Access the frontend at `http://{ip}:3000`.
 - Backend API runs on port 8000 (internal).
 - Uses PostgreSQL with PostGIS and a Django backend.
 - Django admin credentials saved to `~/adventurelog.creds`.

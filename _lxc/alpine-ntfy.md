@@ -14,6 +14,6 @@ maintainer: cobaltgit
 ---
 ntfy notification server on Alpine Linux. Simple HTTP-based pub-sub notification service for mobile and desktop.
 ## Notes
-- Access at `http://<ip>:80`.
+- Access at `http://{ip}:80`.
 ## Links
 - [Website](https://ntfy.sh/)

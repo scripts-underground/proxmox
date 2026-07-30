@@ -17,7 +17,7 @@ Zammad is a web-based open-source helpdesk/customer support system.
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete initial setup.
+- Access the web UI at `http://{ip}` to complete initial setup.
 - Zammad uses Elasticsearch 7.x for search functionality.
 - The system runs behind nginx as a reverse proxy.
 

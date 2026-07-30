@@ -17,7 +17,7 @@ Subtitle manager for Sonarr and Radarr. Automatically downloads and syncs subtit
 
 ## Notes
 
-- Access the web UI at `http://<ip>:6767` to configure subtitle providers.
+- Access the web UI at `http://{ip}:6767` to configure subtitle providers.
 - Connects to Sonarr and Radarr to automatically detect media without subtitles.
 - Supports multiple subtitle providers (OpenSubtitles, Subscene, etc.).
 

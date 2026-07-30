@@ -14,7 +14,7 @@ maintainer: tremor021
 ---
 Email archiving and management server.
 ## Notes
-- Access at `http://<ip>:15630`.
+- Access at `http://{ip}:15630`.
 - You will be prompted for a public URL during installation.
 ## Links
 - [GitHub](https://github.com/rustmailer/bichon)

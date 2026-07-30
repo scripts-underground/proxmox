@@ -17,7 +17,7 @@ A self-hosted file sharing platform built with Node.js.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to get started.
+- Access the web UI at `http://{ip}:3000` to get started.
 - The application uses PostgreSQL for data storage.
 - Your secret key is saved to `~/zipline.creds` inside the container.
 - Uploads are stored in `/opt/zipline-uploads` by default.

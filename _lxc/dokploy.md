@@ -17,7 +17,7 @@ Self-hostable PaaS solution for deploying and managing applications, databases, 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - Dokploy uses Docker to manage deployments. The `setup_docker` function handles Docker installation.
 - Requires a privileged container for Docker functionality.
 

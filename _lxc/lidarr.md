@@ -17,7 +17,7 @@ Music collection manager. Automates downloading and organizing music via Usenet 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8686` to configure music sources and download clients.
+- Access the web UI at `http://{ip}:8686` to configure music sources and download clients.
 - Monitors artists and automatically downloads albums as they release.
 - Supports metadata and artwork management.
 

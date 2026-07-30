@@ -17,7 +17,7 @@ BitTorrent DHT crawler and content classification system on Alpine Linux. Discov
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3333`.
+- Access the web UI at `http://{ip}:3333`.
 - Based on Alpine Linux 3.23 with Go and PostgreSQL.
 - You will be prompted for a TMDB API key during installation (optional).
 

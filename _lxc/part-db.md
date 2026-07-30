@@ -17,7 +17,7 @@ Open source inventory management system for your electronic components.
 
 ## Notes
 
-- Access the web UI at `http://<ip>`.
+- Access the web UI at `http://{ip}`.
 - Default port is 80 (Apache with PHP).
 - Uses PostgreSQL for the database.
 - Show login and database credentials: `cat ~/partdb.creds`

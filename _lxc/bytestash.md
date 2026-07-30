@@ -17,7 +17,7 @@ A self-hosted web application to store, organise, and manage code snippets effic
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`.
+- Access the web UI at `http://{ip}:3000`.
 - The first account created is the admin account.
 - Snippets are stored in a SQLite database at `/opt/bytestash/data`.
 

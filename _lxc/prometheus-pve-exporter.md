@@ -17,7 +17,7 @@ Prometheus Proxmox VE Exporter exposes Proxmox VE metrics in Prometheus format v
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9221`.
+- Access the web UI at `http://{ip}:9221`.
 - Edit the config file at `/opt/prometheus-pve-exporter/pve.yml`.
 
 ## Links

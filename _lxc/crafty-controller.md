@@ -14,7 +14,7 @@ maintainer: tteck
 ---
 Minecraft server management panel. Web UI for managing Minecraft servers.
 ## Notes
-- Access at `https://<ip>:8443`.
+- Access at `https://{ip}:8443`.
 - Requires Docker for server management.
 ## Links
 - [Website](https://craftycontrol.com/)

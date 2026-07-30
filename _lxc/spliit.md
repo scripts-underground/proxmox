@@ -17,7 +17,7 @@ Free and Open Source Alternative to Splitwise. Share expenses with your friends 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to start sharing expenses.
+- Access the web UI at `http://{ip}:3000` to start sharing expenses.
 - PostgreSQL is used as the database backend.
 - The app uses Prisma for database migrations which run automatically on install and update.
 

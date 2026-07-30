@@ -17,7 +17,7 @@ NxWitness (formerly Nx Witness) is a professional video management system (VMS) 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7001` to complete the initial setup.
+- Access the web UI at `http://{ip}:7001` to complete the initial setup.
 - GPU hardware acceleration is enabled by default for supported devices.
 - The container uses Ubuntu 24.04 and requires a privileged container with GPU passthrough.
 - Updates are fetched from the official Network Optix update server on each script run.

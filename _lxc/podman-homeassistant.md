@@ -17,7 +17,7 @@ Home Assistant running as a Podman container with optional Portainer or Portaine
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8123` to complete setup.
+- Access the web UI at `http://{ip}:8123` to complete setup.
 - During installation you will be prompted to optionally install Portainer or Portainer Agent.
 - The update menu provides options to update system and containers, install HACS, install FileBrowser, or remove unused images.
 

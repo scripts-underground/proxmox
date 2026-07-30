@@ -17,7 +17,7 @@ DocuSeal is an open source platform that provides secure and efficient digital d
 
 ## Notes
 
-- Access the web interface at `http://<IP>:3000`
+- Access the web interface at `http://{IP}:3000`
 - Configure SMTP settings in the admin panel for email notifications
 - Data directory: `/opt/docuseal/data`
 - Configuration file: `/opt/docuseal/.env`

@@ -17,8 +17,8 @@ Podman is a daemonless container engine for developing, managing, and running OC
 
 ## Notes
 
-- Podman itself has no web UI. If you choose to install Portainer during setup, access it at `https://<ip>:9443`.
-- If you choose to install the Portainer Agent instead, access it at `http://<ip>:9001`.
+- Podman itself has no web UI. If you choose to install Portainer during setup, access it at `https://{ip}:9443`.
+- If you choose to install the Portainer Agent instead, access it at `http://{ip}:9001`.
 
 ## Links
 

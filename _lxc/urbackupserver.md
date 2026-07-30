@@ -17,7 +17,7 @@ UrBackup is an easy-to-setup open source client/server backup system that, throu
 
 ## Notes
 
-- Access the web UI at `http://<ip>:55414` to complete setup.
+- Access the web UI at `http://{ip}:55414` to complete setup.
 - The container uses FUSE and nesting features for backup functionality.
 - Updates are handled via the system package manager (`apt`).
 

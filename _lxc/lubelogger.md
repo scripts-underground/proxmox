@@ -17,7 +17,7 @@ A self-hosted, open-source vehicle maintenance and fuel mileage tracker. Track s
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5000`
+- Access the web UI at `http://{ip}:5000`
 - Default port is 5000 (HTTP)
 - Supports multiple vehicles, users, and CSV import/export
 

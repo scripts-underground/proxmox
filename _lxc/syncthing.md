@@ -17,7 +17,7 @@ Continuous file synchronization program. Synchronizes files between two or more 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8384` to complete setup.
+- Access the web UI at `http://{ip}:8384` to complete setup.
 - Installed via the official Syncthing apt repository.
 - The config file at `~/.local/state/syncthing/config.xml` is patched to bind to `0.0.0.0`.
 - Updates are handled via `apt upgrade`.

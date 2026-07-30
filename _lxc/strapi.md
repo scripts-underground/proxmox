@@ -17,7 +17,7 @@ Strapi is an open-source headless CMS built with Node.js.
 
 ## Notes
 
-- Access the admin panel at `http://<ip>:1337/admin` to complete setup.
+- Access the admin panel at `http://{ip}:1337/admin` to complete setup.
 - The first request may take a moment while the Node.js server starts.
 - The `.env` file with auto-generated keys is at `/opt/strapi/.env`.
 

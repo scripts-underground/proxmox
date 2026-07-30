@@ -17,7 +17,7 @@ A self-hosted note-taking app with markdown support and sync capabilities.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - The application uses PostgreSQL for data storage.
 - First-time setup will prompt you to create an admin account.
 

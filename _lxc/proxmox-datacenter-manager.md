@@ -17,7 +17,7 @@ Centralized management platform for Proxmox VE and Proxmox Backup Server nodes. 
 
 ## Notes
 
-- Access the web UI at `https://<ip>:8443` to complete setup.
+- Access the web UI at `https://{ip}:8443` to complete setup.
 - Installed via the official Proxmox apt repository (pdm-no-subscription).
 - Updates are handled via `apt upgrade`.
 - Login using the `root` user with your Proxmox server password.

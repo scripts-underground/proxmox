@@ -18,7 +18,7 @@ Usenet downloader focused on efficiency and performance. Automates downloading, 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:6789`
+- Access the web UI at `http://{ip}:6789`
 - Default credentials: `nzbget` / `tegbzn6789`
 - Configuration is stored at `/var/lib/nzbget/nzbget.conf`
 

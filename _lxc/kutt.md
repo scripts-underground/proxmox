@@ -17,7 +17,7 @@ URL shortener built with Node.js. Supports custom domains, link management, visi
 
 ## Notes
 
-- Access the web UI at `https://<ip>` if using internal SSL, or at your custom domain.
+- Access the web UI at `https://{ip}` if using internal SSL, or at your custom domain.
 - During installation you can choose between internal (Caddy + self-signed) or external reverse proxy SSL.
 - Update via the script's update function — backup/restore handles .env and sqlite data.
 

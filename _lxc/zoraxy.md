@@ -17,7 +17,7 @@ A general purpose HTTP reverse proxy and forwarding tool.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to complete setup.
+- Access the web UI at `http://{ip}:8000` to complete setup.
 - Zoraxy is a single binary copied to `/opt/zoraxy/` with a symlink at `/usr/local/bin/zoraxy`.
 
 ## Links

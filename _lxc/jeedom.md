@@ -19,7 +19,7 @@ Jeedom is an open-source home automation platform for managing smart home device
 
 - Jeedom runs a third-party installer from https://github.com/jeedom/core — review before proceeding.
 - You will be prompted to choose a branch (master, beta, alpha) during installation.
-- Access the web UI at `http://<ip>`.
+- Access the web UI at `http://{ip}`.
 
 ## Links
 

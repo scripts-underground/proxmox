@@ -14,7 +14,7 @@ maintainer: tteckster
 ---
 NextCloudPi is a Nextcloud pre-installed and pre-configured server appliance. It includes a management interface and tools for easy deployment and maintenance.
 ## Notes
-- Access the web UI at `http://<ip>` to complete setup.
+- Access the web UI at `http://{ip}` to complete setup.
 - This script runs an external installer from a third-party source (https://nextcloudpi.com/).
 - The installer code is at https://raw.githubusercontent.com/nextcloud/nextcloudpi/master/install.sh.
 ## Links

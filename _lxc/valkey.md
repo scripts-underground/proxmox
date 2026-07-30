@@ -17,7 +17,7 @@ Valkey is a high-performance key-value data store offering compatibility with th
 
 ## Notes
 
-- Access the web UI at `http://<ip>:6379` to connect to the Valkey server.
+- Access the web UI at `http://{ip}:6379` to connect to the Valkey server.
 - Credentials are stored in `~/valkey.creds` inside the container.
 - Upgrade via `apt update && apt upgrade -y`.
 

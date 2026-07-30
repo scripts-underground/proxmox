@@ -17,7 +17,7 @@ Garage object storage server on Debian. Lightweight S3-compatible distributed ob
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3903`.
+- Access the web UI at `http://{ip}:3903`.
 - Based on Debian 13 (Trixie).
 - Single-binary installation from official releases.
 

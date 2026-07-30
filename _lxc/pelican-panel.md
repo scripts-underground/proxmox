@@ -17,7 +17,7 @@ Web-based control panel for managing game and application servers. Provides an i
 
 ## Notes
 
-- Access the web installer at `http://<ip>/installer`.
+- Access the web installer at `http://{ip}/installer`.
 - Step 5 of the Panel installer can be skipped because it has already been set up by the script.
 - Database credentials: `cat ~/pelican-panel.creds`
 

@@ -17,7 +17,7 @@ Microsoft SQL Server 2025 relational database management system for Ubuntu 24.04
 
 ## Notes
 
-- Access SQL Server at `http://<ip>:1433` using any SQL Server client (e.g., Azure Data Studio, SSMS, mssql-cli).
+- Access SQL Server at `http://{ip}:1433` using any SQL Server client (e.g., Azure Data Studio, SSMS, mssql-cli).
 - Run `/opt/mssql/bin/mssql-conf setup` to configure the SA password and edition.
 - SQL Server tools (`sqlcmd`, `bcp`) are installed at `/opt/mssql-tools18/bin/`.
 - This is a privileged container (required by SQL Server).

@@ -18,7 +18,7 @@ A self-hosted digital asset manager for 3D print files. Organize, tag, and share
 
 ## Notes
 
-- Access the web UI at `http://<ip>:80`.
+- Access the web UI at `http://{ip}:80`.
 - Uses PostgreSQL, Ruby on Rails, Redis, and nginx.
 - Set up your library on first connection in `/opt/manyfold_data`.
 - Configuration file at `/opt/manyfold/.env`.

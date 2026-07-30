@@ -17,7 +17,7 @@ Offline Wikipedia reader. Serves ZIM content (Wikipedia, Wiktionary, etc.) over 
 
 ## Notes
 
-- Access at `http://<ip>:8080`
+- Access at `http://{ip}:8080`
 - Lightweight — runs on as little as 512 MB RAM
 - Load ZIM files into `/var/lib/kiwix/` to serve content
 

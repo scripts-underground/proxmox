@@ -17,7 +17,7 @@ Invidious is an alternative front-end to YouTube with privacy-first design and n
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - PostgreSQL is used as the database backend.
 - Configuration is stored in `/opt/invidious/config/config.yml`.
 

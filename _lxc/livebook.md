@@ -15,7 +15,7 @@ maintainer: dkuku
 Collaborative and interactive code notebooks for Elixir. Run code snippets, visualize data, and build documentation with LiveMarkdown.
 ## Notes
 - Credentials saved to ~/livebook.creds
-- Access at `http://<ip>:8080`
+- Access at `http://{ip}:8080`
 ## Links
 - [Website](https://livebook.dev/)
 - [Documentation](https://hexdocs.pm/livebook/readme.html)

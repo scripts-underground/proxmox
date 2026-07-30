@@ -17,7 +17,7 @@ A modern Jellyfin client built with Flutter. Browse, play, and manage your media
 
 ## Notes
 
-- Access at `http://<ip>` (port 80)
+- Access at `http://{ip}` (port 80)
 - Configure server settings in the UI
 - Supports transcoded downloads and gesture controls
 

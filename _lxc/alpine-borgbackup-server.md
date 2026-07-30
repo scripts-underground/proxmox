@@ -18,7 +18,7 @@ BorgBackup server on Alpine Linux. Deduplicating backup solution with SSH access
 ## Notes
 
 - No web UI — SSH access only.
-- Connect via: `ssh backup@<ip>`
+- Connect via: `ssh backup@{ip}`
 - Set up SSH keys using the update script (option 2).
 - Large default disk (20 GB) for backup storage.
 

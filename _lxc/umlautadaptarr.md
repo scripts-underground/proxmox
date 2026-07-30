@@ -17,7 +17,7 @@ A tool to work around Sonarr, Radarr, Lidarr and Readarrs problems with foreign 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5005` to complete setup.
+- Access the web UI at `http://{ip}:5005` to complete setup.
 - UmlautAdaptarr requires .NET 8.0 runtime.
 - The app handles umlauts and special characters in media titles.
 

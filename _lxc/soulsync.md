@@ -17,7 +17,7 @@ SoulSync is a self-hosted music discovery and synchronization tool.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8008` to complete setup.
+- Access the web UI at `http://{ip}:8008` to complete setup.
 - Built with Python (Flask) and a Node.js web UI frontend.
 - Configuration is stored in `/opt/soulsync/config`.
 - Music library database is stored in `/opt/soulsync/data/music_library.db`.

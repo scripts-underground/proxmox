@@ -18,7 +18,7 @@ rustypaste is a minimal file upload/pastebin service written in Rust.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8000` to upload files and create pastes.
+- Access the web UI at `http://{ip}:8000` to upload files and create pastes.
 - Default configuration binds to `0.0.0.0:8000`.
 - Upload and config backup are preserved on updates.
 

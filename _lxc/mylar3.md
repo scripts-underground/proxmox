@@ -18,7 +18,7 @@ Mylar3 is an automated Comic Book (cbr/cbz) downloader program heavily based on 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8090` to complete setup.
+- Access the web UI at `http://{ip}:8090` to complete setup.
 - Configuration and download settings are managed via the web interface.
 - Data directory is located at `/opt/mylar3-data`.
 

@@ -17,7 +17,7 @@ Web-based audio/video streaming application and file manager. Organizes and stre
 
 ## Notes
 
-- Access the web interface at `http://<ip>/install.php` to complete the initial setup.
+- Access the web interface at `http://{ip}/install.php` to complete the initial setup.
 - The database schema is pre-loaded — the web installer handles final configuration.
 - Supports streaming to multiple clients simultaneously.
 

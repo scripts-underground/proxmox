@@ -14,6 +14,6 @@ maintainer: MickLesk
 ---
 RustyPaste pastebin on Alpine Linux. Minimal file upload and pastebin service.
 ## Notes
-- Access at `http://<ip>:8000`.
+- Access at `http://{ip}:8000`.
 ## Links
 - [GitHub](https://github.com/orhun/rustypaste)

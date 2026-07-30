@@ -17,7 +17,7 @@ A self-hostable habit tracker that helps you build and maintain good habits with
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080/register` to create your account.
+- Access the web UI at `http://{ip}:8080/register` to create your account.
 - Data is stored on disk at `/opt/beaverhabits/.user`.
 
 ## Links

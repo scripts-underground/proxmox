@@ -18,7 +18,7 @@ OpenThread Border Router (OTBR) connects a Thread network to other IP-based netw
 ## Notes
 
 - Services are enabled but not started at install. Configure `/etc/default/otbr-agent` with your RCP device, then run: `systemctl restart otbr-agent otbr-web`
-- Home Assistant: Add 'OpenThread Border Router' integration with URL `http://<IP>:8081`. Web UI is on port 80.
+- Home Assistant: Add 'OpenThread Border Router' integration with URL `http://{IP}:8081`. Web UI is on port 80.
 - Requires a Thread Radio Co-Processor (RCP) device. USB: pass through to LXC (e.g. `/dev/ttyACM0`). TCP: use socat forkpty pattern (see `/etc/default/otbr-agent` for examples).
 - Container must be **privileged** for network configuration and TUN device access.
 

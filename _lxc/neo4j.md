@@ -18,7 +18,7 @@ Graph database platform with complete data platform capabilities.
 
 ## Notes
 
-- Access the Neo4j Browser at `http://<ip>:7474`.
+- Access the Neo4j Browser at `http://{ip}:7474`.
 - Initial connection requires setting a password using `cypher-shell` or the web UI.
 - Listens on all interfaces after installation; adjust `server.default_listen_address` in `/etc/neo4j/neo4j.conf` to restrict.
 

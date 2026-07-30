@@ -17,7 +17,7 @@ Transmission is a fast, easy, and free BitTorrent client.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9091/transmission` to manage torrents.
+- Access the web UI at `http://{ip}:9091/transmission` to manage torrents.
 - RPC whitelist and host whitelist are disabled by default for convenience.
 - Updates are handled via apt.
 

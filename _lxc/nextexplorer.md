@@ -17,7 +17,7 @@ A modern, self-hosted file explorer with secure access control, polished UX, and
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000`.
+- Access the web UI at `http://{ip}:3000`.
 - The first account created is the admin account.
 - Configuration is stored at `/etc/nextExplorer/.env`.
 - Volumes are mounted under `/mnt`.

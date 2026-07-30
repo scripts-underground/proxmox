@@ -17,7 +17,7 @@ Audio/Video library transcoding automation. Designed for transcoding media libra
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8265` to complete setup.
+- Access the web UI at `http://{ip}:8265` to complete setup.
 - Updates are handled via the Tdarr_Updater binary which is included with the installation.
 - GPU passthrough is supported and detected during installation.
 

@@ -19,8 +19,8 @@ Headscale implements the Tailscale control server protocol, enabling you to run 
 
 ## Notes
 
-- Access the Headscale API at `http://<ip>:8080`
-- headscale-admin UI available at `http://<ip>/admin` (requires Caddy or reverse proxy configuration)
+- Access the Headscale API at `http://{ip}:8080`
+- headscale-admin UI available at `http://{ip}/admin` (requires Caddy or reverse proxy configuration)
 - The `headscale` CLI is available inside the container for administration
 
 ## Links

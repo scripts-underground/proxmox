@@ -17,7 +17,7 @@ Open-source IoT platform for device management, data collection, processing and 
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080` to log in.
+- Access the web UI at `http://{ip}:8080` to log in.
 - Default credentials: `sysadmin@thingsboard.org / sysadmin`
 - The installation loads demo data (`--loadDemo`) — you can use the demo dashboard to explore features.
 - Database upgrades are handled automatically during update.

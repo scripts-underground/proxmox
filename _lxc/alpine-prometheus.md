@@ -14,6 +14,6 @@ maintainer: MickLesk
 ---
 Prometheus monitoring system on Alpine Linux.
 ## Notes
-- Access the web UI at `http://<ip>:9090`.
+- Access the web UI at `http://{ip}:9090`.
 ## Links
 - [Website](https://prometheus.io/)

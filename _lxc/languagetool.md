@@ -14,5 +14,5 @@ maintainer: tremor021
 ---
 Open Source proofreading software for English, Spanish, French, German, Portuguese, Polish, Dutch, and more than 20 other languages.
 ## Notes
-- API available at `http://<ip>:8081/v2`
+- API available at `http://{ip}:8081/v2`
 - Config file: `/opt/LanguageTool/server.properties`

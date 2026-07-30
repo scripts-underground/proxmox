@@ -17,7 +17,7 @@ WordPress is the world's most popular content management system (CMS), powering 
 
 ## Notes
 
-- Access at `http://<ip>` (port 80) after installation.
+- Access at `http://{ip}` (port 80) after installation.
 - Complete the WordPress setup wizard on first visit.
 - WordPress should be updated via the WordPress admin dashboard.
 - Runs on Apache with PHP 8.4 FPM and MariaDB.

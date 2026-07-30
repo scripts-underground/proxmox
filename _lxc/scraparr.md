@@ -17,7 +17,7 @@ Scraparr is a monitoring tool for the *Arr suite of applications that provides r
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7100` to begin monitoring your *Arr services.
+- Access the web UI at `http://{ip}:7100` to begin monitoring your *Arr services.
 - Configuration is stored in `/scraparr/config/config.yaml`.
 - Service runs as root inside the container.
 

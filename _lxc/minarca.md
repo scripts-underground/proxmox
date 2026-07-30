@@ -17,7 +17,7 @@ Self-hosted backup solution with centralized management and multi-tenant support
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8080` to configure.
+- Access the web UI at `http://{ip}:8080` to configure.
 - Default login credentials: `admin` / `admin123`.
 - Install the Minarca agent on workstations to connect to this server.
 

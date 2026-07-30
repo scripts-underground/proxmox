@@ -17,7 +17,7 @@ LAN/WLAN network monitoring and notification tool. Scans connected devices, aler
 
 ## Notes
 
-- Access the web UI at `http://<ip>/pialert` to view the dashboard.
+- Access the web UI at `http://{ip}/pialert` to view the dashboard.
 - Initial scan runs during installation — first results appear shortly after.
 - Updates are handled via the project's built-in updater (fetched during update_script).
 

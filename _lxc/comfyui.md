@@ -17,7 +17,7 @@ ComfyUI is a powerful and modular stable diffusion GUI and backend.
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8188` to build workflows.
+- Access the web UI at `http://{ip}:8188` to build workflows.
 - GPU passthrough is configured automatically when a GPU is detected on the host.
 - During installation, choose the GPU type (None/NVIDIA/AMD/Intel) for PyTorch variant selection.
 

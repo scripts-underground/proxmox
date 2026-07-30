@@ -17,7 +17,7 @@ Real-time monitoring for Plex, Jellyfin, and Emby servers. Track streams, analyz
 
 ## Notes
 
-- Access the web UI at `http://<ip>:3000` to complete setup.
+- Access the web UI at `http://{ip}:3000` to complete setup.
 - Initial setup may take several minutes due to the build process.
 - PostgreSQL 18 with TimescaleDB is used for data storage.
 - Tailscale is installed and configured for user-mode operation.

@@ -17,7 +17,7 @@ Lightweight Node.js server that emulates the iOS HomeKit API, allowing you to co
 
 ## Notes
 
-- Access the web UI at `http://<ip>:8581` to complete setup.
+- Access the web UI at `http://{ip}:8581` to complete setup.
 - Installed via the official Homebridge apt repository.
 - Updates are handled via `apt install homebridge`.
 

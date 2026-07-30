@@ -17,7 +17,7 @@ Soulseek client daemon. Connects to the Soulseek peer-to-peer file sharing netwo
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5030`
+- Access the web UI at `http://{ip}:5030`
 - Default login: `slskd` / `slskd`
 - Change the default password immediately via the web UI
 - Soularr (optional) syncs wanted albums from Lidarr to slskd for automatic downloading

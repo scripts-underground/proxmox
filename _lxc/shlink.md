@@ -18,8 +18,8 @@ Shlink is a PHP-based self-hosted URL shortener with analytics tracking, built o
 
 ## Notes
 
-- Access the Shlink Web Client at `http://<ip>:3000`
-- The Shlink HTTP API is available at `http://<ip>:8080`
+- Access the Shlink Web Client at `http://{ip}:3000`
+- The Shlink HTTP API is available at `http://{ip}:8080`
 - The initial API key is stored in `/opt/shlink/.env`
 - Web Client is pre-configured with the API key for the local instance
 

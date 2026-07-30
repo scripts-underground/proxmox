@@ -17,7 +17,7 @@ sonobarr is a music discovery tool designed to help you find new music through c
 
 ## Notes
 
-- Access the web UI at `http://<ip>:5000` to complete setup.
+- Access the web UI at `http://{ip}:5000` to complete setup.
 - Credentials are auto-generated and stored in `/etc/sonobarr/.env`.
 - The service uses gunicorn with a Python/uv venv.
 

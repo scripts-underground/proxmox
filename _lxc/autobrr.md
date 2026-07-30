@@ -17,7 +17,7 @@ Automatic download automation for private trackers. Monitors IRC announce channe
 
 ## Notes
 
-- Access the web UI at `http://<ip>:7474` to complete setup.
+- Access the web UI at `http://{ip}:7474` to complete setup.
 - Higher resource requirements (2 GB RAM, 8 GB disk) due to database and filtering engine.
 - A session secret is auto-generated on install.
 

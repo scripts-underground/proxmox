@@ -17,7 +17,7 @@ ntfy (pronounced "notify") is a simple HTTP-based pub-sub notification service.
 
 ## Notes
 
-- Access at `http://<ip>:80`.
+- Access at `http://{ip}:80`.
 - Configuration file is located at `/etc/ntfy/server.yml`.
 
 ## Links

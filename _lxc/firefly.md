@@ -18,8 +18,8 @@ Firefly III is a self-hosted financial manager that helps you keep track of expe
 
 ## Notes
 
-- Access the web UI at `http://<ip>` to complete setup.
-- The Data Importer is included and available at `http://<ip>/dataimporter`.
+- Access the web UI at `http://{ip}` to complete setup.
+- The Data Importer is included and available at `http://{ip}/dataimporter`.
 - MariaDB is used as the database backend with automatic database and user creation.
 - Updates preserve your `.env` configuration and storage directory.
 

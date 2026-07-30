@@ -17,7 +17,7 @@ A one-time-secret sharing tool that allows sharing secrets via a temporary link 
 
 ## Notes
 
-- Access the web UI at `https://<ip>` (self-signed certificate, browser will show a warning).
+- Access the web UI at `https://{ip}` (self-signed certificate, browser will show a warning).
 - Secrets expire automatically after 7 days (configurable via `SECRET_EXPIRY` in `/opt/ots/.env`).
 - Requires nginx and Redis — both are installed and configured automatically.
 

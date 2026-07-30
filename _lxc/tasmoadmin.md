@@ -17,7 +17,7 @@ Web-based management tool for TasmoTOTA/Tasmota flashed devices. Centralized dis
 
 ## Notes
 
-- Access the web UI at `http://<ip>:9999` to manage your devices.
+- Access the web UI at `http://{ip}:9999` to manage your devices.
 - Runs on Apache with PHP 8.4.
 
 ## Links

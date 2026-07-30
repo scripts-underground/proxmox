@@ -17,7 +17,7 @@ Self-hosted two-factor authentication manager. Manage and store TOTP tokens, Web
 
 ## Notes
 
-- Access the web UI at `http://<ip>` (port 80).
+- Access the web UI at `http://{ip}` (port 80).
 - Runs on Nginx with PHP 8.4 FPM and MariaDB.
 - Supports TOTP, HOTP, and WebAuthn/Passkey authentication.
 

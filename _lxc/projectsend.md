@@ -17,7 +17,7 @@ Open-source file sharing platform for clients. Supports client groups, user role
 
 ## Notes
 
-- Initial setup at `http://<ip>/install`.
+- Initial setup at `http://{ip}/install`.
 - Runs PHP 8.4 with Apache and MariaDB.
 - Database credentials configured automatically in `/opt/projectsend/includes/sys.config.php`.
 - Custom PHP limits: memory 256M, post/upload max 256M, execution time 300s.
