@@ -1,8 +1,10 @@
 require 'json'
 require 'yaml'
 require 'fileutils'
+require 'pathname'
 require 'shellwords'
 require 'time'
+require 'open3'
 
 COLLECTIONS = {
   'lxc' => '_lxc',
@@ -14,7 +16,12 @@ COLLECTIONS = {
 def repo_info
   if ENV['GITHUB_REPOSITORY'] =~ /\A(.+)\/(.+)\z/
     [$1, $2]
-  elsif `git remote get-url origin 2>/dev/null` =~ %r{[:/](.+)/(.+)\.git\z}
+  elsif begin
+    remote_url, status = Open3.capture2('git', 'remote', 'get-url', 'origin')
+    status.success? && remote_url.strip =~ %r{[:/](.+)/(.+)\.git\z}
+  rescue
+    nil
+  end
     [$1, $2]
   else
     ['scripts-underground', 'proxmox']
@@ -35,22 +42,46 @@ def install_cmd(base_url, type, slug)
   "REPO_BASE=#{base_url} bash -c \"$(curl -fsSL #{base_url}/scripts/#{type}/#{slug}.sh)\""
 end
 
-def git_date(file, mode = :last)
-  escaped = Shellwords.escape(file)
-  cmd = if mode == :first
-    "git log --reverse --format=%cI -- #{escaped} 2>/dev/null | head -1"
-  else
-    "git log -1 --format=%cI -- #{escaped} 2>/dev/null"
+# Build an in-memory index of {file_path => oldest_iso_8601_date} from a
+# single git-log pass. One subprocess (via Open3, no shell), block form
+# auto-waits for exit. Used by git_date() below.
+def build_git_log_index
+  first_touched = {}
+  last_touched = {}
+  current_time = nil
+  Open3.popen2('git', 'log', '--format=@@@%cI', '--name-only') do |_stdin, stdout, wait_thr|
+    stdout.each_line do |line|
+      line.chomp!
+      if line.start_with?('@@@')
+        current_time = line[3..]
+      elsif !line.empty?
+        last_touched[line] ||= current_time
+        first_touched[line] = current_time
+      end
+    end
+    raise "git log failed with #{wait_thr.value.exitstatus}" unless wait_thr.value.success?
   end
-  result = `#{cmd}`.strip
-  return nil unless result != '' && ($?.respond_to?(:to_i) ? $?.to_i == 0 : $?.success?)
-  Time.parse(result)
+  [first_touched, last_touched]
+end
+
+# Resolve repo-relative path (same format git emits in --name-only output).
+def git_date(file, mode, index_first, index_last)
+  index = mode == :first ? index_first : index_last
+  # Convert absolute path to repo-relative, falling back to the raw path.
+  rel = begin
+    Pathname.new(file).relative_path_from(Pathname.new(Dir.pwd)).to_s
+  rescue
+    file
+  end
+  ts = index[rel]
+  ts && Time.parse(ts)
 rescue
   nil
 end
 
 Jekyll::Hooks.register :site, :post_write do |site|
   root = site.source
+  index_first, index_last = build_git_log_index
   owner, repo = repo_info
   mirrors = load_mirrors
 
@@ -124,13 +155,13 @@ Jekyll::Hooks.register :site, :post_write do |site|
       end
 
       created = begin
-        t1 = git_date(file, :first) || (File.ctime(file) rescue Time.at(0))
-        t2 = File.exist?(script_file) ? (git_date(script_file, :first) || (File.ctime(script_file) rescue Time.at(0))) : Time.at(0)
+        t1 = git_date(file, :first, index_first, index_last) || (File.ctime(file) rescue Time.at(0))
+        t2 = File.exist?(script_file) ? (git_date(script_file, :first, index_first, index_last) || (File.ctime(script_file) rescue Time.at(0))) : Time.at(0)
         [t1, t2].min.iso8601
       end
       updated = begin
-        t1 = git_date(file, :last) || File.mtime(file)
-        t2 = File.exist?(script_file) ? (git_date(script_file, :last) || File.mtime(script_file)) : t1
+        t1 = git_date(file, :last, index_first, index_last) || File.mtime(file)
+        t2 = File.exist?(script_file) ? (git_date(script_file, :last, index_first, index_last) || File.mtime(script_file)) : t1
         [t1, t2].max.iso8601
       end
 
