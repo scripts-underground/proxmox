@@ -213,6 +213,7 @@ The bootstrap requires `install_script()` to be defined, but `build_container` h
 - **Use `setup_*` functions** for runtimes (nodejs, postgresql, go, rust, python/uv)
 - **Use `fetch_and_deploy_gh_release`** instead of curl/wget for GitHub releases
 - **Never use Docker** in LXC scripts — bare-metal installation only
+- **Follow Docker paths** — many apps designed for Docker hardcode paths like `/app/`, `/config/`, `/data/`. Match these in the LXC install rather than inventing new paths (`/opt/<app>`, `/etc/<app>`), unless the app documents environment variables to override them. Matching Docker paths avoids symlink workarounds and keeps the install familiar to users coming from the Docker image.
 - **Never use `sudo`** — scripts run as root inside containers
 - **Use `apt`** not `apt-get`
 - **Credentials stay inside container** — write to files, reference paths in `post_install_script()`
