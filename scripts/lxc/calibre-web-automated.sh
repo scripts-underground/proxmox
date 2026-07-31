@@ -73,13 +73,13 @@ function install_script() {
 
   PYTHON_VERSION="3.13" setup_uv
 
-  fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/opt/calibre-web-automated"
+  fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/app/calibre-web-automated"
 
   msg_info "Configuring Calibre-Web-Automated"
-  INSTALL_DIR="/opt/calibre-web-automated"
-  CONFIG_DIR="/etc/calibre-web-automated"
-  CALIBRE_LIB_DIR="/opt/calibre-library"
-  INGEST_DIR="/opt/cwa-book-ingest"
+  INSTALL_DIR="/app/calibre-web-automated"
+  CONFIG_DIR="/config"
+  CALIBRE_LIB_DIR="/calibre-library"
+  INGEST_DIR="/cwa-book-ingest"
   SCRIPTS_DIR="${INSTALL_DIR}/scripts"
   export VIRTUAL_ENV="${INSTALL_DIR}/.venv"
 
@@ -87,11 +87,6 @@ function install_script() {
   mkdir -p "$CONFIG_DIR"/processed_books/{converted,imported,failed,fixed_originals}
   mkdir -p "$INSTALL_DIR"/{metadata_change_logs,metadata_temp}
   mkdir -p "$CALIBRE_LIB_DIR" "$INGEST_DIR"
-
-  # CWA codebase hardcodes Docker paths /app/ and /config/.
-  mkdir -p /app
-  ln -sf "$INSTALL_DIR" /app/calibre-web-automated
-  ln -sf "$CONFIG_DIR" /config
 
   echo "$CALIBRE_VERSION" > "$INSTALL_DIR"/CALIBRE_RELEASE
   echo "${KEPUB_VERSION#v}" > "$INSTALL_DIR"/KEPUBIFY_RELEASE
@@ -343,7 +338,7 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -d /opt/calibre-web-automated ]]; then
+  if [[ ! -d /app/calibre-web-automated ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
@@ -355,7 +350,7 @@ function update_script() {
     systemctl stop calibre-web-automated cwa-metadata-detector cwa-ingest cwa-auto-zipper
     msg_ok "Stopped Services"
 
-    INSTALL_DIR="/opt/calibre-web-automated"
+    INSTALL_DIR="/app/calibre-web-automated"
     SCRIPTS_DIR="${INSTALL_DIR}/scripts"
     export VIRTUAL_ENV="${INSTALL_DIR}/.venv"
 
@@ -367,12 +362,7 @@ function update_script() {
       "$INSTALL_DIR"/scripts/auto_zipper_wrapper.sh \
       "$INSTALL_DIR"/scripts/metadata_change_detector_wrapper.sh
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/opt/calibre-web-automated"
-
-    # Re-create Docker-path symlinks (CLEAN_INSTALL wipes the target).
-    mkdir -p /app
-    ln -sf "$INSTALL_DIR" /app/calibre-web-automated
-    ln -sf "$CONFIG_DIR" /config
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/app/calibre-web-automated"
 
     msg_info "Updating Calibre-Web-Automated"
     cd "$INSTALL_DIR" || exit
