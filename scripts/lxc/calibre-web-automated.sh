@@ -280,6 +280,7 @@ User=root
 WorkingDirectory=$INSTALL_DIR
 Environment=CALIBRE_DBPATH=$CONFIG_DIR
 Environment=HOME=$CONFIG_DIR
+Environment=CWA_PORT_OVERRIDE=80
 ExecStart=/bin/bash $SCRIPTS_DIR/ingest_watcher.sh
 Restart=always
 StandardOutput=journal
