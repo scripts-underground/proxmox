@@ -88,6 +88,9 @@ function install_script() {
   mkdir -p "$INSTALL_DIR"/{metadata_change_logs,metadata_temp}
   mkdir -p "$CALIBRE_LIB_DIR" "$INGEST_DIR"
 
+  # CWA's ingest processor chowns files to the Docker uid:gid (abc:abc).
+  useradd -r abc 2> /dev/null || true
+
   echo "$CALIBRE_VERSION" > "$INSTALL_DIR"/CALIBRE_RELEASE
   echo "${KEPUB_VERSION#v}" > "$INSTALL_DIR"/KEPUBIFY_RELEASE
   sed 's/^/v/' ~/.calibre-web-automated > "$INSTALL_DIR"/CWA_RELEASE 2> /dev/null || true
