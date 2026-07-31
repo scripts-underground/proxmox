@@ -88,6 +88,11 @@ function install_script() {
   mkdir -p "$INSTALL_DIR"/{metadata_change_logs,metadata_temp}
   mkdir -p "$CALIBRE_LIB_DIR" "$INGEST_DIR"
 
+  # CWA codebase hardcodes Docker paths /app/ and /config/.
+  mkdir -p /app
+  ln -sf "$INSTALL_DIR" /app/calibre-web-automated
+  ln -sf "$CONFIG_DIR" /config
+
   echo "$CALIBRE_VERSION" > "$INSTALL_DIR"/CALIBRE_RELEASE
   echo "${KEPUB_VERSION#v}" > "$INSTALL_DIR"/KEPUBIFY_RELEASE
   sed 's/^/v/' ~/.calibre-web-automated > "$INSTALL_DIR"/CWA_RELEASE 2> /dev/null || true
@@ -363,6 +368,11 @@ function update_script() {
       "$INSTALL_DIR"/scripts/metadata_change_detector_wrapper.sh
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/opt/calibre-web-automated"
+
+    # Re-create Docker-path symlinks (CLEAN_INSTALL wipes the target).
+    mkdir -p /app
+    ln -sf "$INSTALL_DIR" /app/calibre-web-automated
+    ln -sf "$CONFIG_DIR" /config
 
     msg_info "Updating Calibre-Web-Automated"
     cd "$INSTALL_DIR" || exit
