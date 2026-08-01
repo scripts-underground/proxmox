@@ -30,7 +30,7 @@ function install_script() {
 
   msg_info "Cloning Odysseus"
   $STD git clone https://github.com/pewdiepie-archdaemon/odysseus.git /opt/odysseus
-  $STD git -C /opt/odysseus checkout main
+  $STD git -C /opt/odysseus checkout dev
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
@@ -91,9 +91,9 @@ function update_script() {
 
   msg_info "Checking for updates"
   cd /opt/odysseus || exit
-  $STD git fetch origin main
+  $STD git fetch origin dev
   LOCAL=$(git rev-parse HEAD)
-  REMOTE=$(git rev-parse origin/main 2> /dev/null || echo "")
+  REMOTE=$(git rev-parse origin/dev 2> /dev/null || echo "")
   if [[ "$LOCAL" != "$REMOTE" && -n "$REMOTE" ]]; then
     PYTHON_VERSION="3.12" setup_uv
     msg_info "Stopping Service"
@@ -104,7 +104,7 @@ function update_script() {
     cp /opt/odysseus/.env /opt/odysseus.env.bak
     msg_ok "Backed up Configuration"
 
-    $STD git pull origin main
+    $STD git pull origin dev
 
     $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
 
