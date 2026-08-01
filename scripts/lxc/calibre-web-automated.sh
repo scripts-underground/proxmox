@@ -104,6 +104,16 @@ function install_script() {
   # bindings lack X509_V_FLAG_NOTIFY_POLICY, which the resolved pyOpenSSL needs.
   $STD uv pip install --python "$VIRTUAL_ENV"/bin/python --no-cache-dir --upgrade cryptography pyOpenSSL
 
+  # Fix: secure_filename() strips the dot from non-ASCII filenames (e.g. 资本论.epub → 'epub').
+  # Restore the original file extension so the ingest processor can detect the format.
+  sed -i '/base_name = secure_filename(uploaded_file.filename)/a\
+    # Preserve file extension for non-ASCII filenames\
+    if "." in uploaded_file.filename:\
+        ext = uploaded_file.filename.rsplit(".", 1)[-1].lower()\
+        if not base_name.endswith("." + ext):\
+            base_name = base_name.rsplit(".", 1)[0] + "." + ext' \
+    "$INSTALL_DIR"/cps/editbooks.py
+
   cat << EOF > "$INSTALL_DIR"/dirs.json
 {
   "ingest_folder": "$INGEST_DIR",
@@ -367,6 +377,15 @@ function update_script() {
       "$INSTALL_DIR"/scripts/metadata_change_detector_wrapper.sh
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/app/calibre-web-automated"
+
+    # Re-apply non-ASCII filename fix (CLEAN_INSTALL wipes the source).
+    sed -i '/base_name = secure_filename(uploaded_file.filename)/a\
+    # Preserve file extension for non-ASCII filenames\
+    if "." in uploaded_file.filename:\
+        ext = uploaded_file.filename.rsplit(".", 1)[-1].lower()\
+        if not base_name.endswith("." + ext):\
+            base_name = base_name.rsplit(".", 1)[0] + "." + ext' \
+      "$INSTALL_DIR"/cps/editbooks.py
 
     msg_info "Updating Calibre-Web-Automated"
     cd "$INSTALL_DIR" || exit
