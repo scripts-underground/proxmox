@@ -18,6 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_pinned_commit="${var_pinned_commit:-}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -30,7 +31,9 @@ function install_script() {
 
   msg_info "Cloning Odysseus"
   $STD git clone https://github.com/pewdiepie-archdaemon/odysseus.git /opt/odysseus
-  $STD git -C /opt/odysseus checkout dev
+  if [[ -n "$var_pinned_commit" ]]; then
+    $STD git -C /opt/odysseus checkout "$var_pinned_commit"
+  fi
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
@@ -91,36 +94,38 @@ function update_script() {
 
   msg_info "Checking for updates"
   cd /opt/odysseus || exit
-  $STD git fetch origin dev
-  LOCAL=$(git rev-parse HEAD)
-  REMOTE=$(git rev-parse origin/dev 2> /dev/null || echo "")
-  if [[ "$LOCAL" != "$REMOTE" && -n "$REMOTE" ]]; then
+  $STD git fetch origin
+  if [[ -n "$var_pinned_commit" ]]; then
+    LOCAL=$(git rev-parse HEAD)
+    if [[ "$LOCAL" != "$var_pinned_commit" ]]; then
+      PYTHON_VERSION="3.12" setup_uv
+      msg_info "Stopping Service"
+      systemctl stop odysseus
+      msg_ok "Stopped Service"
+      msg_info "Switching to pinned commit"
+      $STD git -C /opt/odysseus checkout "$var_pinned_commit"
+      msg_ok "Switched to pinned commit"
+      $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
+      $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
+      msg_info "Starting Service"
+      systemctl start odysseus
+      msg_ok "Started Service"
+      msg_ok "Updated Successfully!"
+    else
+      msg_ok "${APP} is at the pinned commit — no update needed"
+    fi
+  else
+    $STD git pull origin main
     PYTHON_VERSION="3.12" setup_uv
     msg_info "Stopping Service"
     systemctl stop odysseus
     msg_ok "Stopped Service"
-
-    msg_info "Backing up Configuration"
-    cp /opt/odysseus/.env /opt/odysseus.env.bak
-    msg_ok "Backed up Configuration"
-
-    $STD git pull origin dev
-
     $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
-
-    msg_info "Restoring Configuration"
-    cp /opt/odysseus.env.bak /opt/odysseus/.env
-    rm -f /opt/odysseus.env.bak
-    msg_ok "Restored Configuration"
-
     $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
-
     msg_info "Starting Service"
     systemctl start odysseus
     msg_ok "Started Service"
     msg_ok "Updated Successfully!"
-  else
-    msg_ok "${APP} is up to date"
   fi
   exit
 }
