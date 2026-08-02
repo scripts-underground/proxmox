@@ -16,6 +16,20 @@ Jekyll::Hooks.register :site, :post_read do |site|
   site.data['scripts_index'] = data
 end
 
+# Expose pinned_commit as document-level data so templates use
+# the same path as cpu/ram/disk (page.pinned_commit).
+Jekyll::Hooks.register :documents, :pre_render do |doc|
+  scripts_path = File.join(doc.site.source, 'scripts.json')
+  next unless File.exist?(scripts_path)
+
+  scripts = JSON.parse(File.read(scripts_path))
+  entry = scripts['scripts'].find { |s| s['slug'] == doc.data['slug'] }
+  next unless entry
+
+  doc.data['pinned_commit'] = entry['pinned_commit']
+  doc.data['has_pinned_commit'] = entry['has_pinned_commit']
+end
+
 Jekyll::Hooks.register :site, :post_write do |site|
   scripts_src = File.join(site.source, 'scripts.json')
   scripts_dst = File.join(site.dest, 'scripts.json')

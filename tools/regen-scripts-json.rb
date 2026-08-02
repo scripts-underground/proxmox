@@ -170,6 +170,17 @@ COLLECTIONS.each do |type, dir|
       service_managers = ast['service_managers']
       users = ast['users']
       interactive_prompts = ast['interactive_prompts']
+      pinned_commit = nil
+      has_pc = false
+      pc = (ast['assigns'] || []).find { |a| a['name'] == 'var_pinned_commit' }
+      if pc
+        has_pc = true
+        line = ast['source_lines'][pc['line'] - 1]
+        if line =~ /\$\{var_pinned_commit:-([^}]*)\}/
+          raw = $1.strip
+          pinned_commit = raw unless raw.empty?
+        end
+      end
     end
 
     relative_md = File.join(dir, File.basename(file))
@@ -205,6 +216,8 @@ COLLECTIONS.each do |type, dir|
       cpu: frontmatter['cpu'],
       ram: frontmatter['ram'],
       disk: frontmatter['disk'],
+      pinned_commit: pinned_commit,
+      has_pinned_commit: has_pc,
       image: frontmatter['image'],
       logo: frontmatter['logo'],
       description: desc,
