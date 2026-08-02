@@ -28,6 +28,10 @@ Jekyll::Hooks.register :documents, :pre_render do |doc|
 
   doc.data['pinned_commit'] = entry['pinned_commit']
   doc.data['has_pinned_commit'] = entry['has_pinned_commit']
+  doc.data['git_repo'] = entry['git_repo']
+  doc.data['has_git_repo'] = entry['has_git_repo']
+  doc.data['git_branch'] = entry['git_branch']
+  doc.data['has_git_branch'] = entry['has_git_branch']
 end
 
 Jekyll::Hooks.register :site, :post_write do |site|

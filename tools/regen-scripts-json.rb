@@ -181,6 +181,28 @@ COLLECTIONS.each do |type, dir|
           pinned_commit = raw unless raw.empty?
         end
       end
+      git_repo = nil
+      has_gr = false
+      gr = (ast['assigns'] || []).find { |a| a['name'] == 'var_git_repo' }
+      if gr
+        has_gr = true
+        line = ast['source_lines'][gr['line'] - 1]
+        if line =~ /\$\{var_git_repo:-([^}]*)\}/
+          raw = $1.strip
+          git_repo = raw unless raw.empty?
+        end
+      end
+      git_branch = nil
+      has_gb = false
+      gb = (ast['assigns'] || []).find { |a| a['name'] == 'var_git_branch' }
+      if gb
+        has_gb = true
+        line = ast['source_lines'][gb['line'] - 1]
+        if line =~ /\$\{var_git_branch:-([^}]*)\}/
+          raw = $1.strip
+          git_branch = raw unless raw.empty?
+        end
+      end
     end
 
     relative_md = File.join(dir, File.basename(file))
@@ -218,6 +240,10 @@ COLLECTIONS.each do |type, dir|
       disk: frontmatter['disk'],
       pinned_commit: pinned_commit,
       has_pinned_commit: has_pc,
+      git_repo: git_repo,
+      has_git_repo: has_gr,
+      git_branch: git_branch,
+      has_git_branch: has_gb,
       image: frontmatter['image'],
       logo: frontmatter['logo'],
       description: desc,

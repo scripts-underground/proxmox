@@ -18,6 +18,8 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_git_repo="${var_git_repo:-https://github.com/pewdiepie-archdaemon/odysseus.git}"
+var_git_branch="${var_git_branch:-main}"
 var_pinned_commit="${var_pinned_commit:-}"
 
 function install_script() {
@@ -30,9 +32,11 @@ function install_script() {
   PYTHON_VERSION="3.12" setup_uv
 
   msg_info "Cloning Odysseus"
-  $STD git clone https://github.com/pewdiepie-archdaemon/odysseus.git /opt/odysseus
+  $STD git clone "$var_git_repo" /opt/odysseus
   if [[ -n "$var_pinned_commit" ]]; then
     $STD git -C /opt/odysseus checkout "$var_pinned_commit"
+  elif [[ "$var_git_branch" != "main" ]]; then
+    $STD git -C /opt/odysseus checkout "$var_git_branch"
   fi
   msg_ok "Cloned Odysseus"
 
@@ -115,7 +119,7 @@ function update_script() {
       msg_ok "${APP} is at the pinned commit — no update needed"
     fi
   else
-    $STD git pull origin main
+    $STD git pull origin "$var_git_branch"
     PYTHON_VERSION="3.12" setup_uv
     msg_info "Stopping Service"
     systemctl stop odysseus
