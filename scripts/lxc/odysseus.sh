@@ -18,7 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
-var_git_repo="${var_git_repo:-https://github.com/pewdiepie-archdaemon/odysseus.git}"
+var_git_repo="${var_git_repo:-pewdiepie-archdaemon/odysseus}"
 var_git_branch="${var_git_branch:-main}"
 var_pinned_commit="${var_pinned_commit:-}"
 
@@ -32,12 +32,7 @@ function install_script() {
   PYTHON_VERSION="3.12" setup_uv
 
   msg_info "Cloning Odysseus"
-  $STD git clone "$var_git_repo" /opt/odysseus
-  if [[ -n "$var_pinned_commit" ]]; then
-    $STD git -C /opt/odysseus checkout "$var_pinned_commit"
-  elif [[ "$var_git_branch" != "main" ]]; then
-    $STD git -C /opt/odysseus checkout "$var_git_branch"
-  fi
+  clone_and_deploy_gh_commit "$var_git_repo" "$var_git_branch" "$var_pinned_commit" /opt/odysseus
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
