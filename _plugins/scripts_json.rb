@@ -32,6 +32,8 @@ Jekyll::Hooks.register :documents, :pre_render do |doc|
   doc.data['has_git_repo'] = entry['has_git_repo']
   doc.data['git_branch'] = entry['git_branch']
   doc.data['has_git_branch'] = entry['has_git_branch']
+  doc.data['git_tag'] = entry['git_tag']
+  doc.data['has_git_tag'] = entry['has_git_tag']
 end
 
 Jekyll::Hooks.register :site, :post_write do |site|

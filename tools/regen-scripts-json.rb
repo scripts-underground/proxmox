@@ -203,6 +203,17 @@ COLLECTIONS.each do |type, dir|
           git_branch = raw unless raw.empty?
         end
       end
+      git_tag = nil
+      has_gt = false
+      gt = (ast['assigns'] || []).find { |a| a['name'] == 'var_git_tag' }
+      if gt
+        has_gt = true
+        line = ast['source_lines'][gt['line'] - 1]
+        if line =~ /\$\{var_git_tag:-([^}]*)\}/
+          raw = $1.strip
+          git_tag = raw unless raw.empty?
+        end
+      end
     end
 
     relative_md = File.join(dir, File.basename(file))
@@ -244,6 +255,8 @@ COLLECTIONS.each do |type, dir|
       has_git_repo: has_gr,
       git_branch: git_branch,
       has_git_branch: has_gb,
+      git_tag: git_tag,
+      has_git_tag: has_gt,
       image: frontmatter['image'],
       logo: frontmatter['logo'],
       description: desc,
