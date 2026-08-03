@@ -5,7 +5,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Copyright (c) 2026 scripts-underground.org
 # Author: Alex Indigo (alexindigo)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
-# Source: https://github.com/pewdiepie-archdaemon/odysseus | https://pewdiepie-archdaemon.github.io/odysseus/
+# Source: https://github.com/odysseus-dev/odysseus | https://odysseus-dev.github.io/odysseus/
 
 # shellcheck disable=SC2034
 # Read by the framework - shellcheck cannot see the caller
@@ -18,28 +18,45 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
-var_git_repo="${var_git_repo:-pewdiepie-archdaemon/odysseus}"
+var_git_repo="${var_git_repo:-odysseus-dev/odysseus}"
 var_git_branch="${var_git_branch:-main}"
-var_pinned_commit="${var_pinned_commit:-}"
+var_git_tag="${var_git_tag:-}"
+var_pinned_commit="${var_pinned_commit:-93107c5}"
+export var_git_repo var_git_branch var_git_tag var_pinned_commit
 
 function install_script() {
   msg_info "Installing Dependencies"
   $STD apt install -y \
+    build-essential \
+    cmake \
     git \
-    tmux
+    nodejs \
+    npm \
+    chromium \
+    tmux \
+    libgl1 \
+    libglib2.0-0t64 \
+    libxcb1 \
+    libmagic1
   msg_ok "Installed Dependencies"
 
   PYTHON_VERSION="3.12" setup_uv
 
   msg_info "Cloning Odysseus"
-  clone_and_deploy_gh_commit "$var_git_repo" "$var_git_branch" "$var_pinned_commit" /opt/odysseus
+  clone_and_deploy_gh_commit "odysseus" "$var_git_repo" "$var_git_branch" "${var_git_tag:-}" "${var_pinned_commit:-}" /opt/odysseus
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
   cd /opt/odysseus || exit
   $STD uv venv /opt/odysseus/venv
   $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python
+  $STD uv pip install python-magic --python=/opt/odysseus/venv/bin/python
   msg_ok "Set up Python Environment"
+
+  msg_info "Creating Directories"
+  mkdir -p /opt/odysseus/data
+  mkdir -p /opt/odysseus/logs
+  msg_ok "Created Directories"
 
   msg_info "Running Setup"
   cd /opt/odysseus || exit
@@ -61,7 +78,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/odysseus
-Environment=PATH=/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/opt/odysseus/.local/bin:/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/opt/odysseus/venv/bin/uvicorn app:app --host 0.0.0.0 --port 80
 Restart=on-failure
 RestartSec=5
@@ -82,50 +99,79 @@ function post_install_script() {
 }
 
 function update_script() {
-  header_info
-  check_container_storage
-  check_container_resources
+  render_header
 
   if [[ ! -d /opt/odysseus ]]; then
-    msg_error "No ${APP} Installation Found!"
+    msg_error "No Odysseus Installation Found!"
     exit
   fi
 
-  msg_info "Checking for updates"
-  cd /opt/odysseus || exit
-  $STD git fetch origin
-  if [[ -n "$var_pinned_commit" ]]; then
-    LOCAL=$(git rev-parse HEAD)
-    if [[ "$LOCAL" != "$var_pinned_commit" ]]; then
-      PYTHON_VERSION="3.12" setup_uv
-      msg_info "Stopping Service"
-      systemctl stop odysseus
-      msg_ok "Stopped Service"
-      msg_info "Switching to pinned commit"
-      $STD git -C /opt/odysseus checkout "$var_pinned_commit"
-      msg_ok "Switched to pinned commit"
-      $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
-      $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
-      msg_info "Starting Service"
-      systemctl start odysseus
-      msg_ok "Started Service"
-      msg_ok "Updated Successfully!"
-    else
-      msg_ok "${APP} is at the pinned commit — no update needed"
-    fi
-  else
-    $STD git pull origin "$var_git_branch"
-    PYTHON_VERSION="3.12" setup_uv
-    msg_info "Stopping Service"
-    systemctl stop odysseus
-    msg_ok "Stopped Service"
-    $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
-    $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
-    msg_info "Starting Service"
-    systemctl start odysseus
-    msg_ok "Started Service"
-    msg_ok "Updated Successfully!"
+  local TRACK_FILE="$HOME/.odysseus"
+  local CURRENT_MODE="" CURRENT_REF=""
+  if [[ -f "$TRACK_FILE" ]]; then
+    IFS=: read -r CURRENT_MODE CURRENT_REF < "$TRACK_FILE"
   fi
+
+  cd /opt/odysseus || exit
+  $STD git fetch origin --tags
+
+  local DESIRED_MODE="$CURRENT_MODE" DESIRED_REF="$CURRENT_REF"
+  if [[ -n "${var_pinned_commit:-}" ]]; then
+    DESIRED_MODE="commit" DESIRED_REF="$var_pinned_commit"
+  elif [[ -n "${var_git_tag:-}" ]]; then
+    DESIRED_MODE="tag" DESIRED_REF="$var_git_tag"
+  elif [[ -n "${var_git_branch:-}" ]]; then
+    DESIRED_MODE="branch" DESIRED_REF="$var_git_branch"
+  fi
+
+  if [[ -z "$DESIRED_MODE" ]]; then
+    msg_ok "No update mode configured — exiting"
+    exit
+  fi
+
+  if [[ "$CURRENT_MODE" == "$DESIRED_MODE" && "$CURRENT_REF" == "$DESIRED_REF" ]]; then
+    case "$DESIRED_MODE" in
+      commit | tag)
+        msg_ok "Odysseus is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed"
+        exit
+        ;;
+      branch)
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse "origin/$DESIRED_REF")
+        if [[ "$LOCAL" == "$REMOTE" ]]; then
+          msg_ok "Odysseus is up to date — no update needed"
+          exit
+        fi
+        ;;
+    esac
+  fi
+
+  msg_info "Updating Odysseus"
+  PYTHON_VERSION="3.12" setup_uv
+  msg_info "Stopping Service"
+  systemctl stop odysseus
+  msg_ok "Stopped Service"
+
+  case "$DESIRED_MODE" in
+    commit)
+      $STD git checkout "$DESIRED_REF"
+      ;;
+    tag)
+      $STD git checkout "tags/$DESIRED_REF"
+      ;;
+    branch)
+      $STD git pull origin "$DESIRED_REF"
+      ;;
+  esac
+  echo "${DESIRED_MODE}:${DESIRED_REF}" > "$TRACK_FILE"
+
+  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
+  $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py
+
+  msg_info "Starting Service"
+  systemctl start odysseus
+  msg_ok "Started Service"
+  msg_ok "Updated to ${DESIRED_MODE} ${DESIRED_REF}!"
   exit
 }
 

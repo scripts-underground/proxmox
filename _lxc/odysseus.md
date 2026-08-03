@@ -4,8 +4,8 @@ title: Odysseus
 tags: [ai, workspace, llm]
 logo: /assets/logos/odysseus.svg
 by: alexindigo
-repo: https://github.com/pewdiepie-archdaemon/odysseus
-site: https://pewdiepie-archdaemon.github.io/odysseus/
+repo: https://github.com/odysseus-dev/odysseus
+site: https://odysseus-dev.github.io/odysseus/
 port: 80
 cpu: 2
 ram: 4096
@@ -25,5 +25,5 @@ Odysseus is a self-hosted AI workspace with chat, agents, deep research, documen
 
 ## Links
 
-- [Website](https://pewdiepie-archdaemon.github.io/odysseus/)
-- [GitHub](https://github.com/pewdiepie-archdaemon/odysseus)
+- [Website](https://odysseus-dev.github.io/odysseus/)
+- [GitHub](https://github.com/odysseus-dev/odysseus)
