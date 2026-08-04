@@ -22,7 +22,6 @@ var_git_repo="${var_git_repo:-odysseus-dev/odysseus}"
 var_git_branch="${var_git_branch:-main}"
 var_git_tag="${var_git_tag:-}"
 var_pinned_commit="${var_pinned_commit:-93107c5}"
-export var_git_repo var_git_branch var_git_tag var_pinned_commit
 
 function install_script() {
   msg_info "Installing Dependencies"
