@@ -107,6 +107,11 @@ bundles pushed at install time:
 - **Addon variants**: `/usr/local/sbin/update_<slug>`,
   `/usr/local/sbin/uninstall_<slug>` (same lifecycle rules)
 
+Each bundle carries its own **runtime context**, baked at build time from the
+host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
+script has declared. Hooks may reference these directly. The context block
+appears after `set -euo pipefail` and before the inlined framework files.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the

@@ -12,12 +12,12 @@
 _framework_cache_ensure() {
   local cache_dir="/tmp/framework-${SESSION_ID}"
 
-  if [[ -d "$cache_dir" ]] \
-    && [[ -s "$cache_dir/core.func" ]] \
-    && [[ -s "$cache_dir/error_handler.func" ]] \
-    && [[ -s "$cache_dir/install.func" ]] \
-    && [[ -s "$cache_dir/tools.func" ]] \
-    && [[ -s "$cache_dir/github.func" ]]; then
+  if [[ -d "$cache_dir" ]] &&
+    [[ -s "$cache_dir/core.func" ]] &&
+    [[ -s "$cache_dir/error_handler.func" ]] &&
+    [[ -s "$cache_dir/install.func" ]] &&
+    [[ -s "$cache_dir/tools.func" ]] &&
+    [[ -s "$cache_dir/github.func" ]]; then
     msg_debug "framework cache hit: ${cache_dir}"
     return 0
   fi
@@ -27,28 +27,43 @@ _framework_cache_ensure() {
 
   for f in core.func error_handler.func install.func tools.func github.func; do
     msg_debug "  fetching ${f} ..."
-    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${cache_dir}/${f}" 2>/dev/null || {
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${cache_dir}/${f}" 2> /dev/null || {
       msg_error "Failed to fetch ${f}"
       return 1
     }
     local size
-    size=$(stat -c%s "${cache_dir}/${f}" 2>/dev/null || echo 0)
+    size=$(stat -c%s "${cache_dir}/${f}" 2> /dev/null || echo 0)
     if [[ $size -lt 100 ]]; then
       msg_error "${f}: too small (${size}b), fetch likely failed"
       return 1
     fi
   done
 
-  grep -q 'load_functions' "${cache_dir}/core.func" \
-    || { msg_error "core.func missing load_functions"; return 1; }
-  grep -q 'catch_errors' "${cache_dir}/error_handler.func" \
-    || { msg_error "error_handler.func missing catch_errors"; return 1; }
-  grep -q 'setup_lxc' "${cache_dir}/install.func" \
-    || { msg_error "install.func missing setup_lxc"; return 1; }
-  grep -q 'setup_uv' "${cache_dir}/tools.func" \
-    || { msg_error "tools.func missing setup_uv"; return 1; }
-  grep -q 'clone_and_deploy_gh_commit' "${cache_dir}/github.func" \
-    || { msg_error "github.func missing clone_and_deploy_gh_commit"; return 1; }
+  grep -q 'load_functions' "${cache_dir}/core.func" ||
+    {
+      msg_error "core.func missing load_functions"
+      return 1
+    }
+  grep -q 'catch_errors' "${cache_dir}/error_handler.func" ||
+    {
+      msg_error "error_handler.func missing catch_errors"
+      return 1
+    }
+  grep -q 'setup_lxc' "${cache_dir}/install.func" ||
+    {
+      msg_error "install.func missing setup_lxc"
+      return 1
+    }
+  grep -q 'setup_uv' "${cache_dir}/tools.func" ||
+    {
+      msg_error "tools.func missing setup_uv"
+      return 1
+    }
+  grep -q 'clone_and_deploy_gh_commit' "${cache_dir}/github.func" ||
+    {
+      msg_error "github.func missing clone_and_deploy_gh_commit"
+      return 1
+    }
 }
 
 # ------------------------------------------------------------------------------
@@ -89,7 +104,7 @@ build_bundle() {
   local tag="${name:0:4}" && tag="${tag^^}"
   local bundle_path="/tmp/${name}-bundle-${SESSION_ID}.sh"
 
-  declare -F "$hook" >/dev/null 2>&1 || {
+  declare -F "$hook" > /dev/null 2>&1 || {
     msg_error "hook '${hook}' not defined"
     return 1
   }
@@ -100,18 +115,28 @@ build_bundle() {
   }
 
   {
-    cat <<BUNDLE_HEADER
+    cat << BUNDLE_HEADER
 #!/usr/bin/env bash
 set -euo pipefail
 
 BUNDLE_HEADER
+
+    echo "# ═══ runtime context (baked at bundle build time) ═══"
+
+    printf 'declare -- APP=%q\n' "$APP"
+    printf 'declare -- NSAPP=%q\n' "$NSAPP"
+    printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE"
+
+    while IFS= read -r _v; do
+      printf 'declare -- %s=%q\n' "$_v" "${!_v}"
+    done < <(compgen -v var_lxc_ | sort)
 
     for f in core error_handler install tools github; do
       echo "# ═══ framework: ${f}.func ═══"
       cat "/tmp/framework-${SESSION_ID}/${f}.func"
     done
 
-    cat <<BUNDLE_INIT
+    cat << BUNDLE_INIT
 # ═══ runtime init ═══
 command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
 command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
@@ -158,6 +183,6 @@ BUNDLE_INIT
     return $push_exit
   fi
 
-  pct exec "$CTID" -- chmod "$mode" "$dest" >/dev/null 2>&1
+  pct exec "$CTID" -- chmod "$mode" "$dest" > /dev/null 2>&1
   msg_debug "${name} bundle pushed → ${dest} (mode ${mode})"
 }
