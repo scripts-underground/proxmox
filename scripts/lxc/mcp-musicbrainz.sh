@@ -18,11 +18,11 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
-var_hostname="${var_hostname:-musicbrainz}"
-var_git_repo="${var_git_repo:-zas/mcp-musicbrainz}"
-var_git_branch="${var_git_branch:-main}"
-var_git_tag="${var_git_tag:-}"
-var_pinned_commit="${var_pinned_commit:-370310a}"
+var_hostname="${var_hostname:-mcp-musicbrainz}"
+var_lxc_git_repo="${var_lxc_git_repo:-zas/mcp-musicbrainz}"
+var_lxc_git_branch="${var_lxc_git_branch:-main}"
+var_lxc_git_tag="${var_lxc_git_tag:-}"
+var_lxc_pinned_commit="${var_lxc_pinned_commit:-}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -34,10 +34,7 @@ function install_script() {
   UV_PYTHON_INSTALL_DIR="/usr/local/bin" PYTHON_VERSION="3.12" setup_uv
 
   msg_info "Cloning MusicBrainz MCP Server"
-  # Inline defaults: the install bundle runs with `set -u` and only receives
-  # user-exported var_* via lxc-attach env passthrough (top-level assignments
-  # are not propagated), so unguarded references would abort the install
-  clone_and_deploy_gh_commit "musicbrainz" "${var_git_repo:-zas/mcp-musicbrainz}" "${var_git_branch:-main}" "${var_git_tag:-}" "${var_pinned_commit:-370310a}" /opt/mcp-musicbrainz
+  clone_and_deploy_gh_commit "mcp-musicbrainz" "$var_lxc_git_repo" "$var_lxc_git_branch" "$var_lxc_git_tag" "$var_lxc_pinned_commit" /opt/mcp-musicbrainz
   msg_ok "Cloned MusicBrainz MCP Server"
 
   msg_info "Installing Python Dependencies"
@@ -92,7 +89,7 @@ function update_script() {
     exit
   fi
 
-  local TRACK_FILE="$HOME/.musicbrainz"
+  local TRACK_FILE="$HOME/.mcp-musicbrainz"
   local CURRENT_MODE="" CURRENT_REF=""
   if [[ -f "$TRACK_FILE" ]]; then
     IFS=: read -r CURRENT_MODE CURRENT_REF < "$TRACK_FILE"
@@ -102,12 +99,12 @@ function update_script() {
   $STD git fetch origin --tags
 
   local DESIRED_MODE="$CURRENT_MODE" DESIRED_REF="$CURRENT_REF"
-  if [[ -n "${var_pinned_commit:-}" ]]; then
-    DESIRED_MODE="commit" DESIRED_REF="$var_pinned_commit"
-  elif [[ -n "${var_git_tag:-}" ]]; then
-    DESIRED_MODE="tag" DESIRED_REF="$var_git_tag"
-  elif [[ -n "${var_git_branch:-}" ]]; then
-    DESIRED_MODE="branch" DESIRED_REF="$var_git_branch"
+  if [[ -n "${var_lxc_pinned_commit:-}" ]]; then
+    DESIRED_MODE="commit" DESIRED_REF="$var_lxc_pinned_commit"
+  elif [[ -n "${var_lxc_git_tag:-}" ]]; then
+    DESIRED_MODE="tag" DESIRED_REF="$var_lxc_git_tag"
+  elif [[ -n "${var_lxc_git_branch:-}" ]]; then
+    DESIRED_MODE="branch" DESIRED_REF="$var_lxc_git_branch"
   fi
 
   if [[ -z "$DESIRED_MODE" ]]; then

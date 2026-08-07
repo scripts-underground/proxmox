@@ -1,8 +1,8 @@
 ---
-slug: musicbrainz
+slug: mcp-musicbrainz
 title: MusicBrainz MCP
 tags: [music, mcp]
-logo: /assets/logos/musicbrainz.webp
+logo: /assets/logos/mcp-musicbrainz.webp
 by: alexindigo
 repo: https://github.com/zas/mcp-musicbrainz
 site: https://github.com/zas/mcp-musicbrainz
