@@ -18,10 +18,10 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
-var_git_repo="${var_git_repo:-odysseus-dev/odysseus}"
-var_git_branch="${var_git_branch:-main}"
-var_git_tag="${var_git_tag:-}"
-var_pinned_commit="${var_pinned_commit:-93107c5}"
+var_lxc_git_repo="${var_lxc_git_repo:-odysseus-dev/odysseus}"
+var_lxc_git_branch="${var_lxc_git_branch:-main}"
+var_lxc_git_tag="${var_lxc_git_tag:-}"
+var_lxc_pinned_commit="${var_lxc_pinned_commit:-93107c5}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -42,7 +42,7 @@ function install_script() {
   PYTHON_VERSION="3.12" setup_uv
 
   msg_info "Cloning Odysseus"
-  clone_and_deploy_gh_commit "odysseus" "$var_git_repo" "$var_git_branch" "${var_git_tag:-}" "${var_pinned_commit:-}" /opt/odysseus
+  clone_and_deploy_gh_commit "odysseus" "$var_lxc_git_repo" "$var_lxc_git_branch" "$var_lxc_git_tag" "$var_lxc_pinned_commit" /opt/odysseus
   msg_ok "Cloned Odysseus"
 
   msg_info "Setting up Python Environment"
@@ -115,12 +115,12 @@ function update_script() {
   $STD git fetch origin --tags
 
   local DESIRED_MODE="$CURRENT_MODE" DESIRED_REF="$CURRENT_REF"
-  if [[ -n "${var_pinned_commit:-}" ]]; then
-    DESIRED_MODE="commit" DESIRED_REF="$var_pinned_commit"
-  elif [[ -n "${var_git_tag:-}" ]]; then
-    DESIRED_MODE="tag" DESIRED_REF="$var_git_tag"
-  elif [[ -n "${var_git_branch:-}" ]]; then
-    DESIRED_MODE="branch" DESIRED_REF="$var_git_branch"
+  if [[ -n "${var_lxc_pinned_commit:-}" ]]; then
+    DESIRED_MODE="commit" DESIRED_REF="$var_lxc_pinned_commit"
+  elif [[ -n "${var_lxc_git_tag:-}" ]]; then
+    DESIRED_MODE="tag" DESIRED_REF="$var_lxc_git_tag"
+  elif [[ -n "${var_lxc_git_branch:-}" ]]; then
+    DESIRED_MODE="branch" DESIRED_REF="$var_lxc_git_branch"
   fi
 
   if [[ -z "$DESIRED_MODE" ]]; then
