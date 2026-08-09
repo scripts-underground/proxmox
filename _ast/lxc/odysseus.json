@@ -3,7 +3,7 @@
   "slug": "odysseus",
   "type": "lxc",
   "total_lines": 181,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/odysseus-dev/odysseus | https://odysseus-dev.github.io/odysseus/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Odysseus\"\nvar_tags=\"${var_tags:-ai;workspace;llm}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_git_repo=\"${var_git_repo:-odysseus-dev/odysseus}\"\nvar_git_branch=\"${var_git_branch:-main}\"\nvar_git_tag=\"${var_git_tag:-}\"\nvar_pinned_commit=\"${var_pinned_commit:-93107c5}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    cmake \\\n    git \\\n    nodejs \\\n    npm \\\n    chromium \\\n    tmux \\\n    libgl1 \\\n    libglib2.0-0t64 \\\n    libxcb1 \\\n    libmagic1\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.12\" setup_uv\n\n  msg_info \"Cloning Odysseus\"\n  clone_and_deploy_gh_commit \"odysseus\" \"$var_git_repo\" \"$var_git_branch\" \"${var_git_tag:-}\" \"${var_pinned_commit:-}\" /opt/odysseus\n  msg_ok \"Cloned Odysseus\"\n\n  msg_info \"Setting up Python Environment\"\n  cd /opt/odysseus || exit\n  $STD uv venv /opt/odysseus/venv\n  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python\n  $STD uv pip install python-magic --python=/opt/odysseus/venv/bin/python\n  msg_ok \"Set up Python Environment\"\n\n  msg_info \"Creating Directories\"\n  mkdir -p /opt/odysseus/data\n  mkdir -p /opt/odysseus/logs\n  msg_ok \"Created Directories\"\n\n  msg_info \"Running Setup\"\n  cd /opt/odysseus || exit\n  ADMIN_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  export ODYSSEUS_ADMIN_USER=\"admin\"\n  export ODYSSEUS_ADMIN_PASSWORD=\"$ADMIN_PASS\"\n  /opt/odysseus/venv/bin/python /opt/odysseus/setup.py\n  msg_ok \"Setup Complete\"\n  echo -e \"${INFO}${YW} Admin Username: admin${CL}\"\n  echo -e \"${INFO}${YW} Admin Password: ${ADMIN_PASS}${CL}\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/odysseus.service\n[Unit]\nDescription=Odysseus AI Workspace\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/odysseus\nEnvironment=PATH=/opt/odysseus/.local/bin:/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/opt/odysseus/venv/bin/uvicorn app:app --host 0.0.0.0 --port 80\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now odysseus\n  msg_ok \"Created Service\"\n\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  render_header\n\n  if [[ ! -d /opt/odysseus ]]; then\n    msg_error \"No Odysseus Installation Found!\"\n    exit\n  fi\n\n  local TRACK_FILE=\"$HOME/.odysseus\"\n  local CURRENT_MODE=\"\" CURRENT_REF=\"\"\n  if [[ -f \"$TRACK_FILE\" ]]; then\n    IFS=: read -r CURRENT_MODE CURRENT_REF \u003c \"$TRACK_FILE\"\n  fi\n\n  cd /opt/odysseus || exit\n  $STD git fetch origin --tags\n\n  local DESIRED_MODE=\"$CURRENT_MODE\" DESIRED_REF=\"$CURRENT_REF\"\n  if [[ -n \"${var_pinned_commit:-}\" ]]; then\n    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_pinned_commit\"\n  elif [[ -n \"${var_git_tag:-}\" ]]; then\n    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_git_tag\"\n  elif [[ -n \"${var_git_branch:-}\" ]]; then\n    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_git_branch\"\n  fi\n\n  if [[ -z \"$DESIRED_MODE\" ]]; then\n    msg_ok \"No update mode configured — exiting\"\n    exit\n  fi\n\n  if [[ \"$CURRENT_MODE\" == \"$DESIRED_MODE\" \u0026\u0026 \"$CURRENT_REF\" == \"$DESIRED_REF\" ]]; then\n    case \"$DESIRED_MODE\" in\n      commit | tag)\n        msg_ok \"Odysseus is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed\"\n        exit\n        ;;\n      branch)\n        LOCAL=$(git rev-parse HEAD)\n        REMOTE=$(git rev-parse \"origin/$DESIRED_REF\")\n        if [[ \"$LOCAL\" == \"$REMOTE\" ]]; then\n          msg_ok \"Odysseus is up to date — no update needed\"\n          exit\n        fi\n        ;;\n    esac\n  fi\n\n  msg_info \"Updating Odysseus\"\n  PYTHON_VERSION=\"3.12\" setup_uv\n  msg_info \"Stopping Service\"\n  systemctl stop odysseus\n  msg_ok \"Stopped Service\"\n\n  case \"$DESIRED_MODE\" in\n    commit)\n      $STD git checkout \"$DESIRED_REF\"\n      ;;\n    tag)\n      $STD git checkout \"tags/$DESIRED_REF\"\n      ;;\n    branch)\n      $STD git pull origin \"$DESIRED_REF\"\n      ;;\n  esac\n  echo \"${DESIRED_MODE}:${DESIRED_REF}\" \u003e \"$TRACK_FILE\"\n\n  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade\n  $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py\n\n  msg_info \"Starting Service\"\n  systemctl start odysseus\n  msg_ok \"Started Service\"\n  msg_ok \"Updated to ${DESIRED_MODE} ${DESIRED_REF}!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/odysseus-dev/odysseus | https://odysseus-dev.github.io/odysseus/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Odysseus\"\nvar_tags=\"${var_tags:-ai;workspace;llm}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_lxc_git_repo=\"${var_lxc_git_repo:-odysseus-dev/odysseus}\"\nvar_lxc_git_branch=\"${var_lxc_git_branch:-main}\"\nvar_lxc_git_tag=\"${var_lxc_git_tag:-}\"\nvar_lxc_pinned_commit=\"${var_lxc_pinned_commit:-93107c5}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    cmake \\\n    git \\\n    nodejs \\\n    npm \\\n    chromium \\\n    tmux \\\n    libgl1 \\\n    libglib2.0-0t64 \\\n    libxcb1 \\\n    libmagic1\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.12\" setup_uv\n\n  msg_info \"Cloning Odysseus\"\n  clone_and_deploy_gh_commit \"odysseus\" \"$var_lxc_git_repo\" \"$var_lxc_git_branch\" \"$var_lxc_git_tag\" \"$var_lxc_pinned_commit\" /opt/odysseus\n  msg_ok \"Cloned Odysseus\"\n\n  msg_info \"Setting up Python Environment\"\n  cd /opt/odysseus || exit\n  $STD uv venv /opt/odysseus/venv\n  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python\n  $STD uv pip install python-magic --python=/opt/odysseus/venv/bin/python\n  msg_ok \"Set up Python Environment\"\n\n  msg_info \"Creating Directories\"\n  mkdir -p /opt/odysseus/data\n  mkdir -p /opt/odysseus/logs\n  msg_ok \"Created Directories\"\n\n  msg_info \"Running Setup\"\n  cd /opt/odysseus || exit\n  ADMIN_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  export ODYSSEUS_ADMIN_USER=\"admin\"\n  export ODYSSEUS_ADMIN_PASSWORD=\"$ADMIN_PASS\"\n  /opt/odysseus/venv/bin/python /opt/odysseus/setup.py\n  msg_ok \"Setup Complete\"\n  echo -e \"${INFO}${YW} Admin Username: admin${CL}\"\n  echo -e \"${INFO}${YW} Admin Password: ${ADMIN_PASS}${CL}\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/odysseus.service\n[Unit]\nDescription=Odysseus AI Workspace\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/odysseus\nEnvironment=PATH=/opt/odysseus/.local/bin:/opt/odysseus/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/opt/odysseus/venv/bin/uvicorn app:app --host 0.0.0.0 --port 80\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now odysseus\n  msg_ok \"Created Service\"\n\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  render_header\n\n  if [[ ! -d /opt/odysseus ]]; then\n    msg_error \"No Odysseus Installation Found!\"\n    exit\n  fi\n\n  local TRACK_FILE=\"$HOME/.odysseus\"\n  local CURRENT_MODE=\"\" CURRENT_REF=\"\"\n  if [[ -f \"$TRACK_FILE\" ]]; then\n    IFS=: read -r CURRENT_MODE CURRENT_REF \u003c \"$TRACK_FILE\"\n  fi\n\n  cd /opt/odysseus || exit\n  $STD git fetch origin --tags\n\n  local DESIRED_MODE=\"$CURRENT_MODE\" DESIRED_REF=\"$CURRENT_REF\"\n  if [[ -n \"${var_lxc_pinned_commit:-}\" ]]; then\n    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_lxc_pinned_commit\"\n  elif [[ -n \"${var_lxc_git_tag:-}\" ]]; then\n    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_lxc_git_tag\"\n  elif [[ -n \"${var_lxc_git_branch:-}\" ]]; then\n    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_lxc_git_branch\"\n  fi\n\n  if [[ -z \"$DESIRED_MODE\" ]]; then\n    msg_ok \"No update mode configured — exiting\"\n    exit\n  fi\n\n  if [[ \"$CURRENT_MODE\" == \"$DESIRED_MODE\" \u0026\u0026 \"$CURRENT_REF\" == \"$DESIRED_REF\" ]]; then\n    case \"$DESIRED_MODE\" in\n      commit | tag)\n        msg_ok \"Odysseus is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed\"\n        exit\n        ;;\n      branch)\n        LOCAL=$(git rev-parse HEAD)\n        REMOTE=$(git rev-parse \"origin/$DESIRED_REF\")\n        if [[ \"$LOCAL\" == \"$REMOTE\" ]]; then\n          msg_ok \"Odysseus is up to date — no update needed\"\n          exit\n        fi\n        ;;\n    esac\n  fi\n\n  msg_info \"Updating Odysseus\"\n  PYTHON_VERSION=\"3.12\" setup_uv\n  msg_info \"Stopping Service\"\n  systemctl stop odysseus\n  msg_ok \"Stopped Service\"\n\n  case \"$DESIRED_MODE\" in\n    commit)\n      $STD git checkout \"$DESIRED_REF\"\n      ;;\n    tag)\n      $STD git checkout \"tags/$DESIRED_REF\"\n      ;;\n    branch)\n      $STD git pull origin \"$DESIRED_REF\"\n      ;;\n  esac\n  echo \"${DESIRED_MODE}:${DESIRED_REF}\" \u003e \"$TRACK_FILE\"\n\n  $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade\n  $STD /opt/odysseus/venv/bin/python /opt/odysseus/setup.py\n\n  msg_info \"Starting Service\"\n  systemctl start odysseus\n  msg_ok \"Started Service\"\n  msg_ok \"Updated to ${DESIRED_MODE} ${DESIRED_REF}!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -25,10 +25,10 @@
     "var_version=\"${var_version:-13}\"",
     "var_arm64=\"${var_arm64:-no}\"",
     "var_unprivileged=\"${var_unprivileged:-1}\"",
-    "var_git_repo=\"${var_git_repo:-odysseus-dev/odysseus}\"",
-    "var_git_branch=\"${var_git_branch:-main}\"",
-    "var_git_tag=\"${var_git_tag:-}\"",
-    "var_pinned_commit=\"${var_pinned_commit:-93107c5}\"",
+    "var_lxc_git_repo=\"${var_lxc_git_repo:-odysseus-dev/odysseus}\"",
+    "var_lxc_git_branch=\"${var_lxc_git_branch:-main}\"",
+    "var_lxc_git_tag=\"${var_lxc_git_tag:-}\"",
+    "var_lxc_pinned_commit=\"${var_lxc_pinned_commit:-93107c5}\"",
     "",
     "function install_script() {",
     "  msg_info \"Installing Dependencies\"",
@@ -49,7 +49,7 @@
     "  PYTHON_VERSION=\"3.12\" setup_uv",
     "",
     "  msg_info \"Cloning Odysseus\"",
-    "  clone_and_deploy_gh_commit \"odysseus\" \"$var_git_repo\" \"$var_git_branch\" \"${var_git_tag:-}\" \"${var_pinned_commit:-}\" /opt/odysseus",
+    "  clone_and_deploy_gh_commit \"odysseus\" \"$var_lxc_git_repo\" \"$var_lxc_git_branch\" \"$var_lxc_git_tag\" \"$var_lxc_pinned_commit\" /opt/odysseus",
     "  msg_ok \"Cloned Odysseus\"",
     "",
     "  msg_info \"Setting up Python Environment\"",
@@ -122,12 +122,12 @@
     "  $STD git fetch origin --tags",
     "",
     "  local DESIRED_MODE=\"$CURRENT_MODE\" DESIRED_REF=\"$CURRENT_REF\"",
-    "  if [[ -n \"${var_pinned_commit:-}\" ]]; then",
-    "    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_pinned_commit\"",
-    "  elif [[ -n \"${var_git_tag:-}\" ]]; then",
-    "    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_git_tag\"",
-    "  elif [[ -n \"${var_git_branch:-}\" ]]; then",
-    "    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_git_branch\"",
+    "  if [[ -n \"${var_lxc_pinned_commit:-}\" ]]; then",
+    "    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_lxc_pinned_commit\"",
+    "  elif [[ -n \"${var_lxc_git_tag:-}\" ]]; then",
+    "    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_lxc_git_tag\"",
+    "  elif [[ -n \"${var_lxc_git_branch:-}\" ]]; then",
+    "    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_lxc_git_branch\"",
     "  fi",
     "",
     "  if [[ -z \"$DESIRED_MODE\" ]]; then",
@@ -327,40 +327,40 @@
       "value_is_param_default": false
     },
     {
-      "name": "var_git_repo",
+      "name": "var_lxc_git_repo",
       "line": 21,
       "start_col": 1,
-      "end_col": 54,
+      "end_col": 62,
       "value_has_cmdsubst": false,
       "is_repo_base": false,
       "in_bootstrap_zone": false,
       "value_is_param_default": false
     },
     {
-      "name": "var_git_branch",
+      "name": "var_lxc_git_branch",
       "line": 22,
       "start_col": 1,
-      "end_col": 41,
+      "end_col": 49,
       "value_has_cmdsubst": false,
       "is_repo_base": false,
       "in_bootstrap_zone": false,
       "value_is_param_default": false
     },
     {
-      "name": "var_git_tag",
+      "name": "var_lxc_git_tag",
       "line": 23,
       "start_col": 1,
-      "end_col": 31,
+      "end_col": 39,
       "value_has_cmdsubst": false,
       "is_repo_base": false,
       "in_bootstrap_zone": false,
       "value_is_param_default": false
     },
     {
-      "name": "var_pinned_commit",
+      "name": "var_lxc_pinned_commit",
       "line": 24,
       "start_col": 1,
-      "end_col": 50,
+      "end_col": 58,
       "value_has_cmdsubst": false,
       "is_repo_base": false,
       "in_bootstrap_zone": false,
@@ -744,115 +744,115 @@
       "start_line": 21,
       "start_col": 1,
       "end_line": 21,
-      "end_col": 54
+      "end_col": 62
     },
     {
       "kind": "var-name",
       "start_line": 21,
       "start_col": 1,
       "end_line": 21,
-      "end_col": 13
+      "end_col": 17
     },
     {
       "kind": "string-dq",
       "start_line": 21,
-      "start_col": 14,
+      "start_col": 18,
       "end_line": 21,
-      "end_col": 54
+      "end_col": 62
     },
     {
       "kind": "param-exp",
       "start_line": 21,
-      "start_col": 15,
-      "end_line": 21,
-      "end_col": 53
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 22,
-      "start_col": 1,
-      "end_line": 22,
-      "end_col": 41
-    },
-    {
-      "kind": "var-name",
-      "start_line": 22,
-      "start_col": 1,
-      "end_line": 22,
-      "end_col": 15
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 22,
-      "start_col": 16,
-      "end_line": 22,
-      "end_col": 41
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 22,
-      "start_col": 17,
-      "end_line": 22,
-      "end_col": 40
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 23,
-      "start_col": 1,
-      "end_line": 23,
-      "end_col": 31
-    },
-    {
-      "kind": "var-name",
-      "start_line": 23,
-      "start_col": 1,
-      "end_line": 23,
-      "end_col": 12
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 23,
-      "start_col": 13,
-      "end_line": 23,
-      "end_col": 31
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 23,
-      "start_col": 14,
-      "end_line": 23,
-      "end_col": 30
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 24,
-      "start_col": 1,
-      "end_line": 24,
-      "end_col": 50
-    },
-    {
-      "kind": "var-name",
-      "start_line": 24,
-      "start_col": 1,
-      "end_line": 24,
-      "end_col": 18
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 24,
       "start_col": 19,
+      "end_line": 21,
+      "end_col": 61
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
+      "end_col": 49
+    },
+    {
+      "kind": "var-name",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 22,
+      "start_col": 20,
+      "end_line": 22,
+      "end_col": 49
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 22,
+      "start_col": 21,
+      "end_line": 22,
+      "end_col": 48
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 23,
+      "start_col": 1,
+      "end_line": 23,
+      "end_col": 39
+    },
+    {
+      "kind": "var-name",
+      "start_line": 23,
+      "start_col": 1,
+      "end_line": 23,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 23,
+      "start_col": 17,
+      "end_line": 23,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 23,
+      "start_col": 18,
+      "end_line": 23,
+      "end_col": 38
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 24,
+      "start_col": 1,
       "end_line": 24,
-      "end_col": 50
+      "end_col": 58
+    },
+    {
+      "kind": "var-name",
+      "start_line": 24,
+      "start_col": 1,
+      "end_line": 24,
+      "end_col": 22
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 24,
+      "start_col": 23,
+      "end_line": 24,
+      "end_col": 58
     },
     {
       "kind": "param-exp",
       "start_line": 24,
-      "start_col": 20,
+      "start_col": 24,
       "end_line": 24,
-      "end_col": 49
+      "end_col": 57
     },
     {
       "kind": "keyword",
@@ -981,56 +981,56 @@
       "start_line": 45,
       "start_col": 41,
       "end_line": 45,
-      "end_col": 56
+      "end_col": 60
     },
     {
       "kind": "param-exp",
       "start_line": 45,
       "start_col": 42,
       "end_line": 45,
-      "end_col": 55
+      "end_col": 59
     },
     {
       "kind": "string-dq",
       "start_line": 45,
-      "start_col": 57,
+      "start_col": 61,
       "end_line": 45,
-      "end_col": 74
+      "end_col": 82
     },
     {
       "kind": "param-exp",
       "start_line": 45,
-      "start_col": 58,
+      "start_col": 62,
       "end_line": 45,
-      "end_col": 73
+      "end_col": 81
     },
     {
       "kind": "string-dq",
       "start_line": 45,
-      "start_col": 75,
+      "start_col": 83,
       "end_line": 45,
-      "end_col": 93
+      "end_col": 101
     },
     {
       "kind": "param-exp",
       "start_line": 45,
-      "start_col": 76,
+      "start_col": 84,
       "end_line": 45,
-      "end_col": 92
+      "end_col": 100
     },
     {
       "kind": "string-dq",
       "start_line": 45,
-      "start_col": 94,
+      "start_col": 102,
       "end_line": 45,
-      "end_col": 118
+      "end_col": 126
     },
     {
       "kind": "param-exp",
       "start_line": 45,
-      "start_col": 95,
+      "start_col": 103,
       "end_line": 45,
-      "end_col": 117
+      "end_col": 125
     },
     {
       "kind": "command",
@@ -2149,155 +2149,155 @@
       "start_line": 118,
       "start_col": 12,
       "end_line": 118,
-      "end_col": 36
+      "end_col": 40
     },
     {
       "kind": "param-exp",
       "start_line": 118,
       "start_col": 13,
       "end_line": 118,
-      "end_col": 35
+      "end_col": 39
     },
     {
       "kind": "operator",
       "op": "]]",
       "start_line": 118,
-      "start_col": 37,
+      "start_col": 41,
       "end_line": 118,
-      "end_col": 39
+      "end_col": 43
     },
     {
       "kind": "operator",
       "op": ";",
       "start_line": 118,
-      "start_col": 39,
+      "start_col": 43,
       "end_line": 118,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 118,
+      "start_col": 45,
+      "end_line": 118,
+      "end_col": 49
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 119,
+      "start_col": 5,
+      "end_line": 119,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 119,
+      "start_col": 5,
+      "end_line": 119,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 119,
+      "start_col": 18,
+      "end_line": 119,
+      "end_col": 26
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 119,
+      "start_col": 27,
+      "end_line": 119,
+      "end_col": 63
+    },
+    {
+      "kind": "var-name",
+      "start_line": 119,
+      "start_col": 27,
+      "end_line": 119,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 119,
+      "start_col": 39,
+      "end_line": 119,
+      "end_col": 63
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 40,
+      "end_line": 119,
+      "end_col": 62
+    },
+    {
+      "kind": "keyword",
+      "op": "elif",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 120,
+      "start_col": 8,
+      "end_line": 120,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-n",
+      "start_line": 120,
+      "start_col": 11,
+      "end_line": 120,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 14,
+      "end_line": 120,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 15,
+      "end_line": 120,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 120,
+      "start_col": 37,
+      "end_line": 120,
+      "end_col": 39
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 120,
+      "start_col": 39,
+      "end_line": 120,
       "end_col": 40
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 118,
+      "start_line": 120,
       "start_col": 41,
-      "end_line": 118,
+      "end_line": 120,
       "end_col": 45
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 119,
-      "start_col": 5,
-      "end_line": 119,
-      "end_col": 26
-    },
-    {
-      "kind": "var-name",
-      "start_line": 119,
-      "start_col": 5,
-      "end_line": 119,
-      "end_col": 17
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 119,
-      "start_col": 18,
-      "end_line": 119,
-      "end_col": 26
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 119,
-      "start_col": 27,
-      "end_line": 119,
-      "end_col": 59
-    },
-    {
-      "kind": "var-name",
-      "start_line": 119,
-      "start_col": 27,
-      "end_line": 119,
-      "end_col": 38
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 119,
-      "start_col": 39,
-      "end_line": 119,
-      "end_col": 59
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 119,
-      "start_col": 40,
-      "end_line": 119,
-      "end_col": 58
-    },
-    {
-      "kind": "keyword",
-      "op": "elif",
-      "start_line": 120,
-      "start_col": 3,
-      "end_line": 120,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 120,
-      "start_col": 8,
-      "end_line": 120,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-n",
-      "start_line": 120,
-      "start_col": 11,
-      "end_line": 120,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 120,
-      "start_col": 14,
-      "end_line": 120,
-      "end_col": 32
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 120,
-      "start_col": 15,
-      "end_line": 120,
-      "end_col": 31
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 120,
-      "start_col": 33,
-      "end_line": 120,
-      "end_col": 35
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 120,
-      "start_col": 35,
-      "end_line": 120,
-      "end_col": 36
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 120,
-      "start_col": 37,
-      "end_line": 120,
-      "end_col": 41
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
       "start_line": 121,
       "start_col": 5,
       "end_line": 121,
@@ -2323,7 +2323,7 @@
       "start_line": 121,
       "start_col": 24,
       "end_line": 121,
-      "end_col": 50
+      "end_col": 54
     },
     {
       "kind": "var-name",
@@ -2337,14 +2337,14 @@
       "start_line": 121,
       "start_col": 36,
       "end_line": 121,
-      "end_col": 50
+      "end_col": 54
     },
     {
       "kind": "param-exp",
       "start_line": 121,
       "start_col": 37,
       "end_line": 121,
-      "end_col": 49
+      "end_col": 53
     },
     {
       "kind": "keyword",
@@ -2374,39 +2374,39 @@
       "kind": "string-dq",
       "start_line": 122,
       "start_col": 14,
-      "end_line": 122,
-      "end_col": 35
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 122,
-      "start_col": 15,
-      "end_line": 122,
-      "end_col": 34
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 122,
-      "start_col": 36,
-      "end_line": 122,
-      "end_col": 38
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 122,
-      "start_col": 38,
       "end_line": 122,
       "end_col": 39
     },
     {
-      "kind": "keyword",
-      "op": "then",
+      "kind": "param-exp",
+      "start_line": 122,
+      "start_col": 15,
+      "end_line": 122,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
       "start_line": 122,
       "start_col": 40,
       "end_line": 122,
-      "end_col": 44
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 122,
+      "start_col": 42,
+      "end_line": 122,
+      "end_col": 43
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 122,
+      "start_col": 44,
+      "end_line": 122,
+      "end_col": 48
     },
     {
       "kind": "var-assign",
@@ -2436,7 +2436,7 @@
       "start_line": 123,
       "start_col": 27,
       "end_line": 123,
-      "end_col": 56
+      "end_col": 60
     },
     {
       "kind": "var-name",
@@ -2450,14 +2450,14 @@
       "start_line": 123,
       "start_col": 39,
       "end_line": 123,
-      "end_col": 56
+      "end_col": 60
     },
     {
       "kind": "param-exp",
       "start_line": 123,
       "start_col": 40,
       "end_line": 123,
-      "end_col": 55
+      "end_col": 59
     },
     {
       "kind": "keyword",
