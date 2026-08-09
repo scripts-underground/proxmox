@@ -22,6 +22,7 @@ var_nesting="${var_nesting:-1}"
 var_keyctl="${var_keyctl:-1}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-Crosstalk-Solutions/project-nomad}"
 
 function install_script() {
   NOMAD_DIR="/opt/project-nomad"
@@ -64,7 +65,7 @@ function install_script() {
     fi
   fi
 
-  fetch_and_deploy_gh_release "nomad" "Crosstalk-Solutions/project-nomad" "tarball"
+  fetch_and_deploy_gh_release "nomad" "$var_lxc_git_repo" "tarball"
 
   msg_info "Setting up Nomad"
   mkdir -p ${NOMAD_DIR}/storage/logs
@@ -110,7 +111,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "nomad" "Crosstalk-Solutions/project-nomad"; then
+  if check_for_gh_release "nomad" "$var_lxc_git_repo"; then
     msg_info "Updating Nomad"
     cd /opt/project-nomad || exit
 
@@ -120,7 +121,7 @@ function update_script() {
     DB_USER_PASS=$(grep 'MYSQL_PASSWORD=' /opt/project-nomad/compose.yml | head -1 | sed 's/.*MYSQL_PASSWORD=//')
     NOMAD_URL=$(grep 'URL=' /opt/project-nomad/compose.yml | head -1 | sed 's/.*URL=//')
 
-    fetch_and_deploy_gh_release "nomad" "Crosstalk-Solutions/project-nomad" "tarball"
+    fetch_and_deploy_gh_release "nomad" "$var_lxc_git_repo" "tarball"
 
     cp /opt/nomad/install/management_compose.yaml /opt/project-nomad/compose.yml
     cp /opt/nomad/install/start_nomad.sh /opt/project-nomad/start_nomad.sh
