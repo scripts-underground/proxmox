@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "mcp-musicbrainz",
   "type": "lxc",
-  "total_lines": 165,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/zas/mcp-musicbrainz\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"MusicBrainz MCP\"\nvar_tags=\"${var_tags:-music;mcp}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_hostname=\"${var_hostname:-mcp-musicbrainz}\"\nvar_lxc_git_repo=\"${var_lxc_git_repo:-zas/mcp-musicbrainz}\"\nvar_lxc_git_branch=\"${var_lxc_git_branch:-main}\"\nvar_lxc_git_tag=\"${var_lxc_git_tag:-}\"\nvar_lxc_pinned_commit=\"${var_lxc_pinned_commit:-}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y git curl\n  msg_ok \"Installed Dependencies\"\n\n  # uv-managed Python lands in /usr/local/bin so the unprivileged\n  # service user can execute the venv interpreter (default is ~/.local)\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.12\" setup_uv\n\n  msg_info \"Cloning MusicBrainz MCP Server\"\n  clone_and_deploy_gh_commit \"mcp-musicbrainz\" \"$var_lxc_git_repo\" \"$var_lxc_git_branch\" \"$var_lxc_git_tag\" \"$var_lxc_pinned_commit\" /opt/mcp-musicbrainz\n  msg_ok \"Cloned MusicBrainz MCP Server\"\n\n  msg_info \"Installing Python Dependencies\"\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  cd /opt/mcp-musicbrainz || exit\n  $STD uv sync --locked\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Creating Service User\"\n  useradd --system --no-create-home --shell /usr/sbin/nologin mcp\n  # diskcache writes here relative to the service WorkingDirectory;\n  # /opt/mcp-musicbrainz stays root-owned, only the cache is writable\n  mkdir -p /opt/mcp-musicbrainz/.musicbrainz_cache\n  chown -R mcp:mcp /opt/mcp-musicbrainz/.musicbrainz_cache\n  msg_ok \"Created Service User\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/musicbrainz.service\n[Unit]\nDescription=MusicBrainz MCP Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=mcp\nWorkingDirectory=/opt/mcp-musicbrainz\nEnvironment=MCP_MUSICBRAINZ_HTTP_HOST=0.0.0.0\nEnvironment=MCP_MUSICBRAINZ_HTTP_PORT=8000\nExecStart=/opt/mcp-musicbrainz/.venv/bin/mcp-musicbrainz-sse\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now musicbrainz\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}The MCP endpoint (streamable HTTP) is available at:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8000/mcp${CL}\"\n}\n\nfunction update_script() {\n  render_header\n\n  if [[ ! -d /opt/mcp-musicbrainz ]]; then\n    msg_error \"No MusicBrainz MCP Installation Found!\"\n    exit\n  fi\n\n  local TRACK_FILE=\"$HOME/.mcp-musicbrainz\"\n  local CURRENT_MODE=\"\" CURRENT_REF=\"\"\n  if [[ -f \"$TRACK_FILE\" ]]; then\n    IFS=: read -r CURRENT_MODE CURRENT_REF \u003c \"$TRACK_FILE\"\n  fi\n\n  cd /opt/mcp-musicbrainz || exit\n  $STD git fetch origin --tags\n\n  local DESIRED_MODE=\"$CURRENT_MODE\" DESIRED_REF=\"$CURRENT_REF\"\n  if [[ -n \"${var_lxc_pinned_commit:-}\" ]]; then\n    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_lxc_pinned_commit\"\n  elif [[ -n \"${var_lxc_git_tag:-}\" ]]; then\n    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_lxc_git_tag\"\n  elif [[ -n \"${var_lxc_git_branch:-}\" ]]; then\n    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_lxc_git_branch\"\n  fi\n\n  if [[ -z \"$DESIRED_MODE\" ]]; then\n    msg_ok \"No update mode configured — exiting\"\n    exit\n  fi\n\n  if [[ \"$CURRENT_MODE\" == \"$DESIRED_MODE\" \u0026\u0026 \"$CURRENT_REF\" == \"$DESIRED_REF\" ]]; then\n    case \"$DESIRED_MODE\" in\n      commit | tag)\n        msg_ok \"MusicBrainz MCP is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed\"\n        exit\n        ;;\n      branch)\n        LOCAL=$(git rev-parse HEAD)\n        REMOTE=$(git rev-parse \"origin/$DESIRED_REF\")\n        if [[ \"$LOCAL\" == \"$REMOTE\" ]]; then\n          msg_ok \"MusicBrainz MCP is up to date — no update needed\"\n          exit\n        fi\n        ;;\n    esac\n  fi\n\n  msg_info \"Updating MusicBrainz MCP\"\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.12\" setup_uv\n  msg_info \"Stopping Service\"\n  systemctl stop musicbrainz\n  msg_ok \"Stopped Service\"\n\n  case \"$DESIRED_MODE\" in\n    commit)\n      $STD git checkout \"$DESIRED_REF\"\n      ;;\n    tag)\n      $STD git checkout \"tags/$DESIRED_REF\"\n      ;;\n    branch)\n      $STD git pull origin \"$DESIRED_REF\"\n      ;;\n  esac\n  echo \"${DESIRED_MODE}:${DESIRED_REF}\" \u003e \"$TRACK_FILE\"\n\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  $STD uv sync --locked\n\n  msg_info \"Starting Service\"\n  systemctl start musicbrainz\n  msg_ok \"Started Service\"\n  msg_ok \"Updated to ${DESIRED_MODE} ${DESIRED_REF}!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 155,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/zas/mcp-musicbrainz\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"MusicBrainz MCP\"\nvar_tags=\"${var_tags:-music;mcp}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_hostname=\"${var_hostname:-mcp-musicbrainz}\"\nvar_lxc_git_repo=\"${var_lxc_git_repo:-zas/mcp-musicbrainz}\"\nvar_lxc_git_branch=\"${var_lxc_git_branch:-main}\"\nvar_lxc_git_tag=\"${var_lxc_git_tag:-}\"\nvar_lxc_pinned_commit=\"${var_lxc_pinned_commit:-}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y git curl\n  msg_ok \"Installed Dependencies\"\n\n  # uv-managed Python lands in /usr/local/bin so the unprivileged\n  # service user can execute the venv interpreter (default is ~/.local)\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.12\" setup_uv\n\n  msg_info \"Cloning MusicBrainz MCP Server\"\n  clone_and_deploy_gh_commit \"mcp-musicbrainz\" \"$var_lxc_git_repo\" \"$var_lxc_git_branch\" \"$var_lxc_git_tag\" \"$var_lxc_pinned_commit\" /opt/mcp-musicbrainz\n  msg_ok \"Cloned MusicBrainz MCP Server\"\n\n  msg_info \"Installing Python Dependencies\"\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  cd /opt/mcp-musicbrainz || exit\n  $STD uv sync --locked\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Creating Service User\"\n  useradd --system --no-create-home --shell /usr/sbin/nologin mcp\n  # diskcache writes here relative to the service WorkingDirectory;\n  # /opt/mcp-musicbrainz stays root-owned, only the cache is writable\n  mkdir -p /opt/mcp-musicbrainz/.musicbrainz_cache\n  chown -R mcp:mcp /opt/mcp-musicbrainz/.musicbrainz_cache\n  msg_ok \"Created Service User\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/musicbrainz.service\n[Unit]\nDescription=MusicBrainz MCP Server\nAfter=network.target\n\n[Service]\nType=simple\nUser=mcp\nWorkingDirectory=/opt/mcp-musicbrainz\nEnvironment=MCP_MUSICBRAINZ_HTTP_HOST=0.0.0.0\nEnvironment=MCP_MUSICBRAINZ_HTTP_PORT=8000\nExecStart=/opt/mcp-musicbrainz/.venv/bin/mcp-musicbrainz-sse\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now musicbrainz\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}The MCP endpoint (streamable HTTP) is available at:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8000/mcp${CL}\"\n}\n\nfunction update_script() {\n  render_header\n\n  if [[ ! -d /opt/mcp-musicbrainz ]]; then\n    msg_error \"No MusicBrainz MCP Installation Found!\"\n    exit\n  fi\n\n  local TRACK_FILE=\"$HOME/.mcp-musicbrainz\"\n  local CURRENT_MODE=\"\" CURRENT_REF=\"\"\n  if [[ -f \"$TRACK_FILE\" ]]; then\n    IFS=: read -r CURRENT_MODE CURRENT_REF \u003c \"$TRACK_FILE\"\n  fi\n\n  cd /opt/mcp-musicbrainz || exit\n  $STD git fetch origin --tags\n\n  local DESIRED_MODE=\"$CURRENT_MODE\" DESIRED_REF=\"$CURRENT_REF\"\n  if [[ -n \"${var_lxc_pinned_commit:-}\" ]]; then\n    DESIRED_MODE=\"commit\" DESIRED_REF=\"$var_lxc_pinned_commit\"\n  elif [[ -n \"${var_lxc_git_tag:-}\" ]]; then\n    DESIRED_MODE=\"tag\" DESIRED_REF=\"$var_lxc_git_tag\"\n  elif [[ -n \"${var_lxc_git_branch:-}\" ]]; then\n    DESIRED_MODE=\"branch\" DESIRED_REF=\"$var_lxc_git_branch\"\n  fi\n\n  if [[ -z \"$DESIRED_MODE\" ]]; then\n    msg_ok \"No update mode configured — exiting\"\n    exit\n  fi\n\n  if [[ \"$CURRENT_MODE\" == \"$DESIRED_MODE\" \u0026\u0026 \"$CURRENT_REF\" == \"$DESIRED_REF\" ]]; then\n    case \"$DESIRED_MODE\" in\n      commit | tag)\n        msg_ok \"MusicBrainz MCP is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed\"\n        exit\n        ;;\n      branch)\n        LOCAL=$(git rev-parse HEAD)\n        REMOTE=$(git rev-parse \"origin/$DESIRED_REF\")\n        if [[ \"$LOCAL\" == \"$REMOTE\" ]]; then\n          msg_ok \"MusicBrainz MCP is up to date — no update needed\"\n          exit\n        fi\n        ;;\n    esac\n  fi\n\n  msg_info \"Updating MusicBrainz MCP\"\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.12\" setup_uv\n  msg_info \"Stopping Service\"\n  systemctl stop musicbrainz\n  msg_ok \"Stopped Service\"\n\n  git_update_checkout /opt/mcp-musicbrainz \"$DESIRED_MODE\" \"$DESIRED_REF\"\n  echo \"${DESIRED_MODE}:${DESIRED_REF}\" \u003e \"$TRACK_FILE\"\n\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  $STD uv sync --locked\n\n  msg_info \"Starting Service\"\n  systemctl start musicbrainz\n  msg_ok \"Started Service\"\n  msg_ok \"Updated to ${DESIRED_MODE} ${DESIRED_REF}!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -142,17 +142,7 @@
     "  systemctl stop musicbrainz",
     "  msg_ok \"Stopped Service\"",
     "",
-    "  case \"$DESIRED_MODE\" in",
-    "    commit)",
-    "      $STD git checkout \"$DESIRED_REF\"",
-    "      ;;",
-    "    tag)",
-    "      $STD git checkout \"tags/$DESIRED_REF\"",
-    "      ;;",
-    "    branch)",
-    "      $STD git pull origin \"$DESIRED_REF\"",
-    "      ;;",
-    "  esac",
+    "  git_update_checkout /opt/mcp-musicbrainz \"$DESIRED_MODE\" \"$DESIRED_REF\"",
     "  echo \"${DESIRED_MODE}:${DESIRED_REF}\" \u003e \"$TRACK_FILE\"",
     "",
     "  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"",
@@ -199,7 +189,7 @@
     {
       "name": "update_script",
       "start_line": 84,
-      "end_line": 159,
+      "end_line": 149,
       "name_span": {
         "start_line": 84,
         "start_col": 10,
@@ -2861,381 +2851,270 @@
       "end_col": 27
     },
     {
-      "kind": "keyword",
-      "op": "case",
+      "kind": "command",
       "start_line": 138,
       "start_col": 3,
-      "end_line": 138,
-      "end_col": 7
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 8,
-      "end_line": 138,
-      "end_col": 23
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 138,
-      "start_col": 9,
       "end_line": 138,
       "end_col": 22
     },
     {
-      "kind": "keyword",
-      "op": "in",
+      "kind": "string-dq",
       "start_line": 138,
-      "start_col": 24,
+      "start_col": 44,
       "end_line": 138,
-      "end_col": 26
+      "end_col": 59
     },
     {
       "kind": "param-exp",
-      "start_line": 140,
-      "start_col": 7,
-      "end_line": 140,
-      "end_col": 11
-    },
-    {
-      "kind": "command",
-      "start_line": 140,
-      "start_col": 12,
-      "end_line": 140,
-      "end_col": 15
+      "start_line": 138,
+      "start_col": 45,
+      "end_line": 138,
+      "end_col": 58
     },
     {
       "kind": "string-dq",
-      "start_line": 140,
-      "start_col": 25,
-      "end_line": 140,
-      "end_col": 39
+      "start_line": 138,
+      "start_col": 60,
+      "end_line": 138,
+      "end_col": 74
     },
     {
       "kind": "param-exp",
-      "start_line": 140,
-      "start_col": 26,
-      "end_line": 140,
-      "end_col": 38
+      "start_line": 138,
+      "start_col": 61,
+      "end_line": 138,
+      "end_col": 73
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 3,
+      "end_line": 139,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 8,
+      "end_line": 139,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 9,
+      "end_line": 139,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 25,
+      "end_line": 139,
+      "end_col": 39
     },
     {
       "kind": "operator",
-      "op": ";;",
+      "op": "\u003e",
+      "start_line": 139,
+      "start_col": 41,
+      "end_line": 139,
+      "end_col": 42
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 43,
+      "end_line": 139,
+      "end_col": 56
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 44,
+      "end_line": 139,
+      "end_col": 55
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
       "start_line": 141,
-      "start_col": 7,
+      "start_col": 3,
       "end_line": 141,
       "end_col": 9
     },
     {
-      "kind": "param-exp",
-      "start_line": 143,
-      "start_col": 7,
-      "end_line": 143,
-      "end_col": 11
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 141,
+      "start_col": 10,
+      "end_line": 141,
+      "end_col": 48
     },
     {
-      "kind": "command",
-      "start_line": 143,
-      "start_col": 12,
-      "end_line": 143,
-      "end_col": 15
+      "kind": "var-name",
+      "start_line": 141,
+      "start_col": 10,
+      "end_line": 141,
+      "end_col": 31
     },
     {
       "kind": "string-dq",
-      "start_line": 143,
-      "start_col": 25,
-      "end_line": 143,
-      "end_col": 44
+      "start_line": 141,
+      "start_col": 32,
+      "end_line": 141,
+      "end_col": 48
     },
     {
       "kind": "param-exp",
-      "start_line": 143,
-      "start_col": 31,
-      "end_line": 143,
-      "end_col": 43
+      "start_line": 142,
+      "start_col": 3,
+      "end_line": 142,
+      "end_col": 7
     },
     {
-      "kind": "operator",
-      "op": ";;",
+      "kind": "command",
+      "start_line": 142,
+      "start_col": 8,
+      "end_line": 142,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
       "start_line": 144,
-      "start_col": 7,
+      "start_col": 3,
       "end_line": 144,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 12,
+      "end_line": 144,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 145,
+      "start_col": 3,
+      "end_line": 145,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 3,
+      "end_line": 146,
       "end_col": 9
     },
     {
-      "kind": "param-exp",
+      "kind": "string-dq",
       "start_line": 146,
-      "start_col": 7,
+      "start_col": 10,
       "end_line": 146,
-      "end_col": 11
+      "end_col": 27
     },
     {
       "kind": "command",
-      "start_line": 146,
-      "start_col": 12,
-      "end_line": 146,
-      "end_col": 15
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 146,
-      "start_col": 28,
-      "end_line": 146,
-      "end_col": 42
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 146,
-      "start_col": 29,
-      "end_line": 146,
-      "end_col": 41
-    },
-    {
-      "kind": "operator",
-      "op": ";;",
       "start_line": 147,
-      "start_col": 7,
+      "start_col": 3,
       "end_line": 147,
       "end_col": 9
     },
     {
-      "kind": "keyword",
-      "op": "esac",
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 22,
+      "end_line": 147,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 147,
+      "start_col": 38,
+      "end_line": 147,
+      "end_col": 52
+    },
+    {
+      "kind": "command",
       "start_line": 148,
       "start_col": 3,
       "end_line": 148,
       "end_col": 7
     },
     {
-      "kind": "command",
-      "start_line": 149,
-      "start_col": 3,
-      "end_line": 149,
-      "end_col": 7
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 149,
-      "start_col": 8,
-      "end_line": 149,
-      "end_col": 40
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 149,
-      "start_col": 9,
-      "end_line": 149,
-      "end_col": 24
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 149,
-      "start_col": 25,
-      "end_line": 149,
-      "end_col": 39
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 149,
-      "start_col": 41,
-      "end_line": 149,
-      "end_col": 42
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 149,
-      "start_col": 43,
-      "end_line": 149,
-      "end_col": 56
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 149,
-      "start_col": 44,
-      "end_line": 149,
-      "end_col": 55
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 151,
-      "start_col": 3,
-      "end_line": 151,
-      "end_col": 9
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 151,
-      "start_col": 10,
-      "end_line": 151,
-      "end_col": 48
-    },
-    {
-      "kind": "var-name",
-      "start_line": 151,
-      "start_col": 10,
-      "end_line": 151,
-      "end_col": 31
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 151,
-      "start_col": 32,
-      "end_line": 151,
-      "end_col": 48
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 152,
-      "start_col": 3,
-      "end_line": 152,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 152,
-      "start_col": 8,
-      "end_line": 152,
-      "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 154,
-      "start_col": 3,
-      "end_line": 154,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 154,
-      "start_col": 12,
-      "end_line": 154,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 155,
-      "start_col": 3,
-      "end_line": 155,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 156,
-      "start_col": 3,
-      "end_line": 156,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 156,
-      "start_col": 10,
-      "end_line": 156,
-      "end_col": 27
-    },
-    {
-      "kind": "command",
-      "start_line": 157,
-      "start_col": 3,
-      "end_line": 157,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 157,
-      "start_col": 10,
-      "end_line": 157,
-      "end_col": 54
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 157,
-      "start_col": 22,
-      "end_line": 157,
-      "end_col": 37
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 157,
-      "start_col": 38,
-      "end_line": 157,
-      "end_col": 52
-    },
-    {
-      "kind": "command",
-      "start_line": 158,
-      "start_col": 3,
-      "end_line": 158,
-      "end_col": 7
-    },
-    {
       "kind": "operator",
       "op": "}",
-      "start_line": 159,
+      "start_line": 149,
       "start_col": 1,
-      "end_line": 159,
+      "end_line": 149,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 161,
+      "start_line": 151,
       "start_col": 1,
-      "end_line": 161,
+      "end_line": 151,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 162,
+      "start_line": 152,
       "start_col": 1,
-      "end_line": 162,
+      "end_line": 152,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 163,
+      "start_line": 153,
       "start_col": 1,
-      "end_line": 163,
+      "end_line": 153,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 164,
+      "start_line": 154,
       "start_col": 1,
-      "end_line": 164,
+      "end_line": 154,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 164,
+      "start_line": 154,
       "start_col": 8,
-      "end_line": 164,
+      "end_line": 154,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 164,
+      "start_line": 154,
       "start_col": 10,
-      "end_line": 164,
+      "end_line": 154,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 164,
+      "start_line": 154,
       "start_col": 21,
-      "end_line": 164,
+      "end_line": 154,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 164,
+      "start_line": 154,
       "start_col": 22,
-      "end_line": 164,
+      "end_line": 154,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 164,
+  "bootstrap_line": 154,
   "hooks": {
     "header_info": false,
     "install_script": true,

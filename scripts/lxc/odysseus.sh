@@ -151,17 +151,7 @@ function update_script() {
   systemctl stop odysseus
   msg_ok "Stopped Service"
 
-  case "$DESIRED_MODE" in
-    commit)
-      $STD git checkout "$DESIRED_REF"
-      ;;
-    tag)
-      $STD git checkout "tags/$DESIRED_REF"
-      ;;
-    branch)
-      $STD git pull origin "$DESIRED_REF"
-      ;;
-  esac
+  git_update_checkout /opt/odysseus "$DESIRED_MODE" "$DESIRED_REF"
   echo "${DESIRED_MODE}:${DESIRED_REF}" > "$TRACK_FILE"
 
   $STD uv pip install -r /opt/odysseus/requirements.txt --python=/opt/odysseus/venv/bin/python --upgrade
