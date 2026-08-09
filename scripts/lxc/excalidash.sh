@@ -22,13 +22,22 @@ function install_script() {
   msg_info "Installing Dependencies"
   $STD apt install -y \
     build-essential \
-    make \
     nginx
   msg_ok "Installed Dependencies"
 
   NODE_VERSION="20" setup_nodejs
+  PG_VERSION="18" setup_postgresql
+  PG_DB_NAME="excalidash" PG_DB_USER="excalidash" setup_postgresql_db
 
   fetch_and_deploy_gh_release "excalidash" "ZimengXiong/ExcaliDash" "tarball"
+
+  msg_info "Configuring Database Provider"
+  cd /opt/excalidash/backend || exit
+  sed -i '/datasource db {/,/}/ s/provider = env("[^"]*")/provider = "postgresql"/' prisma/schema.prisma
+  sed -i '/datasource db {/,/}/ s/provider = "[^"]*"/provider = "postgresql"/' prisma/schema.prisma
+  mv prisma/migrations/postgresql/* prisma/migrations/
+  rm -rf prisma/migrations/sqlite prisma/migrations/postgresql
+  msg_ok "Configured Database Provider"
 
   msg_info "Building Backend"
   cd /opt/excalidash/backend || exit
@@ -48,7 +57,8 @@ function install_script() {
   mkdir -p /var/www/excalidash
   cp -r /opt/excalidash/frontend/dist/. /var/www/excalidash/
   cat << EOF > /opt/excalidash_data/.env
-DATABASE_URL=file:/opt/excalidash_data/database.db
+DATABASE_PROVIDER=postgresql
+DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}
 PORT=8000
 NODE_ENV=production
 FRONTEND_URL=http://${LOCAL_IP}
@@ -113,7 +123,7 @@ EOF
   cat << EOF > /etc/systemd/system/excalidash.service
 [Unit]
 Description=ExcaliDash Service
-After=network.target
+After=network.target postgresql.service
 
 [Service]
 Type=simple
@@ -156,6 +166,17 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "excalidash" "ZimengXiong/ExcaliDash" "tarball"
 
     ln -sf /opt/excalidash_data/.env /opt/excalidash/backend/.env
+    # Read only DATABASE_PROVIDER — sourcing the whole .env would export
+    # NODE_ENV=production and make npm ci skip devDependencies (tsc build fails)
+    DATABASE_PROVIDER=$(grep -E '^DATABASE_PROVIDER=' /opt/excalidash_data/.env | cut -d= -f2- || true)
+
+    msg_info "Configuring Database Provider (${DATABASE_PROVIDER:-sqlite})"
+    cd /opt/excalidash/backend || exit
+    sed -i '/datasource db {/,/}/ s/provider = env("[^"]*")/provider = "'"${DATABASE_PROVIDER:-sqlite}"'"/' prisma/schema.prisma
+    sed -i '/datasource db {/,/}/ s/provider = "[^"]*"/provider = "'"${DATABASE_PROVIDER:-sqlite}"'"/' prisma/schema.prisma
+    mv prisma/migrations/"${DATABASE_PROVIDER:-sqlite}"/* prisma/migrations/
+    rm -rf prisma/migrations/postgresql prisma/migrations/sqlite
+    msg_ok "Configured Database Provider"
 
     msg_info "Rebuilding Application"
     cd /opt/excalidash/backend || exit
@@ -170,7 +191,6 @@ function update_script() {
 
     msg_info "Running Migrations"
     cd /opt/excalidash/backend || exit
-    set -a && source /opt/excalidash_data/.env && set +a
     $STD npx prisma migrate deploy
     msg_ok "Ran Migrations"
 
