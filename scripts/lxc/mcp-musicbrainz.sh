@@ -135,17 +135,7 @@ function update_script() {
   systemctl stop musicbrainz
   msg_ok "Stopped Service"
 
-  case "$DESIRED_MODE" in
-    commit)
-      $STD git checkout "$DESIRED_REF"
-      ;;
-    tag)
-      $STD git checkout "tags/$DESIRED_REF"
-      ;;
-    branch)
-      $STD git pull origin "$DESIRED_REF"
-      ;;
-  esac
+  git_update_checkout /opt/mcp-musicbrainz "$DESIRED_MODE" "$DESIRED_REF"
   echo "${DESIRED_MODE}:${DESIRED_REF}" > "$TRACK_FILE"
 
   export UV_PYTHON_INSTALL_DIR="/usr/local/bin"

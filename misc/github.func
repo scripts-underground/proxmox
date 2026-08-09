@@ -3,10 +3,11 @@
 # Copyright (c) 2026 scripts-underground.org
 
 # ------------------------------------------------------------------------------
-# clone_and_deploy_gh_commit — clone a GitHub repo and optionally checkout
-# a specific commit, tag, or branch. Tracks the checked-out ref in ~/.<app>
-# so update_script can detect the current mode and switch between
-# pinned commits, tags, or branch followers.
+# clone_and_deploy_gh_commit — shallow-clone a GitHub repo and optionally
+# checkout a specific commit, tag, or branch.  All clones are depth-1 to
+# avoid pulling full history into the container.
+# Tracks the checked-out ref in ~/.<app> so update_script can detect the
+# current mode and switch between pinned commits, tags, or branch followers.
 #
 # Priority: commit > tag > branch.
 #
@@ -33,15 +34,41 @@ clone_and_deploy_gh_commit() {
   app_lc=$(echo "${app,,}" | tr -d ' ')
   local track_file="$HOME/.${app_lc}"
 
-  $STD git clone "https://github.com/$repo.git" "$target"
   if [[ -n "$commit" ]]; then
+    $STD git clone --branch "$branch" "https://github.com/$repo.git" "$target"
     $STD git -C "$target" checkout "$commit"
     echo "commit:$commit" > "$track_file"
   elif [[ -n "$tag" ]]; then
-    $STD git -C "$target" checkout "tags/$tag"
+    $STD git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$target"
     echo "tag:$tag" > "$track_file"
   else
-    $STD git -C "$target" checkout "$branch"
+    $STD git clone --depth 1 --branch "$branch" "https://github.com/$repo.git" "$target"
     echo "branch:$branch" > "$track_file"
   fi
+}
+
+# ------------------------------------------------------------------------------
+# git_update_checkout — shallow-safe checkout for update flows.
+#
+# Use in update_script: replaces raw git checkout / git pull for each mode
+# so pin bumps (commit) and tag upgrades work under shallow clone repos.
+#
+# Usage:
+#   git_update_checkout /opt/<app> "$DESIRED_MODE" "$DESIRED_REF"
+# ------------------------------------------------------------------------------
+git_update_checkout() {
+  local dir="$1" mode="$2" ref="$3"
+  case "$mode" in
+    branch)
+      $STD git -C "$dir" pull origin "$ref"
+      ;;
+    tag)
+      $STD git -C "$dir" fetch --depth 1 origin tag "$ref"
+      $STD git -C "$dir" checkout "tags/$ref"
+      ;;
+    commit)
+      $STD git -C "$dir" fetch origin
+      $STD git -C "$dir" checkout "$ref"
+      ;;
+  esac
 }
