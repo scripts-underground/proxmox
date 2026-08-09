@@ -56,12 +56,18 @@ function install_script() {
   mkdir -p /opt/excalidash_data
   mkdir -p /var/www/excalidash
   cp -r /opt/excalidash/frontend/dist/. /var/www/excalidash/
+  # FRONTEND_URL doubles as the backend's CSRF origin allowlist (exact match on
+  # the browser Origin header) — seed every origin users are likely to browse by
+  ORIGINS="http://${LOCAL_IP}"
+  ORIGINS="${ORIGINS},http://$(hostname)"
+  fqdn="$(hostname -f 2> /dev/null || true)"
+  [[ -n "$fqdn" && "$fqdn" != "$(hostname)" ]] && ORIGINS="${ORIGINS},http://${fqdn}"
   cat << EOF > /opt/excalidash_data/.env
 DATABASE_PROVIDER=postgresql
 DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}
 PORT=8000
 NODE_ENV=production
-FRONTEND_URL=http://${LOCAL_IP}
+FRONTEND_URL=${ORIGINS}
 AUTH_MODE=local
 TRUST_PROXY=false
 RUN_MIGRATIONS=false
