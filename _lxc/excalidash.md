@@ -6,7 +6,7 @@ logo: /assets/logos/excalidash.webp
 by: MickLesk
 repo: https://github.com/ZimengXiong/ExcaliDash
 site: https://github.com/ZimengXiong/ExcaliDash
-port: 6767
+port: 80
 cpu: 2
 ram: 2048
 disk: 8
