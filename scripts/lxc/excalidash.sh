@@ -51,7 +51,7 @@ function install_script() {
 DATABASE_URL=file:/opt/excalidash_data/database.db
 PORT=8000
 NODE_ENV=production
-FRONTEND_URL=http://${LOCAL_IP}:6767
+FRONTEND_URL=http://${LOCAL_IP}
 AUTH_MODE=local
 TRUST_PROXY=false
 RUN_MIGRATIONS=false
@@ -67,7 +67,7 @@ EOF
   msg_info "Configuring Nginx"
   cat << EOF > /etc/nginx/sites-available/excalidash
 server {
-    listen 6767;
+    listen 80;
     server_name _;
     root /var/www/excalidash;
     index index.html;
@@ -135,7 +135,7 @@ function post_install_script() {
   msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:6767${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
 }
 
 function update_script() {
