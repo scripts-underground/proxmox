@@ -105,7 +105,7 @@ EOF
   msg_ok "Configured Autocaliweb"
 
   msg_info "Creating ACWSync Plugin for KOReader"
-  cd "$INSTALL_DIR" || exit/koreader/plugins
+  cd "$INSTALL_DIR/koreader/plugins" || exit
   PLUGIN_DIGEST="$(find acwsync.koplugin -type f -name "*.lua" -o -name "*.json" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
   echo "Plugin files digest: $PLUGIN_DIGEST" > acwsync.koplugin/${PLUGIN_DIGEST}.digest
   echo "Build date: $(date)" >> acwsync.koplugin/${PLUGIN_DIGEST}.digest
@@ -346,7 +346,7 @@ function update_script() {
       $STD uv venv --clear "$VIRTUAL_ENV"
     fi
     $STD uv sync --all-extras --active
-    cd "$INSTALL_DIR" || exit/koreader/plugins
+    cd "$INSTALL_DIR/koreader/plugins" || exit
     PLUGIN_DIGEST="$(find acwsync.koplugin -type f -name "*.lua" -o -name "*.json" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
     echo "Plugin files digest: $PLUGIN_DIGEST" > acwsync.koplugin/"${PLUGIN_DIGEST}".digest
     echo "Build date: $(date)" >> acwsync.koplugin/"${PLUGIN_DIGEST}".digest
