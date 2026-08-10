@@ -17,6 +17,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-ente-io/ente}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -35,7 +36,7 @@ function install_script() {
   RUST_CRATES="wasm-pack" setup_rust
   $STD rustup target add wasm32-unknown-unknown
 
-  fetch_and_deploy_gh_release "ente-server" "ente-io/ente" "tarball" "latest" "/opt/ente"
+  fetch_and_deploy_gh_release "ente-server" "$var_lxc_git_repo" "tarball" "latest" "/opt/ente"
 
   msg_info "Building Ente CLI"
   cd /opt/ente/cli || exit

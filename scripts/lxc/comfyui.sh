@@ -19,6 +19,7 @@ var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 var_gpu="${var_gpu:-yes}"
+var_lxc_git_repo="${var_lxc_git_repo:-comfyanonymous/ComfyUI}"
 
 function install_script() {
   setup_hwaccel
@@ -43,7 +44,7 @@ function install_script() {
 
   PYTHON_VERSION="3.12" setup_uv
 
-  fetch_and_deploy_gh_release "ComfyUI" "comfyanonymous/ComfyUI" "tarball" "latest" "/opt/ComfyUI"
+  fetch_and_deploy_gh_release "ComfyUI" "$var_lxc_git_repo" "tarball" "latest" "/opt/ComfyUI"
 
   msg_info "Python Dependencies"
   $STD uv venv --clear "/opt/ComfyUI/venv"
