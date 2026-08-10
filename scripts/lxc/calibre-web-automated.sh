@@ -18,6 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-crocodilestick/Calibre-Web-Automated}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -73,7 +74,7 @@ function install_script() {
 
   PYTHON_VERSION="3.13" setup_uv
 
-  fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/app/calibre-web-automated"
+  fetch_and_deploy_gh_release "calibre-web-automated" "$var_lxc_git_repo" "tarball" "latest" "/app/calibre-web-automated"
 
   msg_info "Configuring Calibre-Web-Automated"
   INSTALL_DIR="/app/calibre-web-automated"
@@ -359,7 +360,7 @@ function update_script() {
 
   PYTHON_VERSION="3.13" setup_uv
 
-  if check_for_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated"; then
+  if check_for_gh_release "calibre-web-automated" "$var_lxc_git_repo"; then
     msg_info "Stopping Services"
     systemctl stop calibre-web-automated cwa-metadata-detector cwa-ingest cwa-auto-zipper
     msg_ok "Stopped Services"
@@ -376,7 +377,7 @@ function update_script() {
       "$INSTALL_DIR"/scripts/auto_zipper_wrapper.sh \
       "$INSTALL_DIR"/scripts/metadata_change_detector_wrapper.sh
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "crocodilestick/Calibre-Web-Automated" "tarball" "latest" "/app/calibre-web-automated"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "calibre-web-automated" "$var_lxc_git_repo" "tarball" "latest" "/app/calibre-web-automated"
 
     # Re-apply non-ASCII filename fix (CLEAN_INSTALL wipes the source).
     sed -i '/base_name = secure_filename(uploaded_file.filename)/a\
