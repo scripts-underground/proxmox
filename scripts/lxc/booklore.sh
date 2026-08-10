@@ -21,15 +21,15 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   JAVA_VERSION="25" setup_java
-  NODE_VERSION="22" setup_nodejs
+  NODE_VERSION="24" setup_nodejs
   setup_mariadb
   setup_yq
   MARIADB_DB_NAME="booklore_db" MARIADB_DB_USER="booklore_user" MARIADB_DB_EXTRA_GRANTS="GRANT SELECT ON \`mysql\`.\`time_zone_name\`" setup_mariadb_db
   fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball"
 
   msg_info "Building Frontend"
-  cd /opt/booklore || exit/booklore-ui
-  $STD npm install --force
+  cd /opt/booklore/booklore-ui || exit
+  $STD npm ci --force
   $STD npm run build --configuration=production
   msg_ok "Built Frontend"
 
@@ -49,12 +49,12 @@ DATABASE_PASSWORD=${MARIADB_DB_PASS}
 # App Configuration (Spring Boot mapping from app.* properties)
 APP_PATH_CONFIG=/opt/booklore_storage/data
 APP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop
-SERVER_PORT=6060
+BOOKLORE_PORT=6060
 EOF
   msg_ok "Created Environment"
 
   msg_info "Building Backend"
-  cd /opt/booklore || exit/booklore-api
+  cd /opt/booklore/booklore-api || exit
   APP_VERSION=$(get_latest_github_release "booklore-app/BookLore")
   yq eval ".app.version = \"${APP_VERSION}\"" -i src/main/resources/application.yaml
   $STD ./gradlew clean build -x test --no-daemon
@@ -110,7 +110,7 @@ function update_script() {
 
   if check_for_gh_release "booklore" "booklore-app/BookLore"; then
     JAVA_VERSION="25" setup_java
-    NODE_VERSION="22" setup_nodejs
+    NODE_VERSION="24" setup_nodejs
     setup_mariadb
     setup_yq
 
@@ -134,8 +134,8 @@ function update_script() {
     fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball"
 
     msg_info "Building Frontend"
-    cd /opt/booklore || exit/booklore-ui
-    $STD npm install --force
+    cd /opt/booklore/booklore-ui || exit
+    $STD npm ci --force
     $STD npm run build --configuration=production
     msg_ok "Built Frontend"
 
@@ -145,7 +145,7 @@ function update_script() {
     msg_ok "Embedded Frontend into Backend"
 
     msg_info "Building Backend"
-    cd /opt/booklore || exit/booklore-api
+    cd /opt/booklore/booklore-api || exit
     APP_VERSION=$(get_latest_github_release "booklore-app/BookLore")
     yq eval ".app.version = \"${APP_VERSION}\"" -i src/main/resources/application.yaml
     $STD ./gradlew clean build -x test --no-daemon
@@ -166,7 +166,7 @@ function update_script() {
     fi
 
     if ! grep -q "^SERVER_PORT=" /opt/booklore_storage/.env 2> /dev/null; then
-      echo "SERVER_PORT=6060" >> /opt/booklore_storage/.env
+      echo "BOOKLORE_PORT=6060" >> /opt/booklore_storage/.env
     fi
 
     sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service
