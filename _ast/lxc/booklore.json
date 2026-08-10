@@ -3,7 +3,7 @@
   "slug": "booklore",
   "type": "lxc",
   "total_lines": 188,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/booklore-app/BookLore\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"BookLore\"\nvar_tags=\"${var_tags:-books;library}\"\nvar_cpu=\"${var_cpu:-3}\"\nvar_ram=\"${var_ram:-3072}\"\nvar_disk=\"${var_disk:-7}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  JAVA_VERSION=\"25\" setup_java\n  NODE_VERSION=\"22\" setup_nodejs\n  setup_mariadb\n  setup_yq\n  MARIADB_DB_NAME=\"booklore_db\" MARIADB_DB_USER=\"booklore_user\" MARIADB_DB_EXTRA_GRANTS=\"GRANT SELECT ON \\`mysql\\`.\\`time_zone_name\\`\" setup_mariadb_db\n  fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/booklore || exit/booklore-ui\n  $STD npm install --force\n  $STD npm run build --configuration=production\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Embedding Frontend into Backend\"\n  mkdir -p /opt/booklore/booklore-api/src/main/resources/static\n  cp -r /opt/booklore/booklore-ui/dist/booklore/browser/* /opt/booklore/booklore-api/src/main/resources/static/\n  msg_ok \"Embedded Frontend into Backend\"\n\n  msg_info \"Creating Environment\"\n  mkdir -p /opt/booklore_storage/{data,books,bookdrop}\n  cat \u003c\u003c EOF \u003e /opt/booklore_storage/.env\n# Database Configuration\nDATABASE_URL=jdbc:mariadb://localhost:3306/${MARIADB_DB_NAME}\nDATABASE_USERNAME=${MARIADB_DB_USER}\nDATABASE_PASSWORD=${MARIADB_DB_PASS}\n\n# App Configuration (Spring Boot mapping from app.* properties)\nAPP_PATH_CONFIG=/opt/booklore_storage/data\nAPP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop\nSERVER_PORT=6060\nEOF\n  msg_ok \"Created Environment\"\n\n  msg_info \"Building Backend\"\n  cd /opt/booklore || exit/booklore-api\n  APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")\n  yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml\n  $STD ./gradlew clean build -x test --no-daemon\n  mkdir -p /opt/booklore/dist\n  JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name \"booklore-api-*.jar\" ! -name \"*plain*\" | head -n1)\n  if [[ -z \"$JAR_PATH\" ]]; then\n    msg_error \"Backend JAR not found\"\n    exit 1\n  fi\n  cp \"$JAR_PATH\" /opt/booklore/dist/app.jar\n  msg_ok \"Built Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/booklore.service\n[Unit]\nDescription=BookLore Java Service\nAfter=network.target mariadb.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/booklore/dist\nExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar /opt/booklore/dist/app.jar\nEnvironmentFile=/opt/booklore_storage/.env\nSuccessExitStatus=143\nTimeoutStopSec=10\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now booklore\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:6060${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/booklore ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"booklore\" \"booklore-app/BookLore\"; then\n    JAVA_VERSION=\"25\" setup_java\n    NODE_VERSION=\"22\" setup_nodejs\n    setup_mariadb\n    setup_yq\n\n    msg_info \"Stopping Service\"\n    systemctl stop booklore\n    msg_ok \"Stopped Service\"\n\n    if grep -qE \"^BOOKLORE_(DATA_PATH|BOOKDROP_PATH|BOOKS_PATH|PORT)=\" /opt/booklore_storage/.env 2\u003e /dev/null; then\n      msg_info \"Migrating old environment variables\"\n      sed -i 's/^BOOKLORE_DATA_PATH=/APP_PATH_CONFIG=/g' /opt/booklore_storage/.env\n      sed -i 's/^BOOKLORE_BOOKDROP_PATH=/APP_BOOKDROP_FOLDER=/g' /opt/booklore_storage/.env\n      sed -i '/^BOOKLORE_BOOKS_PATH=/d' /opt/booklore_storage/.env\n      sed -i '/^BOOKLORE_PORT=/d' /opt/booklore_storage/.env\n      msg_ok \"Migrated old environment variables\"\n    fi\n\n    msg_info \"Backing up old installation\"\n    mv /opt/booklore /opt/booklore_bak\n    msg_ok \"Backed up old installation\"\n\n    fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"\n\n    msg_info \"Building Frontend\"\n    cd /opt/booklore || exit/booklore-ui\n    $STD npm install --force\n    $STD npm run build --configuration=production\n    msg_ok \"Built Frontend\"\n\n    msg_info \"Embedding Frontend into Backend\"\n    mkdir -p /opt/booklore/booklore-api/src/main/resources/static\n    cp -r /opt/booklore/booklore-ui/dist/booklore/browser/* /opt/booklore/booklore-api/src/main/resources/static/\n    msg_ok \"Embedded Frontend into Backend\"\n\n    msg_info \"Building Backend\"\n    cd /opt/booklore || exit/booklore-api\n    APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")\n    yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml\n    $STD ./gradlew clean build -x test --no-daemon\n    mkdir -p /opt/booklore/dist\n    JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name \"booklore-api-*.jar\" ! -name \"*plain*\" | head -n1)\n    if [[ -z \"$JAR_PATH\" ]]; then\n      msg_error \"Backend JAR not found\"\n      exit\n    fi\n    cp \"$JAR_PATH\" /opt/booklore/dist/app.jar\n    msg_ok \"Built Backend\"\n\n    if systemctl is-active --quiet nginx 2\u003e /dev/null; then\n      msg_info \"Removing Nginx (no longer needed)\"\n      systemctl disable --now nginx\n      $STD apt-get purge -y nginx nginx-common\n      msg_ok \"Removed Nginx\"\n    fi\n\n    if ! grep -q \"^SERVER_PORT=\" /opt/booklore_storage/.env 2\u003e /dev/null; then\n      echo \"SERVER_PORT=6060\" \u003e\u003e /opt/booklore_storage/.env\n    fi\n\n    sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service\n    systemctl daemon-reload\n\n    msg_info \"Starting Service\"\n    systemctl start booklore\n    rm -rf /opt/booklore_bak\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/booklore-app/BookLore\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"BookLore\"\nvar_tags=\"${var_tags:-books;library}\"\nvar_cpu=\"${var_cpu:-3}\"\nvar_ram=\"${var_ram:-3072}\"\nvar_disk=\"${var_disk:-7}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  JAVA_VERSION=\"25\" setup_java\n  NODE_VERSION=\"24\" setup_nodejs\n  setup_mariadb\n  setup_yq\n  MARIADB_DB_NAME=\"booklore_db\" MARIADB_DB_USER=\"booklore_user\" MARIADB_DB_EXTRA_GRANTS=\"GRANT SELECT ON \\`mysql\\`.\\`time_zone_name\\`\" setup_mariadb_db\n  fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/booklore/booklore-ui || exit\n  $STD npm ci --force\n  $STD npm run build --configuration=production\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Embedding Frontend into Backend\"\n  mkdir -p /opt/booklore/booklore-api/src/main/resources/static\n  cp -r /opt/booklore/booklore-ui/dist/booklore/browser/* /opt/booklore/booklore-api/src/main/resources/static/\n  msg_ok \"Embedded Frontend into Backend\"\n\n  msg_info \"Creating Environment\"\n  mkdir -p /opt/booklore_storage/{data,books,bookdrop}\n  cat \u003c\u003c EOF \u003e /opt/booklore_storage/.env\n# Database Configuration\nDATABASE_URL=jdbc:mariadb://localhost:3306/${MARIADB_DB_NAME}\nDATABASE_USERNAME=${MARIADB_DB_USER}\nDATABASE_PASSWORD=${MARIADB_DB_PASS}\n\n# App Configuration (Spring Boot mapping from app.* properties)\nAPP_PATH_CONFIG=/opt/booklore_storage/data\nAPP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop\nBOOKLORE_PORT=6060\nEOF\n  msg_ok \"Created Environment\"\n\n  msg_info \"Building Backend\"\n  cd /opt/booklore/booklore-api || exit\n  APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")\n  yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml\n  $STD ./gradlew clean build -x test --no-daemon\n  mkdir -p /opt/booklore/dist\n  JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name \"booklore-api-*.jar\" ! -name \"*plain*\" | head -n1)\n  if [[ -z \"$JAR_PATH\" ]]; then\n    msg_error \"Backend JAR not found\"\n    exit 1\n  fi\n  cp \"$JAR_PATH\" /opt/booklore/dist/app.jar\n  msg_ok \"Built Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/booklore.service\n[Unit]\nDescription=BookLore Java Service\nAfter=network.target mariadb.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/booklore/dist\nExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar /opt/booklore/dist/app.jar\nEnvironmentFile=/opt/booklore_storage/.env\nSuccessExitStatus=143\nTimeoutStopSec=10\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now booklore\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:6060${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/booklore ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"booklore\" \"booklore-app/BookLore\"; then\n    JAVA_VERSION=\"25\" setup_java\n    NODE_VERSION=\"24\" setup_nodejs\n    setup_mariadb\n    setup_yq\n\n    msg_info \"Stopping Service\"\n    systemctl stop booklore\n    msg_ok \"Stopped Service\"\n\n    if grep -qE \"^BOOKLORE_(DATA_PATH|BOOKDROP_PATH|BOOKS_PATH|PORT)=\" /opt/booklore_storage/.env 2\u003e /dev/null; then\n      msg_info \"Migrating old environment variables\"\n      sed -i 's/^BOOKLORE_DATA_PATH=/APP_PATH_CONFIG=/g' /opt/booklore_storage/.env\n      sed -i 's/^BOOKLORE_BOOKDROP_PATH=/APP_BOOKDROP_FOLDER=/g' /opt/booklore_storage/.env\n      sed -i '/^BOOKLORE_BOOKS_PATH=/d' /opt/booklore_storage/.env\n      sed -i '/^BOOKLORE_PORT=/d' /opt/booklore_storage/.env\n      msg_ok \"Migrated old environment variables\"\n    fi\n\n    msg_info \"Backing up old installation\"\n    mv /opt/booklore /opt/booklore_bak\n    msg_ok \"Backed up old installation\"\n\n    fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"\n\n    msg_info \"Building Frontend\"\n    cd /opt/booklore/booklore-ui || exit\n    $STD npm ci --force\n    $STD npm run build --configuration=production\n    msg_ok \"Built Frontend\"\n\n    msg_info \"Embedding Frontend into Backend\"\n    mkdir -p /opt/booklore/booklore-api/src/main/resources/static\n    cp -r /opt/booklore/booklore-ui/dist/booklore/browser/* /opt/booklore/booklore-api/src/main/resources/static/\n    msg_ok \"Embedded Frontend into Backend\"\n\n    msg_info \"Building Backend\"\n    cd /opt/booklore/booklore-api || exit\n    APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")\n    yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml\n    $STD ./gradlew clean build -x test --no-daemon\n    mkdir -p /opt/booklore/dist\n    JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name \"booklore-api-*.jar\" ! -name \"*plain*\" | head -n1)\n    if [[ -z \"$JAR_PATH\" ]]; then\n      msg_error \"Backend JAR not found\"\n      exit\n    fi\n    cp \"$JAR_PATH\" /opt/booklore/dist/app.jar\n    msg_ok \"Built Backend\"\n\n    if systemctl is-active --quiet nginx 2\u003e /dev/null; then\n      msg_info \"Removing Nginx (no longer needed)\"\n      systemctl disable --now nginx\n      $STD apt-get purge -y nginx nginx-common\n      msg_ok \"Removed Nginx\"\n    fi\n\n    if ! grep -q \"^SERVER_PORT=\" /opt/booklore_storage/.env 2\u003e /dev/null; then\n      echo \"BOOKLORE_PORT=6060\" \u003e\u003e /opt/booklore_storage/.env\n    fi\n\n    sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service\n    systemctl daemon-reload\n\n    msg_info \"Starting Service\"\n    systemctl start booklore\n    rm -rf /opt/booklore_bak\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -28,15 +28,15 @@
     "",
     "function install_script() {",
     "  JAVA_VERSION=\"25\" setup_java",
-    "  NODE_VERSION=\"22\" setup_nodejs",
+    "  NODE_VERSION=\"24\" setup_nodejs",
     "  setup_mariadb",
     "  setup_yq",
     "  MARIADB_DB_NAME=\"booklore_db\" MARIADB_DB_USER=\"booklore_user\" MARIADB_DB_EXTRA_GRANTS=\"GRANT SELECT ON \\`mysql\\`.\\`time_zone_name\\`\" setup_mariadb_db",
     "  fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"",
     "",
     "  msg_info \"Building Frontend\"",
-    "  cd /opt/booklore || exit/booklore-ui",
-    "  $STD npm install --force",
+    "  cd /opt/booklore/booklore-ui || exit",
+    "  $STD npm ci --force",
     "  $STD npm run build --configuration=production",
     "  msg_ok \"Built Frontend\"",
     "",
@@ -56,12 +56,12 @@
     "# App Configuration (Spring Boot mapping from app.* properties)",
     "APP_PATH_CONFIG=/opt/booklore_storage/data",
     "APP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop",
-    "SERVER_PORT=6060",
+    "BOOKLORE_PORT=6060",
     "EOF",
     "  msg_ok \"Created Environment\"",
     "",
     "  msg_info \"Building Backend\"",
-    "  cd /opt/booklore || exit/booklore-api",
+    "  cd /opt/booklore/booklore-api || exit",
     "  APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")",
     "  yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml",
     "  $STD ./gradlew clean build -x test --no-daemon",
@@ -117,7 +117,7 @@
     "",
     "  if check_for_gh_release \"booklore\" \"booklore-app/BookLore\"; then",
     "    JAVA_VERSION=\"25\" setup_java",
-    "    NODE_VERSION=\"22\" setup_nodejs",
+    "    NODE_VERSION=\"24\" setup_nodejs",
     "    setup_mariadb",
     "    setup_yq",
     "",
@@ -141,8 +141,8 @@
     "    fetch_and_deploy_gh_release \"booklore\" \"booklore-app/BookLore\" \"tarball\"",
     "",
     "    msg_info \"Building Frontend\"",
-    "    cd /opt/booklore || exit/booklore-ui",
-    "    $STD npm install --force",
+    "    cd /opt/booklore/booklore-ui || exit",
+    "    $STD npm ci --force",
     "    $STD npm run build --configuration=production",
     "    msg_ok \"Built Frontend\"",
     "",
@@ -152,7 +152,7 @@
     "    msg_ok \"Embedded Frontend into Backend\"",
     "",
     "    msg_info \"Building Backend\"",
-    "    cd /opt/booklore || exit/booklore-api",
+    "    cd /opt/booklore/booklore-api || exit",
     "    APP_VERSION=$(get_latest_github_release \"booklore-app/BookLore\")",
     "    yq eval \".app.version = \\\"${APP_VERSION}\\\"\" -i src/main/resources/application.yaml",
     "    $STD ./gradlew clean build -x test --no-daemon",
@@ -173,7 +173,7 @@
     "    fi",
     "",
     "    if ! grep -q \"^SERVER_PORT=\" /opt/booklore_storage/.env 2\u003e /dev/null; then",
-    "      echo \"SERVER_PORT=6060\" \u003e\u003e /opt/booklore_storage/.env",
+    "      echo \"BOOKLORE_PORT=6060\" \u003e\u003e /opt/booklore_storage/.env",
     "    fi",
     "",
     "    sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service",
@@ -951,14 +951,14 @@
       "kind": "operator",
       "op": "||",
       "start_line": 31,
-      "start_col": 20,
+      "start_col": 32,
       "end_line": 31,
-      "end_col": 22
+      "end_col": 34
     },
     {
       "kind": "command",
       "start_line": 31,
-      "start_col": 23,
+      "start_col": 35,
       "end_line": 31,
       "end_col": 39
     },
@@ -1166,14 +1166,14 @@
       "kind": "operator",
       "op": "||",
       "start_line": 57,
-      "start_col": 20,
+      "start_col": 33,
       "end_line": 57,
-      "end_col": 22
+      "end_col": 35
     },
     {
       "kind": "command",
       "start_line": 57,
-      "start_col": 23,
+      "start_col": 36,
       "end_line": 57,
       "end_col": 40
     },
@@ -2206,14 +2206,14 @@
       "kind": "operator",
       "op": "||",
       "start_line": 137,
-      "start_col": 22,
+      "start_col": 34,
       "end_line": 137,
-      "end_col": 24
+      "end_col": 36
     },
     {
       "kind": "command",
       "start_line": 137,
-      "start_col": 25,
+      "start_col": 37,
       "end_line": 137,
       "end_col": 41
     },
@@ -2326,14 +2326,14 @@
       "kind": "operator",
       "op": "||",
       "start_line": 148,
-      "start_col": 22,
+      "start_col": 35,
       "end_line": 148,
-      "end_col": 24
+      "end_col": 37
     },
     {
       "kind": "command",
       "start_line": 148,
-      "start_col": 25,
+      "start_col": 38,
       "end_line": 148,
       "end_col": 42
     },
@@ -2761,15 +2761,15 @@
       "start_line": 169,
       "start_col": 12,
       "end_line": 169,
-      "end_col": 30
+      "end_col": 32
     },
     {
       "kind": "operator",
       "op": "\u003e\u003e",
       "start_line": 169,
-      "start_col": 31,
+      "start_col": 33,
       "end_line": 169,
-      "end_col": 33
+      "end_col": 35
     },
     {
       "kind": "keyword",
