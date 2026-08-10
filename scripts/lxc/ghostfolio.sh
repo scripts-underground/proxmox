@@ -16,6 +16,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-ghostfolio/ghostfolio}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -42,7 +43,7 @@ JWT Secret Key: $JWT_SECRET_KEY
 EOF
   msg_ok "Set up Database"
 
-  fetch_and_deploy_gh_release "ghostfolio" "ghostfolio/ghostfolio" "tarball" "latest" "/opt/ghostfolio"
+  fetch_and_deploy_gh_release "ghostfolio" "$var_lxc_git_repo" "tarball" "latest" "/opt/ghostfolio"
 
   msg_info "Setup Ghostfolio"
   sed -i "s/# requirepass foobared/requirepass $REDIS_PASS/" /etc/redis/redis.conf
@@ -130,7 +131,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "ghostfolio" "ghostfolio/ghostfolio"; then
+  if check_for_gh_release "ghostfolio" "$var_lxc_git_repo"; then
     msg_info "Stopping Service"
     systemctl stop ghostfolio
     msg_ok "Stopped Service"
@@ -144,7 +145,7 @@ function update_script() {
     mv /opt/ghostfolio/.env /opt/env.backup
     msg_ok "Backup Created"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ghostfolio" "ghostfolio/ghostfolio" "tarball" "latest" "/opt/ghostfolio"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ghostfolio" "$var_lxc_git_repo" "tarball" "latest" "/opt/ghostfolio"
 
     msg_info "Updating Ghostfolio"
     mv /opt/env.backup /opt/ghostfolio/.env
