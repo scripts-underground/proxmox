@@ -18,6 +18,7 @@ var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 var_gpu="${var_gpu:-yes}"
+var_lxc_git_repo="${var_lxc_git_repo:-immich-app/immich}"
 
 function install_script() {
   ARCH_RAW=$(uname -m)
@@ -320,7 +321,7 @@ EOF
   GEO_DIR="${INSTALL_DIR}/geodata"
   mkdir -p {"${APP_DIR}","${UPLOAD_DIR}","${GEO_DIR}","${INSTALL_DIR}"/cache}
 
-  fetch_and_deploy_gh_release "Immich" "immich-app/immich" "tarball" "v3.0.3" "$SRC_DIR"
+  fetch_and_deploy_gh_release "Immich" "$var_lxc_git_repo" "tarball" "v3.0.3" "$SRC_DIR"
   PNPM_VERSION="$(jq -r '.packageManager | split("@")[1] | split("+")[0]' ${SRC_DIR}/package.json)"
   export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
   NODE_VERSION="24" NODE_MODULE="corepack" setup_nodejs
@@ -806,7 +807,7 @@ EOF
   fi
 
   RELEASE="v3.0.3"
-  if check_for_gh_release "Immich" "immich-app/immich" "${RELEASE}" "each release is tested individually before the version is updated. Please do not open issues for this"; then
+  if check_for_gh_release "Immich" "$var_lxc_git_repo" "${RELEASE}" "each release is tested individually before the version is updated. Please do not open issues for this"; then
     if [[ $(cat ~/.immich) > "2.5.1" ]]; then
       msg_info "Enabling Maintenance Mode"
       cd /opt/immich/app/bin || exit
@@ -865,7 +866,7 @@ EOF
     )
 
     setup_uv
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich" "immich-app/immich" "tarball" "${RELEASE}" "$SRC_DIR"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich" "$var_lxc_git_repo" "tarball" "${RELEASE}" "$SRC_DIR"
     PNPM_VERSION="$(jq -r '.packageManager | split("@")[1] | split("+")[0]' ${SRC_DIR}/package.json)"
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
     export CI=1

@@ -18,6 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-healthchecks/healthchecks}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -50,7 +51,7 @@ healthchecks Admin Password: $ADMIN_PASSWORD
 EOF
   msg_ok "Set up Keys"
 
-  fetch_and_deploy_gh_release "healthchecks" "healthchecks/healthchecks" "tarball"
+  fetch_and_deploy_gh_release "healthchecks" "$var_lxc_git_repo" "tarball"
 
   msg_info "Installing Healthchecks (venv)"
   cd /opt/healthchecks || exit
@@ -166,7 +167,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "healthchecks" "healthchecks/healthchecks"; then
+  if check_for_gh_release "healthchecks" "$var_lxc_git_repo"; then
     msg_info "Stopping Services"
     systemctl stop healthchecks
     systemctl stop healthchecks-sendalerts
@@ -177,7 +178,7 @@ function update_script() {
     cp -a /opt/healthchecks "$BACKUP"
     msg_ok "Backup created at $BACKUP"
 
-    fetch_and_deploy_gh_release "healthchecks" "healthchecks/healthchecks" "tarball"
+    fetch_and_deploy_gh_release "healthchecks" "$var_lxc_git_repo" "tarball"
 
     cd /opt/healthchecks || exit
     if [[ -d venv ]]; then
