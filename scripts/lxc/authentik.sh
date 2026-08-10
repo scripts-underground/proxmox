@@ -18,6 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-goauthentik/authentik}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -67,7 +68,7 @@ function install_script() {
   XMLSEC_VERSION="1.3.11"
   AUTHENTIK_VERSION="version/2026.5.2"
   fetch_and_deploy_gh_release "xmlsec" "lsh123/xmlsec" "tarball" "${XMLSEC_VERSION}" "/opt/xmlsec"
-  fetch_and_deploy_gh_release "authentik" "goauthentik/authentik" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
+  fetch_and_deploy_gh_release "authentik" "$var_lxc_git_repo" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
   fetch_and_deploy_gh_release "geoipupdate" "maxmind/geoipupdate" "binary"
 
   msg_info "Setting up xmlsec"
@@ -371,7 +372,7 @@ function update_script() {
     msg_ok "Updated xmlsec"
   fi
 
-  if check_for_gh_release "authentik" "goauthentik/authentik" "${AUTHENTIK_VERSION}"; then
+  if check_for_gh_release "authentik" "$var_lxc_git_repo" "${AUTHENTIK_VERSION}"; then
     msg_info "Stopping Services"
     systemctl stop authentik-server authentik-worker
     if [[ $(systemctl is-active authentik-ldap) == active ]]; then
@@ -385,7 +386,7 @@ function update_script() {
     fi
     msg_ok "Stopped Services"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "authentik" "goauthentik/authentik" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "authentik" "$var_lxc_git_repo" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
 
     msg_info "Configuring rust"
     cd /opt/authentik || exit
