@@ -17,6 +17,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-Freika/dawarich}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -44,7 +45,7 @@ function install_script() {
   PG_VERSION="17" PG_MODULES="postgis-3" setup_postgresql
   PG_DB_NAME="dawarich_db" PG_DB_USER="dawarich" PG_DB_EXTENSIONS="postgis" setup_postgresql_db
 
-  fetch_and_deploy_gh_release "dawarich" "Freika/dawarich" "tarball" "latest" "/opt/dawarich/app"
+  fetch_and_deploy_gh_release "dawarich" "$var_lxc_git_repo" "tarball" "latest" "/opt/dawarich/app"
 
   msg_info "Setting up Directories"
   mkdir -p /opt/dawarich/app/{storage,log,tmp/pids,tmp/cache,tmp/sockets}
@@ -205,7 +206,7 @@ function update_script() {
 
   ensure_dependencies libgeos++-dev libxml2-dev libxslt-dev libjemalloc-dev
 
-  if check_for_gh_release "dawarich" "Freika/dawarich"; then
+  if check_for_gh_release "dawarich" "$var_lxc_git_repo"; then
     msg_info "Stopping Services"
     systemctl stop dawarich-web dawarich-worker
     msg_ok "Stopped Services"
