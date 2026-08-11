@@ -25,12 +25,22 @@ function install_script() {
   fetch_and_deploy_gh_release "scrutiny-web" "$var_lxc_git_repo" "binary" "latest" "/opt/scrutiny" "scrutiny-web-linux-${SYS_ARCH}"
   chmod +x "/opt/scrutiny/scrutiny-web-linux-${SYS_ARCH}"
   ln -sf "/opt/scrutiny/scrutiny-web-linux-${SYS_ARCH}" /opt/scrutiny/scrutiny-web
-  fetch_and_deploy_gh_release "scrutiny-collector" "$var_lxc_git_repo" "binary" "latest" "/opt/scrutiny" "scrutiny-collector-metrics-linux-${SYS_ARCH}"
-  chmod +x "/opt/scrutiny/scrutiny-collector-metrics-linux-${SYS_ARCH}"
-  ln -sf "/opt/scrutiny/scrutiny-collector-metrics-linux-${SYS_ARCH}" /opt/scrutiny/scrutiny-collector
   msg_ok "Installed Scrutiny"
 
-  msg_info "Creating Services"
+  msg_info "Configuring Scrutiny"
+  mkdir -p /opt/scrutiny/config
+  cat << EOF > /opt/scrutiny/config/scrutiny.yaml
+version: 1
+web:
+  listen:
+    port: 80
+    host: 0.0.0.0
+  database:
+    location: /opt/scrutiny/config/scrutiny.db
+EOF
+  msg_ok "Configured Scrutiny"
+
+  msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/scrutiny.service
 [Unit]
 Description=Scrutiny Web UI
@@ -39,38 +49,15 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/opt/scrutiny/scrutiny-web start --port 80
+ExecStart=/opt/scrutiny/scrutiny-web start --config /opt/scrutiny/config/scrutiny.yaml
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-  cat << EOF > /etc/systemd/system/scrutiny-collector.service
-[Unit]
-Description=Scrutiny Collector
-After=scrutiny.service
-
-[Service]
-Type=oneshot
-User=root
-ExecStart=/opt/scrutiny/scrutiny-collector run --api-endpoint http://localhost:80
-EOF
-
-  cat << EOF > /etc/systemd/system/scrutiny-collector.timer
-[Unit]
-Description=Scrutiny Collector Timer
-
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-  systemctl enable -q --now scrutiny scrutiny-collector.timer
-  msg_ok "Created Services"
+  systemctl enable -q --now scrutiny
+  msg_ok "Created Service"
 }
 
 function post_install_script() {
@@ -78,6 +65,7 @@ function post_install_script() {
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW}Access it using the following URL:${CL}"
   echo -e "${GATEWAY}${BGN}http://${IP}${CL}"
+  echo -e "${INFO}${YW}SMART data collection requires the scrutiny-collector addon — install it on your PVE host.${CL}"
 }
 
 function update_script() {
@@ -98,13 +86,9 @@ function update_script() {
     fetch_and_deploy_gh_release "scrutiny-web" "$var_lxc_git_repo" "binary" "latest" "/opt/scrutiny" "scrutiny-web-linux-${SYS_ARCH}"
     chmod +x "/opt/scrutiny/scrutiny-web-linux-${SYS_ARCH}"
     ln -sf "/opt/scrutiny/scrutiny-web-linux-${SYS_ARCH}" /opt/scrutiny/scrutiny-web
-    fetch_and_deploy_gh_release "scrutiny-collector" "$var_lxc_git_repo" "binary" "latest" "/opt/scrutiny" "scrutiny-collector-metrics-linux-${SYS_ARCH}"
-    chmod +x "/opt/scrutiny/scrutiny-collector-metrics-linux-${SYS_ARCH}"
-    ln -sf "/opt/scrutiny/scrutiny-collector-metrics-linux-${SYS_ARCH}" /opt/scrutiny/scrutiny-collector
     systemctl start scrutiny
     msg_ok "Updated successfully!"
   fi
-
   exit
 }
 
