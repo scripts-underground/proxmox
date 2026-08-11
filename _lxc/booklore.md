@@ -6,7 +6,7 @@ logo: /assets/logos/booklore.webp
 by: MickLesk
 repo: https://github.com/booklore-app/BookLore
 site: https://github.com/booklore-app/BookLore
-port: 6060
+port: 80
 cpu: 3
 ram: 3072
 disk: 7

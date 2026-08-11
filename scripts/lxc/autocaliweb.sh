@@ -122,6 +122,7 @@ EOF
   curl -fsSL https://codeberg.org/gelbphoenix/autocaliweb/raw/branch/main/library/app.db -o "$CONFIG_DIR"/app.db
   sqlite3 "$CONFIG_DIR/app.db" << EOS
 UPDATE settings SET
+    config_port='80',
     config_kepubifypath='$KEPUBIFY_PATH',
     config_converterpath='$EBOOK_CONVERT_PATH',
     config_binariesdir='$CALIBRE_BIN_DIR',
@@ -235,9 +236,11 @@ Environment=PYTHONPATH=$SCRIPTS_DIR:$INSTALL_DIR
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
 Environment=CALIBRE_DBPATH=$CONFIG_DIR
+Environment=CALIBRE_PORT=80
 EnvironmentFile=$INSTALL_DIR/.env
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/cps.py -p $CONFIG_DIR/app.db
 
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -314,7 +317,7 @@ function post_install_script() {
   msg_ok "Completed successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW}Access it using the following URL:${CL}"
-  echo -e "${GATEWAY}${BGN}http://${IP}:8083${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}${CL}"
 }
 
 function update_script() {
@@ -362,6 +365,15 @@ function update_script() {
     sed 's/^/v/' ~/.autocaliweb > "$INSTALL_DIR"/ACW_RELEASE
     chown -R acw:acw "$INSTALL_DIR"
     rm ~/autocaliweb_bkp.tar
+    sqlite3 "$CONFIG_DIR/app.db" "UPDATE settings SET config_port='80'"
+    if ! grep -q "AmbientCapabilities" /etc/systemd/system/autocaliweb.service 2> /dev/null; then
+      sed -i '/^ExecStart=/i AmbientCapabilities=CAP_NET_BIND_SERVICE' /etc/systemd/system/autocaliweb.service
+      systemctl daemon-reload
+    fi
+    if ! grep -q "CALIBRE_PORT=80" /etc/systemd/system/autocaliweb.service 2> /dev/null; then
+      sed -i '/^Environment=CALIBRE_DBPATH=/a Environment=CALIBRE_PORT=80' /etc/systemd/system/autocaliweb.service
+      systemctl daemon-reload
+    fi
     msg_ok "Updated Autocaliweb"
 
     msg_info "Starting Services"
