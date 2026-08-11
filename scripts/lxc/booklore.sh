@@ -49,7 +49,7 @@ DATABASE_PASSWORD=${MARIADB_DB_PASS}
 # App Configuration (Spring Boot mapping from app.* properties)
 APP_PATH_CONFIG=/opt/booklore_storage/data
 APP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop
-BOOKLORE_PORT=6060
+BOOKLORE_PORT=80
 EOF
   msg_ok "Created Environment"
 
@@ -95,7 +95,7 @@ function post_install_script() {
   msg_ok "Completed successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:6060${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
 }
 
 function update_script() {
@@ -166,7 +166,7 @@ function update_script() {
     fi
 
     if ! grep -q "^SERVER_PORT=" /opt/booklore_storage/.env 2> /dev/null; then
-      echo "BOOKLORE_PORT=6060" >> /opt/booklore_storage/.env
+      echo "BOOKLORE_PORT=80" >> /opt/booklore_storage/.env
     fi
 
     sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service
