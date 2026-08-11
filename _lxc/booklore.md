@@ -17,7 +17,7 @@ BookLore: A self-hosted, multi-user digital library with smart shelves, auto met
 
 ## Notes
 
-- Access the web UI at `http://<ip>:6060` to complete setup.
+- Access the web UI at `http://<ip>` to complete setup.
 - Starting BookLore may take up to 2 minutes after a restart or fresh installation.
 - Update works automatically through the script; the app also offers a built-in updater.
 
