@@ -6,7 +6,7 @@ logo: /assets/logos/autocaliweb.webp
 by: vhsdream
 repo: https://codeberg.org/gelbphoenix/autocaliweb
 site: https://codeberg.org/gelbphoenix/autocaliweb
-port: 8083
+port: 80
 cpu: 2
 ram: 2048
 disk: 6
