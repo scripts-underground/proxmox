@@ -30,7 +30,6 @@ function install_script() {
   ln -sf "/opt/scrutiny/scrutiny-collector-metrics-linux-${SYS_ARCH}" /opt/scrutiny/scrutiny-collector
   msg_ok "Installed Scrutiny"
 
-
   msg_info "Creating Services"
   cat << EOF > /etc/systemd/system/scrutiny.service
 [Unit]
