@@ -1,28 +1,16 @@
 ---
 slug: openwebui
 title: Open WebUI
-tags: [ai, interface]
+tags: [ai, llm]
 logo: /assets/logos/openwebui.webp
-by: tteck
-co_author: [havardthom, tremor021]
+by: alexindigo
 repo: https://github.com/open-webui/open-webui
 site: https://openwebui.com
-port: 8080
-cpu: 4
-ram: 8192
-disk: 50
-maintainer: tteck
+port: 80
+cpu: 2
+ram: 4096
+disk: 8
+maintainer: alexindigo
 ---
 
-Open WebUI is a user-friendly web interface for interacting with Large Language Models.
-
-## Notes
-
-- Access the web UI at `http://<ip>:8080`
-- Supports Ollama integration for local LLM inference
-- GPU passthrough is configured automatically when a GPU is detected on the host
-- Ollama installation is optional and prompted during initial setup
-
-## Links
-
-- [GitHub](https://github.com/open-webui/open-webui)
+Open WebUI is an extensible, self-hosted AI chat interface. Connect to Ollama, OpenAI-compatible APIs, or any model provider. Plugin system, agents, RAG, MCP support — all running entirely offline.
