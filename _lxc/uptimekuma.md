@@ -6,7 +6,7 @@ logo: /assets/logos/uptimekuma.webp
 by: tteck
 repo: https://github.com/louislam/uptime-kuma
 site: https://uptime.kuma.pet/
-port: 3001
+port: 80
 cpu: 1
 ram: 1024
 disk: 4
