@@ -15,6 +15,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_git_repo="${var_lxc_git_repo:-louislam/uptime-kuma}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -22,7 +23,7 @@ function install_script() {
   msg_ok "Installed Dependencies"
 
   NODE_VERSION="22" setup_nodejs
-  fetch_and_deploy_gh_release "uptime-kuma" "louislam/uptime-kuma" "tarball"
+  fetch_and_deploy_gh_release "uptime-kuma" "$var_lxc_git_repo" "tarball"
 
   msg_info "Installing Uptime Kuma"
   cd /opt/uptime-kuma || exit
@@ -41,6 +42,7 @@ Type=simple
 Restart=always
 User=root
 WorkingDirectory=/opt/uptime-kuma
+Environment=PORT=80
 ExecStart=/usr/bin/npm start
 
 [Install]
@@ -54,7 +56,7 @@ function post_install_script() {
   msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW}Access it using the following URL:${CL}"
-  echo -e "${GATEWAY}${BGN}http://${IP}:3001${CL}"
+  echo -e "${GATEWAY}${BGN}http://${IP}${CL}"
 }
 
 function update_script() {
@@ -73,12 +75,12 @@ function update_script() {
     ln -s /usr/bin/chromium /opt/uptime-kuma/chromium
   fi
 
-  if check_for_gh_release "uptime-kuma" "louislam/uptime-kuma"; then
+  if check_for_gh_release "uptime-kuma" "$var_lxc_git_repo"; then
     msg_info "Stopping Service"
     systemctl stop uptime-kuma
     msg_ok "Stopped Service"
 
-    fetch_and_deploy_gh_release "uptime-kuma" "louislam/uptime-kuma" "tarball"
+    fetch_and_deploy_gh_release "uptime-kuma" "$var_lxc_git_repo" "tarball"
 
     msg_info "Updating Uptime Kuma"
     cd /opt/uptime-kuma || exit
