@@ -7,7 +7,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Source: https://github.com/alexindigo/globnotes
 
 # shellcheck disable=SC2034
-APP="GlobNotes"
+APP="Globnotes"
 var_tags="${var_tags:-notes;markdown}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-1024}"
@@ -26,9 +26,9 @@ function install_script() {
   NODE_VERSION="24" setup_nodejs
   PYTHON_VERSION="3.13" setup_uv
 
-  msg_info "Cloning GlobNotes"
+  msg_info "Cloning Globnotes"
   clone_and_deploy_gh_commit "globnotes" "$var_lxc_git_repo" "main" "${var_lxc_git_tag:-}" "${var_lxc_pinned_commit:-}" /opt/globnotes
-  msg_ok "Cloned GlobNotes"
+  msg_ok "Cloned Globnotes"
 
   msg_info "Building Frontend"
   cd /opt/globnotes || exit
@@ -99,12 +99,12 @@ function update_script() {
     LOCAL=$(git rev-parse HEAD)
     REMOTE=$(git rev-parse "origin/$DESIRED_REF")
     if [[ "$LOCAL" == "$REMOTE" ]]; then
-      msg_ok "GlobNotes is up to date — no update needed"
+      msg_ok "Globnotes is up to date — no update needed"
       exit
     fi
   fi
 
-  msg_info "Updating GlobNotes"
+  msg_info "Updating Globnotes"
   systemctl stop globnotes
 
   NODE_VERSION="24" setup_nodejs
