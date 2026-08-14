@@ -175,7 +175,7 @@ maintainer: GitHubUsername
 - **repo** — upstream repo URL
 - **site** — project website (prefer the JSON `website` field over the `# Source:` line when they differ)
 - **port**, **cpu**, **ram**, **disk** — must match the `var_*` defaults in the script
-- **logo** — either a repo-relative path (`/assets/logos/appname.webp`) or a remote URL. Remote URLs run through the fetch-logos pipeline which fits them into a 512×512 canvas.
+- **logo** — deliverables are the script, the metadata, and the logo; how the logo arrives doesn't matter because CI validates and auto-fixes every newly added/modified logo. Preferred: reference a **remote URL** (any format — PNG, SVG, webp) and let the fetch-logos pipeline fetch, convert, and commit `assets/logos/<slug>.webp` back to the PR. Hand-committed local files are equally fine (derived marks with no upstream file). CI enforces: webp format, 512×512, alpha preserved when the source has transparency. If you do convert locally, `-background none` must come **before** `-extent` in the magick invocation — otherwise the alpha channel silently flattens to white corners.
 
 When sourcing a logo from the upstream project, prefer in this order:
 

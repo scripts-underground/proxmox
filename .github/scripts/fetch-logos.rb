@@ -142,10 +142,10 @@ COLLECTIONS.each_value do |dir|
     begin
       image = MiniMagick::Image.read(image_data)
       image.combine_options do |c|
+        c.background "none"
         c.resize "512x512"
         c.gravity "center"
         c.extent "512x512"
-        c.background "none"
       end
       image.format "webp"
       image.write webp_path
