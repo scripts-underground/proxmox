@@ -2,7 +2,7 @@
 slug: globnotes
 title: Globnotes
 tags: [notes, markdown]
-logo: /assets/logos/globnotes.webp
+logo: https://raw.githubusercontent.com/alexindigo/globnotes/main/docs/icon.svg
 by: alexindigo
 repo: https://github.com/alexindigo/globnotes
 site: https://github.com/alexindigo/globnotes
