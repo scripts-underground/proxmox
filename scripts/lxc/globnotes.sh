@@ -17,6 +17,9 @@ var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 var_lxc_git_repo="${var_lxc_git_repo:-alexindigo/globnotes}"
+var_lxc_git_branch="${var_lxc_git_branch:-main}"
+var_lxc_git_tag="${var_lxc_git_tag:-}"
+var_lxc_pinned_commit="${var_lxc_pinned_commit:-}"
 
 function install_script() {
   msg_info "Installing Dependencies"
@@ -86,7 +89,7 @@ function update_script() {
   fi
 
   cd /opt/globnotes || exit
-  $STD git fetch origin main
+  $STD git fetch origin --tags
 
   local TRACK_FILE="$HOME/.globnotes"
   local CURRENT_MODE="" CURRENT_REF=""
@@ -94,14 +97,35 @@ function update_script() {
     IFS=: read -r CURRENT_MODE CURRENT_REF < "$TRACK_FILE"
   fi
 
-  local DESIRED_MODE="branch" DESIRED_REF="main"
+  local DESIRED_MODE="$CURRENT_MODE" DESIRED_REF="$CURRENT_REF"
+  if [[ -n "${var_lxc_pinned_commit:-}" ]]; then
+    DESIRED_MODE="commit" DESIRED_REF="$var_lxc_pinned_commit"
+  elif [[ -n "${var_lxc_git_tag:-}" ]]; then
+    DESIRED_MODE="tag" DESIRED_REF="$var_lxc_git_tag"
+  elif [[ -n "${var_lxc_git_branch:-}" ]]; then
+    DESIRED_MODE="branch" DESIRED_REF="$var_lxc_git_branch"
+  fi
+
+  if [[ -z "$DESIRED_MODE" ]]; then
+    msg_ok "No update mode configured — exiting"
+    exit
+  fi
+
   if [[ "$CURRENT_MODE" == "$DESIRED_MODE" && "$CURRENT_REF" == "$DESIRED_REF" ]]; then
-    LOCAL=$(git rev-parse HEAD)
-    REMOTE=$(git rev-parse "origin/$DESIRED_REF")
-    if [[ "$LOCAL" == "$REMOTE" ]]; then
-      msg_ok "Globnotes is up to date — no update needed"
-      exit
-    fi
+    case "$DESIRED_MODE" in
+      commit | tag)
+        msg_ok "Globnotes is at ${DESIRED_MODE} ${DESIRED_REF} — no update needed"
+        exit
+        ;;
+      branch)
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse "origin/$DESIRED_REF")
+        if [[ "$LOCAL" == "$REMOTE" ]]; then
+          msg_ok "Globnotes is up to date — no update needed"
+          exit
+        fi
+        ;;
+    esac
   fi
 
   msg_info "Updating Globnotes"
@@ -110,7 +134,10 @@ function update_script() {
   NODE_VERSION="24" setup_nodejs
   PYTHON_VERSION="3.13" setup_uv
 
-  $STD git pull origin main
+  # setup_nodejs leaves CWD in /opt — return to the app dir before building
+  cd /opt/globnotes || exit
+  git_update_checkout /opt/globnotes "$DESIRED_MODE" "$DESIRED_REF"
+  echo "${DESIRED_MODE}:${DESIRED_REF}" > "$TRACK_FILE"
   $STD npm ci
   $STD npm run build
   $STD uv sync --locked --no-dev
