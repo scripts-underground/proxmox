@@ -2,7 +2,7 @@
 slug: localsend-nas
 title: LocalSend NAS
 tags: [file-sharing, localsend]
-logo: https://raw.githubusercontent.com/alexindigo/localsend-nas/main/web/logo.png
+logo: /assets/logos/localsend-nas.webp
 by: alexindigo
 repo: https://github.com/alexindigo/localsend-nas
 site: https://github.com/alexindigo/localsend-nas
