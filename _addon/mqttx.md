@@ -12,6 +12,12 @@ maintainer: MickLesk
 
 MQTTX Web is a web-based MQTT client that provides a browser interface for testing and interacting with MQTT brokers. Built with modern web technologies, it offers a clean and intuitive UI for publishing and subscribing to MQTT topics.
 
+## Notes
+
+- Runs inside an existing LXC container (Debian/Ubuntu only)
+- Update with: `update-mqttx-web` — Uninstall with: `uninstall-mqttx-web`
+- Re-running the installer offers update/uninstall via the framework guard
+
 ## Links
 
 - [GitHub](https://github.com/emqx/MQTTX)
