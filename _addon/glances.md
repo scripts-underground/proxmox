@@ -14,9 +14,10 @@ Cross-platform system monitoring tool. Web UI with CPU, memory, disk, network, a
 
 ## Notes
 
+- Runs inside an existing LXC container
 - Access at `http://<ip>:61208`
 - Supports both Debian/Ubuntu and Alpine
-- Install/Update/Uninstall via interactive menu
+- Update via `update-glances`, uninstall via `uninstall-glances`
 
 ## Links
 
