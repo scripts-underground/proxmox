@@ -34,16 +34,16 @@
 - [ ] **Shadowed function: `cleanup_lxc`** — both `core.func` and `install.func` define it. `install.func` wins inside the container (sourced later). Confirm this is intentional (install.func version supports all OS families; core.func version is Alpine/Debian only). If intentional, document the shadowing.
 
 ### Architecture docs — stubs to fill
-- [ ] **§3.2 Addon bootstrap** — `misc/bootstrap/addon` detailed walk-through.
+- [x] **§3.2 Addon bootstrap** — `misc/bootstrap/addon` detailed walk-through.
 - [ ] **§3.3 PVE bootstrap** — `misc/bootstrap/pve` detailed walk-through.
 - [ ] **§3.4 VM bootstrap** — `misc/bootstrap/vm` detailed walk-through.
-- [ ] **§4.2-§4.4 Install paths** for Addon, PVE, VM.
-- [ ] **§5.2-§5.4 Variable propagation** for Addon, PVE, VM.
-- [ ] **§6.2-§6.4 Extension points** for Addon, PVE, VM.
+- [x] **§4.2 Install path for Addon** (§4.3/§4.4 PVE/VM remain).
+- [x] **§5.2 Variable propagation for Addon** (§5.3/§5.4 PVE/VM remain).
+- [x] **§6.2 Extension points for Addon** (§6.3/§6.4 PVE/VM remain).
 
 ### Per-script audit
 - [ ] **LXC scripts (87)** — verify each follows the spec: REPO_BASE at top, required function order, no inline helper redefinitions, no direct calls to `start`/`build_container`/`description`.
-- [ ] **Addon scripts (6)** — verify each removes inline helper redefinitions (check copyparty, filebrowser, glances).
+- [x] **Addon scripts (6)** — all rewritten on framework v2 (inline helpers removed, copyparty re-synced with upstream).
 - [ ] **PVE scripts (10)** — verify REPO_BASE is set, bootstrap sourcing works (some scripts source bootstrap in the middle, some don't source at all).
 - [ ] **VM scripts (11)** — verify they match whatever VM contract emerges after filling the stubs.
 
@@ -54,9 +54,9 @@
 - [ ] **Function-call cross-linking** — `function-call` tokens as clickable links to `function-name` declarations.
 - [ ] **Token-first rendering** — pivot AST schema so tokens (not `source` text) are the canonical script representation. See `docs/token-first-rendering.md`.
 
-## Other Script Types (not yet started)
-- [ ] **Addon scripts** — 6 remaining (copyparty, cronmaster, filebrowser, glances, jellystat, mqttx), ~9 more from upstream `tools/` + `addon/`
-- [ ] **Host Addon scripts** (temp name) — 4 identified (add-iptag, add-tailscale-lxc, code-server, netdata), need host-level bootstrap, ~10 more from upstream. Not yet created.
+## Other Script Types
+- [x] **Addon scripts** — framework v2 (`misc/addon.func` + rewritten `misc/bootstrap/addon`); 6 prototypes rewritten; 23 container addons migrated from upstream `tools/addon/`. Runtime-verified on the PVE VM (copyparty, filebrowser, olivetin, webmin, pihole-exporter, coder-code-server, portainer).
+- [ ] **Host addons (parked, classified)** — upstream `tools/addon/` scripts that run on the PVE host: netdata, add-tailscale-lxc, add-netbird-lxc, all-templates (+ add-iptag from `tools/pve/`). coder-code-server / crowdsec / homebrew were re-verified as container addons and migrated. Landing zone for host scripts (pve type vs new type) intentionally undecided — revisit with the PVE audit.
 - [ ] **PVE scripts** — 10 existing, ~20 more from upstream `tools/pve/`
 - [ ] **VM scripts** — 11 existing, ~5 more from upstream `vm/`
 - [ ] **Regenerate `scripts.json`** — auto-generated on `jekyll build`
