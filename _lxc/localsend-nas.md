@@ -1,6 +1,6 @@
 ---
 slug: localsend-nas
-title: LocalSend NAS
+title: LocalSend-NAS
 tags: [file-sharing, localsend]
 logo: /assets/logos/localsend-nas.webp
 by: alexindigo

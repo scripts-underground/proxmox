@@ -7,7 +7,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Source: https://github.com/alexindigo/localsend-nas
 
 # shellcheck disable=SC2034
-APP="LocalSend NAS"
+APP="LocalSend-NAS"
 var_tags="${var_tags:-file-sharing;localsend}"
 var_cpu="${var_cpu:-1}"
 var_ram="${var_ram:-512}"
@@ -19,18 +19,18 @@ var_unprivileged="${var_unprivileged:-1}"
 var_lxc_git_repo="${var_lxc_git_repo:-alexindigo/localsend-nas}"
 
 function install_script() {
-  msg_info "Installing LocalSend NAS"
+  msg_info "Installing LocalSend-NAS"
   local SYS_ARCH
   SYS_ARCH=$(get_system_arch)
   fetch_and_deploy_gh_release "localsend-nas" "$var_lxc_git_repo" "prebuild" "latest" "/opt/localsend-nas" "localsend-nas_*_linux_${SYS_ARCH}.tar.gz"
   chmod +x /opt/localsend-nas/localsend-nas
   mkdir -p /data
-  msg_ok "Installed LocalSend NAS"
+  msg_ok "Installed LocalSend-NAS"
 
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/localsend-nas.service
 [Unit]
-Description=LocalSend NAS
+Description=LocalSend-NAS
 After=network.target
 
 [Service]
