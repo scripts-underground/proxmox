@@ -472,6 +472,93 @@ taken from the upstream JSON's `description` field or the script's
 - [ ] No `motd_ssh`, `customize`, `cleanup_lxc` calls remain in
       `install_script()` body (these are in the wrapper postamble)
 
+## Addon script migration
+
+> Addon scripts come from the upstream `tools/addon/` directory. They run
+> INSIDE an existing LXC container (not on the PVE host, not creating a
+> container). Target: `scripts/addon/<slug>.sh` + `_addon/<slug>.md`.
+
+### Upstream addon architecture
+
+Upstream addons are single-file but carry an inline dispatch section:
+
+1. Shebang + copyright header, `APP=`, `APP_TYPE="addon"`.
+2. Curl-ensure preamble (apk/apt install of curl).
+3. `source <(curl …)` × core.func, tools.func, error_handler.func, api.func
+   + `init_tool_telemetry` (telemetry — removed here).
+4. `set -Eeuo pipefail; trap 'error_handler' ERR`; `load_functions`;
+   `header_info`; `get_lxc_ip`.
+5. Per-script OS detection block (Alpine vs Debian).
+6. `install()` / `update()` / `uninstall()` functions.
+7. MAIN section: `type=update` re-entry → per-script "already installed?"
+   menu (uninstall/update prompt) → y/n confirm → install. `install()`
+   writes a `/usr/local/bin/update_<slug>` stub that **re-curls the
+   installer from GitHub** on every update.
+
+### Our replacement
+
+- Hook contract: `install_script()` / `update_script()` / `uninstall_script()`
+  (+ optional `post_install_script()`, `header_info()`).
+- `misc/bootstrap/addon` + `misc/addon.func` orchestrate; self-contained
+  bundles at `/usr/local/sbin/{update,uninstall}_<slug>` (aliased to
+  `/usr/bin/`) replace the re-curl stub — frozen at install time,
+  offline-capable.
+- Install marker `/var/lib/scripts-underground/addons/<slug>`; re-running
+  the installer offers update/uninstall/abort via `addon_guard_installed`
+  (`ADDON_ACTION` env bypass).
+
+### Host vs container classification
+
+Classify before migrating. Signals in the upstream source:
+
+| Signal | Verdict |
+|---|---|
+| `require_pve_host`, `pct `, `pveam`, `pvesm`, `qm `, `/etc/pve/` paths, whiptail CT picker | **host** — do NOT migrate as addon (park for the PVE effort) |
+| `get_lxc_ip`, container guard, local systemd/openrc service install | **container** — migrate as addon |
+
+Known host scripts (do not port): netdata, add-tailscale-lxc,
+add-netbird-lxc, all-templates, coder-code-server, add-iptag.
+
+### Conversion map
+
+| Upstream piece | Fork action |
+|---|---|
+| Curl-ensure preamble | **Keep minimal version** (apt/apk + hard-fail check) directly above the bootstrap source — the bootstrap line itself needs curl; everything else is framework-bootstrapped |
+| 4× `source <(curl …)` + `init_tool_telemetry` | Delete (bootstrap loads framework; no telemetry) |
+| `set -Eeuo pipefail; trap 'error_handler' ERR` | Delete (`catch_errors` via install.func `_bootstrap`) |
+| `load_functions`, `header_info` call, `ensure_usr_local_bin_persist`, `get_lxc_ip` calls | Delete from body (bootstrap owns); keep `header_info()` *function* if it has ASCII art |
+| Per-script Alpine/Debian detection | Framework `detect_os` globals: `OS_FAMILY` (`debian`/`alpine`), `INIT_SYSTEM` (`systemd`/`openrc`) |
+| `install()` | `install_script()`; strip its update-stub heredoc and trailing success echoes (→ `post_install_script()`) |
+| `update()` | `update_script()`; keep `check_for_gh_release` flow; end with `exit` |
+| `uninstall()` | `uninstall_script()`; drop `rm -f /usr/local/bin/update_*` lines (bundle self-destruct owns lifecycle) |
+| MAIN section (`type=update`, installed-menu, y/n confirm) | Delete (framework guard + bundles replace it) |
+| Interactive prompts (`read` for ports/creds) | **Keep** in `install_script()`, but write `read … \|\| true` + `${var:-default}` (EOF tolerance under `set -e`) |
+| `/usr/local/bin/update_<slug>` re-curl heredoc | Delete — bundles replace it |
+| Script constants referenced by `update`/`uninstall` (paths, URLs, service users) | Rename to `var_addon_*` with `${var_addon_x:-default}` — baked into bundles |
+| Alpine openrc service branches | Keep; branch on `[[ "$INIT_SYSTEM" == "openrc" ]]` |
+| `apt-get` / `sudo` | `apt` / remove (container runs as root) |
+
+### Metadata
+
+`_addon/<slug>.md` frontmatter: `slug`, `title`, `tags`, `logo` (remote URL —
+CI fetch-logos converts), `by`, `repo`, `site`, `port`, `maintainer`. **No**
+`cpu`/`ram`/`disk`. Notes reference the `update-<slug>` / `uninstall-<slug>`
+command names.
+
+### Checklist
+
+- [ ] `REPO_BASE=` first, copyright header after (License → our repo)
+- [ ] `APP=` set; no `APP_TYPE`, no resource `var_*`
+- [ ] `var_addon_*` for every hook-referenced constant
+- [ ] curl-ensure block + hard-fail check above bootstrap source
+- [ ] `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")` as last line
+- [ ] No `init_tool_telemetry` / `api.func` / `type=update` / re-curl stub
+- [ ] No per-script OS detection, no inline colors/`msg_*` redefinitions
+- [ ] Prompts use `read … || true` + `${var:-default}`
+- [ ] `shfmt -i 2 -ci -sr -d` clean, `shellcheck --severity=warning` clean
+- [ ] `go run ./tools/ast/.` exits 0
+- [ ] `_addon/<slug>.md` matches (tags, port, authors)
+
 ## VM script migration
 
 > VM scripts come from the `community-scripts/ProxmoxVE` repository (the

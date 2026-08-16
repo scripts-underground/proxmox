@@ -14,8 +14,9 @@ Copyparty is a lightweight, portable HTTP file server with a browser-based inter
 
 ## Notes
 
-- Execute within the Proxmox shell or in LXC
-- Update with: update_copyparty
+- Runs inside an existing LXC container (Debian/Ubuntu or Alpine)
+- Update with: `update-copyparty` — Uninstall with: `uninstall-copyparty`
+- Re-running the installer offers update/uninstall via the framework guard
 
 ## Links
 

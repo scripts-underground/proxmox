@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster) | Co-Author: MickLesk
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://filebrowser.org/ | Github: https://github.com/filebrowser/filebrowser
 
-REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="File Browser"
 
-function header_info {
+# Bundle-consumed configuration (var_addon_* is baked into update/uninstall
+# bundles at install time — hooks may reference these directly)
+var_addon_bin_path="${var_addon_bin_path:-/usr/local/bin/filebrowser}"
+var_addon_db_dir="${var_addon_db_dir:-/usr/local/scripts-underground}"
+var_addon_db_path="${var_addon_db_path:-${var_addon_db_dir}/filebrowser.db}"
+var_addon_dist_path="${var_addon_dist_path:-/opt/filebrowser-dist}"
+var_addon_default_port="${var_addon_default_port:-8080}"
+
+function header_info() {
   clear
   cat << "EOF"
     _______ __     ____
@@ -17,160 +29,141 @@ function header_info {
 EOF
 }
 
-YW=$(echo "\033[33m")
-GN=$(echo "\033[1;92m")
-RD=$(echo "\033[01;31m")
-BL=$(echo "\033[36m")
-CL=$(echo "\033[m")
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-CM="${GN}✔️${CL}"
-CROSS="${RD}✖️${CL}"
-INFO="${BL}ℹ️${CL}"
-
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-APP="FileBrowser"
-INSTALL_PATH="/usr/local/bin/filebrowser"
-DB_PATH="/usr/local/scripts-underground/filebrowser.db"
-DEFAULT_PORT=8080
-
-IFACE=$(ip -4 route | awk '/default/ {print $5; exit}')
-IP=$(ip -4 addr show "$IFACE" | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
-
-[[ -z "$IP" ]] && IP=$(hostname -I | awk '{print $1}')
-[[ -z "$IP" ]] && IP="127.0.0.1"
-
-if [[ -f "/etc/alpine-release" ]]; then
-  OS="Alpine"
-  SERVICE_PATH="/etc/init.d/filebrowser"
-  PKG_MANAGER="apk add --no-cache"
-elif [[ -f "/etc/debian_version" ]]; then
-  OS="Debian"
-  SERVICE_PATH="/etc/systemd/system/filebrowser.service"
-  PKG_MANAGER="apt-get install -y"
-else
-  echo -e "${CROSS} Unsupported OS detected. Exiting."
-  exit 1
-fi
-
-function msg_info() {
-  local msg="$1"
-  echo -e "${INFO} ${YW}${msg}...${CL}"
-}
-
-function msg_ok() {
-  local msg="$1"
-  echo -e "${CM} ${GN}${msg}${CL}"
-}
-
-function msg_error() {
-  local msg="$1"
-  echo -e "${CROSS} ${RD}${msg}${CL}"
-}
-
 function install_script() {
-  header_info
+  if [[ "$OS_FAMILY" != "debian" && "$OS_FAMILY" != "alpine" ]]; then
+    msg_error "Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)"
+    exit 1
+  fi
 
-  echo -e "${YW}⚠️ ${APP} is not installed.${CL}"
-  read -r -p "Enter port number (Default: ${DEFAULT_PORT}): " PORT
-  PORT=${PORT:-$DEFAULT_PORT}
+  echo ""
+  read -erp "${TAB}Enter port number [${var_addon_default_port}]: " PORT || true
+  PORT=${PORT:-$var_addon_default_port}
 
-  read -r -p "Would you like to install ${APP}? (y/n): " install_prompt
-  if [[ "${install_prompt,,}" =~ ^(y|yes)$ ]]; then
-    msg_info "Installing ${APP} on ${OS}"
-    $PKG_MANAGER wget tar curl &> /dev/null
-    curl -fsSL "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz" | tar -xzv -C /usr/local/bin &> /dev/null
-    chmod +x "$INSTALL_PATH"
-    msg_ok "Installed ${APP}"
+  msg_info "Installing ${APP} on ${OS_FAMILY^}"
+  if [[ "$OS_FAMILY" == "debian" ]]; then
+    $STD apt install -y tar curl
+  else
+    $STD apk add --no-cache tar curl
+  fi
+  fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
+  install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
+  rm -rf "$var_addon_dist_path"
+  msg_ok "Installed ${APP}"
 
-    msg_info "Creating FileBrowser directory"
-    mkdir -p /usr/local/scripts-underground
-    chown root:root /usr/local/scripts-underground
-    chmod 755 /usr/local/scripts-underground
-    touch "$DB_PATH"
-    chown root:root "$DB_PATH"
-    chmod 644 "$DB_PATH"
-    msg_ok "Directory created successfully"
+  msg_info "Creating ${APP} directory"
+  mkdir -p "$var_addon_db_dir"
+  chown root:root "$var_addon_db_dir"
+  chmod 755 "$var_addon_db_dir"
+  touch "$var_addon_db_path"
+  chown root:root "$var_addon_db_path"
+  chmod 644 "$var_addon_db_path"
+  msg_ok "Directory created successfully"
 
-    cd /usr/local/scripts-underground || exit
-    filebrowser config init &> /dev/null
-    filebrowser config set -a '0.0.0.0' -p "$PORT" -d "$DB_PATH" &> /dev/null
-    filebrowser users add admin helper-scripts.com --perm.admin --database "$DB_PATH" &> /dev/null
-
-    read -r -p "Would you like to use No Authentication? (y/N): " auth_prompt
-    if [[ "${auth_prompt,,}" =~ ^(y|yes)$ ]]; then
-      msg_info "Configuring No Authentication"
-      filebrowser config set --auth.method=noauth &> /dev/null
-      msg_ok "No Authentication configured"
-    else
-      msg_ok "Default authentication configured (admin:helper-scripts.com)"
+  echo -n "${TAB}Would you like to use No Authentication? (y/N): "
+  read -r auth_prompt || true
+  if [[ "${auth_prompt,,}" =~ ^(y|yes)$ ]]; then
+    msg_info "Configuring No Authentication"
+    cd "$var_addon_db_dir" || exit
+    $STD filebrowser config init -a '0.0.0.0' -p "$PORT" -d "$var_addon_db_path"
+    $STD filebrowser config set -a '0.0.0.0' -p "$PORT" -d "$var_addon_db_path"
+    $STD filebrowser config set --auth.method=noauth --database "$var_addon_db_path"
+    if ! filebrowser users update 1 --perm.admin --database "$var_addon_db_path" &> /dev/null; then
+      $STD filebrowser users add admin community-scripts.org --perm.admin --database "$var_addon_db_path"
     fi
+    msg_ok "No Authentication configured"
+  else
+    msg_info "Setting up default authentication"
+    cd "$var_addon_db_dir" || exit
+    $STD filebrowser config init -a '0.0.0.0' -p "$PORT" -d "$var_addon_db_path"
+    $STD filebrowser config set -a '0.0.0.0' -p "$PORT" -d "$var_addon_db_path"
+    $STD filebrowser users add admin community-scripts.org --perm.admin --database "$var_addon_db_path"
+    msg_ok "Default authentication configured (admin:community-scripts.org)"
+  fi
 
-    msg_info "Creating service"
-    if [[ "$OS" == "Debian" ]]; then
-      cat << EOF > "$SERVICE_PATH"
+  msg_info "Creating service"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    cat << EOF > /etc/init.d/filebrowser
+#!/sbin/openrc-run
+
+command="${var_addon_bin_path}"
+command_args="-r / -d ${var_addon_db_path} -p ${PORT}"
+command_background=true
+pidfile="/var/run/filebrowser.pid"
+directory="${var_addon_db_dir}"
+
+depend() {
+    need net
+}
+EOF
+    chmod +x /etc/init.d/filebrowser
+    $STD rc-update add filebrowser default
+    $STD rc-service filebrowser start
+  else
+    cat << EOF > /etc/systemd/system/filebrowser.service
 [Unit]
 Description=Filebrowser
 After=network-online.target
 
 [Service]
 User=root
-WorkingDirectory=/usr/local/scripts-underground
-ExecStartPre=/bin/touch /usr/local/scripts-underground/filebrowser.db
-ExecStartPre=/usr/local/bin/filebrowser config set -a "0.0.0.0" -p ${PORT} -d /usr/local/scripts-underground/filebrowser.db
-ExecStart=/usr/local/bin/filebrowser -r / -d /usr/local/scripts-underground/filebrowser.db -p ${PORT}
+WorkingDirectory=${var_addon_db_dir}
+ExecStartPre=/bin/touch ${var_addon_db_path}
+ExecStartPre=${var_addon_bin_path} config set -a "0.0.0.0" -p ${PORT} -d ${var_addon_db_path}
+ExecStart=${var_addon_bin_path} -r / -d ${var_addon_db_path} -p ${PORT}
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
-      systemctl enable -q --now filebrowser
-    else
-      cat << ALPEOF > "$SERVICE_PATH"
-#!/sbin/openrc-run
-
-command="/usr/local/bin/filebrowser"
-command_args="-r / -d $DB_PATH -p $PORT"
-command_background=true
-pidfile="/var/run/filebrowser.pid"
-directory="/usr/local/scripts-underground"
-
-depend() {
-    need net
-}
-ALPEOF
-      chmod +x "$SERVICE_PATH"
-      rc-update add filebrowser default &> /dev/null
-      rc-service filebrowser start &> /dev/null
-    fi
-    msg_ok "Service created successfully"
+    systemctl enable -q --now filebrowser
   fi
+  msg_ok "Service created successfully"
+}
+
+function post_install_script() {
+  echo ""
+  msg_ok "${APP} is reachable at: ${BL}http://${LOCAL_IP}:${PORT}${CL}"
+  echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
 }
 
 function update_script() {
-  msg_info "Updating ${APP}"
-  curl -fsSL "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz" | tar -xzv -C /usr/local/bin &> /dev/null
-  chmod +x "$INSTALL_PATH"
-  msg_ok "Updated ${APP}"
+  if check_for_gh_release "filebrowser" "filebrowser/filebrowser"; then
+    msg_info "Updating ${APP}"
+    fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
+    install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
+    rm -rf "$var_addon_dist_path"
+    msg_ok "Updated ${APP}"
+  fi
+  exit
 }
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  if [[ "$OS" == "Debian" ]]; then
-    systemctl disable --now filebrowser.service &> /dev/null
-    rm -f "$SERVICE_PATH"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service filebrowser stop &> /dev/null || true
+    rc-update del filebrowser &> /dev/null || true
+    rm -f /etc/init.d/filebrowser
   else
-    rc-service filebrowser stop &> /dev/null
-    rc-update del filebrowser &> /dev/null
-    rm -f "$SERVICE_PATH"
+    systemctl disable --now filebrowser.service &> /dev/null || true
+    rm -f /etc/systemd/system/filebrowser.service
   fi
-  rm -f "$INSTALL_PATH" "$DB_PATH"
+  rm -f "$var_addon_bin_path" "$var_addon_db_path" "$HOME/.filebrowser"
   msg_ok "${APP} has been uninstalled."
 }
 
-function post_install_script() {
-  echo -e "${CM} ${GN}${APP} is reachable at: ${BL}http://$IP:$PORT${CL}"
+# Addons run inside arbitrary containers that may lack curl — ensure the
+# transport before sourcing the framework (everything else is bootstrapped
+# by install.func from this point on)
+if ! command -v curl > /dev/null 2>&1; then
+  if [[ -f /etc/alpine-release ]]; then
+    apk update &> /dev/null && apk add --no-cache curl &> /dev/null
+  else
+    apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+  fi
+fi
+command -v curl > /dev/null 2>&1 || {
+  echo "FATAL: curl is required and could not be installed" >&2
+  exit 1
 }
 
 # framework bootstrap

@@ -26,8 +26,10 @@ stages and invoke the appropriate user hooks as part of their work.
   This document covers LXC in detail.
 
 - **Addon** — runs inside an existing LXC (the user has an already-running
-  container and wants to install something into it). Different bootstrap,
-  different dispatch pattern (MODE env var drives install/update/uninstall).
+  container and wants to install something into it). Own bootstrap
+  (`misc/bootstrap/addon`) and framework module (`misc/addon.func`).
+  Install is guarded by a marker; update/uninstall run as self-contained
+  bundles baked at install time.
 
 - **PVE** — runs on the Proxmox host directly (no container creation).
   Procedural scripts that use the framework as a utility library.
@@ -120,7 +122,52 @@ fallback (`header_info_fallback()`) displays the app name.
 
 ### 3.2 Addon — `misc/bootstrap/addon`
 
-**TBD** — see migration plan.
+The addon shim runs INSIDE an existing LXC container. Every line is a source,
+a guard, or a framework function call:
+
+```bash
+# snapshot script-defined header_info (core.func defines a same-named stub)
+source install.func   # self-bootstraps: core+error_handler, load_functions,
+                      # catch_errors, get_lxc_ip, detect_os
+source tools.func     # fetch_and_deploy_*, setup_*, check_for_gh_release
+source github.func    # clone_and_deploy_gh_commit, token helpers
+source addon.func
+
+command -v addon_guard || FATAL   # explicit failure if a fetch went silent
+addon_guard          # container-only check
+addon_init           # APP_SLUG derivation, header restore, render_header
+addon_dispatch       # installed-guard → install path
+```
+
+Ordering notes:
+
+- A script-defined `header_info()` survives framework sourcing: `core.func`'s
+  same-named fallback stub is guarded (`declare -F` check), so
+  `render_header` dispatches to the script's ASCII art.
+- `install.func`'s `_bootstrap` runs at source time and calls `catch_errors`
+  before `render_header` — the reverse of the LXC ordering. Acceptable: the
+  addon path has no whiptail stage that could conflict with active traps.
+- `source <(curl …)` via process substitution swallows curl failures (empty
+  input sources cleanly). The `command -v addon_guard` check turns a silent
+  empty-source into an explicit fatal error.
+- The script itself must ensure `curl` exists before the bootstrap line
+  (containers may lack it). This is the one per-script preamble block —
+  everything else is framework-owned.
+
+#### Hooks owned by framework functions
+
+| Hook | Owner | Runs |
+|------|-------|------|
+| `header_info` | `render_header` (after snapshot restore in `addon_init`) | Container, early |
+| `install_script` | `addon_run_install` (mandatory) | Container, install path |
+| `post_install_script` | `addon_run_install` (optional) | Container, after install |
+| `update_script` | bundle `/usr/local/sbin/update_<slug>` | Container, on demand |
+| `uninstall_script` | bundle `/usr/local/sbin/uninstall_<slug>` | Container, on demand |
+
+`update_script`/`uninstall_script` are also reachable through
+`addon_guard_installed` when the installer is re-run on a container that
+already has the addon (menu dispatches via `exec` into the on-disk bundles).
+
 
 ### 3.3 PVE — `misc/bootstrap/pve`
 
@@ -364,7 +411,53 @@ The shim never calls it directly.
 
 ### 4.2 Addon install path
 
-**TBD** — see migration plan.
+Single-context path — everything runs inside the existing container:
+
+```
+addon script begins
+  declares APP, var_addon_* config, hooks
+  curl-ensure block (per-script transport preamble)
+
+source bootstrap/addon
+  snapshot header_info (if script-defined)
+  source install.func → _bootstrap runs:
+    curl fallback ensure → source core.func, error_handler.func
+    load_functions, catch_errors, get_lxc_ip, detect_os
+  source tools.func, github.func, addon.func
+  load check (addon_guard defined)
+
+addon_guard
+  → /proc/1/environ must contain container=lxc, else exit 1
+
+addon_init
+  → APP_SLUG = normalized APP (lowercase, spaces→dashes)
+  → restore script header_info, render_header
+
+addon_dispatch
+  → addon_guard_installed
+      marker /var/lib/scripts-underground/addons/<slug> absent → return 1
+      marker present → prompt [u]pdate/[x]uninstall/[a]bort
+        (ADDON_ACTION env bypasses; non-interactive stdin aborts safely)
+        u → exec /usr/local/sbin/update_<slug>
+        x → exec /usr/local/sbin/uninstall_<slug>
+        a → exit 0
+  → addon_run_install
+      execute_mandatory_hook install_script     ◀ USER HOOK
+      execute_optional_hook post_install_script ◀ USER HOOK
+      addon_assemble_bundles
+        fetch core/error_handler/install/tools/github .func to stage dir
+        compose update bundle    → /usr/local/sbin/update_<slug>
+        compose uninstall bundle → /usr/local/sbin/uninstall_<slug>
+        alias both into /usr/bin (update-<slug>, uninstall-<slug>)
+      addon_marker_write   ← LAST: any earlier failure leaves no marker,
+                              so a re-run retries the install path
+```
+
+Failure semantics: with `catch_errors` active (`set -Ee -o pipefail`), any
+unhandled error aborts before the marker write. The already-installed guard
+keyed on the marker therefore never routes to half-built bundles after a
+failed install.
+
 
 ### 4.3 PVE install path
 
@@ -449,7 +542,48 @@ needed for the install artifact.
 
 ### 5.2 Addon
 
-**TBD**
+#### Script-level variables
+
+- **`APP`** — required; `addon_init` derives `APP_SLUG` from it (lowercase,
+  spaces to dashes) for bundle/marker naming.
+- **`var_addon_*`** — bundle-consumed configuration. Declared as
+  `var_addon_x="${var_addon_x:-default}"` so values are overridable from the
+  environment AND baked into the update/uninstall bundles. The whole set is
+  captured at install time via `compgen -v var_addon_`.
+- **Plain globals** — install-time cross-hook state (e.g. a chosen port set
+  by `install_script` and printed by `post_install_script`). Both hooks run
+  in the same shell, so ordinary globals suffice; they are NOT baked into
+  bundles.
+- No `var_cpu`/`var_ram`/`var_disk`/`var_os`/`var_version` — addons don't
+  size containers.
+
+#### Framework-provided state
+
+`detect_os` (run by install.func's `_bootstrap` at source time) provides
+`OS_TYPE`/`OS_FAMILY`/`OS_VERSION`/`PKG_MANAGER`/`INIT_SYSTEM`; `get_lxc_ip`
+provides `LOCAL_IP`. Scripts branch on `OS_FAMILY`/`INIT_SYSTEM` instead of
+re-implementing OS detection.
+
+#### Bundle baking
+
+Each bundle carries, after its `set -euo pipefail` + PATH header:
+
+1. **Context block** — `declare -- APP=…`, `APP_SLUG=…`, `REPO_BASE=…` and
+   every `var_addon_*` variable, emitted with `printf %q` (same pattern as
+   the LXC `build_bundle`).
+2. **Framework libraries** — all 5 `.func` files inlined verbatim. The
+   embedded install.func `_bootstrap` re-runs at bundle execution; its
+   re-source of core/error_handler uses process substitution, which silently
+   no-ops offline — so bundles remain fully functional without network.
+3. **Hook body** — `declare -f <hook>`. Only the named function is copied:
+   hooks must be self-contained (framework helpers OK, script-local helpers
+   are NOT available).
+
+Uninstall bundles additionally remove: themselves (resolving the
+`/usr/bin/<alias>` symlink via `readlink -f`), the sibling update bundle,
+both `/usr/bin` aliases, the install marker, and the now-empty marker
+directories.
+
 
 ### 5.3 PVE
 
@@ -495,7 +629,21 @@ see `function-reference.md`.
 
 ### 6.2 Addon
 
-**TBD**
+**Adding a user hook.** Add the invocation inside the owning framework
+function in `misc/addon.func` (`addon_run_install` for install-path hooks,
+`_addon_bundle_write` for bundle-embedded hooks) and document it in
+`function-reference.md`. The shim never calls hooks directly.
+
+**Modifying lifecycle behavior for all addons** (e.g. a new guard, a
+pre-install check). The seam is `addon_dispatch` / `addon_run_install` in
+`addon.func`.
+
+**Modifying bundle composition** (new baked variables, extra inlined files,
+different self-destruct behavior). The seam is `_addon_bundle_write` in
+`addon.func`. Note the parallel with `build_bundle` in `bundle.func` — keep
+the context-block conventions (`printf %q`, `compgen -v var_<type>_`) in
+sync across both.
+
 
 ### 6.3 PVE
 
