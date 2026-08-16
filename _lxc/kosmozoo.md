@@ -2,7 +2,7 @@
 slug: kosmozoo
 title: Kosmozoo
 tags: [comfyui, review, curation]
-logo: https://raw.githubusercontent.com/alexindigo/kosmozoo/main/logo-512.png
+logo: /assets/logos/kosmozoo.webp
 by: alexindigo
 repo: https://github.com/alexindigo/kosmozoo
 site: https://github.com/alexindigo/kosmozoo
