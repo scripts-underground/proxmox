@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 scripts-underground
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+
+# ==============================================================================
+# ADDON.FUNC - ADDON FRAMEWORK (in-container addon lifecycle)
+# ==============================================================================
+#
+# Framework module for addon scripts (scripts/addon/*.sh). Addons run inside
+# an EXISTING LXC container and install additional software into it.
+#
+# Provides:
+#   - Environment guard (LXC container only)
+#   - Framework init (app slug, header rendering)
+#   - Install dispatch with already-installed guard
+#   - Install marker lifecycle (/var/lib/scripts-underground/addons/<slug>)
+#   - Self-contained update/uninstall bundle assembly
+#     (/usr/local/sbin/{update,uninstall}_<slug>, aliased to /usr/bin/)
+#
+# Sourced by misc/bootstrap/addon AFTER install.func, tools.func, github.func.
+# install.func's source-time _bootstrap has already provided: core.func,
+# error_handler.func, load_functions, catch_errors, get_lxc_ip, detect_os.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# SECTION 1: CONSTANTS
+# ------------------------------------------------------------------------------
+
+ADDON_MARKER_DIR="/var/lib/scripts-underground/addons"
+
+# ------------------------------------------------------------------------------
+# SECTION 2: GUARD & INIT
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# addon_guard()
+#
+# Addons install software into an existing LXC container. Refuse to run
+# anywhere else (PVE host, VM, bare metal).
+# ------------------------------------------------------------------------------
+addon_guard() {
+  if ! grep -q container=lxc /proc/1/environ 2> /dev/null; then
+    echo "Error: addon scripts must run inside an LXC container" >&2
+    exit 1
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# addon_init()
+#
+# Derives APP_SLUG from APP (lowercase, spaces to dashes) and renders the
+# script's header. load_functions/catch_errors/get_lxc_ip/detect_os already
+# ran via install.func's source-time _bootstrap.
+# ------------------------------------------------------------------------------
+addon_init() {
+  APP_SLUG="$(echo "${APP:-}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
+  if [[ -z "$APP_SLUG" ]]; then
+    echo "Error: APP is not defined — addon scripts must set APP" >&2
+    exit 1
+  fi
+  render_header
+}
+
+# ------------------------------------------------------------------------------
+# SECTION 3: INSTALL MARKER
+#
+# The marker records a completed addon install. It is written only after
+# install_script AND post_install_script both succeed, and is removed by the
+# uninstall bundle's self-destruct. The marker directory doubles as a registry
+# of installed addons (`ls /var/lib/scripts-underground/addons/`).
+# ------------------------------------------------------------------------------
+
+addon_marker_path() {
+  echo "${ADDON_MARKER_DIR}/${APP_SLUG}"
+}
+
+addon_marker_write() {
+  mkdir -p "$ADDON_MARKER_DIR"
+  {
+    echo "APP=${APP}"
+    echo "SLUG=${APP_SLUG}"
+    echo "INSTALLED_AT=$(date -Is)"
+    echo "REPO_BASE=${REPO_BASE}"
+  } > "$(addon_marker_path)"
+  chmod 0644 "$(addon_marker_path)"
+}
+
+addon_marker_remove() {
+  rm -f "$(addon_marker_path)"
+}
+
+# ------------------------------------------------------------------------------
+# SECTION 4: DISPATCH
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# addon_dispatch()
+#
+# Entry point called by the bootstrap shim. If the addon is already installed
+# (marker present), the installed-guard takes over (menu / bundle exec / abort).
+# Otherwise the install path runs.
+# ------------------------------------------------------------------------------
+addon_dispatch() {
+  # addon_guard_installed returns 1 only when no install marker exists.
+  # Marker-present paths never return here (exec into bundle, or exit).
+  addon_guard_installed || addon_run_install
+}
+
+# ------------------------------------------------------------------------------
+# addon_guard_installed()
+#
+# Returns 1 when no install marker exists (caller proceeds to install).
+# When the marker exists, offers [u]pdate / [x] uninstall / [a]bort and
+# dispatches to the on-disk bundles via exec (bundles are the single frozen
+# code path — offline-capable, no installer re-curl).
+#
+# Automation escape hatch: ADDON_ACTION=update|uninstall|abort bypasses the
+# prompt. Non-interactive stdin without ADDON_ACTION aborts safely.
+# ------------------------------------------------------------------------------
+addon_guard_installed() {
+  [[ -f "$(addon_marker_path)" ]] || return 1
+
+  local update_bin="/usr/local/sbin/update_${APP_SLUG}"
+  local uninstall_bin="/usr/local/sbin/uninstall_${APP_SLUG}"
+  local action="${ADDON_ACTION:-}"
+
+  if [[ -z "$action" ]]; then
+    msg_warn "${APP} is already installed."
+    if [[ ! -t 0 ]]; then
+      msg_info "Run 'update-${APP_SLUG}' or 'uninstall-${APP_SLUG}' — or re-run with ADDON_ACTION=update|uninstall"
+      exit 0
+    fi
+    local choices=""
+    [[ -x "$update_bin" ]] && choices+="u)pdate "
+    [[ -x "$uninstall_bin" ]] && choices+="x) uninstall "
+    choices+="a)bort"
+    local reply=""
+    read -rp "$(echo -e "${TAB}${INFO} ${choices} [a]: ")" reply || reply="a"
+    action="${reply:-a}"
+  fi
+
+  case "${action,,}" in
+    u | update)
+      [[ -x "$update_bin" ]] || {
+        msg_error "No update bundle found for ${APP} (${update_bin})"
+        exit 1
+      }
+      exec "$update_bin"
+      ;;
+    x | uninstall)
+      [[ -x "$uninstall_bin" ]] || {
+        msg_error "No uninstall bundle found for ${APP} (${uninstall_bin})"
+        exit 1
+      }
+      exec "$uninstall_bin"
+      ;;
+    *)
+      msg_info "No action selected. Exiting."
+      exit 0
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# SECTION 5: INSTALL PATH
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# addon_run_install()
+#
+# Runs the install path: install_script (required) → post_install_script
+# (optional) → bundle assembly → marker write. The marker is written LAST so
+# a failure anywhere leaves the container marker-less and a re-run retries
+# the install path instead of dispatching to missing/half-built bundles.
+# ------------------------------------------------------------------------------
+addon_run_install() {
+  execute_mandatory_hook install_script
+  execute_optional_hook post_install_script
+  addon_assemble_bundles
+  addon_marker_write
+}
+
+# ------------------------------------------------------------------------------
+# SECTION 6: BUNDLE ASSEMBLY
+#
+# Self-contained update/uninstall bundles, baked at install time. Each bundle
+# inlines the 5 framework files (core, error_handler, install, tools, github),
+# a runtime context block (APP, APP_SLUG, REPO_BASE, var_addon_*), and the
+# hook body via `declare -f`. Bundles need zero network I/O for framework
+# loading — they work offline and never drift from the installed version.
+#
+# Convention: variables referenced by update_script/uninstall_script hooks must
+# use the var_addon_* prefix (${var_addon_x:-default}) so the assembler bakes
+# them. APP, APP_SLUG and REPO_BASE are always baked.
+#
+# Bundle lifecycle:
+#   update    → /usr/local/sbin/update_<slug>    persists; alias /usr/bin/update-<slug>
+#   uninstall → /usr/local/sbin/uninstall_<slug> self-destructs on success;
+#               also removes the update bundle, both /usr/bin aliases, and the
+#               install marker
+#
+# Hook bodies must be self-contained: `declare -f` copies only the named
+# function, so hooks may call framework helpers but NOT script-local helpers.
+# ------------------------------------------------------------------------------
+
+addon_assemble_bundles() {
+  local -a hooks=()
+  declare -F update_script > /dev/null 2>&1 && hooks+=("update:update_script")
+  declare -F uninstall_script > /dev/null 2>&1 && hooks+=("uninstall:uninstall_script")
+  ((${#hooks[@]} > 0)) || return 0
+
+  local stage_dir="/tmp/.addon-bundle-$$"
+  mkdir -p "$stage_dir" || return 1
+  local f
+  for f in core error_handler install tools github; do
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}.func" -o "${stage_dir}/${f}.func" || {
+      echo "[addon] FAILED to fetch ${f}.func from ${REPO_BASE}" >&2
+      rm -rf "$stage_dir"
+      return 1
+    }
+  done
+
+  local pair
+  for pair in "${hooks[@]}"; do
+    _addon_bundle_write "${pair%%:*}" "${pair#*:}" "$stage_dir" || {
+      rm -rf "$stage_dir"
+      return 1
+    }
+  done
+  rm -rf "$stage_dir"
+}
+
+# ------------------------------------------------------------------------------
+# _addon_bundle_write <name> <hook> <stage_dir>
+#
+# Composes one bundle (update or uninstall) at /usr/local/sbin/<name>_<slug>
+# and refreshes its /usr/bin alias.
+# ------------------------------------------------------------------------------
+_addon_bundle_write() {
+  local name="$1" hook="$2" stage_dir="$3"
+  local dest="/usr/local/sbin/${name}_${APP_SLUG}"
+  local tag="${name:0:4}" && tag="${tag^^}"
+
+  {
+    cat << BUNDLE_HEADER
+#!/usr/bin/env bash
+set -euo pipefail
+# pct exec / cron / non-login shells provide a minimal PATH; bundles must be
+# self-sufficient (setup_uv/setup_nodejs install to /usr/local/bin).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+BUNDLE_HEADER
+
+    echo "# ═══ runtime context (baked at bundle build time) ═══"
+    printf 'declare -- APP=%q\n' "$APP"
+    printf 'declare -- APP_SLUG=%q\n' "$APP_SLUG"
+    printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE"
+    local _v
+    while IFS= read -r _v; do
+      printf 'declare -- %s=%q\n' "$_v" "${!_v}"
+    done < <(compgen -v var_addon_ | sort)
+    echo
+
+    for f in core error_handler install tools github; do
+      echo "# ═══ framework: ${f}.func ═══"
+      cat "${stage_dir}/${f}.func"
+      echo
+    done
+
+    cat << BUNDLE_INIT
+# ═══ runtime init ═══
+command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
+command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
+command -v pkg_install >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
+command -v fetch_and_deploy_gh_release >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
+command -v clone_and_deploy_gh_commit >/dev/null 2>&1 || { echo "FATAL: github.func not loaded" >&2; exit 111; }
+
+load_functions
+catch_errors
+color
+
+BUNDLE_INIT
+
+    echo "# ═══ hook: ${hook} ═══"
+    declare -f "$hook"
+    echo
+
+    if [[ "$name" == "uninstall" ]]; then
+      cat << BUNDLE_FOOTER
+# ═══ uninstall (conditional self-destruct) ═══
+if ${hook}; then
+  # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —
+  # resolve to the real bundle file so self-destruct removes both
+  _addon_self="\$(readlink -f "\${BASH_SOURCE[0]}" 2> /dev/null || echo "\${BASH_SOURCE[0]}")"
+  rm -f "\${BASH_SOURCE[0]}" "\${_addon_self}"
+  rm -f "/usr/local/sbin/update_${APP_SLUG}"
+  rm -f "/usr/bin/update-${APP_SLUG}" "/usr/bin/uninstall-${APP_SLUG}"
+  rm -f "${ADDON_MARKER_DIR}/${APP_SLUG}"
+  rmdir --ignore-fail-on-non-empty "${ADDON_MARKER_DIR}" "/var/lib/scripts-underground" 2> /dev/null || true
+  echo "[${tag}] uninstall complete, removed self" >&2
+fi
+BUNDLE_FOOTER
+    else
+      echo "# ═══ update pipeline ═══"
+      echo "${hook}"
+    fi
+  } > "$dest"
+
+  chmod 0755 "$dest"
+  ln -sf "$dest" "/usr/bin/${name}-${APP_SLUG}" 2> /dev/null || true
+  echo "[addon] ${name} bundle assembled: ${dest}" >&2
+}

@@ -300,6 +300,8 @@ maintainer: GitHubUsername
 
 Addon scripts (`scripts/addon/<slug>.sh`) run inside an existing LXC
 container. They use `misc/bootstrap/addon` instead of `misc/bootstrap/lxc`.
+Addons do NOT declare `var_cpu`/`var_ram`/`var_disk`/`var_os`/`var_version` —
+they don't size containers.
 
 ### Update/uninstall bundle naming
 
@@ -307,12 +309,20 @@ Each addon gets its own self-contained bundles on first install:
 
 | Hook | Bundle destination | Lifecycle |
 |------|-------------------|-----------|
-| `update_script` | `/usr/local/sbin/update_<slug>` | Persists |
-| `uninstall_script` | `/usr/local/sbin/uninstall_<slug>` | Self-destructs on success |
+| `update_script` | `/usr/local/sbin/update_<slug>` | Persists; aliased to `/usr/bin/update-<slug>` |
+| `uninstall_script` | `/usr/local/sbin/uninstall_<slug>` | Self-destructs on success; aliased to `/usr/bin/uninstall-<slug>` |
 
-The `<slug>` is derived from `${NSAPP,,}` (lowercased `NSAPP`). Users
-trigger updates by running `/usr/local/sbin/update_<slug>` inside the
-container.
+The `<slug>` is derived from `APP` (lowercase, spaces to dashes). Users
+trigger updates by running `update-<slug>` inside the container. Bundles
+inline the framework files, the hook body, and a context block
+(`APP`, `APP_SLUG`, `REPO_BASE`, all `var_addon_*`) — they work offline and
+never re-download the installer.
+
+The framework writes an install marker at
+`/var/lib/scripts-underground/addons/<slug>` after a successful install.
+Re-running the installer on a container that has the marker offers
+update/uninstall/abort (dispatched to the bundles); `ADDON_ACTION=update|
+uninstall|abort` bypasses the prompt for automation.
 
 ### Addon script template
 
@@ -322,28 +332,27 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 # Copyright (c) 2021-2026 scripts-underground ORG
 # Author: YourName (GitHubUsername)
-# License: MIT | <url>
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: <url>
 
 APP="AddonName"
-var_tags="${var_tags:-tag1}"
-var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-512}"
-var_disk="${var_disk:-2}"
-var_os="${var_os:-debian}"
-var_version="${var_version:-13}"
+
+# Bundle-consumed config — baked into update/uninstall bundles
+var_addon_bin_path="${var_addon_bin_path:-/usr/local/bin/addonname}"
 
 function install_script() {
   msg_info "Installing AddonName"
-  # ... addon install steps ...
+  $STD apt install -y dep1
   msg_ok "Installed AddonName"
 }
 
+function post_install_script() {
+  echo -e "${INFO}${YW}Access: http://${LOCAL_IP}:8080${CL}"
+  echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
+}
+
 function update_script() {
-  header_info
-  check_container_storage
-  check_container_resources
-  # ... addon update steps ...
+  # ... addon update steps (may reference $APP, $APP_SLUG, var_addon_*) ...
   exit
 }
 
@@ -351,14 +360,36 @@ function uninstall_script() {
   # ... addon removal steps ...
 }
 
-# Addon bootstrap
+# Addons run inside arbitrary containers that may lack curl — ensure the
+# transport before sourcing the framework
+if ! command -v curl > /dev/null 2>&1; then
+  if [[ -f /etc/alpine-release ]]; then
+    apk update &> /dev/null && apk add --no-cache curl &> /dev/null
+  else
+    apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+  fi
+fi
+command -v curl > /dev/null 2>&1 || {
+  echo "FATAL: curl is required and could not be installed" >&2
+  exit 1
+}
+
+# framework bootstrap
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
 ```
 
-The `install_script` and `post_install_script` run immediately during
-addon install. `update_script` and `uninstall_script` are bundled into
-self-contained scripts at `/usr/local/sbin/update_<slug>` and
-`/usr/local/sbin/uninstall_<slug>` for later use.
+Rules specific to addons:
+
+- **Prompts tolerate EOF**: `read -erp "…" var || true`, then
+  `var=${var:-default}`. `catch_errors` runs with `set -e`; a bare `read` on
+  closed stdin aborts the install.
+- **OS branching**: use `detect_os` globals — `[[ "$OS_FAMILY" == "alpine" ]]`,
+  `[[ "$INIT_SYSTEM" == "openrc" ]]`. Don't re-implement OS detection.
+- **Hooks are self-contained**: only the hook body lands in bundles — don't
+  call script-local helper functions from `update_script`/`uninstall_script`.
+- **`install_script` runs immediately** on install; `post_install_script`
+  follows it in the same shell (globals set by `install_script` are visible).
+
 
 ## Pre-commit checklist
 

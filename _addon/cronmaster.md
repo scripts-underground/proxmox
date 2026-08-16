@@ -14,8 +14,9 @@ Self-hosted cron job scheduler with web UI, live logs, auth and prebuilt binarie
 
 ## Notes
 
-- Credentials are saved to: /root/cronmaster.creds
-- Update with: update_cronmaster
+- Runs inside an existing LXC container (Debian/Ubuntu only)
+- Generated password is saved to `/root/cronmaster.creds`
+- Update with: `update-cronmaster` — Uninstall with: `uninstall-cronmaster`
 
 ## Links
 

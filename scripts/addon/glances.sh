@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-
-# Copyright (c) 2021-2026 tteck
-# Author: tteck (tteckster) | MickLesk (CanbiZ)
-# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
-
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-function header_info {
+# Copyright (c) 2021-2026 community-scripts ORG
+# Author: tteck (tteckster) | MickLesk (CanbiZ)
+# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
+# Source: https://nicolargo.github.io/glances/ | Github: https://github.com/nicolargo/glances
+
+# shellcheck disable=SC2034
+# Read by the framework - shellcheck cannot see the caller
+APP="Glances"
+
+# Bundle-consumed configuration (var_addon_* is baked into update/uninstall
+# bundles at install time — hooks may reference these directly)
+var_addon_app_dir="${var_addon_app_dir:-/opt/glances}"
+var_addon_service="${var_addon_service:-glances}"
+
+function header_info() {
   clear
   cat << "EOF"
    ________
@@ -18,185 +27,124 @@ function header_info {
 EOF
 }
 
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-APP="Glances"
-YW=$(echo "\033[33m")
-GN=$(echo "\033[1;92m")
-RD=$(echo "\033[01;31m")
-BL=$(echo "\033[36m")
-CL=$(echo "\033[m")
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-CM="${GN}✔️${CL}"
-CROSS="${RD}✖️${CL}"
-INFO="${BL}ℹ️${CL}"
-
-function msg_info() { echo -e "${INFO} ${YW}$1...${CL}"; }
-function msg_ok() { echo -e "${CM} ${GN}$1${CL}"; }
-function msg_error() { echo -e "${CROSS} ${RD}$1${CL}"; }
-
-get_local_ip() {
-  if command -v hostname > /dev/null 2>&1 && hostname -I 2> /dev/null; then
-    hostname -I | awk '{print $1}'
-  elif command -v ip > /dev/null 2>&1; then
-    ip -4 addr show scope global | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1
-  else
-    echo "127.0.0.1"
-  fi
-}
-IP=$(get_local_ip)
-
-install_glances_debian() {
+function install_script() {
   msg_info "Installing dependencies"
-  apt-get update > /dev/null 2>&1
-  apt-get install -y gcc lm-sensors wireless-tools > /dev/null 2>&1
+  if [[ "$OS_FAMILY" == "alpine" ]]; then
+    $STD apk update
+    $STD apk add --no-cache \
+      gcc musl-dev linux-headers python3-dev \
+      python3 py3-pip py3-virtualenv lm-sensors wireless-tools curl
+  else
+    $STD apt update
+    $STD apt install -y \
+      gcc \
+      lm-sensors \
+      wireless-tools \
+      curl
+  fi
   msg_ok "Installed dependencies"
 
   msg_info "Setting up Python + uv"
   setup_uv PYTHON_VERSION="3.12"
   msg_ok "Setup Python + uv"
 
-  msg_info "Installing $APP (with web UI)"
-  cd /opt || exit
-  mkdir -p glances
-  cd glances || exit
-  uv venv
+  msg_info "Installing ${APP} (with web UI)"
+  mkdir -p "$var_addon_app_dir"
+  cd "$var_addon_app_dir" || exit
+  $STD uv venv --clear
   source .venv/bin/activate > /dev/null 2>&1
-  uv pip install --upgrade pip wheel setuptools > /dev/null 2>&1
-  uv pip install "glances[web]" > /dev/null 2>&1
+  $STD uv pip install --upgrade pip wheel setuptools
+  $STD uv pip install "glances[web]"
   deactivate
-  msg_ok "Installed $APP"
+  msg_ok "Installed ${APP}"
 
-  msg_info "Creating systemd service"
-  cat << EOF > /etc/systemd/system/glances.service
+  msg_info "Creating service"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    cat << EOF > "/etc/init.d/${var_addon_service}"
+#!/sbin/openrc-run
+command="${var_addon_app_dir}/.venv/bin/glances"
+command_args="-w"
+command_background="yes"
+pidfile="/run/${var_addon_service}.pid"
+name="${var_addon_service}"
+description="Glances monitoring tool"
+EOF
+    chmod +x "/etc/init.d/${var_addon_service}"
+    rc-update add "$var_addon_service" default
+    rc-service "$var_addon_service" start
+  else
+    cat << EOF > "/etc/systemd/system/${var_addon_service}.service"
 [Unit]
 Description=Glances - An eye on your system
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/glances/.venv/bin/glances -w
+ExecStart=${var_addon_app_dir}/.venv/bin/glances -w
 Restart=on-failure
-WorkingDirectory=/opt/glances
+WorkingDirectory=${var_addon_app_dir}
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now glances
-  msg_ok "Created systemd service"
-}
-
-update_glances_debian() {
-  if [[ ! -d /opt/glances/.venv ]]; then
-    msg_error "$APP is not installed"
-    exit 1
+    systemctl enable -q --now "$var_addon_service"
   fi
-  msg_info "Updating $APP"
-  cd /opt/glances || exit
-  source .venv/bin/activate
-  uv pip install --upgrade "glances[web]" > /dev/null 2>&1
-  deactivate
-  systemctl restart glances
-  msg_ok "Updated $APP"
-}
-
-uninstall_glances_debian() {
-  msg_info "Uninstalling $APP"
-  systemctl disable -q --now glances || true
-  rm -f /etc/systemd/system/glances.service
-  rm -rf /opt/glances
-  msg_ok "Removed $APP"
-}
-
-install_glances_alpine() {
-  msg_info "Installing dependencies"
-  apk update > /dev/null 2>&1
-  $STD apk add --no-cache \
-    gcc musl-dev linux-headers python3-dev \
-    python3 py3-pip py3-virtualenv lm-sensors wireless-tools > /dev/null 2>&1
-  msg_ok "Installed dependencies"
-
-  msg_info "Setting up Python + uv"
-  setup_uv PYTHON_VERSION="3.12"
-  msg_ok "Setup Python + uv"
-
-  msg_info "Installing $APP (with web UI)"
-  cd /opt || exit
-  mkdir -p glances
-  cd glances || exit
-  uv venv
-  source .venv/bin/activate
-  uv pip install --upgrade pip wheel setuptools > /dev/null 2>&1
-  uv pip install "glances[web]" > /dev/null 2>&1
-  deactivate
-  msg_ok "Installed $APP"
-
-  msg_info "Creating OpenRC service"
-  cat << 'ALPEOF' > /etc/init.d/glances
-#!/sbin/openrc-run
-command="/opt/glances/.venv/bin/glances"
-command_args="-w"
-command_background="yes"
-pidfile="/run/glances.pid"
-name="glances"
-description="Glances monitoring tool"
-ALPEOF
-  chmod +x /etc/init.d/glances
-  rc-update add glances default
-  rc-service glances start
-  msg_ok "Created OpenRC service"
-}
-
-update_glances_alpine() {
-  if [[ ! -d /opt/glances/.venv ]]; then
-    msg_error "$APP is not installed"
-    exit 1
-  fi
-  msg_info "Updating $APP"
-  cd /opt/glances || exit
-  source .venv/bin/activate
-  uv pip install --upgrade "glances[web]" > /dev/null 2>&1
-  deactivate
-  rc-service glances restart
-  msg_ok "Updated $APP"
-}
-
-uninstall_glances_alpine() {
-  msg_info "Uninstalling $APP"
-  rc-service glances stop || true
-  rc-update del glances || true
-  rm -f /etc/init.d/glances
-  rm -rf /opt/glances
-  msg_ok "Removed $APP"
-}
-
-function install_script() {
-  if grep -qi "alpine" /etc/os-release; then
-    install_glances_alpine
-  else
-    install_glances_debian
-  fi
-}
-
-function update_script() {
-  if grep -qi "alpine" /etc/os-release; then
-    update_glances_alpine
-  else
-    update_glances_debian
-  fi
-}
-
-function uninstall_script() {
-  if grep -qi "alpine" /etc/os-release; then
-    uninstall_glances_alpine
-  else
-    uninstall_glances_debian
-  fi
+  msg_ok "Created service"
 }
 
 function post_install_script() {
-  echo -e "\n$APP is now running at: http://$IP:61208\n"
+  echo ""
+  msg_ok "${APP} installed successfully"
+  echo -e "${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:61208${CL}"
+  echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
+}
+
+function update_script() {
+  if [[ ! -d "${var_addon_app_dir}/.venv" ]]; then
+    msg_error "${APP} is not installed"
+    exit 233
+  fi
+  msg_info "Updating ${APP}"
+  cd "$var_addon_app_dir" || exit
+  source .venv/bin/activate
+  $STD uv pip install --upgrade "glances[web]"
+  deactivate
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service "$var_addon_service" restart
+  else
+    systemctl restart "$var_addon_service"
+  fi
+  msg_ok "Updated successfully!"
+  exit
+}
+
+function uninstall_script() {
+  msg_info "Uninstalling ${APP}"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service "$var_addon_service" stop || true
+    rc-update del "$var_addon_service" || true
+    rm -f "/etc/init.d/${var_addon_service}"
+  else
+    systemctl disable -q --now "$var_addon_service" || true
+    rm -f "/etc/systemd/system/${var_addon_service}.service"
+  fi
+  rm -rf "$var_addon_app_dir"
+  msg_ok "Removed ${APP}"
+}
+
+# Addons run inside arbitrary containers that may lack curl — ensure the
+# transport before sourcing the framework (everything else is bootstrapped
+# by install.func from this point on)
+if ! command -v curl > /dev/null 2>&1; then
+  if [[ -f /etc/alpine-release ]]; then
+    apk update &> /dev/null && apk add --no-cache curl &> /dev/null
+  else
+    apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+  fi
+fi
+command -v curl > /dev/null 2>&1 || {
+  echo "FATAL: curl is required and could not be installed" >&2
+  exit 1
 }
 
 # framework bootstrap

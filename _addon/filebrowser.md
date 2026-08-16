@@ -14,9 +14,11 @@ Web-based file manager. Upload, delete, preview, rename, and edit files in your 
 
 ## Notes
 
+- Runs inside an existing LXC container (Debian/Ubuntu or Alpine)
 - Access at `http://<ip>:8080`
-- Default credentials: `admin` / `helper-scripts.com`
+- Default credentials: `admin` / `community-scripts.org`
 - Supports no-auth mode for local networks
+- Update with: `update-file-browser` — Uninstall with: `uninstall-file-browser`
 
 ## Links
 

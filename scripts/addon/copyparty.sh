@@ -1,37 +1,25 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034,SC2046
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/9001/copyparty
 
-REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-
-YW=$(echo "\033[33m")
-GN=$(echo "\033[1;92m")
-RD=$(echo "\033[01;31m")
-BL=$(echo "\033[36m")
-CL=$(echo "\033[m")
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-CM="${GN}\u2714${CL}"
-CROSS="${RD}\u2716${CL}"
-INFO="${BL}\u2139${CL}"
-
 # shellcheck disable=SC2034
 # Read by the framework - shellcheck cannot see the caller
 APP="CopyParty"
-BIN_PATH="/usr/local/bin/copyparty-sfx.py"
-CONF_PATH="/etc/copyparty.conf"
-LOG_PATH="/var/log/copyparty"
-DATA_PATH="/var/lib/copyparty"
-SERVICE_PATH_DEB="/etc/systemd/system/copyparty.service"
-SERVICE_PATH_ALP="/etc/init.d/copyparty"
-SVC_USER="copyparty"
-SVC_GROUP="copyparty"
-SRC_URL="https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py"
-DEFAULT_PORT=3923
+
+# Bundle-consumed configuration (var_addon_* is baked into update/uninstall
+# bundles at install time — hooks may reference these directly)
+var_addon_bin_path="${var_addon_bin_path:-/usr/local/bin/copyparty-sfx.py}"
+var_addon_conf_path="${var_addon_conf_path:-/etc/copyparty.conf}"
+var_addon_log_path="${var_addon_log_path:-/var/log/copyparty}"
+var_addon_data_path="${var_addon_data_path:-/var/lib/copyparty}"
+var_addon_src_url="${var_addon_src_url:-https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py}"
+var_addon_svc_user="${var_addon_svc_user:-copyparty}"
+var_addon_svc_group="${var_addon_svc_group:-copyparty}"
+var_addon_default_port="${var_addon_default_port:-3923}"
 
 function header_info() {
   clear
@@ -45,147 +33,113 @@ function header_info() {
 EOF
 }
 
-function msg_info() { echo -e "${INFO} ${YW}$1...${CL}"; }
-function msg_ok() { echo -e "${CM} ${GN}$1${CL}"; }
-function msg_error() { echo -e "${CROSS} ${RD}$1${CL}"; }
-
-function detect_os() {
-  if [[ -f "/etc/alpine-release" ]]; then
-    OS="Alpine"
-    PKG_MANAGER="apk add --no-cache"
-    SERVICE_PATH="$SERVICE_PATH_ALP"
-  elif [[ -f "/etc/debian_version" ]]; then
-    OS="Debian"
-    PKG_MANAGER="apt-get install -y"
-    SERVICE_PATH="$SERVICE_PATH_DEB"
-  else
-    echo -e "${CROSS} Unsupported OS detected. Exiting."
+function install_script() {
+  if [[ "$OS_FAMILY" != "debian" && "$OS_FAMILY" != "alpine" ]]; then
+    msg_error "Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)"
     exit 1
   fi
-}
 
-function setup_user_and_dirs() {
-  detect_os
-  msg_info "Creating $SVC_USER user and directories"
-  if ! id "$SVC_USER" &> /dev/null; then
-    if [[ "$OS" == "Debian" ]]; then
-      useradd -r -s /sbin/nologin -d "$DATA_PATH" "$SVC_USER"
-    else
-      addgroup -S "$SVC_GROUP" 2> /dev/null || true
-      adduser -S -D -H -G "$SVC_GROUP" -h "$DATA_PATH" -s /sbin/nologin "$SVC_USER" 2> /dev/null || true
-    fi
-  fi
-  mkdir -p "$DATA_PATH" "$LOG_PATH"
-  chown -R "$SVC_USER:$SVC_GROUP" "$DATA_PATH" "$LOG_PATH"
-  chmod 755 "$DATA_PATH" "$LOG_PATH"
-  msg_ok "User/Group/Dirs ready"
-}
+  echo ""
+  read -erp "${TAB}Enter port for ${APP} [${var_addon_default_port}]: " CPP_PORT || true
+  CPP_PORT=${CPP_PORT:-$var_addon_default_port}
 
-function install_script() {
-  header_info
-  detect_os
+  read -erp "${TAB}Set data directory [${var_addon_data_path}]: " CPP_DATA_PATH || true
+  CPP_DATA_PATH=${CPP_DATA_PATH:-$var_addon_data_path}
 
-  msg_info "Installing dependencies"
-  if [[ "$OS" == "Debian" ]]; then
-    $PKG_MANAGER python3 curl &> /dev/null
+  CPP_ADMIN_USER=""
+  CPP_ADMIN_PASS=""
+  echo -n "${TAB}Enable authentication? (Y/n): "
+  read -r CPP_AUTH || true
+  if [[ ! "${CPP_AUTH,,}" =~ ^(n|no)$ ]]; then
+    read -erp "${TAB}Set admin username [admin]: " CPP_ADMIN_USER || true
+    CPP_ADMIN_USER=${CPP_ADMIN_USER:-admin}
+    read -rsp "${TAB}Set admin password [community-scripts.org]: " CPP_ADMIN_PASS || true
+    echo ""
+    CPP_ADMIN_PASS=${CPP_ADMIN_PASS:-community-scripts.org}
+    msg_ok "Configured with admin user: ${CPP_ADMIN_USER}"
   else
-    $PKG_MANAGER python3 curl &> /dev/null
-  fi
-  msg_ok "Dependencies installed"
-
-  setup_user_and_dirs
-
-  msg_info "Downloading $APP"
-  curl -fsSL "$SRC_URL" -o "$BIN_PATH"
-  chmod +x "$BIN_PATH"
-  chown "$SVC_USER:$SVC_GROUP" "$BIN_PATH"
-  msg_ok "Downloaded to $BIN_PATH"
-
-  echo -n "Enter port for $APP (default: $DEFAULT_PORT): "
-  read -r PORT
-  PORT=${PORT:-$DEFAULT_PORT}
-
-  echo -n "Set data directory (default: $DATA_PATH): "
-  read -r USER_DATA_PATH
-  USER_DATA_PATH=${USER_DATA_PATH:-$DATA_PATH}
-  mkdir -p "$USER_DATA_PATH"
-  chown "$SVC_USER:$SVC_GROUP" "$USER_DATA_PATH"
-
-  echo -n "Enable authentication? (Y/n): "
-  read -r auth_enable
-  if [[ "${auth_enable,,}" =~ ^(n|no)$ ]]; then
-    AUTH_LINE=""
     msg_ok "Configured without authentication"
-  else
-    echo -n "Set admin username [default: admin]: "
-    read -r ADMIN_USER
-    ADMIN_USER=${ADMIN_USER:-admin}
-    echo -n "Set admin password [default: helper-scripts.com]: "
-    read -rs ADMIN_PASS
-    ADMIN_PASS=${ADMIN_PASS:-helper-scripts.com}
-    echo
-    AUTH_LINE="auth vhost=/:$ADMIN_USER:$ADMIN_PASS:admin,,"
-    msg_ok "Configured with admin user: $ADMIN_USER"
   fi
 
-  msg_info "Writing config to $CONF_PATH"
-  {
-    echo "[global]"
-    echo "  p: $PORT"
-    echo "  ansi"
-    echo "  e2dsa"
-    echo "  e2ts"
-    echo "  theme: 2"
-    echo "  grid"
-    echo
-    if [[ -n "$ADMIN_USER" && -n "$ADMIN_PASS" ]]; then
-      echo "[accounts]"
-      echo "  $ADMIN_USER: $ADMIN_PASS"
-      echo
-    fi
-    echo "[/]"
-    echo "  $USER_DATA_PATH"
-    echo "  accs:"
-    if [[ -n "$ADMIN_USER" ]]; then
-      echo "    rw: *"
-      echo "    rwmda: $ADMIN_USER"
+  msg_info "Installing Dependencies"
+  if [[ "$OS_FAMILY" == "debian" ]]; then
+    $STD apt install -y python3 python3-pil ffmpeg curl
+  else
+    $STD apk add --no-cache python3 py3-pillow ffmpeg curl
+  fi
+  msg_ok "Installed Dependencies (with thumbnail support)"
+
+  msg_info "Creating ${var_addon_svc_user} user and directories"
+  if ! id "$var_addon_svc_user" &> /dev/null; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      useradd -r -s /sbin/nologin -d "$var_addon_data_path" "$var_addon_svc_user"
     else
-      echo "    rw: *"
+      addgroup -S "$var_addon_svc_group" 2> /dev/null || true
+      adduser -S -D -H -G "$var_addon_svc_group" -h "$var_addon_data_path" -s /sbin/nologin "$var_addon_svc_user" 2> /dev/null || true
     fi
-  } > "$CONF_PATH"
+  fi
+  mkdir -p "$var_addon_data_path" "$var_addon_log_path" "$CPP_DATA_PATH"
+  chown -R "$var_addon_svc_user:$var_addon_svc_group" "$var_addon_data_path" "$var_addon_log_path" "$CPP_DATA_PATH"
+  chmod 755 "$var_addon_data_path" "$var_addon_log_path"
+  msg_ok "User/Group/Dirs ready"
 
-  chmod 640 "$CONF_PATH"
-  chown "$SVC_USER:$SVC_GROUP" "$CONF_PATH"
-  msg_ok "Config written"
+  msg_info "Downloading ${APP}"
+  curl -fsSL "$var_addon_src_url" -o "$var_addon_bin_path"
+  chmod +x "$var_addon_bin_path"
+  chown "$var_addon_svc_user:$var_addon_svc_group" "$var_addon_bin_path"
+  msg_ok "Downloaded to ${var_addon_bin_path}"
 
-  msg_info "Creating service"
-  if [[ "$OS" == "Debian" ]]; then
-    cat << EOF > "$SERVICE_PATH_DEB"
-[Unit]
-Description=Copyparty file server
-After=network.target
+  msg_info "Creating configuration"
+  cat << EOF > "$var_addon_conf_path"
+[global]
+  p: ${CPP_PORT}
+  ansi
+  e2dsa
+  e2ts
+  theme: 2
+  grid
+  no-robots
+  force-js
+  lo: ${var_addon_log_path}/cpp-%Y-%m%d.txt.xz
 
-[Service]
-User=$SVC_USER
-Group=$SVC_GROUP
-WorkingDirectory=$DATA_PATH
-ExecStart=/usr/bin/python3 /usr/local/bin/copyparty-sfx.py -c /etc/copyparty.conf
-Restart=always
-StandardOutput=append:/var/log/copyparty/copyparty.log
-StandardError=append:/var/log/copyparty/copyparty.err
-
-[Install]
-WantedBy=multi-user.target
 EOF
 
-    systemctl enable -q --now copyparty
+  if [[ -n "$CPP_ADMIN_USER" && -n "$CPP_ADMIN_PASS" ]]; then
+    cat << EOF >> "$var_addon_conf_path"
+[accounts]
+  ${CPP_ADMIN_USER}: ${CPP_ADMIN_PASS}
 
-  elif [[ "$OS" == "Alpine" ]]; then
-    cat << 'ALPEOF' > "$SERVICE_PATH_ALP"
+EOF
+  fi
+
+  cat << EOF >> "$var_addon_conf_path"
+[/]
+  ${CPP_DATA_PATH}
+  accs:
+EOF
+
+  if [[ -n "$CPP_ADMIN_USER" ]]; then
+    cat << EOF >> "$var_addon_conf_path"
+    rw: *
+    rwmda: ${CPP_ADMIN_USER}
+EOF
+  else
+    cat << EOF >> "$var_addon_conf_path"
+    rw: *
+EOF
+  fi
+
+  chmod 640 "$var_addon_conf_path"
+  chown "$var_addon_svc_user:$var_addon_svc_group" "$var_addon_conf_path"
+  msg_ok "Created configuration"
+
+  msg_info "Creating Service"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    cat << 'EOF' > /etc/init.d/copyparty
 #!/sbin/openrc-run
 
 name="copyparty"
-description="Copyparty file server"
+description="CopyParty file server"
 
 command="$(command -v python3)"
 command_args="/usr/local/bin/copyparty-sfx.py -c /etc/copyparty.conf"
@@ -198,48 +152,104 @@ error_log="/var/log/copyparty/copyparty.err"
 depend() {
     need net
 }
-ALPEOF
+EOF
+    chmod +x /etc/init.d/copyparty
+    $STD rc-update add copyparty default
+    $STD rc-service copyparty start
+  else
+    cat << EOF > /etc/systemd/system/copyparty.service
+[Unit]
+Description=CopyParty file server
+After=network.target
 
-    chmod +x "$SERVICE_PATH_ALP"
-    rc-update add copyparty default > /dev/null 2>&1
-    rc-service copyparty restart > /dev/null 2>&1
+[Service]
+User=${var_addon_svc_user}
+Group=${var_addon_svc_group}
+WorkingDirectory=${CPP_DATA_PATH}
+ExecStart=/usr/bin/python3 ${var_addon_bin_path} -c ${var_addon_conf_path}
+Restart=always
+StandardOutput=append:${var_addon_log_path}/copyparty.log
+StandardError=append:${var_addon_log_path}/copyparty.err
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable -q --now copyparty
   fi
-  msg_ok "Service created and started"
+  msg_ok "Created and started Service"
 }
 
 function post_install_script() {
-  IFACE=$(ip -4 route | awk '/default/ {print $5; exit}')
-  IP=$(ip -4 addr show "$IFACE" | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1)
-  [[ -z "$IP" ]] && IP=$(hostname -I | awk '{print $1}')
-  [[ -z "$IP" ]] && IP="127.0.0.1"
-
-  echo -e "${CM} ${GN}$APP is running at: ${BL}http://$IP:$PORT${CL}"
-  echo -e "${INFO} Storage directory: ${YW}$USER_DATA_PATH${CL}"
-  if [[ -n "$AUTH_LINE" ]]; then
-    echo -e "${INFO} Login: ${GN}${ADMIN_USER}${CL} / ${GN}${ADMIN_PASS}${CL}"
+  echo ""
+  msg_ok "${APP} installed successfully"
+  echo -e "${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:${CPP_PORT}${CL}"
+  echo -e "${INFO}${YW}Storage:${CL} ${CPP_DATA_PATH}"
+  echo -e "${INFO}${YW}Config:${CL} ${var_addon_conf_path}"
+  if [[ -n "$CPP_ADMIN_USER" ]]; then
+    echo -e "${INFO}${YW}Login:${CL} ${GN}${CPP_ADMIN_USER}${CL} / ${GN}${CPP_ADMIN_PASS}${CL}"
   fi
+  echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
 }
 
 function update_script() {
-  msg_info "Updating $APP"
-  curl -fsSL "$SRC_URL" -o "$BIN_PATH"
-  chmod +x "$BIN_PATH"
-  msg_ok "Updated $APP"
+  if check_for_gh_release "copyparty-sfx.py" "9001/copyparty"; then
+    msg_info "Stopping Service"
+    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+      rc-service copyparty stop &> /dev/null || true
+    else
+      systemctl stop copyparty &> /dev/null || true
+    fi
+    msg_ok "Stopped Service"
+
+    msg_info "Updating ${APP}"
+    curl -fsSL "$var_addon_src_url" -o "$var_addon_bin_path"
+    chmod +x "$var_addon_bin_path"
+    chown "$var_addon_svc_user:$var_addon_svc_group" "$var_addon_bin_path"
+    msg_ok "Updated ${APP}"
+
+    msg_info "Starting Service"
+    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+      rc-service copyparty start
+    else
+      systemctl start copyparty
+    fi
+    msg_ok "Started Service"
+    msg_ok "Updated successfully!"
+  fi
+  exit
 }
 
 function uninstall_script() {
-  detect_os
-  msg_info "Uninstalling $APP"
-  if [[ "$OS" == "Debian" ]]; then
-    systemctl disable --now copyparty &> /dev/null
-    rm -f "$SERVICE_PATH_DEB"
+  msg_info "Uninstalling ${APP}"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service copyparty stop &> /dev/null || true
+    rc-update del copyparty &> /dev/null || true
+    rm -f /etc/init.d/copyparty
   else
-    rc-service copyparty stop &> /dev/null
-    rc-update del copyparty &> /dev/null
-    rm -f "$SERVICE_PATH_ALP"
+    systemctl disable --now copyparty &> /dev/null || true
+    rm -f /etc/systemd/system/copyparty.service
   fi
-  rm -f "$BIN_PATH" "$CONF_PATH"
-  msg_ok "$APP has been uninstalled."
+  rm -f "$var_addon_bin_path" "$var_addon_conf_path"
+  rm -rf "$var_addon_data_path" "$var_addon_log_path"
+  userdel "$var_addon_svc_user" 2> /dev/null || true
+  groupdel "$var_addon_svc_group" 2> /dev/null || true
+  rm -f "$HOME/.copyparty"
+  msg_ok "${APP} has been uninstalled"
+}
+
+# Addons run inside arbitrary containers that may lack curl — ensure the
+# transport before sourcing the framework (everything else is bootstrapped
+# by install.func from this point on)
+if ! command -v curl > /dev/null 2>&1; then
+  if [[ -f /etc/alpine-release ]]; then
+    apk update &> /dev/null && apk add --no-cache curl &> /dev/null
+  else
+    apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+  fi
+fi
+command -v curl > /dev/null 2>&1 || {
+  echo "FATAL: curl is required and could not be installed" >&2
+  exit 1
 }
 
 # framework bootstrap

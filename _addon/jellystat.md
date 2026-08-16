@@ -14,9 +14,10 @@ A free and open source statistics app for Jellyfin
 
 ## Notes
 
-- Requires Node.js 20+ and PostgreSQL (auto-installed if missing)
-- Default PostgreSQL credentials: jellystat / jellystat
-- Update with: update_jellystat
+- Runs inside an existing LXC container (Debian/Ubuntu only)
+- Requires Node.js 22 and PostgreSQL 17 (auto-installed if missing)
+- Generated database credentials and JWT secret are saved to `/root/jellystat.creds`
+- Update with: `update-jellystat` — Uninstall with: `uninstall-jellystat`
 
 ## Links
 
