@@ -18,8 +18,7 @@ Send-only LocalSend node with a web UI, built for NAS-style deployments: browse 
 ## Notes
 
 - Web UI on port 80; LocalSend protocol v2.2 on 53317 (TCP+UDP multicast discovery) — works on bridged LXC networking (vmbr0).
-- Configure shares at install: `var_lxc_shares="movies=/srv/movies,books=/srv/books"` — each is bind-mounted read-only into the CT at `/data/<name>` via `post_build_script`.
-- With no shares configured the web UI still runs; add mounts later with `pct set <ctid> -mp0 /srv/share,mp=/data/share,ro=1` and list them in `LOCALSEND_NAS_SHARES` in the systemd unit.
+- The CT's `/opt` directory is the default share root (`LOCALSEND_NAS_SHARES=files=/opt`). Mount your storage anywhere under `/opt` — bind mount, NFS, virtiofs, your call — and it shows up in the picker with no config changes. The app itself lives there too (open source, read-only is fine).
 - Health endpoints for monitoring: `/api/health` and `/api/selftest`.
 
 ## Links
