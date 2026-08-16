@@ -2,7 +2,7 @@
 slug: homebrew
 title: Homebrew
 tags: [misc]
-logo: https://brew.sh/assets/img/homebrew-256x256.png
+logo: /assets/logos/homebrew.webp
 by: MorganCSIT
 co_author: [MickLesk (CanbiZ)]
 repo: https://github.com/Homebrew/brew

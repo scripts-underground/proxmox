@@ -2,7 +2,7 @@
 slug: nextcloud-exporter
 title: Nextcloud-Exporter
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/nextcloud.webp
+logo: /assets/logos/nextcloud-exporter.webp
 by: CrazyWolf13
 repo: https://github.com/xperimental/nextcloud-exporter
 site: https://github.com/xperimental/nextcloud-exporter

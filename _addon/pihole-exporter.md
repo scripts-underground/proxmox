@@ -2,7 +2,7 @@
 slug: pihole-exporter
 title: Pi-hole Exporter
 tags: [monitoring]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/pi-hole.webp
+logo: /assets/logos/pihole-exporter.webp
 by: CrazyWolf13
 repo: https://github.com/eko/pihole-exporter
 site: https://github.com/eko/pihole-exporter

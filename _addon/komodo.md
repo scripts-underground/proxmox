@@ -2,7 +2,7 @@
 slug: komodo
 title: Komodo
 tags: [docker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/komodo.webp
+logo: /assets/logos/komodo.webp
 by: MickLesk
 repo: https://github.com/moghtech/komodo
 site: https://komo.do

@@ -2,7 +2,7 @@
 slug: crowdsec
 title: CrowdSec
 tags: [auth-security, network]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/crowdsec.webp
+logo: /assets/logos/crowdsec.webp
 by: tteck
 repo: https://github.com/crowdsecurity/crowdsec
 site: https://crowdsec.net

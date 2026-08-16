@@ -2,7 +2,7 @@
 slug: adguardhome-sync
 title: AdGuardHome-Sync
 tags: [adblock]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/adguardhome-sync.webp
+logo: /assets/logos/adguardhome-sync.webp
 by: MickLesk
 repo: https://github.com/bakito/adguardhome-sync
 site: https://github.com/bakito/adguardhome-sync

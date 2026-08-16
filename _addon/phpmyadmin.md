@@ -2,7 +2,7 @@
 slug: phpmyadmin
 title: phpMyAdmin
 tags: [database]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/phpmyadmin.webp
+logo: /assets/logos/phpmyadmin.webp
 by: MickLesk
 repo: https://github.com/phpmyadmin/phpmyadmin
 site: https://www.phpmyadmin.net

@@ -2,7 +2,7 @@
 slug: qbittorrent-exporter
 title: qBittorrent-Exporter
 tags: [monitoring, arr-suite]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/qbittorrent.webp
+logo: /assets/logos/qbittorrent-exporter.webp
 by: CrazyWolf13
 repo: https://github.com/martabal/qbittorrent-exporter
 site: https://github.com/martabal/qbittorrent-exporter

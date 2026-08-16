@@ -2,7 +2,7 @@
 slug: arcane
 title: Arcane
 tags: [docker]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/arcane.webp
+logo: /assets/logos/arcane.webp
 by: summoningpixels
 repo: https://github.com/getarcaneapp/arcane
 site: https://getarcane.app

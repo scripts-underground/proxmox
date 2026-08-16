@@ -2,7 +2,7 @@
 slug: pyenv
 title: pyenv
 tags: [ai-dev]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/python.webp
+logo: /assets/logos/pyenv.webp
 by: tteck
 repo: https://github.com/pyenv/pyenv
 site: https://github.com/pyenv/pyenv

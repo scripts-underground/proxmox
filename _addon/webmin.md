@@ -2,7 +2,7 @@
 slug: webmin
 title: Webmin
 tags: [proxmox, system, web]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/webmin.webp
+logo: /assets/logos/webmin.webp
 by: tteck
 repo: https://github.com/webmin/webmin
 site: https://www.webmin.com/

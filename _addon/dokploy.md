@@ -2,7 +2,7 @@
 slug: dokploy
 title: Dokploy
 tags: [docker, paas]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/dokploy.webp
+logo: /assets/logos/dokploy.webp
 by: MickLesk
 repo: https://github.com/Dokploy/dokploy
 site: https://dokploy.com

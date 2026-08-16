@@ -2,7 +2,7 @@
 slug: olivetin
 title: OliveTin
 tags: [automation, dashboard]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/olivetin.webp
+logo: /assets/logos/olivetin.webp
 by: tteck
 repo: https://github.com/OliveTin/OliveTin
 site: https://docs.olivetin.app/

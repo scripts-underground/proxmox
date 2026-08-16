@@ -2,7 +2,7 @@
 slug: actual-budget-prometheus-exporter
 title: Actual Budget Prometheus Exporter
 tags: [monitoring, finance]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/actual-budget.webp
+logo: /assets/logos/actual-budget-prometheus-exporter.webp
 by: CrazyWolf13
 repo: https://github.com/sakowicz/actual-budget-prometheus-exporter
 site: https://github.com/sakowicz/actual-budget-prometheus-exporter

@@ -2,7 +2,7 @@
 slug: immich-public-proxy
 title: Immich Public Proxy
 tags: [photos, proxy]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/immich-public-proxy.webp
+logo: /assets/logos/immich-public-proxy.webp
 by: vhsdream
 repo: https://github.com/alangrainger/immich-public-proxy
 site: https://github.com/alangrainger/immich-public-proxy

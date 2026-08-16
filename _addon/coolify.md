@@ -2,7 +2,7 @@
 slug: coolify
 title: Coolify
 tags: [docker, paas]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/coolify.webp
+logo: /assets/logos/coolify.webp
 by: MickLesk
 repo: https://github.com/coollabsio/coolify
 site: https://coolify.io

@@ -2,7 +2,7 @@
 slug: portainer
 title: Portainer
 tags: [docker, proxmox]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/portainer.webp
+logo: /assets/logos/portainer.webp
 by: MickLesk
 repo: https://github.com/portainer/portainer
 site: https://www.portainer.io

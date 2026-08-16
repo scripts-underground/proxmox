@@ -2,7 +2,7 @@
 slug: runtipi
 title: Runtipi
 tags: [docker, hosting]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/runtipi.webp
+logo: /assets/logos/runtipi.webp
 by: MickLesk
 repo: https://github.com/runtipi/runtipi
 site: https://runtipi.io/

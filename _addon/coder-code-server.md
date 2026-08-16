@@ -2,7 +2,7 @@
 slug: coder-code-server
 title: Code Server
 tags: [ai-dev]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/coder-light.webp
+logo: /assets/logos/coder-code-server.webp
 by: tteck
 repo: https://github.com/coder/code-server
 site: https://coder.com

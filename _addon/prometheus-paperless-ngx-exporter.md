@@ -2,7 +2,7 @@
 slug: prometheus-paperless-ngx-exporter
 title: Prometheus Paperless-ngx Exporter
 tags: [monitoring, documents]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/paperless-ngx.webp
+logo: /assets/logos/prometheus-paperless-ngx-exporter.webp
 by: andygrunwald
 repo: https://github.com/hansmi/prometheus-paperless-exporter
 site: https://github.com/hansmi/prometheus-paperless-exporter

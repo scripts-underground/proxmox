@@ -2,7 +2,7 @@
 slug: filebrowser-quantum
 title: FileBrowser Quantum
 tags: [files, management, web]
-logo: https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/filebrowser-quantum.webp
+logo: /assets/logos/filebrowser-quantum.webp
 by: MickLesk
 repo: https://github.com/gtsteffaniak/filebrowser
 site: https://github.com/gtsteffaniak/filebrowser
