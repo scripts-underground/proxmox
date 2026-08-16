@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034,SC2046
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 # Source: https://github.com/CyferShepard/Jellystat
 
-REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-
 # shellcheck disable=SC2034
 # Read by the framework - shellcheck cannot see the caller
 APP="Jellystat"
-# shellcheck disable=SC2034
-# Read by the framework - shellcheck cannot see the caller
-APP_TYPE="addon"
-INSTALL_PATH="/opt/jellystat"
-CONFIG_PATH="/opt/jellystat/.env"
-DEFAULT_PORT=3000
 
-function header_info {
+# Bundle-consumed configuration (var_addon_* is baked into update/uninstall
+# bundles at install time — hooks may reference these directly)
+var_addon_install_path="${var_addon_install_path:-/opt/jellystat}"
+var_addon_config_path="${var_addon_config_path:-/opt/jellystat/.env}"
+var_addon_service_path="${var_addon_service_path:-/etc/systemd/system/jellystat.service}"
+var_addon_backup_dir="${var_addon_backup_dir:-/opt/jellystat_backup}"
+var_addon_creds_path="${var_addon_creds_path:-/root/jellystat.creds}"
+var_addon_db_name="${var_addon_db_name:-jellystat}"
+var_addon_db_user="${var_addon_db_user:-jellystat}"
+var_addon_default_port="${var_addon_default_port:-3000}"
+
+function header_info() {
   clear
   cat << "EOF"
        __     ____           __        __
@@ -30,18 +33,12 @@ function header_info {
 EOF
 }
 
-if [[ -f "/etc/alpine-release" ]]; then
-  msg_error "Alpine is not supported for ${APP}. Use Debian/Ubuntu."
-  exit 1
-elif [[ -f "/etc/debian_version" ]]; then
-  OS="Debian"
-  SERVICE_PATH="/etc/systemd/system/jellystat.service"
-else
-  echo -e "${CROSS} Unsupported OS detected. Exiting."
-  exit 1
-fi
-
 function install_script() {
+  if [[ "$OS_FAMILY" != "debian" ]]; then
+    msg_error "Unsupported OS: ${OS_TYPE} (Debian/Ubuntu only)"
+    exit 1
+  fi
+
   if command -v node &> /dev/null; then
     msg_ok "Node.js already installed ($(node -v))"
   else
@@ -54,67 +51,65 @@ function install_script() {
     PG_VERSION="17" setup_postgresql
   fi
 
-  local DB_NAME="jellystat"
-  local DB_USER="jellystat"
   local DB_PASS
 
   msg_info "Setting up PostgreSQL database"
 
-  if sudo -u postgres psql -lqt 2> /dev/null | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
-    msg_warn "Database '${DB_NAME}' already exists - skipping creation"
-    echo -n "${TAB}Enter existing database password for '${DB_USER}': "
-    read -rs DB_PASS
+  if sudo -u postgres psql -lqt 2> /dev/null | cut -d \| -f 1 | grep -qw "$var_addon_db_name"; then
+    msg_warn "Database '${var_addon_db_name}' already exists - skipping creation"
+    echo -n "${TAB}Enter existing database password for '${var_addon_db_user}': "
+    read -rs DB_PASS || true
     echo ""
   else
     DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c16)
 
-    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2> /dev/null | grep -q 1; then
-      msg_info "User '${DB_USER}' exists, updating password"
-      $STD sudo -u postgres psql -c "ALTER USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" || {
+    if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${var_addon_db_user}'" 2> /dev/null | grep -q 1; then
+      msg_info "User '${var_addon_db_user}' exists, updating password"
+      $STD sudo -u postgres psql -c "ALTER USER ${var_addon_db_user} WITH PASSWORD '${DB_PASS}';" || {
         msg_error "Failed to update PostgreSQL user"
         return 1
       }
     else
-      $STD sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" || {
+      $STD sudo -u postgres psql -c "CREATE USER ${var_addon_db_user} WITH PASSWORD '${DB_PASS}';" || {
         msg_error "Failed to create PostgreSQL user"
         return 1
       }
     fi
 
-    $STD sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} WITH OWNER ${DB_USER} ENCODING 'UTF8' LC_COLLATE='C' LC_CTYPE='C' TEMPLATE template0;" || {
+    $STD sudo -u postgres psql -c "CREATE DATABASE ${var_addon_db_name} WITH OWNER ${var_addon_db_user} ENCODING 'UTF8' LC_COLLATE='C' LC_CTYPE='C' TEMPLATE template0;" || {
       msg_error "Failed to create PostgreSQL database"
       return 1
     }
-    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};" || {
+    $STD sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${var_addon_db_name} TO ${var_addon_db_user};" || {
       msg_error "Failed to grant privileges"
       return 1
     }
 
-    $STD sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" || true
+    $STD sudo -u postgres psql -d "${var_addon_db_name}" -c "GRANT ALL ON SCHEMA public TO ${var_addon_db_user};" || true
 
     local PG_HBA
     PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file;" 2> /dev/null | tr -d ' ')
     if [[ -n "$PG_HBA" && -f "$PG_HBA" ]]; then
-      if ! grep -qE "^host\s+${DB_NAME}\s+${DB_USER}\s+127.0.0.1" "$PG_HBA"; then
+      if ! grep -qE "^host\s+${var_addon_db_name}\s+${var_addon_db_user}\s+127.0.0.1" "$PG_HBA"; then
         msg_info "Configuring PostgreSQL authentication"
-        sed -i "/^# IPv4 local connections:/a host    ${DB_NAME}    ${DB_USER}    127.0.0.1/32    scram-sha-256" "$PG_HBA"
-        sed -i "/^# IPv4 local connections:/a host    ${DB_NAME}    ${DB_USER}    ::1/128         scram-sha-256" "$PG_HBA"
+        sed -i "/^# IPv4 local connections:/a host    ${var_addon_db_name}    ${var_addon_db_user}    127.0.0.1/32    scram-sha-256" "$PG_HBA"
+        sed -i "/^# IPv4 local connections:/a host    ${var_addon_db_name}    ${var_addon_db_user}    ::1/128         scram-sha-256" "$PG_HBA"
         systemctl reload postgresql
         msg_ok "Configured PostgreSQL authentication"
       fi
     fi
 
-    msg_ok "Created PostgreSQL database '${DB_NAME}'"
+    msg_ok "Created PostgreSQL database '${var_addon_db_name}'"
   fi
 
   local JWT_SECRET
   JWT_SECRET=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c32)
 
   rm -f "$HOME/.jellystat"
-  fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$INSTALL_PATH"
+  fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$var_addon_install_path"
 
   msg_info "Installing dependencies"
-  cd "$INSTALL_PATH" || exit
+  cd "$var_addon_install_path" || exit
   $STD npm install
   msg_ok "Installed dependencies"
 
@@ -123,14 +118,14 @@ function install_script() {
   msg_ok "Built ${APP}"
 
   msg_info "Creating configuration"
-  cat << EOF > "$CONFIG_PATH"
+  cat << EOF > "$var_addon_config_path"
 # Jellystat Configuration
 # Database
-POSTGRES_USER=${DB_USER}
+POSTGRES_USER=${var_addon_db_user}
 POSTGRES_PASSWORD=${DB_PASS}
 POSTGRES_IP=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=${DB_NAME}
+POSTGRES_DB=${var_addon_db_name}
 
 # Security
 JWT_SECRET=${JWT_SECRET}
@@ -154,11 +149,11 @@ TZ=$(cat /etc/timezone 2> /dev/null || echo "UTC")
 # Optional: Self-signed certificates
 REJECT_SELF_SIGNED_CERTIFICATES=true
 EOF
-  chmod 600 "$CONFIG_PATH"
+  chmod 600 "$var_addon_config_path"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
-  cat << EOF > "$SERVICE_PATH"
+  cat << EOF > "$var_addon_service_path"
 [Unit]
 Description=Jellystat - Statistics for Jellyfin
 After=network.target postgresql.service
@@ -166,26 +161,40 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=${INSTALL_PATH}/backend
-EnvironmentFile=${CONFIG_PATH}
-ExecStart=/usr/bin/node ${INSTALL_PATH}/backend/server.js
+WorkingDirectory=${var_addon_install_path}/backend
+EnvironmentFile=${var_addon_config_path}
+ExecStart=/usr/bin/node ${var_addon_install_path}/backend/server.js
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable --now jellystat &> /dev/null
+  systemctl enable -q --now jellystat
   msg_ok "Created and started service"
 
-  msg_info "Creating update script"
-  cat << 'UPDATEEOF' > /usr/local/bin/update_jellystat
-#!/usr/bin/env bash
-# Jellystat Update Script
-type=update bash -c "$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/tools/addon/jellystat.sh)"
-UPDATEEOF
-  chmod +x /usr/local/bin/update_jellystat
-  msg_ok "Created update script (/usr/local/bin/update_jellystat)"
+  msg_info "Saving credentials"
+  cat << EOF > "$var_addon_creds_path"
+Jellystat Credentials
+=====================
+Database User: ${var_addon_db_user}
+Database Password: ${DB_PASS}
+Database Name: ${var_addon_db_name}
+JWT Secret: ${JWT_SECRET}
+
+Web UI: http://${LOCAL_IP}:${var_addon_default_port}
+EOF
+  chmod 600 "$var_addon_creds_path"
+  msg_ok "Saved credentials to ${var_addon_creds_path}"
+}
+
+function post_install_script() {
+  echo ""
+  msg_ok "${APP} is reachable at: ${BL}http://${LOCAL_IP}:${var_addon_default_port}${CL}"
+  msg_ok "Credentials saved to: ${BL}${var_addon_creds_path}${CL}"
+  echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
+  echo ""
+  msg_warn "On first access, you'll need to configure your Jellyfin server connection."
 }
 
 function update_script() {
@@ -195,18 +204,19 @@ function update_script() {
     msg_ok "Stopped service"
 
     msg_info "Backing up configuration"
-    cp "$CONFIG_PATH" /tmp/jellystat.env.bak 2> /dev/null || true
+    mkdir -p "$var_addon_backup_dir"
+    cp "$var_addon_config_path" "$var_addon_backup_dir/env.bak" 2> /dev/null || true
     msg_ok "Backed up configuration"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$INSTALL_PATH"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$var_addon_install_path"
 
     msg_info "Restoring configuration"
-    cp /tmp/jellystat.env.bak "$CONFIG_PATH" 2> /dev/null || true
-    rm -f /tmp/jellystat.env.bak
+    cp "$var_addon_backup_dir/env.bak" "$var_addon_config_path" 2> /dev/null || true
+    rm -rf "$var_addon_backup_dir"
     msg_ok "Restored configuration"
 
     msg_info "Installing dependencies"
-    cd "$INSTALL_PATH" || exit
+    cd "$var_addon_install_path" || exit
     $STD npm install
     msg_ok "Installed dependencies"
 
@@ -219,55 +229,49 @@ function update_script() {
     msg_ok "Started service"
     msg_ok "Updated successfully"
   fi
+  exit
 }
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
   systemctl disable --now jellystat.service &> /dev/null || true
-  rm -f "$SERVICE_PATH"
-  rm -rf "$INSTALL_PATH"
-  rm -f "/usr/local/bin/update_jellystat"
+  rm -f "$var_addon_service_path"
+  rm -rf "$var_addon_install_path"
   rm -f "$HOME/.jellystat"
   msg_ok "${APP} has been uninstalled"
 
   echo ""
-  echo -n "${TAB}Also remove PostgreSQL database 'jellystat'? (y/N): "
-  read -r db_prompt
+  echo -n "${TAB}Also remove PostgreSQL database '${var_addon_db_name}'? (y/N): "
+  read -r db_prompt || true
   if [[ "${db_prompt,,}" =~ ^(y|yes)$ ]]; then
     if command -v psql &> /dev/null; then
       msg_info "Removing PostgreSQL database and user"
-      $STD sudo -u postgres psql -c "DROP DATABASE IF EXISTS jellystat;" &> /dev/null || true
-      $STD sudo -u postgres psql -c "DROP USER IF EXISTS jellystat;" &> /dev/null || true
-      msg_ok "Removed PostgreSQL database 'jellystat' and user 'jellystat'"
+      $STD sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${var_addon_db_name};" &> /dev/null || true
+      $STD sudo -u postgres psql -c "DROP USER IF EXISTS ${var_addon_db_user};" &> /dev/null || true
+      msg_ok "Removed PostgreSQL database '${var_addon_db_name}' and user '${var_addon_db_user}'"
     else
       msg_warn "PostgreSQL not found - database may have been removed already"
     fi
   else
     msg_warn "PostgreSQL database was NOT removed. Remove manually if needed:"
-    echo -e "${TAB}  sudo -u postgres psql -c \"DROP DATABASE jellystat;\""
-    echo -e "${TAB}  sudo -u postgres psql -c \"DROP USER jellystat;\""
+    echo -e "${TAB}  sudo -u postgres psql -c \"DROP DATABASE ${var_addon_db_name};\""
+    echo -e "${TAB}  sudo -u postgres psql -c \"DROP USER ${var_addon_db_user};\""
   fi
 }
 
-function post_install_script() {
-  local CREDS_FILE="/root/jellystat.creds"
-  cat << EOF > "$CREDS_FILE"
-Jellystat Credentials
-=====================
-Database User: ${DB_USER}
-Database Password: ${DB_PASS}
-Database Name: ${DB_NAME}
-JWT Secret: ${JWT_SECRET}
-
-Web UI: http://${LOCAL_IP}:${DEFAULT_PORT}
-EOF
-  chmod 600 "$CREDS_FILE"
-
-  echo ""
-  msg_ok "${APP} is reachable at: ${BL}http://${LOCAL_IP}:${DEFAULT_PORT}${CL}"
-  msg_ok "Credentials saved to: ${BL}${CREDS_FILE}${CL}"
-  echo ""
-  msg_warn "On first access, you'll need to configure your Jellyfin server connection."
+# Addons run inside arbitrary containers that may lack curl — ensure the
+# transport before sourcing the framework (everything else is bootstrapped
+# by install.func from this point on)
+if ! command -v curl > /dev/null 2>&1; then
+  if [[ -f /etc/alpine-release ]]; then
+    apk update &> /dev/null && apk add --no-cache curl &> /dev/null
+  else
+    apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+  fi
+fi
+command -v curl > /dev/null 2>&1 || {
+  echo "FATAL: curl is required and could not be installed" >&2
+  exit 1
 }
 
 # framework bootstrap
