@@ -111,7 +111,7 @@ Once it runs, your hook functions are called in this order:
 3. `post_install_script()` — runs ON THE HOST after everything completes.
    Print access URLs and credentials here. `$IP` is available.
 4. `update_script()` — runs INSIDE the container via a persistent bundle
-   at `/usr/local/sbin/update`. User runs `update` to trigger upgrades.
+   at `/usr/local/sbin/update` (aliased to `/usr/bin/update`). User runs `update` to trigger upgrades.
 5. `uninstall_script()` — runs INSIDE the container via a bundle at
    `/usr/local/sbin/uninstall` (self-destructs on success).
 

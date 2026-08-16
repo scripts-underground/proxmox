@@ -94,7 +94,7 @@ hooks invoked directly.
 | `install_script` | `build_container` | Container, via install bundle (self-destructs) |
 | `post_build_script` | `build_container` | Host, after install completes |
 | `post_install_script` | `complete_install` | Host, as final step |
-| `update_script` | — | Container, via `/usr/local/sbin/update` (persistent bundle) |
+| `update_script` | — | Container, via `/usr/local/sbin/update` (persistent bundle; aliased to `/usr/bin/update` so bare `update` works in minimal-PATH shells like `pct enter`) |
 | `uninstall_script` | — | Container, via `/usr/local/sbin/uninstall` (self-destructs on success) |
 
 #### Hooks NOT invoked by the shim
