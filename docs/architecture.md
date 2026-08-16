@@ -141,10 +141,9 @@ addon_dispatch       # installed-guard → install path
 
 Ordering notes:
 
-- The `header_info` snapshot happens BEFORE any framework source, because
-  `core.func` defines `header_info() { header_info_fallback; }`
-  unconditionally at source time. `addon_init` restores the script's version
-  before `render_header` dispatches.
+- A script-defined `header_info()` survives framework sourcing: `core.func`'s
+  same-named fallback stub is guarded (`declare -F` check), so
+  `render_header` dispatches to the script's ASCII art.
 - `install.func`'s `_bootstrap` runs at source time and calls `catch_errors`
   before `render_header` — the reverse of the LXC ordering. Acceptable: the
   addon path has no whiptail stage that could conflict with active traps.
