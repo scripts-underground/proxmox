@@ -1,0 +1,5232 @@
+{
+  "schema_version": 2,
+  "slug": "komodo",
+  "type": "addon",
+  "total_lines": 220,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://komo.do/ | Github: https://github.com/moghtech/komodo\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Komodo\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_install_path=\"${var_addon_install_path:-/opt/komodo}\"\nvar_addon_compose_env=\"${var_addon_compose_env:-${var_addon_install_path:-/opt/komodo}/compose.env}\"\nvar_addon_compose_base_url=\"${var_addon_compose_base_url:-https://raw.githubusercontent.com/moghtech/komodo/main/compose}\"\nvar_addon_default_port=\"${var_addon_default_port:-9120}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu only)\"\n    exit 1\n  fi\n\n  if ! command -v docker \u003e /dev/null 2\u003e\u00261; then\n    msg_info \"Installing Docker\"\n    DOCKER_SKIP_UPDATES=true setup_docker\n    msg_ok \"Installed Docker\"\n  fi\n  if ! docker compose version \u003e /dev/null 2\u003e\u00261; then\n    msg_error \"Docker Compose plugin is not available. Please install it before running this script. Exiting.\"\n    exit 1\n  fi\n  msg_ok \"Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available\"\n\n  if ! command -v openssl \u003e /dev/null 2\u003e\u00261; then\n    msg_info \"Installing openssl\"\n    $STD apt update\n    $STD apt install -y openssl\n    msg_ok \"Installed openssl\"\n  fi\n\n  echo -e \"${TAB}Choose the database for ${APP}:\"\n  echo -e \"${TAB}  1) MongoDB (recommended)\"\n  echo -e \"${TAB}  2) FerretDB\"\n  read -erp \"${TAB}Enter your choice (default: 1): \" DB_CHOICE || true\n  DB_CHOICE=${DB_CHOICE:-1}\n\n  case $DB_CHOICE in\n    1) DB_COMPOSE_FILE=\"mongo.compose.yaml\" ;;\n    2) DB_COMPOSE_FILE=\"ferretdb.compose.yaml\" ;;\n    *)\n      msg_warn \"Invalid choice. Defaulting to MongoDB.\"\n      DB_COMPOSE_FILE=\"mongo.compose.yaml\"\n      ;;\n  esac\n\n  msg_info \"Creating install directory\"\n  mkdir -p \"$var_addon_install_path\"\n  msg_ok \"Created ${var_addon_install_path}\"\n\n  msg_info \"Downloading Docker Compose file\"\n  curl -fsSL \"${var_addon_compose_base_url}/${DB_COMPOSE_FILE}\" -o \"${var_addon_install_path}/${DB_COMPOSE_FILE}\"\n  msg_ok \"Downloaded ${DB_COMPOSE_FILE}\"\n\n  msg_info \"Configuring environment\"\n  curl -fsSL \"${var_addon_compose_base_url}/compose.env\" -o \"$var_addon_compose_env\"\n\n  local db_password webhook_secret jwt_secret\n  db_password=$(openssl rand -base64 16 | tr -d '/+=')\n  KOMODO_ADMIN_PASSWORD=$(openssl rand -base64 8 | tr -d '/+=')\n  webhook_secret=$(openssl rand -base64 24 | tr -d '/+=')\n  jwt_secret=$(openssl rand -base64 24 | tr -d '/+=')\n\n  sed -i \"s/^KOMODO_DATABASE_USERNAME=.*/KOMODO_DATABASE_USERNAME=komodo_admin/\" \"$var_addon_compose_env\"\n  sed -i \"s/^KOMODO_DATABASE_PASSWORD=.*/KOMODO_DATABASE_PASSWORD=${db_password}/\" \"$var_addon_compose_env\"\n  sed -i \"s/^KOMODO_INIT_ADMIN_PASSWORD=changeme/KOMODO_INIT_ADMIN_PASSWORD=${KOMODO_ADMIN_PASSWORD}/\" \"$var_addon_compose_env\"\n  sed -i \"s/^KOMODO_WEBHOOK_SECRET=.*/KOMODO_WEBHOOK_SECRET=${webhook_secret}/\" \"$var_addon_compose_env\"\n  sed -i \"s/^KOMODO_JWT_SECRET=.*/KOMODO_JWT_SECRET=${jwt_secret}/\" \"$var_addon_compose_env\"\n  msg_ok \"Configured environment\"\n\n  msg_info \"Starting ${APP}\"\n  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"${var_addon_install_path}/${DB_COMPOSE_FILE}\" --env-file \"$var_addon_compose_env\" up -d)\n  msg_ok \"Started ${APP}\"\n\n  {\n    echo \"${APP} Credentials\"\n    echo \"\"\n    echo \"Admin User    : admin\"\n    echo \"Admin Password: ${KOMODO_ADMIN_PASSWORD}\"\n  } \u003e\u003e ~/komodo.creds\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}${CL}\"\n  echo -e \"${INFO}${YW}Login:${CL} ${GN}admin${CL} / ${GN}${KOMODO_ADMIN_PASSWORD}${CL}\"\n  echo -e \"${INFO}${YW}Credentials:${CL} saved to ~/komodo.creds\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if [[ ! -d \"$var_addon_install_path\" ]]; then\n    msg_error \"${APP} is not installed. Nothing to update.\"\n    exit 233\n  fi\n\n  # find_compose_file (inlined — bundles contain only the hook body)\n  local compose_file compose_basename\n  compose_file=$(find \"$var_addon_install_path\" -maxdepth 1 -type f -name '*.compose.yaml' ! -name 'compose.env' | head -n1)\n  if [[ -z \"${compose_file:-}\" ]]; then\n    msg_error \"No valid compose file found in ${var_addon_install_path}!\"\n    exit 233\n  fi\n  compose_basename=$(basename \"$compose_file\")\n\n  # check_legacy_db (inlined)\n  if [[ \"$compose_basename\" == \"sqlite.compose.yaml\" || \"$compose_basename\" == \"postgres.compose.yaml\" ]]; then\n    msg_error \"Detected outdated ${APP} setup using SQLite or PostgreSQL (FerretDB v1).\"\n    echo -e \"${YW}This configuration is no longer supported since Komodo v1.18.0.${CL}\"\n    echo -e \"${YW}Please follow the migration guide:${CL}\"\n    echo -e \"${BGN}https://github.com/community-scripts/ProxmoxVE/discussions/5689${CL}\\n\"\n    exit 238\n  fi\n\n  msg_info \"Updating ${APP}\"\n  local backup_file\n  backup_file=\"${var_addon_install_path}/${compose_basename}.bak_$(date +%Y%m%d_%H%M%S)\"\n  cp \"$compose_file\" \"$backup_file\" || {\n    msg_error \"Failed to create backup of ${compose_basename}!\"\n    exit 235\n  }\n  cp \"$var_addon_compose_env\" \"${var_addon_compose_env}.bak_$(date +%Y%m%d_%H%M%S)\" 2\u003e /dev/null || true\n\n  if ! curl -fsSL \"${var_addon_compose_base_url}/${compose_basename}\" -o \"$compose_file\"; then\n    msg_error \"Failed to download ${compose_basename} from GitHub!\"\n    mv \"$backup_file\" \"$compose_file\"\n    exit 115\n  fi\n\n  # === v2 migration: image tag (latest is deprecated) ===\n  if grep -q '^COMPOSE_KOMODO_IMAGE_TAG=latest' \"$var_addon_compose_env\"; then\n    msg_info \"Migrating to Komodo v2 image tag\"\n    sed -i 's/^COMPOSE_KOMODO_IMAGE_TAG=latest/COMPOSE_KOMODO_IMAGE_TAG=2/' \"$var_addon_compose_env\"\n    msg_ok \"Migrated image tag to :2\"\n  fi\n\n  # === v2 migration: DB credential variable names ===\n  if grep -q '^KOMODO_DB_USERNAME=' \"$var_addon_compose_env\"; then\n    msg_info \"Migrating database credential variables\"\n    sed -i 's/^KOMODO_DB_USERNAME=/KOMODO_DATABASE_USERNAME=/' \"$var_addon_compose_env\"\n    sed -i 's/^KOMODO_DB_PASSWORD=/KOMODO_DATABASE_PASSWORD=/' \"$var_addon_compose_env\"\n    msg_ok \"Migrated DB credential variables\"\n  fi\n\n  # === v2 migration: remove deprecated passkey (replaced by PKI) ===\n  if grep -q '^KOMODO_PASSKEY=' \"$var_addon_compose_env\"; then\n    sed -i '/^KOMODO_PASSKEY=/d' \"$var_addon_compose_env\"\n  fi\n\n  # === v2 migration: ensure PERIPHERY_CORE_PUBLIC_KEYS is set ===\n  if ! grep -q 'PERIPHERY_CORE_PUBLIC_KEYS' \"$var_addon_compose_env\"; then\n    echo '## Use the public key generated by Core.' \u003e\u003e \"$var_addon_compose_env\"\n    echo 'PERIPHERY_CORE_PUBLIC_KEYS=file:/config/keys/core.pub' \u003e\u003e \"$var_addon_compose_env\"\n  fi\n\n  # === ensure backups path is set ===\n  if ! grep -q 'COMPOSE_KOMODO_BACKUPS_PATH=' \"$var_addon_compose_env\"; then\n    echo 'COMPOSE_KOMODO_BACKUPS_PATH=/etc/komodo/backups' \u003e\u003e \"$var_addon_compose_env\"\n  fi\n\n  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" pull)\n  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" up -d)\n  msg_ok \"Updated ${APP}\"\n\n  msg_ok \"Updated successfully\"\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n\n  # find_compose_file (inlined — bundles contain only the hook body)\n  local compose_file\n  compose_file=$(find \"$var_addon_install_path\" -maxdepth 1 -type f -name '*.compose.yaml' ! -name 'compose.env' | head -n1)\n  if [[ -z \"${compose_file:-}\" ]]; then\n    msg_error \"No valid compose file found in ${var_addon_install_path}!\"\n    exit 233\n  fi\n\n  msg_info \"Stopping and removing Docker containers\"\n  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" down --volumes --remove-orphans)\n  msg_ok \"Stopped and removed Docker containers\"\n\n  rm -rf \"$var_addon_install_path\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon\")\n",
+  "source_lines": [
+    "#!/usr/bin/env bash",
+    "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
+    "",
+    "# Copyright (c) 2021-2026 community-scripts ORG",
+    "# Author: MickLesk (CanbiZ)",
+    "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
+    "# Source: https://komo.do/ | Github: https://github.com/moghtech/komodo",
+    "",
+    "# shellcheck disable=SC2034",
+    "# Read by the framework - shellcheck cannot see the caller",
+    "APP=\"Komodo\"",
+    "",
+    "# Bundle-consumed configuration (var_addon_* is baked into update/uninstall",
+    "# bundles at install time — hooks may reference these directly)",
+    "var_addon_install_path=\"${var_addon_install_path:-/opt/komodo}\"",
+    "var_addon_compose_env=\"${var_addon_compose_env:-${var_addon_install_path:-/opt/komodo}/compose.env}\"",
+    "var_addon_compose_base_url=\"${var_addon_compose_base_url:-https://raw.githubusercontent.com/moghtech/komodo/main/compose}\"",
+    "var_addon_default_port=\"${var_addon_default_port:-9120}\"",
+    "",
+    "function install_script() {",
+    "  if [[ \"$OS_FAMILY\" != \"debian\" ]]; then",
+    "    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu only)\"",
+    "    exit 1",
+    "  fi",
+    "",
+    "  if ! command -v docker \u003e /dev/null 2\u003e\u00261; then",
+    "    msg_info \"Installing Docker\"",
+    "    DOCKER_SKIP_UPDATES=true setup_docker",
+    "    msg_ok \"Installed Docker\"",
+    "  fi",
+    "  if ! docker compose version \u003e /dev/null 2\u003e\u00261; then",
+    "    msg_error \"Docker Compose plugin is not available. Please install it before running this script. Exiting.\"",
+    "    exit 1",
+    "  fi",
+    "  msg_ok \"Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available\"",
+    "",
+    "  if ! command -v openssl \u003e /dev/null 2\u003e\u00261; then",
+    "    msg_info \"Installing openssl\"",
+    "    $STD apt update",
+    "    $STD apt install -y openssl",
+    "    msg_ok \"Installed openssl\"",
+    "  fi",
+    "",
+    "  echo -e \"${TAB}Choose the database for ${APP}:\"",
+    "  echo -e \"${TAB}  1) MongoDB (recommended)\"",
+    "  echo -e \"${TAB}  2) FerretDB\"",
+    "  read -erp \"${TAB}Enter your choice (default: 1): \" DB_CHOICE || true",
+    "  DB_CHOICE=${DB_CHOICE:-1}",
+    "",
+    "  case $DB_CHOICE in",
+    "    1) DB_COMPOSE_FILE=\"mongo.compose.yaml\" ;;",
+    "    2) DB_COMPOSE_FILE=\"ferretdb.compose.yaml\" ;;",
+    "    *)",
+    "      msg_warn \"Invalid choice. Defaulting to MongoDB.\"",
+    "      DB_COMPOSE_FILE=\"mongo.compose.yaml\"",
+    "      ;;",
+    "  esac",
+    "",
+    "  msg_info \"Creating install directory\"",
+    "  mkdir -p \"$var_addon_install_path\"",
+    "  msg_ok \"Created ${var_addon_install_path}\"",
+    "",
+    "  msg_info \"Downloading Docker Compose file\"",
+    "  curl -fsSL \"${var_addon_compose_base_url}/${DB_COMPOSE_FILE}\" -o \"${var_addon_install_path}/${DB_COMPOSE_FILE}\"",
+    "  msg_ok \"Downloaded ${DB_COMPOSE_FILE}\"",
+    "",
+    "  msg_info \"Configuring environment\"",
+    "  curl -fsSL \"${var_addon_compose_base_url}/compose.env\" -o \"$var_addon_compose_env\"",
+    "",
+    "  local db_password webhook_secret jwt_secret",
+    "  db_password=$(openssl rand -base64 16 | tr -d '/+=')",
+    "  KOMODO_ADMIN_PASSWORD=$(openssl rand -base64 8 | tr -d '/+=')",
+    "  webhook_secret=$(openssl rand -base64 24 | tr -d '/+=')",
+    "  jwt_secret=$(openssl rand -base64 24 | tr -d '/+=')",
+    "",
+    "  sed -i \"s/^KOMODO_DATABASE_USERNAME=.*/KOMODO_DATABASE_USERNAME=komodo_admin/\" \"$var_addon_compose_env\"",
+    "  sed -i \"s/^KOMODO_DATABASE_PASSWORD=.*/KOMODO_DATABASE_PASSWORD=${db_password}/\" \"$var_addon_compose_env\"",
+    "  sed -i \"s/^KOMODO_INIT_ADMIN_PASSWORD=changeme/KOMODO_INIT_ADMIN_PASSWORD=${KOMODO_ADMIN_PASSWORD}/\" \"$var_addon_compose_env\"",
+    "  sed -i \"s/^KOMODO_WEBHOOK_SECRET=.*/KOMODO_WEBHOOK_SECRET=${webhook_secret}/\" \"$var_addon_compose_env\"",
+    "  sed -i \"s/^KOMODO_JWT_SECRET=.*/KOMODO_JWT_SECRET=${jwt_secret}/\" \"$var_addon_compose_env\"",
+    "  msg_ok \"Configured environment\"",
+    "",
+    "  msg_info \"Starting ${APP}\"",
+    "  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"${var_addon_install_path}/${DB_COMPOSE_FILE}\" --env-file \"$var_addon_compose_env\" up -d)",
+    "  msg_ok \"Started ${APP}\"",
+    "",
+    "  {",
+    "    echo \"${APP} Credentials\"",
+    "    echo \"\"",
+    "    echo \"Admin User    : admin\"",
+    "    echo \"Admin Password: ${KOMODO_ADMIN_PASSWORD}\"",
+    "  } \u003e\u003e ~/komodo.creds",
+    "}",
+    "",
+    "function post_install_script() {",
+    "  echo \"\"",
+    "  msg_ok \"${APP} installed successfully\"",
+    "  echo -e \"${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}${CL}\"",
+    "  echo -e \"${INFO}${YW}Login:${CL} ${GN}admin${CL} / ${GN}${KOMODO_ADMIN_PASSWORD}${CL}\"",
+    "  echo -e \"${INFO}${YW}Credentials:${CL} saved to ~/komodo.creds\"",
+    "  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"",
+    "}",
+    "",
+    "function update_script() {",
+    "  if [[ ! -d \"$var_addon_install_path\" ]]; then",
+    "    msg_error \"${APP} is not installed. Nothing to update.\"",
+    "    exit 233",
+    "  fi",
+    "",
+    "  # find_compose_file (inlined — bundles contain only the hook body)",
+    "  local compose_file compose_basename",
+    "  compose_file=$(find \"$var_addon_install_path\" -maxdepth 1 -type f -name '*.compose.yaml' ! -name 'compose.env' | head -n1)",
+    "  if [[ -z \"${compose_file:-}\" ]]; then",
+    "    msg_error \"No valid compose file found in ${var_addon_install_path}!\"",
+    "    exit 233",
+    "  fi",
+    "  compose_basename=$(basename \"$compose_file\")",
+    "",
+    "  # check_legacy_db (inlined)",
+    "  if [[ \"$compose_basename\" == \"sqlite.compose.yaml\" || \"$compose_basename\" == \"postgres.compose.yaml\" ]]; then",
+    "    msg_error \"Detected outdated ${APP} setup using SQLite or PostgreSQL (FerretDB v1).\"",
+    "    echo -e \"${YW}This configuration is no longer supported since Komodo v1.18.0.${CL}\"",
+    "    echo -e \"${YW}Please follow the migration guide:${CL}\"",
+    "    echo -e \"${BGN}https://github.com/community-scripts/ProxmoxVE/discussions/5689${CL}\\n\"",
+    "    exit 238",
+    "  fi",
+    "",
+    "  msg_info \"Updating ${APP}\"",
+    "  local backup_file",
+    "  backup_file=\"${var_addon_install_path}/${compose_basename}.bak_$(date +%Y%m%d_%H%M%S)\"",
+    "  cp \"$compose_file\" \"$backup_file\" || {",
+    "    msg_error \"Failed to create backup of ${compose_basename}!\"",
+    "    exit 235",
+    "  }",
+    "  cp \"$var_addon_compose_env\" \"${var_addon_compose_env}.bak_$(date +%Y%m%d_%H%M%S)\" 2\u003e /dev/null || true",
+    "",
+    "  if ! curl -fsSL \"${var_addon_compose_base_url}/${compose_basename}\" -o \"$compose_file\"; then",
+    "    msg_error \"Failed to download ${compose_basename} from GitHub!\"",
+    "    mv \"$backup_file\" \"$compose_file\"",
+    "    exit 115",
+    "  fi",
+    "",
+    "  # === v2 migration: image tag (latest is deprecated) ===",
+    "  if grep -q '^COMPOSE_KOMODO_IMAGE_TAG=latest' \"$var_addon_compose_env\"; then",
+    "    msg_info \"Migrating to Komodo v2 image tag\"",
+    "    sed -i 's/^COMPOSE_KOMODO_IMAGE_TAG=latest/COMPOSE_KOMODO_IMAGE_TAG=2/' \"$var_addon_compose_env\"",
+    "    msg_ok \"Migrated image tag to :2\"",
+    "  fi",
+    "",
+    "  # === v2 migration: DB credential variable names ===",
+    "  if grep -q '^KOMODO_DB_USERNAME=' \"$var_addon_compose_env\"; then",
+    "    msg_info \"Migrating database credential variables\"",
+    "    sed -i 's/^KOMODO_DB_USERNAME=/KOMODO_DATABASE_USERNAME=/' \"$var_addon_compose_env\"",
+    "    sed -i 's/^KOMODO_DB_PASSWORD=/KOMODO_DATABASE_PASSWORD=/' \"$var_addon_compose_env\"",
+    "    msg_ok \"Migrated DB credential variables\"",
+    "  fi",
+    "",
+    "  # === v2 migration: remove deprecated passkey (replaced by PKI) ===",
+    "  if grep -q '^KOMODO_PASSKEY=' \"$var_addon_compose_env\"; then",
+    "    sed -i '/^KOMODO_PASSKEY=/d' \"$var_addon_compose_env\"",
+    "  fi",
+    "",
+    "  # === v2 migration: ensure PERIPHERY_CORE_PUBLIC_KEYS is set ===",
+    "  if ! grep -q 'PERIPHERY_CORE_PUBLIC_KEYS' \"$var_addon_compose_env\"; then",
+    "    echo '## Use the public key generated by Core.' \u003e\u003e \"$var_addon_compose_env\"",
+    "    echo 'PERIPHERY_CORE_PUBLIC_KEYS=file:/config/keys/core.pub' \u003e\u003e \"$var_addon_compose_env\"",
+    "  fi",
+    "",
+    "  # === ensure backups path is set ===",
+    "  if ! grep -q 'COMPOSE_KOMODO_BACKUPS_PATH=' \"$var_addon_compose_env\"; then",
+    "    echo 'COMPOSE_KOMODO_BACKUPS_PATH=/etc/komodo/backups' \u003e\u003e \"$var_addon_compose_env\"",
+    "  fi",
+    "",
+    "  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" pull)",
+    "  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" up -d)",
+    "  msg_ok \"Updated ${APP}\"",
+    "",
+    "  msg_ok \"Updated successfully\"",
+    "  exit",
+    "}",
+    "",
+    "function uninstall_script() {",
+    "  msg_info \"Uninstalling ${APP}\"",
+    "",
+    "  # find_compose_file (inlined — bundles contain only the hook body)",
+    "  local compose_file",
+    "  compose_file=$(find \"$var_addon_install_path\" -maxdepth 1 -type f -name '*.compose.yaml' ! -name 'compose.env' | head -n1)",
+    "  if [[ -z \"${compose_file:-}\" ]]; then",
+    "    msg_error \"No valid compose file found in ${var_addon_install_path}!\"",
+    "    exit 233",
+    "  fi",
+    "",
+    "  msg_info \"Stopping and removing Docker containers\"",
+    "  (cd \"$var_addon_install_path\" \u0026\u0026 $STD docker compose -p komodo -f \"$compose_file\" --env-file \"$var_addon_compose_env\" down --volumes --remove-orphans)",
+    "  msg_ok \"Stopped and removed Docker containers\"",
+    "",
+    "  rm -rf \"$var_addon_install_path\"",
+    "  msg_ok \"${APP} has been uninstalled\"",
+    "}",
+    "",
+    "# Addons run inside arbitrary containers that may lack curl — ensure the",
+    "# transport before sourcing the framework (everything else is bootstrapped",
+    "# by install.func from this point on)",
+    "if ! command -v curl \u003e /dev/null 2\u003e\u00261; then",
+    "  if [[ -f /etc/alpine-release ]]; then",
+    "    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null",
+    "  else",
+    "    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null",
+    "  fi",
+    "fi",
+    "command -v curl \u003e /dev/null 2\u003e\u00261 || {",
+    "  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262",
+    "  exit 1",
+    "}",
+    "",
+    "# framework bootstrap",
+    "# shellcheck disable=SC1090",
+    "# Dynamic URL resolved at runtime - shellcheck cannot follow",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon\")",
+    ""
+  ],
+  "functions": [
+    {
+      "name": "install_script",
+      "start_line": 20,
+      "end_line": 93,
+      "name_span": {
+        "start_line": 20,
+        "start_col": 10,
+        "end_line": 20,
+        "end_col": 24,
+        "kind": ""
+      }
+    },
+    {
+      "name": "post_install_script",
+      "start_line": 95,
+      "end_line": 102,
+      "name_span": {
+        "start_line": 95,
+        "start_col": 10,
+        "end_line": 95,
+        "end_col": 29,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 104,
+      "end_line": 180,
+      "name_span": {
+        "start_line": 104,
+        "start_col": 10,
+        "end_line": 104,
+        "end_col": 23,
+        "kind": ""
+      }
+    },
+    {
+      "name": "uninstall_script",
+      "start_line": 182,
+      "end_line": 199,
+      "name_span": {
+        "start_line": 182,
+        "start_col": 10,
+        "end_line": 182,
+        "end_col": 26,
+        "kind": ""
+      }
+    }
+  ],
+  "assigns": [
+    {
+      "name": "REPO_BASE",
+      "line": 2,
+      "start_col": 1,
+      "end_col": 93,
+      "value_has_cmdsubst": false,
+      "is_repo_base": true,
+      "in_bootstrap_zone": true,
+      "value_is_param_default": false
+    },
+    {
+      "name": "APP",
+      "line": 11,
+      "start_col": 1,
+      "end_col": 13,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_addon_install_path",
+      "line": 15,
+      "start_col": 1,
+      "end_col": 64,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_addon_compose_env",
+      "line": 16,
+      "start_col": 1,
+      "end_col": 101,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_addon_compose_base_url",
+      "line": 17,
+      "start_col": 1,
+      "end_col": 123,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_addon_default_port",
+      "line": 18,
+      "start_col": 1,
+      "end_col": 57,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    }
+  ],
+  "global_ranges": [
+    {
+      "start_line": 204,
+      "end_line": 204
+    },
+    {
+      "start_line": 211,
+      "end_line": 211
+    }
+  ],
+  "heredocs": [],
+  "download_spans": [
+    {
+      "start_line": 64,
+      "start_col": 3,
+      "end_line": 64,
+      "end_col": 114,
+      "kind": "download"
+    },
+    {
+      "start_line": 68,
+      "start_col": 3,
+      "end_line": 68,
+      "end_col": 85,
+      "kind": "download"
+    },
+    {
+      "start_line": 137,
+      "start_col": 8,
+      "end_line": 137,
+      "end_col": 89,
+      "kind": "download"
+    }
+  ],
+  "piped_download_spans": [],
+  "external_spans": [],
+  "tokens": [
+    {
+      "kind": "comment",
+      "start_line": 1,
+      "start_col": 1,
+      "end_line": 1,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "var-name",
+      "start_line": 2,
+      "start_col": 1,
+      "end_line": 2,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 2,
+      "start_col": 11,
+      "end_line": 2,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 2,
+      "start_col": 12,
+      "end_line": 2,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 4,
+      "start_col": 1,
+      "end_line": 4,
+      "end_col": 48
+    },
+    {
+      "kind": "comment",
+      "start_line": 5,
+      "start_col": 1,
+      "end_line": 5,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 6,
+      "start_col": 1,
+      "end_line": 6,
+      "end_col": 92
+    },
+    {
+      "kind": "comment",
+      "start_line": 7,
+      "start_col": 1,
+      "end_line": 7,
+      "end_col": 72
+    },
+    {
+      "kind": "comment",
+      "start_line": 9,
+      "start_col": 1,
+      "end_line": 9,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 10,
+      "start_col": 1,
+      "end_line": 10,
+      "end_col": 59
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 13
+    },
+    {
+      "kind": "var-name",
+      "start_line": 11,
+      "start_col": 1,
+      "end_line": 11,
+      "end_col": 4
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 11,
+      "start_col": 5,
+      "end_line": 11,
+      "end_col": 13
+    },
+    {
+      "kind": "comment",
+      "start_line": 13,
+      "start_col": 1,
+      "end_line": 13,
+      "end_col": 76
+    },
+    {
+      "kind": "comment",
+      "start_line": 14,
+      "start_col": 1,
+      "end_line": 14,
+      "end_col": 64
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 64
+    },
+    {
+      "kind": "var-name",
+      "start_line": 15,
+      "start_col": 1,
+      "end_line": 15,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 15,
+      "start_col": 24,
+      "end_line": 15,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 15,
+      "start_col": 25,
+      "end_line": 15,
+      "end_col": 63
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 101
+    },
+    {
+      "kind": "var-name",
+      "start_line": 16,
+      "start_col": 1,
+      "end_line": 16,
+      "end_col": 22
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 16,
+      "start_col": 23,
+      "end_line": 16,
+      "end_col": 101
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 24,
+      "end_line": 16,
+      "end_col": 100
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 16,
+      "start_col": 49,
+      "end_line": 16,
+      "end_col": 87
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 123
+    },
+    {
+      "kind": "var-name",
+      "start_line": 17,
+      "start_col": 1,
+      "end_line": 17,
+      "end_col": 27
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 17,
+      "start_col": 28,
+      "end_line": 17,
+      "end_col": 123
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 17,
+      "start_col": 29,
+      "end_line": 17,
+      "end_col": 122
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 57
+    },
+    {
+      "kind": "var-name",
+      "start_line": 18,
+      "start_col": 1,
+      "end_line": 18,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 18,
+      "start_col": 24,
+      "end_line": 18,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 18,
+      "start_col": 25,
+      "end_line": 18,
+      "end_col": 56
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 20,
+      "start_col": 10,
+      "end_line": 20,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 20,
+      "start_col": 27,
+      "end_line": 20,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 21,
+      "start_col": 3,
+      "end_line": 21,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 21,
+      "start_col": 6,
+      "end_line": 21,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 21,
+      "start_col": 9,
+      "end_line": 21,
+      "end_col": 21
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 21,
+      "start_col": 10,
+      "end_line": 21,
+      "end_col": 20
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 21,
+      "start_col": 22,
+      "end_line": 21,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 21,
+      "start_col": 25,
+      "end_line": 21,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 21,
+      "start_col": 34,
+      "end_line": 21,
+      "end_col": 36
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 21,
+      "start_col": 36,
+      "end_line": 21,
+      "end_col": 37
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 21,
+      "start_col": 38,
+      "end_line": 21,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 22,
+      "start_col": 5,
+      "end_line": 22,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 22,
+      "start_col": 15,
+      "end_line": 22,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 22,
+      "start_col": 32,
+      "end_line": 22,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 23,
+      "start_col": 5,
+      "end_line": 23,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 24,
+      "start_col": 3,
+      "end_line": 24,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 26,
+      "start_col": 3,
+      "end_line": 26,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 26,
+      "start_col": 6,
+      "end_line": 26,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 26,
+      "start_col": 8,
+      "end_line": 26,
+      "end_col": 15
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 26,
+      "start_col": 26,
+      "end_line": 26,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 26,
+      "start_col": 39,
+      "end_line": 26,
+      "end_col": 41
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 26,
+      "start_col": 42,
+      "end_line": 26,
+      "end_col": 43
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 26,
+      "start_col": 44,
+      "end_line": 26,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 27,
+      "start_col": 5,
+      "end_line": 27,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 27,
+      "start_col": 14,
+      "end_line": 27,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 5,
+      "end_line": 28,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 5,
+      "end_line": 28,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 28,
+      "start_col": 30,
+      "end_line": 28,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 29,
+      "start_col": 5,
+      "end_line": 29,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 12,
+      "end_line": 29,
+      "end_col": 30
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 30,
+      "start_col": 3,
+      "end_line": 30,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 31,
+      "start_col": 3,
+      "end_line": 31,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 31,
+      "start_col": 6,
+      "end_line": 31,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 31,
+      "start_col": 8,
+      "end_line": 31,
+      "end_col": 14
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 31,
+      "start_col": 31,
+      "end_line": 31,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 31,
+      "start_col": 44,
+      "end_line": 31,
+      "end_col": 46
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 31,
+      "start_col": 47,
+      "end_line": 31,
+      "end_col": 48
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 31,
+      "start_col": 49,
+      "end_line": 31,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 32,
+      "start_col": 5,
+      "end_line": 32,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 32,
+      "start_col": 15,
+      "end_line": 32,
+      "end_col": 111
+    },
+    {
+      "kind": "command",
+      "start_line": 33,
+      "start_col": 5,
+      "end_line": 33,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 3,
+      "end_line": 35,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 35,
+      "start_col": 10,
+      "end_line": 35,
+      "end_col": 99
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 35,
+      "start_col": 18,
+      "end_line": 35,
+      "end_col": 65
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 20,
+      "end_line": 35,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 35,
+      "start_col": 37,
+      "end_line": 35,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 39,
+      "end_line": 35,
+      "end_col": 42
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 35,
+      "start_col": 45,
+      "end_line": 35,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 35,
+      "start_col": 53,
+      "end_line": 35,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 55,
+      "end_line": 35,
+      "end_col": 57
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 35,
+      "start_col": 61,
+      "end_line": 35,
+      "end_col": 64
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 37,
+      "start_col": 3,
+      "end_line": 37,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 37,
+      "start_col": 6,
+      "end_line": 37,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 8,
+      "end_line": 37,
+      "end_col": 15
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 37,
+      "start_col": 27,
+      "end_line": 37,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 37,
+      "start_col": 40,
+      "end_line": 37,
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 37,
+      "start_col": 43,
+      "end_line": 37,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 37,
+      "start_col": 45,
+      "end_line": 37,
+      "end_col": 49
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 5,
+      "end_line": 38,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 38,
+      "start_col": 14,
+      "end_line": 38,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 39,
+      "start_col": 5,
+      "end_line": 39,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 39,
+      "start_col": 10,
+      "end_line": 39,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 40,
+      "start_col": 5,
+      "end_line": 40,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 40,
+      "start_col": 10,
+      "end_line": 40,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 5,
+      "end_line": 41,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 41,
+      "start_col": 12,
+      "end_line": 41,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 42,
+      "start_col": 3,
+      "end_line": 42,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 44,
+      "start_col": 11,
+      "end_line": 44,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 12,
+      "end_line": 44,
+      "end_col": 18
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 44,
+      "start_col": 42,
+      "end_line": 44,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 11,
+      "end_line": 45,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 45,
+      "start_col": 12,
+      "end_line": 45,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 11,
+      "end_line": 46,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 12,
+      "end_line": 46,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 13,
+      "end_line": 47,
+      "end_col": 53
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 47,
+      "start_col": 14,
+      "end_line": 47,
+      "end_col": 20
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 47,
+      "start_col": 64,
+      "end_line": 47,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 67,
+      "end_line": 47,
+      "end_col": 71
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 28
+    },
+    {
+      "kind": "var-name",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 48,
+      "start_col": 13,
+      "end_line": 48,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 50,
+      "start_col": 3,
+      "end_line": 50,
+      "end_col": 7
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 50,
+      "start_col": 8,
+      "end_line": 50,
+      "end_col": 18
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 50,
+      "start_col": 19,
+      "end_line": 50,
+      "end_col": 21
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 51,
+      "start_col": 8,
+      "end_line": 51,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 51,
+      "start_col": 8,
+      "end_line": 51,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 24,
+      "end_line": 51,
+      "end_col": 44
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 51,
+      "start_col": 45,
+      "end_line": 51,
+      "end_col": 47
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 52,
+      "start_col": 8,
+      "end_line": 52,
+      "end_col": 47
+    },
+    {
+      "kind": "var-name",
+      "start_line": 52,
+      "start_col": 8,
+      "end_line": 52,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 24,
+      "end_line": 52,
+      "end_col": 47
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 52,
+      "start_col": 48,
+      "end_line": 52,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 54,
+      "start_col": 7,
+      "end_line": 54,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 54,
+      "start_col": 16,
+      "end_line": 54,
+      "end_col": 56
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 55,
+      "start_col": 7,
+      "end_line": 55,
+      "end_col": 43
+    },
+    {
+      "kind": "var-name",
+      "start_line": 55,
+      "start_col": 7,
+      "end_line": 55,
+      "end_col": 22
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 55,
+      "start_col": 23,
+      "end_line": 55,
+      "end_col": 43
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 56,
+      "start_col": 7,
+      "end_line": 56,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 57,
+      "start_col": 3,
+      "end_line": 57,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 59,
+      "start_col": 3,
+      "end_line": 59,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 59,
+      "start_col": 12,
+      "end_line": 59,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 60,
+      "start_col": 3,
+      "end_line": 60,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 60,
+      "start_col": 12,
+      "end_line": 60,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 60,
+      "start_col": 13,
+      "end_line": 60,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 61,
+      "start_col": 10,
+      "end_line": 61,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 61,
+      "start_col": 19,
+      "end_line": 61,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 63,
+      "start_col": 12,
+      "end_line": 63,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 64,
+      "start_col": 3,
+      "end_line": 64,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 64,
+      "start_col": 14,
+      "end_line": 64,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 64,
+      "start_col": 15,
+      "end_line": 64,
+      "end_col": 44
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 64,
+      "start_col": 45,
+      "end_line": 64,
+      "end_col": 63
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 64,
+      "start_col": 68,
+      "end_line": 64,
+      "end_col": 114
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 64,
+      "start_col": 69,
+      "end_line": 64,
+      "end_col": 94
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 64,
+      "start_col": 95,
+      "end_line": 64,
+      "end_col": 113
+    },
+    {
+      "kind": "command",
+      "start_line": 65,
+      "start_col": 3,
+      "end_line": 65,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 65,
+      "start_col": 10,
+      "end_line": 65,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 65,
+      "start_col": 22,
+      "end_line": 65,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 67,
+      "start_col": 3,
+      "end_line": 67,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 12,
+      "end_line": 67,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 68,
+      "start_col": 3,
+      "end_line": 68,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 68,
+      "start_col": 14,
+      "end_line": 68,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 68,
+      "start_col": 15,
+      "end_line": 68,
+      "end_col": 44
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 68,
+      "start_col": 61,
+      "end_line": 68,
+      "end_col": 85
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 68,
+      "start_col": 62,
+      "end_line": 68,
+      "end_col": 84
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 70,
+      "start_col": 9,
+      "end_line": 70,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 70,
+      "start_col": 9,
+      "end_line": 70,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 70,
+      "start_col": 21,
+      "end_line": 70,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 70,
+      "start_col": 21,
+      "end_line": 70,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 70,
+      "start_col": 36,
+      "end_line": 70,
+      "end_col": 46
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 70,
+      "start_col": 36,
+      "end_line": 70,
+      "end_col": 46
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 55
+    },
+    {
+      "kind": "var-name",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 14
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 71,
+      "start_col": 15,
+      "end_line": 71,
+      "end_col": 55
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 17,
+      "end_line": 71,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 71,
+      "start_col": 41,
+      "end_line": 71,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 43,
+      "end_line": 71,
+      "end_col": 45
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 71,
+      "start_col": 49,
+      "end_line": 71,
+      "end_col": 54
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 72,
+      "start_col": 3,
+      "end_line": 72,
+      "end_col": 64
+    },
+    {
+      "kind": "var-name",
+      "start_line": 72,
+      "start_col": 3,
+      "end_line": 72,
+      "end_col": 24
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 72,
+      "start_col": 25,
+      "end_line": 72,
+      "end_col": 64
+    },
+    {
+      "kind": "command",
+      "start_line": 72,
+      "start_col": 27,
+      "end_line": 72,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 72,
+      "start_col": 50,
+      "end_line": 72,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 72,
+      "start_col": 52,
+      "end_line": 72,
+      "end_col": 54
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 72,
+      "start_col": 58,
+      "end_line": 72,
+      "end_col": 63
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 73,
+      "start_col": 3,
+      "end_line": 73,
+      "end_col": 58
+    },
+    {
+      "kind": "var-name",
+      "start_line": 73,
+      "start_col": 3,
+      "end_line": 73,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 73,
+      "start_col": 18,
+      "end_line": 73,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 73,
+      "start_col": 20,
+      "end_line": 73,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 73,
+      "start_col": 44,
+      "end_line": 73,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 73,
+      "start_col": 46,
+      "end_line": 73,
+      "end_col": 48
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 73,
+      "start_col": 52,
+      "end_line": 73,
+      "end_col": 57
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 74,
+      "start_col": 3,
+      "end_line": 74,
+      "end_col": 54
+    },
+    {
+      "kind": "var-name",
+      "start_line": 74,
+      "start_col": 3,
+      "end_line": 74,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 74,
+      "start_col": 14,
+      "end_line": 74,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 74,
+      "start_col": 16,
+      "end_line": 74,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 74,
+      "start_col": 40,
+      "end_line": 74,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 74,
+      "start_col": 42,
+      "end_line": 74,
+      "end_col": 44
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 74,
+      "start_col": 48,
+      "end_line": 74,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 76,
+      "start_col": 3,
+      "end_line": 76,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 76,
+      "start_col": 10,
+      "end_line": 76,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 76,
+      "start_col": 82,
+      "end_line": 76,
+      "end_col": 106
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 76,
+      "start_col": 83,
+      "end_line": 76,
+      "end_col": 105
+    },
+    {
+      "kind": "command",
+      "start_line": 77,
+      "start_col": 3,
+      "end_line": 77,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 77,
+      "start_col": 10,
+      "end_line": 77,
+      "end_col": 83
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 77,
+      "start_col": 67,
+      "end_line": 77,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 77,
+      "start_col": 84,
+      "end_line": 77,
+      "end_col": 108
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 77,
+      "start_col": 85,
+      "end_line": 77,
+      "end_col": 107
+    },
+    {
+      "kind": "command",
+      "start_line": 78,
+      "start_col": 3,
+      "end_line": 78,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 78,
+      "start_col": 10,
+      "end_line": 78,
+      "end_col": 103
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 78,
+      "start_col": 77,
+      "end_line": 78,
+      "end_col": 101
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 78,
+      "start_col": 104,
+      "end_line": 78,
+      "end_col": 128
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 78,
+      "start_col": 105,
+      "end_line": 78,
+      "end_col": 127
+    },
+    {
+      "kind": "command",
+      "start_line": 79,
+      "start_col": 3,
+      "end_line": 79,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 79,
+      "start_col": 10,
+      "end_line": 79,
+      "end_col": 80
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 79,
+      "start_col": 61,
+      "end_line": 79,
+      "end_col": 78
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 79,
+      "start_col": 81,
+      "end_line": 79,
+      "end_col": 105
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 79,
+      "start_col": 82,
+      "end_line": 79,
+      "end_col": 104
+    },
+    {
+      "kind": "command",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 80,
+      "start_col": 10,
+      "end_line": 80,
+      "end_col": 68
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 80,
+      "start_col": 53,
+      "end_line": 80,
+      "end_col": 66
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 80,
+      "start_col": 69,
+      "end_line": 80,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 80,
+      "start_col": 70,
+      "end_line": 80,
+      "end_col": 92
+    },
+    {
+      "kind": "command",
+      "start_line": 81,
+      "start_col": 3,
+      "end_line": 81,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 81,
+      "start_col": 10,
+      "end_line": 81,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 83,
+      "start_col": 3,
+      "end_line": 83,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 83,
+      "start_col": 12,
+      "end_line": 83,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 83,
+      "start_col": 22,
+      "end_line": 83,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "(",
+      "start_line": 84,
+      "start_col": 3,
+      "end_line": 84,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 84,
+      "start_col": 4,
+      "end_line": 84,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 84,
+      "start_col": 7,
+      "end_line": 84,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 8,
+      "end_line": 84,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 84,
+      "start_col": 33,
+      "end_line": 84,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 36,
+      "end_line": 84,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 84,
+      "start_col": 41,
+      "end_line": 84,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 84,
+      "start_col": 69,
+      "end_line": 84,
+      "end_col": 115
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 70,
+      "end_line": 84,
+      "end_col": 95
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 96,
+      "end_line": 84,
+      "end_col": 114
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 84,
+      "start_col": 127,
+      "end_line": 84,
+      "end_col": 151
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 84,
+      "start_col": 128,
+      "end_line": 84,
+      "end_col": 150
+    },
+    {
+      "kind": "operator",
+      "op": ")",
+      "start_line": 84,
+      "start_col": 157,
+      "end_line": 84,
+      "end_col": 158
+    },
+    {
+      "kind": "command",
+      "start_line": 85,
+      "start_col": 3,
+      "end_line": 85,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 85,
+      "start_col": 10,
+      "end_line": 85,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 85,
+      "start_col": 19,
+      "end_line": 85,
+      "end_col": 25
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 5,
+      "end_line": 88,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 88,
+      "start_col": 10,
+      "end_line": 88,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 88,
+      "start_col": 11,
+      "end_line": 88,
+      "end_col": 17
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 5,
+      "end_line": 89,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 89,
+      "start_col": 10,
+      "end_line": 89,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 5,
+      "end_line": 90,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 90,
+      "start_col": 10,
+      "end_line": 90,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 91,
+      "start_col": 5,
+      "end_line": 91,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 91,
+      "start_col": 10,
+      "end_line": 91,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 91,
+      "start_col": 27,
+      "end_line": 91,
+      "end_col": 51
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 92,
+      "start_col": 3,
+      "end_line": 92,
+      "end_col": 4
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 92,
+      "start_col": 5,
+      "end_line": 92,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 93,
+      "start_col": 1,
+      "end_line": 93,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 95,
+      "start_col": 1,
+      "end_line": 95,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 95,
+      "start_col": 10,
+      "end_line": 95,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 95,
+      "start_col": 32,
+      "end_line": 95,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 96,
+      "start_col": 3,
+      "end_line": 96,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 96,
+      "start_col": 8,
+      "end_line": 96,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 97,
+      "start_col": 3,
+      "end_line": 97,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 97,
+      "start_col": 10,
+      "end_line": 97,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 97,
+      "start_col": 11,
+      "end_line": 97,
+      "end_col": 17
+    },
+    {
+      "kind": "command",
+      "start_line": 98,
+      "start_col": 3,
+      "end_line": 98,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 98,
+      "start_col": 11,
+      "end_line": 98,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 12,
+      "end_line": 98,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 19,
+      "end_line": 98,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 31,
+      "end_line": 98,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 37,
+      "end_line": 98,
+      "end_col": 43
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 50,
+      "end_line": 98,
+      "end_col": 61
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 62,
+      "end_line": 98,
+      "end_col": 87
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 98,
+      "start_col": 87,
+      "end_line": 98,
+      "end_col": 92
+    },
+    {
+      "kind": "command",
+      "start_line": 99,
+      "start_col": 3,
+      "end_line": 99,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 99,
+      "start_col": 11,
+      "end_line": 99,
+      "end_col": 89
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 12,
+      "end_line": 99,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 19,
+      "end_line": 99,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 30,
+      "end_line": 99,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 36,
+      "end_line": 99,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 46,
+      "end_line": 99,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 54,
+      "end_line": 99,
+      "end_col": 59
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 59,
+      "end_line": 99,
+      "end_col": 83
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 83,
+      "end_line": 99,
+      "end_col": 88
+    },
+    {
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 3,
+      "end_line": 100,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 100,
+      "start_col": 11,
+      "end_line": 100,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 100,
+      "start_col": 12,
+      "end_line": 100,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 100,
+      "start_col": 19,
+      "end_line": 100,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 100,
+      "start_col": 36,
+      "end_line": 100,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 101,
+      "start_col": 3,
+      "end_line": 101,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 101,
+      "start_col": 11,
+      "end_line": 101,
+      "end_col": 101
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 12,
+      "end_line": 101,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 19,
+      "end_line": 101,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 31,
+      "end_line": 101,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 44,
+      "end_line": 101,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 58,
+      "end_line": 101,
+      "end_col": 63
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 73,
+      "end_line": 101,
+      "end_col": 78
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 101,
+      "start_col": 89,
+      "end_line": 101,
+      "end_col": 100
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 102,
+      "start_col": 1,
+      "end_line": 102,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 104,
+      "start_col": 1,
+      "end_line": 104,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 104,
+      "start_col": 10,
+      "end_line": 104,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 104,
+      "start_col": 26,
+      "end_line": 104,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 105,
+      "start_col": 3,
+      "end_line": 105,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 105,
+      "start_col": 6,
+      "end_line": 105,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 105,
+      "start_col": 9,
+      "end_line": 105,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 105,
+      "start_col": 11,
+      "end_line": 105,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 105,
+      "start_col": 14,
+      "end_line": 105,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 105,
+      "start_col": 15,
+      "end_line": 105,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 105,
+      "start_col": 40,
+      "end_line": 105,
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 105,
+      "start_col": 42,
+      "end_line": 105,
+      "end_col": 43
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 105,
+      "start_col": 44,
+      "end_line": 105,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 5,
+      "end_line": 106,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 106,
+      "start_col": 15,
+      "end_line": 106,
+      "end_col": 60
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 106,
+      "start_col": 16,
+      "end_line": 106,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 5,
+      "end_line": 107,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 108,
+      "start_col": 3,
+      "end_line": 108,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 110,
+      "start_col": 3,
+      "end_line": 110,
+      "end_col": 69
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 111,
+      "start_col": 3,
+      "end_line": 111,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 111,
+      "start_col": 9,
+      "end_line": 111,
+      "end_col": 21
+    },
+    {
+      "kind": "var-name",
+      "start_line": 111,
+      "start_col": 9,
+      "end_line": 111,
+      "end_col": 21
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 111,
+      "start_col": 22,
+      "end_line": 111,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 111,
+      "start_col": 22,
+      "end_line": 111,
+      "end_col": 38
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 125
+    },
+    {
+      "kind": "var-name",
+      "start_line": 112,
+      "start_col": 3,
+      "end_line": 112,
+      "end_col": 15
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 112,
+      "start_col": 16,
+      "end_line": 112,
+      "end_col": 125
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 18,
+      "end_line": 112,
+      "end_col": 22
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 23,
+      "end_line": 112,
+      "end_col": 48
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 112,
+      "start_col": 24,
+      "end_line": 112,
+      "end_col": 47
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 112,
+      "start_col": 75,
+      "end_line": 112,
+      "end_col": 91
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 112,
+      "start_col": 100,
+      "end_line": 112,
+      "end_col": 113
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 112,
+      "start_col": 114,
+      "end_line": 112,
+      "end_col": 115
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 116,
+      "end_line": 112,
+      "end_col": 120
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 113,
+      "start_col": 3,
+      "end_line": 113,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 113,
+      "start_col": 6,
+      "end_line": 113,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "-z",
+      "start_line": 113,
+      "start_col": 9,
+      "end_line": 113,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 113,
+      "start_col": 12,
+      "end_line": 113,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 113,
+      "start_col": 13,
+      "end_line": 113,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 113,
+      "start_col": 32,
+      "end_line": 113,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 113,
+      "start_col": 34,
+      "end_line": 113,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 113,
+      "start_col": 36,
+      "end_line": 113,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 114,
+      "start_col": 5,
+      "end_line": 114,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 114,
+      "start_col": 15,
+      "end_line": 114,
+      "end_col": 74
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 114,
+      "start_col": 47,
+      "end_line": 114,
+      "end_col": 72
+    },
+    {
+      "kind": "command",
+      "start_line": 115,
+      "start_col": 5,
+      "end_line": 115,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 116,
+      "start_col": 3,
+      "end_line": 116,
+      "end_col": 5
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 47
+    },
+    {
+      "kind": "var-name",
+      "start_line": 117,
+      "start_col": 3,
+      "end_line": 117,
+      "end_col": 19
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 117,
+      "start_col": 20,
+      "end_line": 117,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 22,
+      "end_line": 117,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 117,
+      "start_col": 31,
+      "end_line": 117,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 117,
+      "start_col": 32,
+      "end_line": 117,
+      "end_col": 45
+    },
+    {
+      "kind": "comment",
+      "start_line": 119,
+      "start_col": 3,
+      "end_line": 119,
+      "end_col": 30
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 120,
+      "start_col": 3,
+      "end_line": 120,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 120,
+      "start_col": 6,
+      "end_line": 120,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 9,
+      "end_line": 120,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 10,
+      "end_line": 120,
+      "end_col": 27
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 120,
+      "start_col": 29,
+      "end_line": 120,
+      "end_col": 31
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 32,
+      "end_line": 120,
+      "end_col": 53
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 120,
+      "start_col": 54,
+      "end_line": 120,
+      "end_col": 56
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 57,
+      "end_line": 120,
+      "end_col": 76
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 58,
+      "end_line": 120,
+      "end_col": 75
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 120,
+      "start_col": 77,
+      "end_line": 120,
+      "end_col": 79
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 120,
+      "start_col": 80,
+      "end_line": 120,
+      "end_col": 103
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 120,
+      "start_col": 104,
+      "end_line": 120,
+      "end_col": 106
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 120,
+      "start_col": 106,
+      "end_line": 120,
+      "end_col": 107
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 120,
+      "start_col": 108,
+      "end_line": 120,
+      "end_col": 112
+    },
+    {
+      "kind": "command",
+      "start_line": 121,
+      "start_col": 5,
+      "end_line": 121,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 121,
+      "start_col": 15,
+      "end_line": 121,
+      "end_col": 89
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 121,
+      "start_col": 34,
+      "end_line": 121,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 122,
+      "start_col": 5,
+      "end_line": 122,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 122,
+      "start_col": 13,
+      "end_line": 122,
+      "end_col": 88
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 122,
+      "start_col": 14,
+      "end_line": 122,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 122,
+      "start_col": 82,
+      "end_line": 122,
+      "end_col": 87
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 5,
+      "end_line": 123,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 123,
+      "start_col": 13,
+      "end_line": 123,
+      "end_col": 59
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 123,
+      "start_col": 14,
+      "end_line": 123,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 123,
+      "start_col": 53,
+      "end_line": 123,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 124,
+      "start_col": 5,
+      "end_line": 124,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 124,
+      "start_col": 13,
+      "end_line": 124,
+      "end_col": 91
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 124,
+      "start_col": 14,
+      "end_line": 124,
+      "end_col": 20
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 124,
+      "start_col": 83,
+      "end_line": 124,
+      "end_col": 88
+    },
+    {
+      "kind": "command",
+      "start_line": 125,
+      "start_col": 5,
+      "end_line": 125,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 128,
+      "start_col": 3,
+      "end_line": 128,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 128,
+      "start_col": 12,
+      "end_line": 128,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 128,
+      "start_col": 22,
+      "end_line": 128,
+      "end_col": 28
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 129,
+      "start_col": 3,
+      "end_line": 129,
+      "end_col": 8
+    },
+    {
+      "kind": "var-name",
+      "start_line": 129,
+      "start_col": 9,
+      "end_line": 129,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 129,
+      "start_col": 9,
+      "end_line": 129,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 130,
+      "start_col": 3,
+      "end_line": 130,
+      "end_col": 89
+    },
+    {
+      "kind": "var-name",
+      "start_line": 130,
+      "start_col": 3,
+      "end_line": 130,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 15,
+      "end_line": 130,
+      "end_col": 89
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 130,
+      "start_col": 16,
+      "end_line": 130,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 130,
+      "start_col": 42,
+      "end_line": 130,
+      "end_col": 61
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 130,
+      "start_col": 66,
+      "end_line": 130,
+      "end_col": 88
+    },
+    {
+      "kind": "command",
+      "start_line": 130,
+      "start_col": 68,
+      "end_line": 130,
+      "end_col": 72
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 3,
+      "end_line": 131,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 6,
+      "end_line": 131,
+      "end_col": 21
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 7,
+      "end_line": 131,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 22,
+      "end_line": 131,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 23,
+      "end_line": 131,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 131,
+      "start_col": 37,
+      "end_line": 131,
+      "end_col": 39
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 131,
+      "start_col": 40,
+      "end_line": 131,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 5,
+      "end_line": 132,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 15,
+      "end_line": 132,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 43,
+      "end_line": 132,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 5,
+      "end_line": 133,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 134,
+      "start_col": 3,
+      "end_line": 134,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 3,
+      "end_line": 135,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 6,
+      "end_line": 135,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 135,
+      "start_col": 7,
+      "end_line": 135,
+      "end_col": 29
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 31,
+      "end_line": 135,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 135,
+      "start_col": 32,
+      "end_line": 135,
+      "end_col": 56
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 135,
+      "start_col": 61,
+      "end_line": 135,
+      "end_col": 83
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 63,
+      "end_line": 135,
+      "end_col": 67
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 135,
+      "start_col": 86,
+      "end_line": 135,
+      "end_col": 87
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 135,
+      "start_col": 98,
+      "end_line": 135,
+      "end_col": 100
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 101,
+      "end_line": 135,
+      "end_col": 105
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 137,
+      "start_col": 3,
+      "end_line": 137,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 137,
+      "start_col": 6,
+      "end_line": 137,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 8,
+      "end_line": 137,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 137,
+      "start_col": 19,
+      "end_line": 137,
+      "end_col": 70
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 137,
+      "start_col": 20,
+      "end_line": 137,
+      "end_col": 49
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 137,
+      "start_col": 50,
+      "end_line": 137,
+      "end_col": 69
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 137,
+      "start_col": 74,
+      "end_line": 137,
+      "end_col": 89
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 137,
+      "start_col": 75,
+      "end_line": 137,
+      "end_col": 88
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 137,
+      "start_col": 89,
+      "end_line": 137,
+      "end_col": 90
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 137,
+      "start_col": 91,
+      "end_line": 137,
+      "end_col": 95
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 5,
+      "end_line": 138,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 138,
+      "start_col": 15,
+      "end_line": 138,
+      "end_col": 68
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 138,
+      "start_col": 35,
+      "end_line": 138,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 8,
+      "end_line": 139,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 9,
+      "end_line": 139,
+      "end_col": 21
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 23,
+      "end_line": 139,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 24,
+      "end_line": 139,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 140,
+      "start_col": 5,
+      "end_line": 140,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 141,
+      "start_col": 3,
+      "end_line": 141,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 143,
+      "start_col": 3,
+      "end_line": 143,
+      "end_col": 59
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 144,
+      "start_col": 3,
+      "end_line": 144,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 6,
+      "end_line": 144,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 144,
+      "start_col": 14,
+      "end_line": 144,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 49,
+      "end_line": 144,
+      "end_col": 73
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 144,
+      "start_col": 50,
+      "end_line": 144,
+      "end_col": 72
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 144,
+      "start_col": 73,
+      "end_line": 144,
+      "end_col": 74
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 144,
+      "start_col": 75,
+      "end_line": 144,
+      "end_col": 79
+    },
+    {
+      "kind": "command",
+      "start_line": 145,
+      "start_col": 5,
+      "end_line": 145,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 145,
+      "start_col": 14,
+      "end_line": 145,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 5,
+      "end_line": 146,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 146,
+      "start_col": 12,
+      "end_line": 146,
+      "end_col": 76
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 146,
+      "start_col": 77,
+      "end_line": 146,
+      "end_col": 101
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 146,
+      "start_col": 78,
+      "end_line": 146,
+      "end_col": 100
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 5,
+      "end_line": 147,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 12,
+      "end_line": 147,
+      "end_col": 38
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 148,
+      "start_col": 3,
+      "end_line": 148,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 150,
+      "start_col": 3,
+      "end_line": 150,
+      "end_col": 55
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 151,
+      "start_col": 3,
+      "end_line": 151,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 151,
+      "start_col": 6,
+      "end_line": 151,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 151,
+      "start_col": 14,
+      "end_line": 151,
+      "end_col": 36
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 151,
+      "start_col": 37,
+      "end_line": 151,
+      "end_col": 61
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 151,
+      "start_col": 38,
+      "end_line": 151,
+      "end_col": 60
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 151,
+      "start_col": 61,
+      "end_line": 151,
+      "end_col": 62
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 151,
+      "start_col": 63,
+      "end_line": 151,
+      "end_col": 67
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 5,
+      "end_line": 152,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 152,
+      "start_col": 14,
+      "end_line": 152,
+      "end_col": 55
+    },
+    {
+      "kind": "command",
+      "start_line": 153,
+      "start_col": 5,
+      "end_line": 153,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 153,
+      "start_col": 12,
+      "end_line": 153,
+      "end_col": 63
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 153,
+      "start_col": 64,
+      "end_line": 153,
+      "end_col": 88
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 153,
+      "start_col": 65,
+      "end_line": 153,
+      "end_col": 87
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 5,
+      "end_line": 154,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 154,
+      "start_col": 12,
+      "end_line": 154,
+      "end_col": 63
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 154,
+      "start_col": 64,
+      "end_line": 154,
+      "end_col": 88
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 154,
+      "start_col": 65,
+      "end_line": 154,
+      "end_col": 87
+    },
+    {
+      "kind": "command",
+      "start_line": 155,
+      "start_col": 5,
+      "end_line": 155,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 155,
+      "start_col": 12,
+      "end_line": 155,
+      "end_col": 46
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 156,
+      "start_col": 3,
+      "end_line": 156,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 158,
+      "start_col": 3,
+      "end_line": 158,
+      "end_col": 70
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 159,
+      "start_col": 3,
+      "end_line": 159,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 159,
+      "start_col": 6,
+      "end_line": 159,
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 159,
+      "start_col": 14,
+      "end_line": 159,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 159,
+      "start_col": 33,
+      "end_line": 159,
+      "end_col": 57
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 159,
+      "start_col": 34,
+      "end_line": 159,
+      "end_col": 56
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 159,
+      "start_col": 57,
+      "end_line": 159,
+      "end_col": 58
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 159,
+      "start_col": 59,
+      "end_line": 159,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 160,
+      "start_col": 5,
+      "end_line": 160,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 160,
+      "start_col": 12,
+      "end_line": 160,
+      "end_col": 33
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 160,
+      "start_col": 34,
+      "end_line": 160,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 160,
+      "start_col": 35,
+      "end_line": 160,
+      "end_col": 57
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 161,
+      "start_col": 3,
+      "end_line": 161,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 163,
+      "start_col": 3,
+      "end_line": 163,
+      "end_col": 67
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 164,
+      "start_col": 3,
+      "end_line": 164,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 164,
+      "start_col": 6,
+      "end_line": 164,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 164,
+      "start_col": 8,
+      "end_line": 164,
+      "end_col": 12
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 164,
+      "start_col": 16,
+      "end_line": 164,
+      "end_col": 44
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 164,
+      "start_col": 45,
+      "end_line": 164,
+      "end_col": 69
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 164,
+      "start_col": 46,
+      "end_line": 164,
+      "end_col": 68
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 164,
+      "start_col": 69,
+      "end_line": 164,
+      "end_col": 70
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 164,
+      "start_col": 71,
+      "end_line": 164,
+      "end_col": 75
+    },
+    {
+      "kind": "command",
+      "start_line": 165,
+      "start_col": 5,
+      "end_line": 165,
+      "end_col": 9
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 165,
+      "start_col": 10,
+      "end_line": 165,
+      "end_col": 52
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 165,
+      "start_col": 53,
+      "end_line": 165,
+      "end_col": 55
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 165,
+      "start_col": 56,
+      "end_line": 165,
+      "end_col": 80
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 165,
+      "start_col": 57,
+      "end_line": 165,
+      "end_col": 79
+    },
+    {
+      "kind": "command",
+      "start_line": 166,
+      "start_col": 5,
+      "end_line": 166,
+      "end_col": 9
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 166,
+      "start_col": 10,
+      "end_line": 166,
+      "end_col": 65
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 166,
+      "start_col": 66,
+      "end_line": 166,
+      "end_col": 68
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 166,
+      "start_col": 69,
+      "end_line": 166,
+      "end_col": 93
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 166,
+      "start_col": 70,
+      "end_line": 166,
+      "end_col": 92
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 167,
+      "start_col": 3,
+      "end_line": 167,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 169,
+      "start_col": 3,
+      "end_line": 169,
+      "end_col": 39
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 170,
+      "start_col": 3,
+      "end_line": 170,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 170,
+      "start_col": 6,
+      "end_line": 170,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 8,
+      "end_line": 170,
+      "end_col": 12
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 170,
+      "start_col": 16,
+      "end_line": 170,
+      "end_col": 46
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 47,
+      "end_line": 170,
+      "end_col": 71
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 48,
+      "end_line": 170,
+      "end_col": 70
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 170,
+      "start_col": 71,
+      "end_line": 170,
+      "end_col": 72
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 170,
+      "start_col": 73,
+      "end_line": 170,
+      "end_col": 77
+    },
+    {
+      "kind": "command",
+      "start_line": 171,
+      "start_col": 5,
+      "end_line": 171,
+      "end_col": 9
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 171,
+      "start_col": 10,
+      "end_line": 171,
+      "end_col": 59
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 171,
+      "start_col": 60,
+      "end_line": 171,
+      "end_col": 62
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 171,
+      "start_col": 63,
+      "end_line": 171,
+      "end_col": 87
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 171,
+      "start_col": 64,
+      "end_line": 171,
+      "end_col": 86
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 172,
+      "start_col": 3,
+      "end_line": 172,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "(",
+      "start_line": 174,
+      "start_col": 3,
+      "end_line": 174,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 174,
+      "start_col": 4,
+      "end_line": 174,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 174,
+      "start_col": 7,
+      "end_line": 174,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 174,
+      "start_col": 8,
+      "end_line": 174,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 174,
+      "start_col": 33,
+      "end_line": 174,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 174,
+      "start_col": 36,
+      "end_line": 174,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 174,
+      "start_col": 41,
+      "end_line": 174,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 174,
+      "start_col": 69,
+      "end_line": 174,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 174,
+      "start_col": 70,
+      "end_line": 174,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 174,
+      "start_col": 96,
+      "end_line": 174,
+      "end_col": 120
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 174,
+      "start_col": 97,
+      "end_line": 174,
+      "end_col": 119
+    },
+    {
+      "kind": "operator",
+      "op": ")",
+      "start_line": 174,
+      "start_col": 125,
+      "end_line": 174,
+      "end_col": 126
+    },
+    {
+      "kind": "operator",
+      "op": "(",
+      "start_line": 175,
+      "start_col": 3,
+      "end_line": 175,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 175,
+      "start_col": 4,
+      "end_line": 175,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 175,
+      "start_col": 7,
+      "end_line": 175,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 175,
+      "start_col": 8,
+      "end_line": 175,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 175,
+      "start_col": 33,
+      "end_line": 175,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 175,
+      "start_col": 36,
+      "end_line": 175,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 175,
+      "start_col": 41,
+      "end_line": 175,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 175,
+      "start_col": 69,
+      "end_line": 175,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 175,
+      "start_col": 70,
+      "end_line": 175,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 175,
+      "start_col": 96,
+      "end_line": 175,
+      "end_col": 120
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 175,
+      "start_col": 97,
+      "end_line": 175,
+      "end_col": 119
+    },
+    {
+      "kind": "operator",
+      "op": ")",
+      "start_line": 175,
+      "start_col": 126,
+      "end_line": 175,
+      "end_col": 127
+    },
+    {
+      "kind": "command",
+      "start_line": 176,
+      "start_col": 3,
+      "end_line": 176,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 176,
+      "start_col": 10,
+      "end_line": 176,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 176,
+      "start_col": 19,
+      "end_line": 176,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 178,
+      "start_col": 3,
+      "end_line": 178,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 178,
+      "start_col": 10,
+      "end_line": 178,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 179,
+      "start_col": 3,
+      "end_line": 179,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 180,
+      "start_col": 1,
+      "end_line": 180,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 182,
+      "start_col": 1,
+      "end_line": 182,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 182,
+      "start_col": 10,
+      "end_line": 182,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 182,
+      "start_col": 29,
+      "end_line": 182,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 183,
+      "start_col": 3,
+      "end_line": 183,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 183,
+      "start_col": 12,
+      "end_line": 183,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 26,
+      "end_line": 183,
+      "end_col": 32
+    },
+    {
+      "kind": "comment",
+      "start_line": 185,
+      "start_col": 3,
+      "end_line": 185,
+      "end_col": 69
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 186,
+      "start_col": 3,
+      "end_line": 186,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 186,
+      "start_col": 9,
+      "end_line": 186,
+      "end_col": 21
+    },
+    {
+      "kind": "var-name",
+      "start_line": 186,
+      "start_col": 9,
+      "end_line": 186,
+      "end_col": 21
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 187,
+      "start_col": 3,
+      "end_line": 187,
+      "end_col": 125
+    },
+    {
+      "kind": "var-name",
+      "start_line": 187,
+      "start_col": 3,
+      "end_line": 187,
+      "end_col": 15
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 187,
+      "start_col": 16,
+      "end_line": 187,
+      "end_col": 125
+    },
+    {
+      "kind": "command",
+      "start_line": 187,
+      "start_col": 18,
+      "end_line": 187,
+      "end_col": 22
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 187,
+      "start_col": 23,
+      "end_line": 187,
+      "end_col": 48
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 187,
+      "start_col": 24,
+      "end_line": 187,
+      "end_col": 47
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 187,
+      "start_col": 75,
+      "end_line": 187,
+      "end_col": 91
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 187,
+      "start_col": 100,
+      "end_line": 187,
+      "end_col": 113
+    },
+    {
+      "kind": "operator",
+      "op": "|",
+      "start_line": 187,
+      "start_col": 114,
+      "end_line": 187,
+      "end_col": 115
+    },
+    {
+      "kind": "command",
+      "start_line": 187,
+      "start_col": 116,
+      "end_line": 187,
+      "end_col": 120
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 188,
+      "start_col": 3,
+      "end_line": 188,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 188,
+      "start_col": 6,
+      "end_line": 188,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "-z",
+      "start_line": 188,
+      "start_col": 9,
+      "end_line": 188,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 188,
+      "start_col": 12,
+      "end_line": 188,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 188,
+      "start_col": 13,
+      "end_line": 188,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 188,
+      "start_col": 32,
+      "end_line": 188,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 188,
+      "start_col": 34,
+      "end_line": 188,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 188,
+      "start_col": 36,
+      "end_line": 188,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 5,
+      "end_line": 189,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 189,
+      "start_col": 15,
+      "end_line": 189,
+      "end_col": 74
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 189,
+      "start_col": 47,
+      "end_line": 189,
+      "end_col": 72
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 5,
+      "end_line": 190,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 191,
+      "start_col": 3,
+      "end_line": 191,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 3,
+      "end_line": 193,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 193,
+      "start_col": 12,
+      "end_line": 193,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "(",
+      "start_line": 194,
+      "start_col": 3,
+      "end_line": 194,
+      "end_col": 4
+    },
+    {
+      "kind": "command",
+      "start_line": 194,
+      "start_col": 4,
+      "end_line": 194,
+      "end_col": 6
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 194,
+      "start_col": 7,
+      "end_line": 194,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 194,
+      "start_col": 8,
+      "end_line": 194,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 194,
+      "start_col": 33,
+      "end_line": 194,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 194,
+      "start_col": 36,
+      "end_line": 194,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 194,
+      "start_col": 41,
+      "end_line": 194,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 194,
+      "start_col": 69,
+      "end_line": 194,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 194,
+      "start_col": 70,
+      "end_line": 194,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 194,
+      "start_col": 96,
+      "end_line": 194,
+      "end_col": 120
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 194,
+      "start_col": 97,
+      "end_line": 194,
+      "end_col": 119
+    },
+    {
+      "kind": "operator",
+      "op": ")",
+      "start_line": 194,
+      "start_col": 152,
+      "end_line": 194,
+      "end_col": 153
+    },
+    {
+      "kind": "command",
+      "start_line": 195,
+      "start_col": 3,
+      "end_line": 195,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 10,
+      "end_line": 195,
+      "end_col": 49
+    },
+    {
+      "kind": "command",
+      "start_line": 197,
+      "start_col": 3,
+      "end_line": 197,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 197,
+      "start_col": 10,
+      "end_line": 197,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 197,
+      "start_col": 11,
+      "end_line": 197,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 3,
+      "end_line": 198,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 198,
+      "start_col": 10,
+      "end_line": 198,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 11,
+      "end_line": 198,
+      "end_col": 17
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 199,
+      "start_col": 1,
+      "end_line": 199,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 201,
+      "start_col": 1,
+      "end_line": 201,
+      "end_col": 73
+    },
+    {
+      "kind": "comment",
+      "start_line": 202,
+      "start_col": 1,
+      "end_line": 202,
+      "end_col": 75
+    },
+    {
+      "kind": "comment",
+      "start_line": 203,
+      "start_col": 1,
+      "end_line": 203,
+      "end_col": 38
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 204,
+      "start_col": 1,
+      "end_line": 204,
+      "end_col": 3
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 204,
+      "start_col": 4,
+      "end_line": 204,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 204,
+      "start_col": 6,
+      "end_line": 204,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 204,
+      "start_col": 22,
+      "end_line": 204,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 204,
+      "start_col": 35,
+      "end_line": 204,
+      "end_col": 37
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 204,
+      "start_col": 38,
+      "end_line": 204,
+      "end_col": 39
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 204,
+      "start_col": 40,
+      "end_line": 204,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 205,
+      "start_col": 3,
+      "end_line": 205,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 205,
+      "start_col": 6,
+      "end_line": 205,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 205,
+      "start_col": 9,
+      "end_line": 205,
+      "end_col": 11
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 205,
+      "start_col": 32,
+      "end_line": 205,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 205,
+      "start_col": 34,
+      "end_line": 205,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 205,
+      "start_col": 36,
+      "end_line": 205,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 206,
+      "start_col": 5,
+      "end_line": 206,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 206,
+      "start_col": 16,
+      "end_line": 206,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 206,
+      "start_col": 29,
+      "end_line": 206,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 206,
+      "start_col": 32,
+      "end_line": 206,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 206,
+      "start_col": 56,
+      "end_line": 206,
+      "end_col": 58
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 207,
+      "start_col": 3,
+      "end_line": 207,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 208,
+      "start_col": 5,
+      "end_line": 208,
+      "end_col": 12
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 208,
+      "start_col": 20,
+      "end_line": 208,
+      "end_col": 22
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u0026",
+      "start_line": 208,
+      "start_col": 33,
+      "end_line": 208,
+      "end_col": 35
+    },
+    {
+      "kind": "command",
+      "start_line": 208,
+      "start_col": 36,
+      "end_line": 208,
+      "end_col": 43
+    },
+    {
+      "kind": "operator",
+      "op": "\u0026\u003e",
+      "start_line": 208,
+      "start_col": 60,
+      "end_line": 208,
+      "end_col": 62
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 209,
+      "start_col": 3,
+      "end_line": 209,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 210,
+      "start_col": 1,
+      "end_line": 210,
+      "end_col": 3
+    },
+    {
+      "kind": "command",
+      "start_line": 211,
+      "start_col": 1,
+      "end_line": 211,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 211,
+      "start_col": 17,
+      "end_line": 211,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 211,
+      "start_col": 30,
+      "end_line": 211,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 211,
+      "start_col": 34,
+      "end_line": 211,
+      "end_col": 36
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 211,
+      "start_col": 37,
+      "end_line": 211,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 212,
+      "start_col": 3,
+      "end_line": 212,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 212,
+      "start_col": 8,
+      "end_line": 212,
+      "end_col": 60
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 212,
+      "start_col": 61,
+      "end_line": 212,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 213,
+      "start_col": 3,
+      "end_line": 213,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 214,
+      "start_col": 1,
+      "end_line": 214,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 216,
+      "start_col": 1,
+      "end_line": 216,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 217,
+      "start_col": 1,
+      "end_line": 217,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 218,
+      "start_col": 1,
+      "end_line": 218,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 219,
+      "start_col": 1,
+      "end_line": 219,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 219,
+      "start_col": 8,
+      "end_line": 219,
+      "end_col": 55
+    },
+    {
+      "kind": "command",
+      "start_line": 219,
+      "start_col": 10,
+      "end_line": 219,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 219,
+      "start_col": 21,
+      "end_line": 219,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 219,
+      "start_col": 22,
+      "end_line": 219,
+      "end_col": 32
+    }
+  ],
+  "bootstrap_line": 219,
+  "hooks": {
+    "header_info": false,
+    "install_script": true,
+    "post_build_script": false,
+    "post_install_script": true,
+    "pre_build_script": false,
+    "uninstall_script": true,
+    "update_script": true
+  },
+  "hook_order": [
+    "install_script",
+    "post_install_script",
+    "update_script",
+    "uninstall_script"
+  ],
+  "flags": {
+    "docker": true,
+    "podman": false,
+    "npm": false,
+    "yarn": false,
+    "pnpm": false,
+    "pip": false,
+    "cargo": false,
+    "go": false,
+    "git": false,
+    "sudo": false,
+    "eval": false
+  },
+  "has_download": true,
+  "has_piped_download": false,
+  "has_external": false,
+  "has_eval": false,
+  "has_global": true,
+  "has_bootstrap": true,
+  "systemd_services": [],
+  "openrc_services": [],
+  "service_managers": [],
+  "users": [],
+  "interactive_prompts": []
+}
