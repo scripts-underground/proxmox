@@ -188,17 +188,11 @@ function update_script() {
     fi
     msg_ok "Stopped service"
 
-    msg_info "Backing up configuration"
-    mkdir -p "$var_addon_backup_dir"
-    cp "$var_addon_config_path" "$var_addon_backup_dir/adguardhome-sync.yaml.bak" 2> /dev/null || true
-    msg_ok "Backed up configuration"
+    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz"
 
-    msg_info "Restoring configuration"
-    cp "$var_addon_backup_dir/adguardhome-sync.yaml.bak" "$var_addon_config_path" 2> /dev/null || true
-    rm -rf "$var_addon_backup_dir"
-    msg_ok "Restored configuration"
+    BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
     msg_info "Starting service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
