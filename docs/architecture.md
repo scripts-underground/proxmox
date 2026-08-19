@@ -27,7 +27,7 @@ stages and invoke the appropriate user hooks as part of their work.
 
 - **Addon** — runs inside an existing LXC (the user has an already-running
   container and wants to install something into it). Own bootstrap
-  (`misc/bootstrap/addon`) and framework module (`misc/addon.func`).
+  (`misc/bootstrap/addon_lxc`) and framework module (`misc/addon_lxc.func`).
   Install is guarded by a marker; update/uninstall run as self-contained
   bundles baked at install time.
 
@@ -120,22 +120,21 @@ before `catch_errors`). If the script defines `header_info()`, the
 framework's `render_header()` dispatches to it; otherwise a generic
 fallback (`header_info_fallback()`) displays the app name.
 
-### 3.2 Addon — `misc/bootstrap/addon`
+### 3.2 Addon — `misc/bootstrap/addon_lxc`
 
 The addon shim runs INSIDE an existing LXC container. Every line is a source,
 a guard, or a framework function call:
 
 ```bash
-# snapshot script-defined header_info (core.func defines a same-named stub)
 source install.func   # self-bootstraps: core+error_handler, load_functions,
                       # catch_errors, get_lxc_ip, detect_os
 source tools.func     # fetch_and_deploy_*, setup_*, check_for_gh_release
 source github.func    # clone_and_deploy_gh_commit, token helpers
-source addon.func
+source addon_lxc.func
 
 command -v addon_guard || FATAL   # explicit failure if a fetch went silent
 addon_guard          # container-only check
-addon_init           # APP_SLUG derivation, header restore, render_header
+addon_init           # APP_SLUG derivation, render_header
 addon_dispatch       # installed-guard → install path
 ```
 
@@ -158,7 +157,7 @@ Ordering notes:
 
 | Hook | Owner | Runs |
 |------|-------|------|
-| `header_info` | `render_header` (after snapshot restore in `addon_init`) | Container, early |
+| `header_info` | `render_header` (dispatches to script's art or fallback) | Container, early |
 | `install_script` | `addon_run_install` (mandatory) | Container, install path |
 | `post_install_script` | `addon_run_install` (optional) | Container, after install |
 | `update_script` | bundle `/usr/local/sbin/update_<slug>` | Container, on demand |
@@ -418,12 +417,11 @@ addon script begins
   declares APP, var_addon_* config, hooks
   curl-ensure block (per-script transport preamble)
 
-source bootstrap/addon
-  snapshot header_info (if script-defined)
+source bootstrap/addon_lxc
   source install.func → _bootstrap runs:
     curl fallback ensure → source core.func, error_handler.func
     load_functions, catch_errors, get_lxc_ip, detect_os
-  source tools.func, github.func, addon.func
+  source tools.func, github.func, addon_lxc.func
   load check (addon_guard defined)
 
 addon_guard
@@ -630,17 +628,17 @@ see `function-reference.md`.
 ### 6.2 Addon
 
 **Adding a user hook.** Add the invocation inside the owning framework
-function in `misc/addon.func` (`addon_run_install` for install-path hooks,
+function in `misc/addon_lxc.func` (`addon_run_install` for install-path hooks,
 `_addon_bundle_write` for bundle-embedded hooks) and document it in
 `function-reference.md`. The shim never calls hooks directly.
 
 **Modifying lifecycle behavior for all addons** (e.g. a new guard, a
 pre-install check). The seam is `addon_dispatch` / `addon_run_install` in
-`addon.func`.
+`addon_lxc.func`.
 
 **Modifying bundle composition** (new baked variables, extra inlined files,
 different self-destruct behavior). The seam is `_addon_bundle_write` in
-`addon.func`. Note the parallel with `build_bundle` in `bundle.func` — keep
+`addon_lxc.func`. Note the parallel with `build_bundle` in `bundle.func` — keep
 the context-block conventions (`printf %q`, `compgen -v var_<type>_`) in
 sync across both.
 
@@ -656,7 +654,7 @@ sync across both.
 ## 7. References
 
 - `misc/bootstrap/lxc` — LXC entry-point shim
-- `misc/bootstrap/addon` — Addon entry-point shim
+- `misc/bootstrap/addon_lxc` — Addon entry-point shim
 - `misc/bootstrap/pve` — PVE entry-point shim
 - `misc/bootstrap/vm` — VM entry-point shim
 - `misc/bundle.func` — Self-contained bundle assembler (`build_bundle`, `_framework_cache_ensure`)
