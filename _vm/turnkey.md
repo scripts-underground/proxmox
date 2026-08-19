@@ -6,6 +6,9 @@ logo: /assets/logos/turnkey.webp
 by: tteck
 repo: https://www.turnkeylinux.org/
 site: https://www.turnkeylinux.org/
+cpu: 2
+ram: 2048
+disk: 8
 maintainer: tteck
 ---
 

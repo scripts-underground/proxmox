@@ -7,7 +7,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 VM_URL="${VM_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-nocloud-amd64.qcow2}"
-VM_OSTYPE="l26"
+VM_OSTYPE="${VM_OSTYPE:-l26}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-8}"
@@ -15,7 +15,6 @@ var_bridge="${var_bridge:-vmbr0}"
 var_hostname="${var_hostname:-debian}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
-NSAPP="${NSAPP:-Debian 12 VM}"
 
 function header_info {
   clear
