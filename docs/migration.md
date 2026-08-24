@@ -499,7 +499,7 @@ Upstream addons are single-file but carry an inline dispatch section:
 
 - Hook contract: `install_script()` / `update_script()` / `uninstall_script()`
   (+ optional `post_install_script()`, `header_info()`).
-- `misc/bootstrap/addon` + `misc/addon.func` orchestrate; self-contained
+- `misc/bootstrap/addon_lxc` + `misc/addon_lxc.func` orchestrate; self-contained
   bundles at `/usr/local/sbin/{update,uninstall}_<slug>` (aliased to
   `/usr/bin/`) replace the re-curl stub — frozen at install time,
   offline-capable.
@@ -551,7 +551,7 @@ command names.
 - [ ] `APP=` set; no `APP_TYPE`, no resource `var_*`
 - [ ] `var_addon_*` for every hook-referenced constant
 - [ ] curl-ensure block + hard-fail check above bootstrap source
-- [ ] `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")` as last line
+- [ ] `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon_lxc")` as last line
 - [ ] No `init_tool_telemetry` / `api.func` / `type=update` / re-curl stub
 - [ ] No per-script OS detection, no inline colors/`msg_*` redefinitions
 - [ ] Prompts use `read … || true` + `${var:-default}`

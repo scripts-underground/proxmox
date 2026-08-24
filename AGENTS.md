@@ -236,11 +236,11 @@ All other conventions (REPO_BASE, copyright header, shfmt formatting, variable p
 
 ### Addon-specific conventions
 
-Addon scripts (`scripts/addon/<slug>.sh`) run **inside an existing LXC container** and use `misc/bootstrap/addon`. Specifics:
+Addon scripts (`scripts/addon/<slug>.sh`) run **inside an existing LXC container** and use `misc/bootstrap/addon_lxc`. Specifics:
 
 - **No `var_cpu`/`var_ram`/`var_disk`/`var_os`/`var_version`** — addons don't size containers. Declare only `APP` and app config.
 - **Bundle-consumed vars use `var_addon_` prefix** — variables referenced by `update_script`/`uninstall_script` must be declared as `var_addon_*="${var_addon_*:-default}"` (e.g. `var_addon_bin_path`). The framework bakes `APP`, `APP_SLUG`, `REPO_BASE` and all `var_addon_*` into the bundles so they survive the `set -u` boundary. Hooks must be self-contained: `declare -f` copies only the hook body, so script-local helper functions are NOT available inside bundles — use framework helpers or inline the logic.
-- **curl-ensure block before the bootstrap source** — addon scripts run in arbitrary containers that may lack curl. Keep the minimal transport block (`apt-get`/`apk` install of curl + hard-fail check) directly above the `source <(curl … bootstrap/addon)` line.
+- **curl-ensure block before the bootstrap source** — addon scripts run in arbitrary containers that may lack curl. Keep the minimal transport block (`apt-get`/`apk` install of curl + hard-fail check) directly above the `source <(curl … bootstrap/addon_lxc)` line.
 - **Interactive prompts must tolerate EOF** — write `read -erp "…" var || true` and apply `${var:-default}` after. `catch_errors` runs with `set -e`; a bare `read` on closed stdin (unattended runs, tests) would abort the install.
 - **OS branching uses framework globals** — `detect_os` (from install.func) sets `OS_TYPE`/`OS_FAMILY`/`PKG_MANAGER`/`INIT_SYSTEM`. Branch with `[[ "$OS_FAMILY" == "alpine" ]]` / `[[ "$INIT_SYSTEM" == "openrc" ]]`; don't re-implement OS detection.
 - **Already-installed behavior is framework-owned** — re-running an installed addon prompts update/uninstall/abort (dispatches to the on-disk bundles). `ADDON_ACTION=update|uninstall|abort` bypasses the prompt for automation. Scripts never implement their own "am I installed" menu.

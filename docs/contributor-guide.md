@@ -299,7 +299,7 @@ maintainer: GitHubUsername
 ## Addon scripts
 
 Addon scripts (`scripts/addon/<slug>.sh`) run inside an existing LXC
-container. They use `misc/bootstrap/addon` instead of `misc/bootstrap/lxc`.
+container. They use `misc/bootstrap/addon_lxc` instead of `misc/bootstrap/lxc`.
 Addons do NOT declare `var_cpu`/`var_ram`/`var_disk`/`var_os`/`var_version` —
 they don't size containers.
 
@@ -375,7 +375,7 @@ command -v curl > /dev/null 2>&1 || {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon")
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon_lxc")
 ```
 
 Rules specific to addons:
