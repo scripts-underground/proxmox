@@ -1,27 +1,62 @@
-GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//') 2>/dev/null || true
+GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//') 2> /dev/null || true
+
+# ------------------------------------------------------------------------------
+# get_valid_nextid()
+# Resolves the next free VMID. Starts from the cluster suggestion and skips
+# IDs already in use (as VM/LXC config or LVM volume). Mirrors the resolver
+# upstream VM scripts expect; the framework provides it so scripts stay thin.
+# ------------------------------------------------------------------------------
+_is_vmid_free() {
+  local id="$1"
+  [[ ! "$id" =~ ^[0-9]+$ ]] && return 1
+  if [[ -f "/etc/pve/qemu-server/${id}.conf" ]] || [[ -f "/etc/pve/lxc/${id}.conf" ]]; then return 1; fi
+  if command -v lvs > /dev/null 2>&1 && lvs --noheadings -o lv_name 2> /dev/null | grep -qE "(^|[-_])${id}($|[-_])"; then return 1; fi
+  return 0
+}
+
+get_valid_nextid() {
+  local suggested_id="${1:-$(pvesh get /cluster/nextid 2> /dev/null)}"
+  while ! _is_vmid_free "$suggested_id"; do
+    suggested_id=$((suggested_id + 1))
+  done
+  echo "$suggested_id"
+}
 
 vm_init_colors() {
-  YW="\033[33m"; BL="\033[36m"; RD="\033[01;31m"
-  BGN="\033[4;92m"; GN="\033[1;92m"; DGN="\033[32m"; CL="\033[m"
-  BOLD="\033[1m"; BFR="\\r\\033[K"; HOLD=" "; TAB="  "
-  CM="${TAB}✔️${TAB}${CL}"; CROSS="${TAB}✖️${TAB}${CL}"
+  YW="\033[33m"
+  BL="\033[36m"
+  RD="\033[01;31m"
+  BGN="\033[4;92m"
+  GN="\033[1;92m"
+  DGN="\033[32m"
+  CL="\033[m"
+  BOLD="\033[1m"
+  BFR="\\r\\033[K"
+  HOLD=" "
+  TAB="  "
+  CM="${TAB}✔️${TAB}${CL}"
+  CROSS="${TAB}✖️${TAB}${CL}"
   INFO="${TAB}💡${TAB}${CL}"
 }
 
 vm_validate() {
-  if ! command -v pveversion >/dev/null 2>&1; then
-    echo "Error: must run on Proxmox VE host"; exit 1
+  if ! command -v pveversion > /dev/null 2>&1; then
+    echo "Error: must run on Proxmox VE host"
+    exit 1
   fi
   if [ "$(id -u)" -ne 0 ]; then
-    echo "Error: must run as root"; exit 1
+    echo "Error: must run as root"
+    exit 1
   fi
   if [ "$(dpkg --print-architecture)" != "amd64" ]; then
-    echo "Error: amd64 architecture required"; exit 1
+    echo "Error: amd64 architecture required"
+    exit 1
   fi
 }
 
 vm_select_storage() {
-  STORAGE_MENU=(); MSG_MAX_LENGTH=0
+  STORAGE_MENU=()
+  MSG_MAX_LENGTH=0
   while read -r line; do
     TAG=$(echo "$line" | awk '{print $1}')
     TYPE=$(echo "$line" | awk '{printf "%-10s", $2}')
@@ -30,7 +65,8 @@ vm_select_storage() {
   done < <(pvesm status -content images | awk 'NR>1')
   VALID=$(pvesm status -content images | awk 'NR>1')
   if [ -z "$VALID" ]; then
-    echo "Error: no valid storage found"; exit 1
+    echo "Error: no valid storage found"
+    exit 1
   elif [ $((${#STORAGE_MENU[@]} / 3)) -eq 1 ]; then
     VM_STORAGE=${STORAGE_MENU[0]}
   else
@@ -43,7 +79,10 @@ vm_select_storage() {
 
 vm_download_image() {
   local url="${VM_URL:-}"
-  [ -z "$url" ] && { echo "Error: VM_URL not set"; exit 1; }
+  [ -z "$url" ] && {
+    echo "Error: VM_URL not set"
+    exit 1
+  }
   msg_info "Downloading VM image"
   curl -f#SL -o "$(basename "$url")" "$url"
   VM_FILE="$(basename "$url")"
@@ -83,9 +122,9 @@ vm_create() {
     -scsi0 "${disk1_ref},${vm_disk_cache:+$vm_disk_cache,}size=${VM_DISK_SIZE:-10G}" \
     ${vm_ci:+-ide2 "${VM_STORAGE}:cloudinit"} \
     -boot order=scsi0 \
-    -serial0 socket >/dev/null
+    -serial0 socket > /dev/null
 
-  qm resize "$VM_VMID" scsi0 "${VM_DISK_SIZE:-10G}" >/dev/null
+  qm resize "$VM_VMID" scsi0 "${VM_DISK_SIZE:-10G}" > /dev/null
   msg_ok "Created VM $VM_VMID"
 }
 
@@ -95,8 +134,8 @@ vm_start() {
     return 0
   fi
   VM_PASSWORD="${VM_PASSWORD:-$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c13)}"
-  qm set "$VM_VMID" --ciuser root --cipassword "$VM_PASSWORD" >/dev/null 2>&1 || true
-  qm start "$VM_VMID" >/dev/null
+  qm set "$VM_VMID" --ciuser root --cipassword "$VM_PASSWORD" > /dev/null 2>&1 || true
+  qm start "$VM_VMID" > /dev/null
   msg_ok "Started VM $VM_VMID"
 }
 
@@ -114,9 +153,12 @@ vm_wait_for_ssh() {
   local ip="${1:-}"
   local timeout="${2:-180}"
   local waited=0
-  [ -z "$ip" ] && { echo "Warning: no IP, skipping SSH wait"; return 1; }
+  [ -z "$ip" ] && {
+    echo "Warning: no IP, skipping SSH wait"
+    return 1
+  }
   while [ $waited -lt $timeout ]; do
-    if sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@"$ip" exit 2>/dev/null; then
+    if sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@"$ip" exit 2> /dev/null; then
       return 0
     fi
     sleep 5
@@ -129,7 +171,7 @@ vm_wait_for_ssh() {
 vm_inject_install() {
   local ip="${1:-}"
   [ -z "$ip" ] && return 1
-  if declare -F install_script >/dev/null 2>&1; then
+  if declare -F install_script > /dev/null 2>&1; then
     sshpass -p "$VM_PASSWORD" ssh -o StrictHostKeyChecking=no root@"$ip" bash <<< "$(declare -f install_script); install_script"
   fi
 }

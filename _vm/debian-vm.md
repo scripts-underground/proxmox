@@ -8,7 +8,7 @@ repo: https://www.debian.org
 site: https://www.debian.org
 cpu: 2
 ram: 2048
-disk: 4
+disk: 8
 maintainer: MickLesk
 ---
 
