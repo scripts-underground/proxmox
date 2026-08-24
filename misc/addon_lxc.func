@@ -166,14 +166,40 @@ addon_guard_installed() {
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
+# addon_baseline()
+#
+# Ensures the minimal package baseline the framework's helpers assume.
+# LXC-created containers get these from build_container's base stage
+# (sudo curl mc gnupg2 jq); addon targets are ARBITRARY containers that may
+# lack them (bare debian/alpine templates ship without gpg/sudo/jq) — e.g.
+# setup_nodejs needs gpg for the NodeSource key, postgres flows need sudo.
+# Idempotent: exits immediately when the baseline is already satisfied.
+# ------------------------------------------------------------------------------
+addon_baseline() {
+  local -a pkgs=()
+  command -v gpg > /dev/null 2>&1 || pkgs+=("gnupg")
+  command -v sudo > /dev/null 2>&1 || pkgs+=("sudo")
+  command -v jq > /dev/null 2>&1 || pkgs+=("jq")
+  [[ -e /etc/ssl/certs/ca-certificates.crt || -e /etc/ssl/cert.pem ]] || pkgs+=("ca-certificates")
+  ((${#pkgs[@]} == 0)) && return 0
+
+  msg_info "Installing baseline packages (${pkgs[*]})"
+  pkg_update
+  pkg_install "${pkgs[@]}"
+  msg_ok "Baseline packages ready"
+}
+
+# ------------------------------------------------------------------------------
 # addon_run_install()
 #
-# Runs the install path: install_script (required) → post_install_script
-# (optional) → bundle assembly → marker write. The marker is written LAST so
-# a failure anywhere leaves the container marker-less and a re-run retries
-# the install path instead of dispatching to missing/half-built bundles.
+# Runs the install path: baseline → install_script (required) →
+# post_install_script (optional) → bundle assembly → marker write. The marker
+# is written LAST so a failure anywhere leaves the container marker-less and
+# a re-run retries the install path instead of dispatching to
+# missing/half-built bundles.
 # ------------------------------------------------------------------------------
 addon_run_install() {
+  addon_baseline
   execute_mandatory_hook install_script
   execute_optional_hook post_install_script
   addon_assemble_bundles
@@ -184,9 +210,9 @@ addon_run_install() {
 # SECTION 6: BUNDLE ASSEMBLY
 #
 # Self-contained update/uninstall bundles, baked at install time. Each bundle
-# inlines the 5 framework files (core, error_handler, install, tools, github),
-# a runtime context block (APP, APP_SLUG, REPO_BASE, var_addon_*), and the
-# hook body via `declare -f`. Bundles need zero network I/O for framework
+# inlines the 6 framework files (core, error_handler, install, tools, github,
+# addon), a runtime context block (APP, APP_SLUG, REPO_BASE, var_addon_*), and
+# the hook body via `declare -f`. Bundles need zero network I/O for framework
 # loading — they work offline and never drift from the installed version.
 #
 # Convention: variables referenced by update_script/uninstall_script hooks must
@@ -212,7 +238,7 @@ addon_assemble_bundles() {
   local stage_dir="/tmp/.addon-bundle-$$"
   mkdir -p "$stage_dir" || return 1
   local f
-  for f in core error_handler install tools github; do
+  for f in core error_handler install tools github addon; do
     curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}.func" -o "${stage_dir}/${f}.func" || {
       echo "[addon] FAILED to fetch ${f}.func from ${REPO_BASE}" >&2
       rm -rf "$stage_dir"
@@ -261,7 +287,7 @@ BUNDLE_HEADER
     done < <(compgen -v var_addon_ | sort)
     echo
 
-    for f in core error_handler install tools github; do
+    for f in core error_handler install tools github addon; do
       echo "# ═══ framework: ${f}.func ═══"
       cat "${stage_dir}/${f}.func"
       echo
@@ -274,6 +300,7 @@ command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not
 command -v pkg_install >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
 command -v fetch_and_deploy_gh_release >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
 command -v clone_and_deploy_gh_commit >/dev/null 2>&1 || { echo "FATAL: github.func not loaded" >&2; exit 111; }
+command -v addon_baseline >/dev/null 2>&1 || { echo "FATAL: addon.func not loaded" >&2; exit 111; }
 
 load_functions
 catch_errors
@@ -302,6 +329,7 @@ fi
 BUNDLE_FOOTER
     else
       echo "# ═══ update pipeline ═══"
+      echo "addon_baseline"
       echo "${hook}"
     fi
   } > "$dest"
