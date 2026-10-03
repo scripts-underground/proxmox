@@ -43,6 +43,36 @@ CWA test adds a book upload phase (Phase 9) that authenticates with
 CSRF, uploads a test EPUB, waits for ingest, and verifies the book
 count increases.
 
+## Codeberg release helpers
+
+Run these inside a disposable Linux guest with `bash`, `jq`, `curl`, `zip`,
+and `unzip` installed:
+
+```bash
+bash tests/codeberg-release.test.sh
+bash tests/codeberg-release.test.sh --live
+```
+
+The deterministic suite covers release selection, pins, bounded API requests,
+malformed responses, interrupted downloads, staging cleanup, and preserving an
+existing installation when copying or publishing a replacement fails. It does
+not invoke the PVE harness or destroy containers.
+
+The live mode fetches and redeploys all four Codeberg consumers' actual releases
+in temporary directories using the framework's verbose and quiet modes. It checks
+version markers, configuration preservation, source files, and executable
+versions. These are release-helper checks, not full application/service installs.
+
+To verify the actual persistent-bundle path, serve the candidate checkout over
+HTTP and run this on the disposable PVE guest, supplying a test container ID:
+
+```bash
+bash tests/codeberg-release.test.sh --bundle 103 http://192.168.122.50:8001
+```
+
+It uses `build_bundle()` to inline the candidate framework and a probe hook,
+then deploys and runs Readeck from the resulting update bundle inside that CT.
+
 ## RomM player-serving probe
 
 In a fresh disposable guest, install the prerequisites and run:
