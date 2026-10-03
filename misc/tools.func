@@ -1438,34 +1438,53 @@ codeberg_api_call() {
   local output_file="${2:-/dev/stdout}"
   local max_retries=3
   local retry_delay=2
+  local api_timeouts=(60 120 240)
+  local attempt response_file http_code curl_ok
+  response_file=$(mktemp) || return 252
 
-  for attempt in $(seq 1 $max_retries); do
-    local http_code
-    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
+  for ((attempt = 1; attempt <= max_retries; attempt++)); do
+    curl_ok=false
+    if http_code=$(curl --connect-timeout 10 --max-time "${api_timeouts[$((attempt - 1))]}" \
+      -sSL -w "%{http_code}" -o "$response_file" \
       -H "Accept: application/json" \
-      "$url" 2> /dev/null) || true
+      "$url" 2> /dev/null); then
+      curl_ok=true
+    fi
+
+    # A truncated HTTP 200 response is still a failed transfer.
+    if [[ "$curl_ok" != true ]]; then
+      http_code=000
+    fi
 
     case "$http_code" in
       200)
+        if ! cat "$response_file" > "$output_file"; then
+          rm -f "$response_file"
+          return 252
+        fi
+        rm -f "$response_file"
         return 0
         ;;
       401)
-        msg_error "Codeberg API authentication failed (HTTP 401)."
+        msg_error "Codeberg API authentication failed (HTTP 401)." >&2
+        rm -f "$response_file"
         return 22
         ;;
-      403)
+      403 | 429)
         # Rate limit - retry
         if [[ $attempt -lt $max_retries ]]; then
-          msg_warn "Codeberg API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
+          msg_warn "Codeberg API returned HTTP $http_code, waiting ${retry_delay}s... (attempt $attempt/$max_retries)" >&2
           sleep "$retry_delay"
           retry_delay=$((retry_delay * 2))
           continue
         fi
-        msg_error "Codeberg API rate limit exceeded (HTTP 403)."
+        msg_error "Codeberg API access denied or rate limited (HTTP $http_code)." >&2
+        rm -f "$response_file"
         return 22
         ;;
       404)
-        msg_error "Codeberg repository or release not found (HTTP 404): $url"
+        msg_error "Codeberg repository or release not found (HTTP 404): $url" >&2
+        rm -f "$response_file"
         return 22
         ;;
       000 | "")
@@ -1473,8 +1492,9 @@ codeberg_api_call() {
           sleep "$retry_delay"
           continue
         fi
-        msg_error "Codeberg API connection failed (no response)."
-        msg_error "Check your network/DNS: curl -sSL https://codeberg.org"
+        msg_error "Codeberg API connection failed or response incomplete." >&2
+        msg_error "Check your network/DNS: curl -sSL https://codeberg.org" >&2
+        rm -f "$response_file"
         return 22
         ;;
       *)
@@ -1482,14 +1502,64 @@ codeberg_api_call() {
           sleep "$retry_delay"
           continue
         fi
-        msg_error "Codeberg API call failed (HTTP $http_code)."
+        msg_error "Codeberg API call failed (HTTP $http_code)." >&2
+        rm -f "$response_file"
         return 22
         ;;
     esac
   done
 
-  msg_error "Codeberg API call failed after ${max_retries} attempts: ${url}"
+  rm -f "$response_file"
+  msg_error "Codeberg API call failed after ${max_retries} attempts: ${url}" >&2
   return 22
+}
+
+# Shared release selection for version lookup, update checking and deployment.
+# Emits one validated release object, preserving the upstream tag verbatim.
+_codeberg_release_json() {
+  local repo="$1" version="${2:-latest}" json encoded_tag errors rc
+  local api_url="https://codeberg.org/api/v1/repos/${repo}/releases"
+  if [[ "$version" != latest ]]; then
+    encoded_tag=$(jq -rn --arg tag "$version" '$tag | @uri') || return 250
+    api_url+="/tags/${encoded_tag}"
+  fi
+
+  # Numeric pins historically matched both 1.2.3 and v1.2.3. Prefer an exact
+  # tag, then try the prefixed spelling; preserve both diagnostics on failure.
+  if [[ "$version" =~ ^[0-9] ]]; then
+    errors=$(mktemp) || return 252
+    if json=$(codeberg_api_call "$api_url" 2> "$errors"); then
+      rm -f "$errors"
+    elif json=$(codeberg_api_call "https://codeberg.org/api/v1/repos/${repo}/releases/tags/v${encoded_tag}" 2>> "$errors"); then
+      rm -f "$errors"
+    else
+      rc=$?
+      cat "$errors" >&2
+      rm -f "$errors"
+      return "$rc"
+    fi
+  elif json=$(codeberg_api_call "$api_url"); then
+    :
+  else
+    return $?
+  fi
+  if [[ "$version" == latest ]]; then
+    json=$(jq -ce '
+      if type == "array" then
+        [.[] | select(.draft == false and .prerelease == false)][0]
+      else error("expected a release list") end' <<< "$json") || {
+      msg_error "No stable Codeberg release found for ${repo}" >&2
+      return 250
+    }
+  fi
+  jq -ce '
+    select(type == "object") |
+    select(.draft != true) |
+    select(.prerelease != true) |
+    select(.tag_name | type == "string" and length > 0)' <<< "$json" || {
+    msg_error "Invalid Codeberg release metadata for ${repo}" >&2
+    return 250
+  }
 }
 
 should_upgrade() {
@@ -2260,30 +2330,16 @@ get_latest_github_release() {
 get_latest_codeberg_release() {
   local repo="$1"
   local strip_v="${2:-true}"
-  local temp_file=$(mktemp)
-
-  # Codeberg API: get all releases and pick the first non-draft/non-prerelease
-  if ! codeberg_api_call "https://codeberg.org/api/v1/repos/${repo}/releases" "$temp_file"; then
-    msg_warn "Codeberg API call failed for ${repo}"
-    rm -f "$temp_file"
-    return 22
+  local json version
+  ensure_dependencies jq || return $?
+  if json=$(_codeberg_release_json "$repo"); then
+    version=$(jq -r '.tag_name' <<< "$json")
+  else
+    return $?
   fi
-
-  local version
-  # Codeberg uses same JSON structure but releases endpoint returns array
-  version=$(jq -r '[.[] | select(.draft==false and .prerelease==false)][0].tag_name // empty' "$temp_file")
-
-  if [[ "$strip_v" == "true" ]]; then
-    version="${version#v}"
+  if [[ "$strip_v" == true && "$version" =~ ^v[0-9] ]]; then
+    version="${version:1}"
   fi
-
-  rm -f "$temp_file"
-
-  if [[ -z "$version" ]]; then
-    msg_error "Could not determine latest version for ${repo}"
-    return 250
-  fi
-
   echo "$version"
 }
 
@@ -2707,7 +2763,9 @@ check_for_codeberg_release() {
   local pinned_version_in="${3:-}" # optional
   local pin_reason="${4:-}"        # optional reason shown to user
   local app_lc="${app,,}"
+  app_lc="${app_lc// /}"
   local current_file="$HOME/.${app_lc}"
+  CHECK_UPDATE_RELEASE=""
 
   msg_info "Checking for update: ${app}"
 
@@ -2717,35 +2775,15 @@ check_for_codeberg_release() {
     return 6
   fi
 
-  ensure_dependencies jq
-
-  # Fetch releases from Codeberg API
-  local releases_json=""
-  releases_json=$(curl -fsSL --max-time 20 \
-    -H 'Accept: application/json' \
-    "https://codeberg.org/api/v1/repos/${source}/releases" 2> /dev/null) || {
-    msg_error "Unable to fetch releases for ${app} (codeberg.org/api/v1/repos/${source}/releases)"
-    return 22
-  }
-
-  mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<< "$releases_json")
-  if ((${#raw_tags[@]} == 0)); then
-    msg_error "No stable releases found for ${app}"
-    return 250
+  ensure_dependencies jq || return $?
+  local json latest_raw latest_clean
+  if json=$(_codeberg_release_json "$source" "${pinned_version_in:-latest}"); then
+    latest_raw=$(jq -r '.tag_name' <<< "$json")
+  else
+    return $?
   fi
-
-  local clean_tags=()
-  for t in "${raw_tags[@]}"; do
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
-    if [[ "$t" =~ ^v[0-9] ]]; then
-      clean_tags+=("${t:1}")
-    else
-      clean_tags+=("$t")
-    fi
-  done
-
-  local latest_raw="${raw_tags[0]}"
-  local latest_clean="${clean_tags[0]}"
+  latest_clean="$latest_raw"
+  [[ "$latest_raw" =~ ^v[0-9] ]] && latest_clean="${latest_raw:1}"
 
   # current installed (stored without v)
   local current=""
@@ -2757,31 +2795,18 @@ check_for_codeberg_release() {
     mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2> /dev/null)
     if ((${#legacy_files[@]} == 1)); then
       current="$(< "${legacy_files[0]}")"
-      echo "${current#v}" > "$current_file"
+      [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
+      echo "$current" > "$current_file"
       rm -f "${legacy_files[0]}"
     fi
   fi
-  current="${current#v}"
+  [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
 
   # Pinned version handling
   if [[ -n "$pinned_version_in" ]]; then
-    local pin_clean="${pinned_version_in#v}"
-    local match_raw=""
-    for i in "${!clean_tags[@]}"; do
-      if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
-        match_raw="${raw_tags[$i]}"
-        break
-      fi
-    done
-
-    if [[ -z "$match_raw" ]]; then
-      msg_error "Pinned version ${pinned_version_in} not found upstream"
-      return 250
-    fi
-
-    if [[ "$current" != "$pin_clean" ]]; then
-      CHECK_UPDATE_RELEASE="$match_raw"
-      msg_ok "Update available: ${app} ${current:-not installed} → ${pin_clean}"
+    if [[ "$current" != "$latest_clean" ]]; then
+      CHECK_UPDATE_RELEASE="$latest_raw"
+      msg_ok "Update available: ${app} ${current:-not installed} → ${latest_clean}"
       return 0
     fi
 
@@ -3044,6 +3069,61 @@ _diagnose_deb_failure() {
   fi
 }
 
+# Prepare a complete replacement beside the target, so copy failures cannot
+# damage the installed tree. Non-clean deployments merge into the old tree;
+# clean deployments retain existing dotfiles, as the original clean glob did.
+_codeberg_deploy_tree() (
+  local source="$1" target="$2" parent stage
+  target=$(realpath -m "$target") || return 252
+  [[ "$target" != / && ! -f "$target" ]] || return 252
+  parent=$(dirname "$target")
+  mkdir -p "$parent" || return 252
+  stage=$(mktemp -d "$parent/.codeberg-deploy.XXXXXX") || return 252
+  mkdir "$stage/new" || {
+    rm -rf "$stage"
+    return 252
+  }
+  if [[ -d "$target" ]]; then
+    cp -a "$target/." "$stage/new/" || {
+      rm -rf "$stage"
+      return 252
+    }
+    if [[ "${CLEAN_INSTALL:-0}" == 1 ]]; then
+      shopt -u dotglob
+      shopt -s nullglob
+      rm -rf "$stage/new/"* || {
+        rm -rf "$stage"
+        return 252
+      }
+    fi
+  else
+    chmod 755 "$stage/new" || {
+      rm -rf "$stage"
+      return 252
+    }
+  fi
+  cp -r "$source/." "$stage/new/" || {
+    msg_error "Failed to stage Codeberg release for $target"
+    rm -rf "$stage"
+    return 252
+  }
+  if [[ -d "$target" ]]; then
+    mv -T "$target" "$stage/previous" || {
+      rm -rf "$stage"
+      return 252
+    }
+  fi
+  if ! mv -T "$stage/new" "$target"; then
+    if [[ -d "$stage/previous" ]] && ! mv -T "$stage/previous" "$target"; then
+      msg_error "Failed to restore $target; previous installation preserved at $stage/previous"
+      return 252
+    fi
+    rm -rf "$stage"
+    return 252
+  fi
+  rm -rf "$stage"
+)
+
 fetch_and_deploy_codeberg_release() {
   local app="$1"
   local repo="$2"
@@ -3052,15 +3132,16 @@ fetch_and_deploy_codeberg_release() {
   local target="${5:-/opt/$app}"
   local asset_pattern="${6:-}"
 
-  local app_lc=$(echo "${app,,}" | tr -d ' ')
+  [[ -n "$app" && -n "$repo" ]] || return 65
+  local app_lc="${app,,}"
+  app_lc="${app_lc// /}"
   local version_file="$HOME/.${app_lc}"
-
-  local api_timeouts=(60 120 240)
 
   local current_version=""
   [[ -f "$version_file" ]] && current_version=$(< "$version_file")
+  [[ "$current_version" =~ ^v[0-9] ]] && current_version="${current_version:1}"
 
-  ensure_dependencies jq
+  ensure_dependencies jq || return $?
 
   ### Tag Mode (bypass Release API) ###
   if [[ "$mode" == "tag" ]]; then
@@ -3070,7 +3151,7 @@ fetch_and_deploy_codeberg_release() {
     fi
 
     local tag_name="$version"
-    [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+    [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
 
     if [[ "$current_version" == "$version" ]]; then
       $STD msg_ok "$app is already up-to-date (v$version)"
@@ -3094,7 +3175,12 @@ fetch_and_deploy_codeberg_release() {
     local download_success=false
 
     # Codeberg archive URL format: https://codeberg.org/{owner}/{repo}/archive/{tag}.tar.gz
-    local archive_url="https://codeberg.org/$repo/archive/${tag_name}.tar.gz"
+    local encoded_tag
+    encoded_tag=$(jq -rn --arg tag "$tag_name" '$tag | @uri') || {
+      rm -rf "$tmpdir"
+      return 250
+    }
+    local archive_url="https://codeberg.org/$repo/archive/${encoded_tag}.tar.gz"
     if curl_download "$tmpdir/$filename" "$archive_url"; then
       download_success=true
     fi
@@ -3105,11 +3191,6 @@ fetch_and_deploy_codeberg_release() {
       return 250
     fi
 
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
       msg_error "Failed to extract tarball"
       rm -rf "$tmpdir"
@@ -3118,22 +3199,30 @@ fetch_and_deploy_codeberg_release() {
 
     local unpack_dir
     unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+    if [[ -z "$unpack_dir" ]]; then
+      msg_error "Extracted Codeberg tarball is empty: $app ($tag_name)"
+      rm -rf "$tmpdir"
+      return 252
+    fi
 
-    shopt -s dotglob nullglob
-    cp -r "$unpack_dir"/* "$target/"
-    shopt -u dotglob nullglob
+    if [[ -z "$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Extracted Codeberg directory is empty: $unpack_dir"
+      rm -rf "$tmpdir"
+      return 252
+    fi
 
-    echo "$version" > "$version_file"
+    _codeberg_deploy_tree "$unpack_dir" "$target" || {
+      rm -rf "$tmpdir"
+      return 252
+    }
+
+    echo "$version" > "$version_file" || {
+      rm -rf "$tmpdir"
+      return 252
+    }
     msg_ok "Deployed: $app ($version)"
     rm -rf "$tmpdir"
     return 0
-  fi
-
-  # Codeberg API: https://codeberg.org/api/v1/repos/{owner}/{repo}/releases
-  local api_url="https://codeberg.org/api/v1/repos/$repo/releases"
-  if [[ "$version" != "latest" ]]; then
-    # Get release by tag: /repos/{owner}/{repo}/releases/tags/{tag}
-    api_url="https://codeberg.org/api/v1/repos/$repo/releases/tags/$version"
   fi
 
   # dns pre check
@@ -3142,37 +3231,13 @@ fetch_and_deploy_codeberg_release() {
     return 6
   fi
 
-  local attempt=0 success=false resp http_code
-
-  while ((attempt < ${#api_timeouts[@]})); do
-    resp=$(curl --connect-timeout 10 --max-time "${api_timeouts[$attempt]}" -fsSL -w "%{http_code}" -o /tmp/codeberg_rel.json "$api_url") && success=true && break
-    attempt=$((attempt + 1))
-    if ((attempt < ${#api_timeouts[@]})); then
-      msg_warn "API request timed out after ${api_timeouts[$((attempt - 1))]}s, retrying... (attempt $((attempt + 1))/${#api_timeouts[@]})"
-    fi
-  done
-
-  if ! $success; then
-    msg_error "Failed to fetch release metadata from $api_url after ${#api_timeouts[@]} attempts"
-    return 22
-  fi
-
-  http_code="${resp:(-3)}"
-  [[ "$http_code" != "200" ]] && {
-    msg_error "Codeberg API returned HTTP $http_code"
-    return 22
-  }
-
   local json tag_name
-  json=$(< /tmp/codeberg_rel.json)
-
-  # For "latest", the API returns an array - take the first (most recent) release
-  if [[ "$version" == "latest" ]]; then
-    json=$(echo "$json" | jq '.[0]')
+  if json=$(_codeberg_release_json "$repo" "$version"); then
+    tag_name=$(jq -r '.tag_name' <<< "$json")
+  else
+    return $?
   fi
-
-  tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
-  [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+  [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
 
   if [[ "$current_version" == "$version" ]]; then
     $STD msg_ok "$app is already up-to-date (v$version)"
@@ -3193,7 +3258,12 @@ fetch_and_deploy_codeberg_release() {
     local download_success=false
 
     # Codeberg archive URL format
-    local archive_url="https://codeberg.org/$repo/archive/${tag_name}.tar.gz"
+    local encoded_tag
+    encoded_tag=$(jq -rn --arg tag "$tag_name" '$tag | @uri') || {
+      rm -rf "$tmpdir"
+      return 250
+    }
+    local archive_url="https://codeberg.org/$repo/archive/${encoded_tag}.tar.gz"
     if curl_download "$tmpdir/$filename" "$archive_url"; then
       download_success=true
     fi
@@ -3204,11 +3274,6 @@ fetch_and_deploy_codeberg_release() {
       return 250
     fi
 
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
       msg_error "Failed to extract tarball"
       rm -rf "$tmpdir"
@@ -3216,10 +3281,22 @@ fetch_and_deploy_codeberg_release() {
     }
     local unpack_dir
     unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+    if [[ -z "$unpack_dir" ]]; then
+      msg_error "Extracted Codeberg tarball is empty: $app ($tag_name)"
+      rm -rf "$tmpdir"
+      return 252
+    fi
 
-    shopt -s dotglob nullglob
-    cp -r "$unpack_dir"/* "$target/"
-    shopt -u dotglob nullglob
+    if [[ -z "$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Extracted Codeberg directory is empty: $unpack_dir"
+      rm -rf "$tmpdir"
+      return 252
+    fi
+
+    _codeberg_deploy_tree "$unpack_dir" "$target" || {
+      rm -rf "$tmpdir"
+      return 252
+    }
 
   ### Binary Mode ###
   elif [[ "$mode" == "binary" ]]; then
@@ -3275,8 +3352,8 @@ fetch_and_deploy_codeberg_release() {
     }
 
     chmod 644 "$tmpdir/$filename"
-    $STD apt install -y "$tmpdir/$filename" || {
-      $STD dpkg -i "$tmpdir/$filename" || {
+    (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD apt install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$tmpdir/$filename") || {
+      (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD dpkg --force-confdef --force-confold -i "$tmpdir/$filename") || {
         _diagnose_deb_failure "$tmpdir/$filename"
         rm -rf "$tmpdir"
         return 100
@@ -3318,11 +3395,10 @@ fetch_and_deploy_codeberg_release() {
     }
 
     local unpack_tmp
-    unpack_tmp=$(mktemp -d)
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
+    unpack_tmp=$(mktemp -d) || {
+      rm -rf "$tmpdir"
+      return 252
+    }
 
     if [[ "$filename" == *.zip ]]; then
       ensure_dependencies unzip
@@ -3343,40 +3419,22 @@ fetch_and_deploy_codeberg_release() {
       return 251
     fi
 
-    local top_dirs
-    top_dirs=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1 -type d | wc -l)
     local top_entries inner_dir
     top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
+    inner_dir="$unpack_tmp"
     if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
       inner_dir="$top_entries"
-      shopt -s dotglob nullglob
-      if compgen -G "$inner_dir/*" > /dev/null; then
-        cp -r "$inner_dir"/* "$target/" || {
-          msg_error "Failed to copy contents from $inner_dir to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 252
-        }
-      else
-        msg_error "Inner directory is empty: $inner_dir"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      fi
-      shopt -u dotglob nullglob
-    else
-      shopt -s dotglob nullglob
-      if compgen -G "$unpack_tmp/*" > /dev/null; then
-        cp -r "$unpack_tmp"/* "$target/" || {
-          msg_error "Failed to copy contents to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 252
-        }
-      else
-        msg_error "Unpacked archive is empty"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      fi
-      shopt -u dotglob nullglob
     fi
+    if [[ -z "$(find "$inner_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Unpacked archive is empty"
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 252
+    fi
+    _codeberg_deploy_tree "$inner_dir" "$target" || {
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 252
+    }
+    rm -rf "$unpack_tmp"
 
   ### Singlefile Mode ###
   elif [[ "$mode" == "singlefile" ]]; then
@@ -3412,14 +3470,30 @@ fetch_and_deploy_codeberg_release() {
     local target_file="$app"
     [[ "$use_filename" == "true" ]] && target_file="$filename"
 
-    curl_download "$target/$target_file" "$asset_url" || {
+    curl_download "$tmpdir/$filename" "$asset_url" || {
       msg_error "Download failed: $asset_url"
       rm -rf "$tmpdir"
       return 250
     }
 
-    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
-      chmod +x "$target/$target_file"
+    local staged_file
+    staged_file=$(mktemp "$target/.codeberg-file.XXXXXX") || {
+      rm -rf "$tmpdir"
+      return 252
+    }
+    cp "$tmpdir/$filename" "$staged_file" || {
+      msg_error "Failed to deploy $target_file to $target"
+      rm -f "$staged_file"
+      rm -rf "$tmpdir"
+      return 252
+    }
+
+    local file_mode=755
+    [[ "$target_file" == *.jar ]] && file_mode=644
+    if ! chmod "$file_mode" "$staged_file" || ! mv -T "$staged_file" "$target/$target_file"; then
+      rm -f "$staged_file"
+      rm -rf "$tmpdir"
+      return 252
     fi
 
   else
@@ -3428,7 +3502,10 @@ fetch_and_deploy_codeberg_release() {
     return 65
   fi
 
-  echo "$version" > "$version_file"
+  echo "$version" > "$version_file" || {
+    rm -rf "$tmpdir"
+    return 252
+  }
   msg_ok "Deployed: $app ($version)"
   rm -rf "$tmpdir"
 }
