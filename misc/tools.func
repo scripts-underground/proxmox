@@ -3462,6 +3462,7 @@ fetch_and_deploy_codeberg_release() {
 #
 # Optional:
 #   - Set GITHUB_TOKEN env var to increase API rate limit (recommended for CI/CD).
+#   - FORCE_DEPLOY=1 redeploys the selected release even when its version matches.
 #
 # Examples:
 #   # 1. Minimal: Fetch and deploy source tarball
@@ -3688,7 +3689,7 @@ fetch_and_deploy_gh_release() {
   # Sanitize version for use in filenames (replace / with -)
   local version_safe="${version//\//-}"
 
-  if [[ "$current_version" == "$version" ]]; then
+  if [[ "$current_version" == "$version" && "${FORCE_DEPLOY:-0}" != "1" ]]; then
     $STD msg_ok "$app is already up-to-date (v$version)"
     return 0
   fi
@@ -3905,6 +3906,18 @@ fetch_and_deploy_gh_release() {
         rm -rf "$tmpdir" "$unpack_tmp"
         return 251
       }
+    elif [[ "$filename" == *.7z ]]; then
+      if ! command -v 7z &> /dev/null; then
+        ensure_dependencies p7zip-full || {
+          rm -rf "$tmpdir" "$unpack_tmp"
+          return 100
+        }
+      fi
+      ($STD 7z x -y -o"$unpack_tmp" "$tmpdir/$filename") || {
+        msg_error "Failed to extract 7z archive"
+        rm -rf "$tmpdir" "$unpack_tmp"
+        return 251
+      }
     else
       msg_error "Unsupported archive format: $filename"
       rm -rf "$tmpdir" "$unpack_tmp"
@@ -3947,6 +3960,7 @@ fetch_and_deploy_gh_release() {
       fi
       shopt -u dotglob nullglob
     fi
+    rm -rf "$unpack_tmp"
 
     ### Singlefile Mode ###
   elif [[ "$mode" == "singlefile" ]]; then
@@ -8469,16 +8483,32 @@ setup_rust() {
 #   - Extracts uv binary
 #   - Places it in /usr/local/bin
 #   - Optionally installs a specific Python version via uv
+#   - Selects explicit UV_VERSION, then UV_PROJECT_DIR's exact pin, then latest
 # ------------------------------------------------------------------------------
 
+# Adapted from community-scripts/core's runtime helper (MIT).
+# Only exact required-version pins are used; ranges retain latest behavior.
+_uv_required_version() {
+  local dir="${1:?dir}" f v
+  for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
+    [[ -f "$f" ]] || continue
+    v=$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2> /dev/null |
+      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/') || continue
+    if [[ "$v" =~ ^[0-9] ]]; then
+      echo "$v"
+      return 0
+    fi
+  done
+  return 1
+}
+
 setup_uv() {
+  export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
+  local PROJECT_DIR="${UV_PROJECT_DIR:-}"
   local UV_BIN="/usr/local/bin/uv"
   local UVX_BIN="/usr/local/bin/uvx"
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
   local CACHED_VERSION
-
-  # trap for TMP Cleanup
-  trap "rm -rf '$TMP_DIR'" EXIT
 
   CACHED_VERSION=$(get_cached_version "uv")
 
@@ -8511,12 +8541,17 @@ setup_uv() {
 
   ensure_dependencies jq
 
-  # Fetch latest version
-  local LATEST_VERSION
-  LATEST_VERSION=$(get_latest_github_release "astral-sh/uv") || {
-    msg_error "Could not fetch latest uv version from GitHub API"
-    return 7
-  }
+  # Keep the caller's override ahead of a project's pin; no pin means latest.
+  local TARGET_VERSION="${UV_VERSION:-}"
+  if [[ -z "$TARGET_VERSION" && -n "$PROJECT_DIR" ]]; then
+    TARGET_VERSION=$(_uv_required_version "$PROJECT_DIR") || TARGET_VERSION=""
+  fi
+  if [[ -z "$TARGET_VERSION" ]]; then
+    TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
+      msg_error "Could not fetch latest uv version from GitHub API"
+      return 7
+    }
+  fi
 
   # Get currently installed version
   local INSTALLED_VERSION=""
@@ -8524,9 +8559,9 @@ setup_uv() {
     INSTALLED_VERSION=$("$UV_BIN" --version 2> /dev/null | awk '{print $2}')
   fi
 
-  # Scenario 1: Already at latest version
-  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$LATEST_VERSION" ]]; then
-    cache_installed_version "uv" "$LATEST_VERSION"
+  # Scenario 1: Already at target version
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$TARGET_VERSION" ]]; then
+    cache_installed_version "uv" "$TARGET_VERSION"
 
     # Check if uvx is needed and missing
     if [[ "${USE_UVX:-NO}" == "YES" ]] && [[ ! -x "$UVX_BIN" ]]; then
@@ -8535,27 +8570,40 @@ setup_uv() {
       msg_ok "uvx wrapper installed"
     fi
 
+    # A later request may need Python even if uv itself needs no change.
+    if [[ -n "${PYTHON_VERSION:-}" ]]; then
+      msg_info "Installing Python $PYTHON_VERSION via uv"
+      $STD uv python install "$PYTHON_VERSION" || {
+        msg_error "Failed to install Python $PYTHON_VERSION"
+        return 150
+      }
+      msg_ok "Python $PYTHON_VERSION installed"
+    fi
+
     return 0
   fi
 
   # Scenario 2: New install or upgrade
-  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$LATEST_VERSION" ]]; then
-    msg_info "Upgrade uv from $INSTALLED_VERSION to $LATEST_VERSION"
+  if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "$TARGET_VERSION" ]]; then
+    msg_info "Upgrade uv from $INSTALLED_VERSION to $TARGET_VERSION"
   else
-    msg_info "Setup uv $LATEST_VERSION"
+    msg_info "Setup uv $TARGET_VERSION"
   fi
 
-  local UV_URL="https://github.com/astral-sh/uv/releases/download/${LATEST_VERSION}/${UV_TAR}"
+  TMP_DIR=$(mktemp -d) || return 252
+  local UV_URL="https://github.com/astral-sh/uv/releases/download/${TARGET_VERSION}/${UV_TAR}"
 
   if ! curl_with_retry "$UV_URL" "$TMP_DIR/uv.tar.gz"; then
     msg_error "Failed to download uv from $UV_URL"
     msg_error "Hint: GitHub Releases — check connectivity or set GITHUB_TOKEN to avoid rate-limiting"
+    rm -rf "$TMP_DIR"
     return 7
   fi
 
   # Extract
-  $STD tar -xzf "$TMP_DIR/uv.tar.gz" -C "$TMP_DIR" || {
+  ($STD tar -xzf "$TMP_DIR/uv.tar.gz" -C "$TMP_DIR") || {
     msg_error "Failed to extract uv"
+    rm -rf "$TMP_DIR"
     return 251
   }
 
@@ -8563,13 +8611,16 @@ setup_uv() {
   local UV_BINARY=$(find "$TMP_DIR" -name "uv" -type f -executable | head -n1)
   if [[ ! -f "$UV_BINARY" ]]; then
     msg_error "Could not find uv binary in extracted tarball"
+    rm -rf "$TMP_DIR"
     return 127
   fi
 
-  $STD /usr/bin/install -m 755 "$UV_BINARY" "$UV_BIN" || {
+  ($STD /usr/bin/install -m 755 "$UV_BINARY" "$UV_BIN") || {
     msg_error "Failed to install uv binary"
+    rm -rf "$TMP_DIR"
     return 252
   }
+  rm -rf "$TMP_DIR"
 
   ensure_usr_local_bin_persist
   export PATH="/usr/local/bin:$PATH"
@@ -8600,8 +8651,8 @@ setup_uv() {
     msg_ok "Python $PYTHON_VERSION installed"
   fi
 
-  cache_installed_version "uv" "$LATEST_VERSION"
-  msg_ok "Setup uv $LATEST_VERSION"
+  cache_installed_version "uv" "$TARGET_VERSION"
+  msg_ok "Setup uv $TARGET_VERSION"
 }
 
 # Helper function to install uvx wrapper

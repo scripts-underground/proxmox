@@ -274,7 +274,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 ### Release fetch & deploy
 
 - **`fetch_and_deploy_gh_tag()`** — Download tag archive via `refs/tags/<tag>.tar.gz`, extract to target. Modes: tag-only repos.
-- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback.
+- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback. `FORCE_DEPLOY=1` explicitly redeploys the selected release without changing its version marker; normal same-version calls remain idempotent.
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and extraction.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
@@ -301,7 +301,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`setup_postgresql_db()`** — Provision role + database. Reads `PG_DB_NAME`/`USER`/`PASS`. Exports DB vars.
 - **`setup_ruby()`** — Install rbenv + ruby-build. Reads `RUBY_VERSION`, `RUBY_INSTALL_RAILS`.
 - **`setup_rust()`** — Install rustup + toolchain + crates. Reads `RUST_TOOLCHAIN`, `RUST_CRATES`.
-- **`setup_uv()`** — Install `uv` (astral-sh) binary. Reads `USE_UVX`, `PYTHON_VERSION`.
+- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then an exact `required-version` pin in `UV_PROJECT_DIR` (`pyproject.toml` or `uv.toml`), then latest. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
@@ -329,7 +329,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 
 ---
 
- 
+
 
 ---
 

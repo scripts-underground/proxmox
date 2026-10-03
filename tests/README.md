@@ -43,6 +43,57 @@ CWA test adds a book upload phase (Phase 9) that authenticates with
 CSRF, uploads a test EPUB, waits for ingest, and verifies the book
 count increases.
 
+## RomM player-serving probe
+
+In a fresh disposable guest, install the prerequisites and run:
+
+```bash
+bash tests/romm-player-serving.test.sh --setup
+bash tests/romm-player-serving.test.sh
+```
+
+This deploys actual EmulatorJS `.7z`, Ruffle ZIP and uv TAR releases using the
+GitHub helper. It runs the Angie configuration extracted from `romm.sh` on port
+8080, with fixture SPA HTML, and checks isolation headers, ordinary SPA routes,
+and byte-for-byte HTTP delivery of the emulator loader and DOS core. It does
+not install the RomM backend or prove in-browser gameplay. The guest must not
+already have `/opt/romm/frontend/dist/index.html`.
+
+## uv project-version helper
+
+Run as root inside a disposable VM/container with `curl` and `jq` available:
+
+```bash
+bash tests/uv-project-version.test.sh
+```
+
+It uses real uv releases to check exact pins in `pyproject.toml`/`uv.toml`,
+explicit override precedence, selecting an older release, and latest fallback.
+It also verifies that an already-installed uv still installs a newly requested
+Python interpreter, that `uv sync` selects a project-compatible Python despite
+a different setup request, and that helper calls preserve the caller's exit trap.
+
+## Same-version GitHub asset repair
+
+```bash
+bash tests/github-force-deploy.test.sh
+```
+
+Run inside a disposable guest. It deploys a real release, damages only its
+temporary test payload, verifies normal same-version idempotence, and verifies
+that `FORCE_DEPLOY=1` repairs the payload while retaining the correct marker.
+
+## Installed RomM verification
+
+```bash
+bash tests/romm-live-verification.test.sh
+```
+
+Run inside a disposable installed RomM container. It checks the actual built
+player assets over HTTP, isolation headers, and active/enabled services. It also
+checks the cron process's configured schedules in Redis and sends isolated
+probe jobs to both ordinary and scan queues, verifying the returned results.
+
 ## Configuration
 
 Each test script has a config block at the top:
