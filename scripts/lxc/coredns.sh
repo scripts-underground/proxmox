@@ -61,20 +61,24 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
+  _release_recover_archive /usr/local/bin "$HOME/.coredns" || return $?
   if [[ ! -f /usr/local/bin/coredns ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
   if check_for_gh_release "coredns" "coredns/coredns"; then
     msg_info "Stopping Service"
-    systemctl stop coredns
+    systemctl stop coredns || return $?
     msg_ok "Stopped Service"
-    fetch_and_deploy_gh_release "coredns" "coredns/coredns" "prebuild" "latest" "/usr/local/bin" "coredns_*_linux_$(get_system_arch).tgz"
+    fetch_and_deploy_gh_release "coredns" "coredns/coredns" "prebuild" "latest" "/usr/local/bin" "coredns_*_linux_$(get_system_arch).tgz" || return $?
     chmod +x /usr/local/bin/coredns
     msg_info "Starting Service"
-    systemctl start coredns
+    systemctl start coredns || return $?
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }
