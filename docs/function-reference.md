@@ -371,6 +371,20 @@ request's target, marker, input root, fingerprint revision, root identity or pla
 seals. Recovery and finalization explicitly load a validated record's context;
 the loader assigns that context only after all required reads succeed.
 
+Single-binary archive callers may use `_gh_deploy_archive_binary` to fetch into
+private staging, prepare only the requested archive member, and publish the final
+binary with its real version marker through the same owner. Archive-only README
+and license files stay outside the binary directory. Filebrowser uses this route
+for installation and update, requesting mode755 explicitly; a failed publication
+keeps the previous binary/version and returns an error.
+
+The private prepared-tree owner accepts an optional regular-payload publication
+mode, recorded as `publish_mode`. It applies to regular published payload files,
+never the marker. An absent/empty field preserves existing metadata as before;
+historical records retain that default. Recovery validates the requested mode and
+the expected incoming mode. Explicit callers can therefore retain their executable
+installation policy without weakening the default metadata-preserving route.
+
 New schema-2 manifests declare `fingerprint_revision: 2`, requiring exact native
 UTC nanosecond leaf mtime alongside bytes, owner, mode and the complete native
 attribute set. An unchanged symlink referent does not make a timestamp-only link

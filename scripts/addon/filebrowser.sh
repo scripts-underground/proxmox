@@ -45,9 +45,7 @@ function install_script() {
   else
     $STD apk add --no-cache tar curl
   fi
-  fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
-  install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
-  rm -rf "$var_addon_dist_path"
+  _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" "filebrowser" "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" 755 || return $?
   msg_ok "Installed ${APP}"
 
   msg_info "Creating ${APP} directory"
@@ -127,12 +125,14 @@ function post_install_script() {
 }
 
 function update_script() {
+  _release_recover_archive "${var_addon_bin_path%/*}" "$HOME/.filebrowser" || return $?
   if check_for_gh_release "filebrowser" "filebrowser/filebrowser"; then
     msg_info "Updating ${APP}"
-    fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
-    install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
-    rm -rf "$var_addon_dist_path"
+    _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" "filebrowser" "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" 755 || return $?
     msg_ok "Updated ${APP}"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

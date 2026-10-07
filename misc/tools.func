@@ -4140,6 +4140,9 @@ _release_tx_prepare() {
           chmod "$mode" -- "$input" || return 252
         fi
       fi
+      if [[ "$action" == publish && -n "$rt_publish_mode" && -f "$input" && ! -L "$input" ]]; then
+        chmod "$rt_publish_mode" -- "$input" || return 252
+      fi
       expected=$(_release_tx_fingerprint "$input") || return 252
     elif [[ "$action" == mkdir ]]; then
       mode=777
@@ -4974,11 +4977,12 @@ _release_tx_validate_record() {
   local rt_target=$rt_target rt_marker=$rt_marker rt_input_root=$rt_input_root rt_root_identity=$rt_root_identity
   local rt_fingerprint_revision=$rt_fingerprint_revision rt_application_started=$rt_application_started
   local rt_plan_count=$rt_plan_count rt_plan_hash=$rt_plan_hash rt_alias_hash=$rt_alias_hash
+  local rt_publish_mode=$rt_publish_mode
   _release_tx_inspect_record "$@"
 }
 
 _release_tx_load_record_context() {
-  local manifest_document state_document schema revision target marker input='' identity started=false count=null plan='' aliases='' root_operation
+  local manifest_document state_document schema revision target marker input='' identity started=false count=null plan='' aliases='' root_operation publish_mode=''
   _release_tx_validate_record || return 252
   manifest_document=$(< "$rt_tx/manifest.json")
   state_document=$(< "$rt_tx/state.json")
@@ -4988,6 +4992,7 @@ _release_tx_load_record_context() {
   if [[ "$schema" == 2 ]]; then
     revision=$(jq -r '.fingerprint_revision // 1' <<< "$manifest_document") || return 252
     _release_tx_field input .input_root "$manifest_document" || return 252
+    _release_tx_field publish_mode '.publish_mode // ""' "$manifest_document" || return 252
     started=$(jq -r .application_started <<< "$state_document") || return 252
     count=$(jq -c .plan_count <<< "$state_document") || return 252
     _release_tx_field plan .plan_sha256 "$state_document" && _release_tx_field aliases .aliases_sha256 "$state_document" || return 252
@@ -5004,10 +5009,12 @@ _release_tx_load_record_context() {
   rt_target=$target rt_marker=$marker rt_input_root=$input rt_root_identity=$identity
   rt_fingerprint_revision=$revision rt_application_started=$started
   rt_plan_count=$count rt_plan_hash=$plan rt_alias_hash=$aliases
+  rt_publish_mode=$publish_mode
 }
 
 _release_tx_inspect_record() {
   local require_complete=${1:-} record schema decision manifest operation progress id path source logical action before expected
+  local mode expected_kind
   local count index preparation_gap=0 prepared_count=0 marker_count=0 alias temporary temporary_count temporary_index actual_hash expected_relevant actual_relevant recorded_root marker_hash attempt_row purpose needs_original metadata_pending
   local fingerprint_filter operation_filter
   [[ -d "$rt_tx" && ! -L "$rt_tx" && "$(stat -c '%u:%a' -- "$rt_tx")" == "$(id -u):700" ]] || return 252
@@ -5019,6 +5026,7 @@ _release_tx_inspect_record() {
   if [[ "$schema" == 1 ]]; then
     rt_fingerprint_revision=1
     rt_input_root=''
+    rt_publish_mode=''
     # Completed legacy history stays read-only. Stronger legacy recovery is
     # dispatched separately; missing evidence is never inferred from live data.
     _release_tx_validate_legacy_record || return 252
@@ -5047,11 +5055,13 @@ _release_tx_inspect_record() {
     (.clean | IN("0","1")) and (.root_absent | type == "boolean") and
     (.root_absent == (.root_identity == "")) and
     (.root_identity == "" or (.root_identity | test("^[0-9]+:[0-9]+$"))) and
+    (if has("publish_mode") then (.publish_mode | type == "string" and (. == "" or test("^[0-7]{1,4}$"))) else true end) and
     (.owner | type == "number" and . >= 0 and floor == .)' "$rt_tx/manifest.json" > /dev/null || return 252
   manifest=$(< "$rt_tx/manifest.json")
   _release_tx_field rt_target .target "$manifest" && _release_tx_field rt_marker .marker "$manifest" &&
     _release_tx_field rt_input_root .input_root "$manifest" &&
     _release_tx_field rt_root_identity .root_identity "$manifest" && _release_tx_field record .id "$manifest" || return 252
+  _release_tx_field rt_publish_mode '.publish_mode // ""' "$manifest" || return 252
   [[ "${rt_tx##*/}" == "$record" || ("$rt_published" == 0 && "${rt_tx##*/}" == "init-${record#txn-}") ]] || return 252
   [[ "$(jq -r .owner "$rt_tx/manifest.json")" == "$(id -u)" ]] || return 252
   _release_tx_realpath path -ms "$rt_target" || return 252
@@ -5162,6 +5172,13 @@ _release_tx_inspect_record() {
         '($expected.kind | IN("file","link")) and ($before.kind == "absent" or $before.kind == $expected.kind)' > /dev/null || return 252
       [[ -e "$rt_tx/entries/$id/incoming" || -L "$rt_tx/entries/$id/incoming" ]] || return 252
       _release_tx_matches "$rt_tx/entries/$id/incoming" "$expected" || return 252
+      if [[ "$action" == publish && -n "$rt_publish_mode" ]]; then
+        _release_tx_field expected_kind .kind "$expected" || return 252
+        if [[ "$expected_kind" == file ]]; then
+          mode=$(jq -r .mode <<< "$expected") || return 252
+          [[ "$((8#$mode))" == "$((8#$rt_publish_mode))" ]] || return 252
+        fi
+      fi
       if [[ "$action" == marker ]]; then
         marker_hash=$(
           set -o pipefail
@@ -5476,6 +5493,7 @@ _release_tx_extract_command() {
 _release_transaction() (
   local rt_kind=$1 rt_input=$2 rt_filename=$3 rt_layout=$4 rt_target=$5 rt_marker=${6:-}
   local rt_version=${7:-} rt_clean=${8:-0} rt_force=${9:-0}
+  local rt_publish_mode=${10:-} rt_requested_mode=${10:-}
   local rt_store=/var/lib/scripts-underground/release-deploy rt_tx='' rt_root_identity='' rt_mount_hash='' rt_candidate=''
   local rt_published=0 rt_application_started=false rt_plan_count=null rt_plan_hash='' rt_alias_hash='' rt_init='' rt_final=''
   local rt_store_identity='' rt_lock_identity='' rt_lock_descriptor=''
@@ -5492,6 +5510,11 @@ _release_transaction() (
   trap '_release_tx_signal 130' INT
   trap '_release_tx_signal 143' TERM
   trap '_release_tx_finalize "$?"' EXIT
+  if [[ -n "$rt_requested_mode" ]]; then
+    [[ "$rt_kind" == prepared-tree && "$rt_requested_mode" =~ ^[0-7]{1,4}$ ]] || exit 65
+    printf -v rt_requested_mode '%o' "$((8#$rt_requested_mode))"
+    rt_publish_mode=$rt_requested_mode
+  fi
   ensure_dependencies jq coreutils util-linux attr tar || exit 252
   command -v getfattr > /dev/null && command -v setfattr > /dev/null || exit 252
   local tar_help tar_version
@@ -5595,6 +5618,7 @@ _release_transaction() (
     fi
   fi
   rt_application_started=false rt_plan_count=null rt_plan_hash='' rt_alias_hash=''
+  rt_publish_mode=$rt_requested_mode
   rt_fingerprint_revision=2
   rt_input_root=''
   rt_init=$(mktemp -d "$rt_store/init-XXXXXXXX") || exit 252
@@ -5614,8 +5638,8 @@ _release_transaction() (
   rt_mount_hash=$(sha256sum /proc/self/mountinfo) || exit 252
   document=$(jq -cn --arg target "$rt_target" --arg logical "$logical_target" --arg marker "$rt_marker" --arg version "$rt_version" \
     --arg identity "$rt_root_identity" --arg boot "$(< /proc/sys/kernel/random/boot_id)" --arg mntns "$(readlink /proc/self/ns/mnt)" \
-    --argjson owner "$uid" --arg clean "$rt_clean" --arg id "${rt_final##*/}" --arg input "$rt_input_root" \
-    '{schema:2,fingerprint_revision:2,id:$id,target:$target,logical_target:$logical,marker:$marker,version:$version,clean:$clean,
+    --argjson owner "$uid" --arg clean "$rt_clean" --arg id "${rt_final##*/}" --arg input "$rt_input_root" --arg publish_mode "$rt_publish_mode" \
+    '{schema:2,fingerprint_revision:2,publish_mode:$publish_mode,id:$id,target:$target,logical_target:$logical,marker:$marker,version:$version,clean:$clean,
       root_identity:$identity,root_absent:($identity == ""),owner:$owner,boot_id:$boot,mntns:$mntns,input_root:$input}') || exit 252
   _release_tx_write_json "$rt_tx/manifest.json" \
     'type == "object" and .schema == 2 and (.target | type == "string") and
@@ -5694,6 +5718,49 @@ _release_transaction() (
 _release_deploy_archive() { _release_transaction archive "$@"; }
 _codeberg_deploy_tree() { _release_transaction prepared-tree "$1" '' tree "$2" '' '' "${CLEAN_INSTALL:-0}" 0; }
 _release_recover_archive() { _release_transaction recovery-only '' '' '' "$1" "${2:-}" '' 0 0; }
+
+# Install one archive member and its real version marker through the same owner.
+# The provider's staging marker belongs to a private HOME, never the caller's HOME.
+_gh_deploy_archive_binary() {
+  local app=$1 repo=$2 member=$3 final_path=$4 pattern=$5 publish_mode=${6:-755}
+  local app_lc=${app,,} binary_stage stage_identity version status destination_name parent
+  app_lc=${app_lc// /}
+  [[ -n "$app_lc" && "$app_lc" != */* && "$member" != */* && "$member" != . && "$member" != .. && -n "$member" &&
+    "$final_path" == /* && "$final_path" != */ && "$publish_mode" =~ ^[0-7]{1,4}$ ]] || return 65
+  destination_name=${final_path##*/}
+  [[ "$destination_name" != . && "$destination_name" != .. ]] || return 65
+  parent=${final_path%/*}
+  [[ -n "$parent" ]] || parent=/
+  _release_recover_archive "$parent" "$HOME/.${app_lc}" || return $?
+  binary_stage=$(mktemp -d) || return 252
+  stage_identity=$(stat -c '%d:%i:%u:%g:%a' -- "$binary_stage") || return 252
+  mkdir -m 700 -- "$binary_stage/home" "$binary_stage/tree" || return 252
+  if HOME="$binary_stage/home" fetch_and_deploy_gh_release "$app" "$repo" prebuild latest "$binary_stage/extract" "$pattern"; then
+    :
+  else
+    status=$?
+    msg_warn "Binary archive staging failed; retained at $binary_stage"
+    return "$status"
+  fi
+  [[ -f "$binary_stage/extract/$member" && ! -L "$binary_stage/extract/$member" &&
+    -f "$binary_stage/home/.${app_lc}" && ! -L "$binary_stage/home/.${app_lc}" ]] || return 252
+  version=$(cat -- "$binary_stage/home/.${app_lc}") || return 252
+  [[ -n "$version" ]] || return 252
+  install -m "$publish_mode" -- "$binary_stage/extract/$member" "$binary_stage/tree/$destination_name" || return 252
+  if _release_transaction prepared-tree "$binary_stage/tree" '' tree "$parent" "$HOME/.${app_lc}" "$version" 0 1 "$publish_mode"; then
+    :
+  else
+    status=$?
+    msg_warn "Binary publication failed; prepared input retained at $binary_stage"
+    return "$status"
+  fi
+  if [[ -d "$binary_stage" && ! -L "$binary_stage" && "$(stat -c '%d:%i:%u:%g:%a' -- "$binary_stage")" == "$stage_identity" ]]; then
+    rm -rf -- "$binary_stage" || msg_warn "Installed binary; staging cleanup incomplete at $binary_stage"
+  else
+    msg_warn "Installed binary; changed staging identity retained at $binary_stage"
+  fi
+  return 0
+}
 
 fetch_and_deploy_codeberg_release() {
   local app="$1"
