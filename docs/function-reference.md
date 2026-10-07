@@ -538,7 +538,7 @@ remain unchanged.
 
 ### Utilities
 
-- **`check_available_storage_bytes(bytes, path...)`** — Pre-mutation available-byte guard. It resolves each absolute path's nearest existing directory ancestor, checks completed GNU stat/df observations, and deduplicates filesystem device identities. Missing/invalid/incomplete command output fails closed; it creates no directories and never prompts or removes data. Returns 0 for sufficient space, 65 for invalid input and 252 for unavailable/insufficient observation. The caller supplies its workload budget and paths; this utility has no application-specific policy.
+- **`check_available_storage_bytes(bytes, path...)`** — Pre-mutation available-byte guard. It resolves each absolute path's nearest existing directory ancestor, checks completed GNU stat/df observations, and deduplicates filesystem device identities. Missing/invalid/incomplete command output fails closed; it creates no directories and never prompts or removes data. Returns 0 for sufficient space, 65 for invalid input and 252 for unavailable/insufficient observation. The caller supplies its workload budget and paths; this utility has no application-specific policy. RomM's baked context defaults to an 8 GiB operational budget, checked before installation or update service stop, with a recommended 32 GiB root allocation plus separate library/retention growth.
 - **`create_self_signed_cert()`** — Generate 2048-bit RSA cert with SANs.
 - **`ensure_usr_local_bin_persist()`** — Persist `/usr/local/bin` in PATH across login/non-login shells.
 - **`setup_local_ip_helper()`** — Install networkd-dispatcher hook for dynamic IP tracking.

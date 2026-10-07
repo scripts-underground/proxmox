@@ -10,13 +10,16 @@ APP="RomM"
 var_tags="${var_tags:-emulation}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-4096}"
-var_disk="${var_disk:-20}"
+var_disk="${var_disk:-32}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-no}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_romm_minimum_free_bytes="${var_lxc_romm_minimum_free_bytes:-8589934592}"
 
 function install_script() {
+  check_available_storage_bytes "$var_lxc_romm_minimum_free_bytes" \
+    /opt/romm /var/lib /var/cache "${HOME:-/root}" "${TMPDIR:-/tmp}" || return 252
   msg_info "Installing Dependencies"
   $STD apt install -y \
     acl \
@@ -410,6 +413,8 @@ function post_install_script() {
 }
 
 function update_script() {
+  check_available_storage_bytes "$var_lxc_romm_minimum_free_bytes" \
+    /opt/romm /var/lib /var/cache "${HOME:-/root}" "${TMPDIR:-/tmp}" || return 252
   header_info
   check_container_storage
   check_container_resources
@@ -505,12 +510,12 @@ function update_script() {
 
   # A version marker alone does not prove the built frontend still has its files.
   if [[ ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
     restart_services=true
   fi
   if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores ]] ||
     check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
     restart_services=true
     msg_ok "Updated EmulatorJS successfully"
   fi
