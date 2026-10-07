@@ -1029,7 +1029,11 @@ ensure_dependencies() {
 
   # Debian/Ubuntu: Fast batch check using dpkg-query
   local installed_pkgs
-  installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2> /dev/null | sort -u)
+  installed_pkgs=$(dpkg-query -W -f='${Package}\n' 2> /dev/null) || {
+    msg_error 'Could not read installed-package metadata completely'
+    return 100
+  }
+  installed_pkgs=$(LC_ALL=C sort -u <<< "$installed_pkgs") || return 100
 
   for dep in "${deps[@]}"; do
     # First check if command exists (for binaries like jq, curl)
@@ -1037,7 +1041,9 @@ ensure_dependencies() {
       continue
     fi
     # Then check if package is installed
-    if echo "$installed_pkgs" | grep -qx "$dep"; then
+    # Match a literal complete name without grep -q closing a pipe early and
+    # turning a genuine installed match into SIGPIPE failure under pipefail.
+    if [[ $'\n'"$installed_pkgs"$'\n' == *$'\n'"$dep"$'\n'* ]]; then
       continue
     fi
     missing+=("$dep")
@@ -8566,17 +8572,92 @@ setup_rust() {
 # Adapted from community-scripts/core's runtime helper (MIT).
 # Only exact required-version pins are used; ranges retain latest behavior.
 _uv_required_version() {
-  local dir="${1:?dir}" f v
-  for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
-    [[ -f "$f" ]] || continue
-    v=$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2> /dev/null |
-      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/') || continue
-    if [[ "$v" =~ ^[0-9] ]]; then
-      echo "$v"
-      return 0
-    fi
-  done
-  return 1
+  local dir="${1:?dir}" file standalone=0
+  if [[ -f "$dir/uv.toml" ]]; then
+    file="$dir/uv.toml"
+    standalone=1
+  elif [[ -f "$dir/pyproject.toml" ]]; then
+    file="$dir/pyproject.toml"
+  else
+    return 1
+  fi
+  # Bounded lexical extractor, not a general TOML parser. Track unrelated
+  # multiline text and tables; unsupported targeted values never become latest.
+  awk -v standalone="$standalone" '
+    function trim(value) { sub(/^[ \t]+/, "", value); sub(/[ \t]+$/, "", value); return value }
+    function invalid(reason) {
+      printf "%s:%d: unsupported or invalid required-version (%s); use an ordinary single-line quoted exact version or range\n", FILENAME, NR, reason > "/dev/stderr"
+      outcome=2; exit 2
+    }
+    function lexical(line,    result,i,c,three,quote) {
+      result=""; quote=""
+      for (i=1; i<=length(line); i++) {
+        c=substr(line,i,1); three=substr(line,i,3)
+        if (multiline != "") {
+          if (multiline == "\"\"\"" && c == "\\") { i++; continue }
+          if (three == multiline) { multiline=""; i+=2 }
+          continue
+        }
+        if (quote != "") {
+          result=result c
+          if (quote == "\"" && c == "\\") { result=result substr(line,++i,1); continue }
+          if (c == quote) quote=""
+          continue
+        }
+        if (c == "#") break
+        if (three == "\"\"\"" || three == literal literal literal) {
+          multiline=three; result=result three; i+=2; continue
+        }
+        result=result c
+        if (c == "\"" || c == literal) quote=c
+      }
+      return result
+    }
+    function requirement(value,    parts,n,i,p) {
+      value=trim(value)
+      if (value ~ /^[0-9][0-9A-Za-z.+-]*$/) { selected=value; return 0 }
+      if (value ~ /^==[ \t]*[0-9][0-9A-Za-z.+-]*$/) {
+        sub(/^==[ \t]*/, "", value); selected=value; return 0
+      }
+      if (value == "*") return 1
+      n=split(value,parts,",")
+      for (i=1;i<=n;i++) {
+        p=trim(parts[i])
+        if (p !~ /^(==|!=|<=|>=|<|>|~=)[ \t]*[0-9][0-9A-Za-z.+*-]*$/) return 2
+      }
+      return 1
+    }
+    BEGIN { literal=sprintf("%c",39); active=standalone; outcome=1; seen=0 }
+    {
+      was_multiline=(multiline != "")
+      record=$0; sub(/\r$/, "", record)
+      line=trim(lexical(record))
+      if (was_multiline || line == "") next
+      if (line ~ /^\[/) {
+        table=line; gsub(/[ \t]/,"",table)
+        active=(!standalone && table == "[tool.uv]")
+        next
+      }
+      if (!active) next
+      if (line !~ /^(required-version|\042required-version\042|\047required-version\047)[ \t]*=/) next
+      if (seen++) invalid("duplicate setting")
+      sub(/^[^=]*=[ \t]*/,"",line)
+      quote=substr(line,1,1)
+      if (quote != "\"" && quote != literal) invalid("expected quoted string")
+      if (substr(line,1,3) == quote quote quote) invalid("multiline value")
+      value=""; closing=0
+      for (i=2;i<=length(line);i++) {
+        c=substr(line,i,1)
+        if (c == "\\") invalid("escaped value")
+        if (c == quote) { closing=i; break }
+        value=value c
+      }
+      if (!closing || trim(substr(line,closing+1)) != "") invalid("unclosed string or trailing syntax")
+      outcome=requirement(value)
+      if (outcome == 2) invalid("unsupported requirement syntax")
+    }
+    END { if (outcome == 0) print selected; exit outcome }
+  ' "$file"
 }
 
 setup_uv() {
@@ -8585,12 +8666,10 @@ setup_uv() {
   local UV_BIN="/usr/local/bin/uv"
   local UVX_BIN="/usr/local/bin/uvx"
   local TMP_DIR
-  local CACHED_VERSION
-
-  CACHED_VERSION=$(get_cached_version "uv")
 
   # Architecture Detection
-  local ARCH=$(uname -m)
+  local ARCH
+  ARCH=$(uname -m) || return 236
   local OS_TYPE=""
   local UV_TAR=""
 
@@ -8616,12 +8695,21 @@ setup_uv() {
       ;;
   esac
 
-  ensure_dependencies jq
+  ensure_dependencies jq || return $?
 
   # Keep the caller's override ahead of a project's pin; no pin means latest.
-  local TARGET_VERSION="${UV_VERSION:-}"
+  local TARGET_VERSION="${UV_VERSION:-}" pin_status
+  if [[ "$TARGET_VERSION" =~ ^[[:blank:]]*==[[:blank:]]*([0-9][0-9A-Za-z.+-]*)[[:blank:]]*$ ]]; then
+    TARGET_VERSION=${BASH_REMATCH[1]}
+  fi
   if [[ -z "$TARGET_VERSION" && -n "$PROJECT_DIR" ]]; then
-    TARGET_VERSION=$(_uv_required_version "$PROJECT_DIR") || TARGET_VERSION=""
+    if TARGET_VERSION=$(_uv_required_version "$PROJECT_DIR"); then
+      :
+    else
+      pin_status=$?
+      [[ "$pin_status" == 1 ]] || return 250
+      TARGET_VERSION=''
+    fi
   fi
   if [[ -z "$TARGET_VERSION" ]]; then
     TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
@@ -8685,7 +8773,8 @@ setup_uv() {
   }
 
   # Find and install uv binary (tarball extracts to uv-VERSION-ARCH/ directory)
-  local UV_BINARY=$(find "$TMP_DIR" -name "uv" -type f -executable | head -n1)
+  local UV_BINARY
+  UV_BINARY=$(find "$TMP_DIR" -name "uv" -type f -executable -print -quit) || return 252
   if [[ ! -f "$UV_BINARY" ]]; then
     msg_error "Could not find uv binary in extracted tarball"
     rm -rf "$TMP_DIR"

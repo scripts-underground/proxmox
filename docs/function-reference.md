@@ -301,11 +301,30 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`setup_postgresql_db()`** — Provision role + database. Reads `PG_DB_NAME`/`USER`/`PASS`. Exports DB vars.
 - **`setup_ruby()`** — Install rbenv + ruby-build. Reads `RUBY_VERSION`, `RUBY_INSTALL_RAILS`.
 - **`setup_rust()`** — Install rustup + toolchain + crates. Reads `RUST_TOOLCHAIN`, `RUST_CRATES`.
-- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then an exact `required-version` pin in `UV_PROJECT_DIR` (`pyproject.toml` or `uv.toml`), then latest. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
+- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then the effective exact project pin, then latest. A present `uv.toml` masks pyproject settings even when its root-level pin is absent/non-exact; otherwise only direct `[tool.uv]` is inspected. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
 - **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`.
+
+The shell-based uv extractor supports ordinary single-line basic/double or
+literal/single quoted `required-version` values, horizontal whitespace, and a
+comment after the closing quote. It tracks tables and unrelated quoted/multiline
+text, preserves internal `#`, and does not claim general TOML compliance.
+Bare numeric version tokens and complete `==` requirements select exact tags;
+wildcards/compound ranges retain latest fallback rather than becoming exact.
+Recognized complete `==...` explicit overrides normalize to the version before
+comparison/download/cache; other explicit override spellings retain their
+existing interpretation and precedence. Escaped/multiline targeted values,
+invalid types, duplicate settings and unsupported targeted syntax return an
+actionable parse error, not a latest installation. Private parser statuses are
+0 = exact version on stdout, 1 = absent/non-exact, 2 = invalid/unsupported;
+`setup_uv` maps status 2 to 250. Diagnostics go to stderr. No production
+Python/TOML parser dependency is introduced and ranges are not resolved.
+LF and CRLF records use the same lexical path: only a terminal record-ending CR
+is removed before header/target parsing. Quoted/interior data is not stripped or
+rewritten; effective-file precedence, exact/range handling and status mapping
+remain unchanged.
 
 ### Utilities
 
