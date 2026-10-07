@@ -260,7 +260,7 @@ Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgr
 - **`validate_github_token()`** — Tests PAT against GitHub `/user`. Returns 0/1/2/3.
 - **`prompt_for_github_token()`** — Interactive PAT entry; exports `GITHUB_TOKEN`.
 - **`github_api_call()`** — Authenticated GET with rate-limit backoff. Reads `GITHUB_TOKEN`.
-- **`codeberg_api_call()`** — Codeberg API GET (no auth needed).
+- **`codeberg_api_call <url> [output_file] [status_file]`** — Codeberg API GET (no auth needed). The optional third file records the final HTTP status; incomplete or curl-failed transfers record `000`. The existing two-argument/stdout interface and error codes remain supported.
 - **`get_latest_gh_tag()`**, **`get_latest_github_release()`**, **`get_latest_codeberg_release()`**, **`get_latest_gitlab_release()`** — Latest version probes.
 - **`extract_version_from_json()`** — `jq` field extraction from release JSON.
 
@@ -278,6 +278,216 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and extraction.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
+
+Codeberg pins prefer the exact tag endpoint. Only a completed HTTP 404 permits
+the alternate numeric-v spelling (`1.0.0` ↔ `v1.0.0`). Authentication,
+rate-limit and incomplete-transfer failures do not trigger that fallback.
+Explicit metadata must match the requested tag or its permitted equivalent;
+raw tags such as `version/2` remain intact and URL-encoded. Selection and
+already-current comparisons do not depend on the first release-list page.
+Agreement is checked against raw JSON strings inside jq before Bash extraction.
+Forbidden control/whitespace metadata rejects with250; valid slash/non-ASCII
+spellings remain intact. Trailing newlines cannot turn a different raw tag into
+an accepted requested pin, and stale selection/installed markers stay protected.
+
+#### Archive transaction and retained recovery data
+
+Codeberg `tag`, `tarball`/`source`, `prebuild`, and GitHub **prebuild** use one
+private archive transaction owner. Public positional signatures are unchanged.
+The canonical root is never renamed away; root binds, descendant directory
+mounts and their ancestor skeletons remain attached. Ordinary files inside a
+mounted directory can be replaced in their actual parent. Mounted-file
+collisions, conflicting aliases, changed directory-link ancestors, unsupported
+incoming links/special entries, and changed/pruned hardlinked files reject
+before application. An existing internal leaf alias receiving regular data
+keeps its link text while publication addresses the ordinary internal referent.
+
+The complete incoming payload is extracted and validated before application.
+Original overwritten/pruned leaves and the old marker are prepared before the
+first live operation. JSON intent records precede individual prunes, directory
+creations and same-parent leaf publication. The marker is published last through
+the same protocol, then verified with the payload before `COMMITTED` is written.
+Merge mode retains unrelated data; `CLEAN_INSTALL=1` prunes eligible absent
+entries under non-hidden root names, preserves absent root dot entries, and
+never prunes inside a proper descendant mount. Existing directories retain
+their permissions, existing regular leaves retain owner/mode, and new files
+take source mode subject to the caller's umask. No live directory is recursively
+removed by this transaction.
+
+Cooperating archive calls serialize on a stable lock in the executing guest's
+`/var/lib/scripts-underground/release-deploy` (120-second acquisition bound).
+Unique `txn-*` directories retain manifests, plans, operation state and
+originals after commit or rollback. There is no automatic backup pruning or
+store-path override. Unfinished records are validated and recovered before a
+same-version shortcut. Invalid records or incompatible boot/mount-namespace or
+mount topology changes refuse new mutation and identify the retained path.
+
+Returned errors and caught INT/TERM cause reverse rollback under that lock.
+Restoration copies retained originals to fresh same-parent candidates rather
+than consuming backups. If a live entry matches neither the original nor the
+transaction's expected result, preserve it and the backup, report
+`RECOVERY_REQUIRED`, and continue independent safe undo steps. Recovery trouble
+does not become successful deployment; an on-disk committed decision is never
+undone by a later cleanup failure. Disposable cleanup problems after commit are
+warnings. Caller EXIT/INT/TERM traps remain caller-owned.
+
+Journal publication requires a completed successful producer and exactly one
+complete JSON document with the caller's required record shape. Empty,
+multiple-document and truncated input cannot replace the previous valid
+destination. A producer that emits valid bytes but exits nonzero cannot
+authorize publication; this contract is independent of caller pipefail/errexit.
+Schedule readers complete and validate cardinality, row types and expected
+counts before their rows are consumed. A failed reader or partial prefix is not
+a successful empty verification/undo. Scalar/path reads retain trailing
+newlines and check the producer's status before assigning the value.
+
+Current finalization requires validated committed records and checked actual
+payload/marker readback, or an explicit recovered same-version no-op, before
+returning success. Returning status 0 followed by rollback is still a deployment
+failure. A valid committed publication remains accepted if its rename reports
+a later error; failed decision/outcome reads are reported as failure rather
+than downgraded to disposable-cleanup warnings. Historical journal validation
+does not create reader artifacts inside those retained records.
+
+New manifest, decision, operation and fingerprint records use **schema 2**.
+The decision records monotone `application_started`, complete `plan_count`,
+and sealed plan/alias SHA-256 values. `APPLYING` authorizes application only
+after every planned original/input and operation has been validated. Once true,
+`application_started` is never reset. Application-capable phases require the
+entire sealed record set; missing plan, alias or operation data is invalid
+recovery, not an empty undo schedule. Historical completed decisions are
+structurally inspected without comparing them to a later legitimate live
+generation. Unknown or contradictory records refuse mutation.
+
+Decision and operation writers validate the complete candidate shape before its
+rename and check the legal predecessor. Completed decisions cannot return to
+application, and applied operations cannot return to preparation. Recovery may
+repeat its restoring steps and finalize directory metadata under `ROLLING_BACK`;
+these retries do not reopen a committed or rolled-back decision. Rejected
+candidates leave the previous valid document intact.
+
+Record inspection uses a record-local context. It cannot change the current
+request's target, marker, input root, fingerprint revision, root identity or plan
+seals. Recovery and finalization explicitly load a validated record's context;
+the loader assigns that context only after all required reads succeed.
+
+New schema-2 manifests declare `fingerprint_revision: 2`, requiring exact native
+UTC nanosecond leaf mtime alongside bytes, owner, mode and the complete native
+attribute set. An unchanged symlink referent does not make a timestamp-only link
+edit safe to overwrite. Historical schema-2 records without this declaration
+retain revision-1 comparisons; unknown revisions and malformed extensions refuse
+mutation. Historical records are not rewritten to fabricate timestamps.
+
+Private Boolean readers distinguish a successfully read false value from producer
+failure. Checked record writers/loaders return 0 on success and 252 on rejection
+or failed reads; shape predicates return the completed jq predicate status, which
+their callers must check. These conventions do not change public provider status
+codes or transfer service ownership from callers into the engine.
+
+Initialization allocates a private retained `init-*` directory, prepares and
+validates its complete bootstrap plus a preallocated preparation-only terminal
+decision, then publishes its unused `txn-*` name. Unpublished allocations never
+authorize application or become active recovery records; failed allocations
+remain evidence without poisoning unrelated later calls. Aliases publish before
+the plan. PREPARING/false may contain a valid PREPARED prefix and a partial next
+copy, but never application progress/candidates. A checked preparation abort
+verifies unchanged planned originals and renames the preallocated ROLLED_BACK/
+false decision without allocating a new state temporary into a full store.
+Incomplete legacy application recovery is refused rather than guessing stronger
+original/ownership evidence from current live data.
+The schema1 dispatcher requires a complete structurally usable record set for
+completed history. Fully initialized PREPARING with a valid exclusive PREPARED
+prefix/no candidates can terminate without application changes; its checked
+schema1 terminal decision records `preparation_only:true`, preserving every
+legacy artifact. Missing files alone never establish that proof. Unsafe active
+schema1 application/recovery remains explicitly refused at its exact retained
+path because it lacks the new ownership/directory-original guarantee; new
+finalization cannot enter the former permissive recovery branch. Completed
+history is neither rewritten nor recertified as schema2 metadata evidence.
+
+Recovery rechecks PREPARED and already-RESTORED originals. A later edit to a
+RESTORED object is a conflict even if it matches the former incoming value;
+it does not authorize restoring again or starting a new deployment. Independent
+safe undo may continue, but ROLLED_BACK requires a complete checked original/
+alias/root/mount outcome, including untouched PREPARED operations. Completed
+historical generations are not compared against later legitimate live bytes.
+
+Physical exclusion covers effective roots and proper descendant mount origins
+of target, prepared input and store, plus each changed entry and same-parent
+candidate. Explicit kernel mount parentage resolves visible stacked attachments;
+hidden/ambiguous mappings reject rather than choosing an arbitrary mount row.
+Store-covering/descendant attachments participate in topology guards.
+Prepared-tree source roots are recorded as `input_root` and their covering/
+descendant attachments are checked during preparation and recovery; owned
+archive staging is covered by the store's topology guard. The lock
+opens without truncating its contents; held descriptor and pathname must retain
+the same device/inode/type/owner/link count, and the store identity is guarded.
+An archive owner never unlinks, replaces or repairs that lock inode.
+
+Each locked call allocates a separate private `.read-*` workspace before prior
+journal inspection. Its fixed native-output/diagnostic/canonical-body buffers
+and checksum checkpoint are allocated once and reused serially, including
+fingerprint subshells. Completed checked native getfattr output is accepted only
+with no diagnostics and valid exactly-one-object framing (or the characterized
+successful empty set); duplicate names, missing separators, NUL bytes and
+partial/multiple/failed producers reject. Encoded names/hex values remain in
+canonical files rather than binary Bash/JSON values. Historical journal reads
+never create those buffers inside retained records.
+
+Reader directory/buffer identity, ownership, link count, current content and
+native metadata govern cleanup. Only known owned disposable buffers are
+unlinked; replacements, hardlinks, unexpected entries/edits or ambiguous
+initialization retain the workspace. Older reader leftovers are not recovery
+authorities or adopted cleanup targets. Reusing allocated buffers supports the
+bounded preparation ENOSPC case; it is not an arbitrary-growth-on-full-storage
+guarantee. Standard attr (`getfattr`/`setfattr`) is a transaction prerequisite.
+
+Schema-2 non-absent fingerprints include the full canonical xattr-set SHA-256
+and count, including access/default ACLs exposed by the native utility.
+Allocation identity and link count are distinct from content/basic metadata.
+New-directory preparation records only the requested mode with
+`metadata_pending`; native mkdir's actual inherited group/setgid/default-ACL
+fingerprint and identity replace that request before APPLIED. Caught INT/TERM
+are deferred through a bounded immune primitive child until actual creation
+and ownership observation finish; the single owner's pending130/143 remains
+authoritative and caller traps stay isolated.
+
+Operation `attempts` replace string temporaries/shared per-purpose fingerprints.
+Each attempt records canonical purpose/number/path, guarded parent/directory,
+retained source fingerprint/size, exclusive candidate identity/initial metadata,
+copy result/status, readiness and cleanup state. Regular data copies into a
+preallocated inode do not preserve attributes; full data/prefix/identity and
+initial metadata observations establish ownership even after a genuine copy
+error. Attributes are then applied and verified separately. Links use literal
+exclusive creation and no dereferenced placeholder copy. Later attempts cannot
+lend ownership to earlier partials. Unexpected bytes/mode/ACL/xattrs/inodes/
+hardlinks retain their conflicts and gate retry. Verified attempts are cleared
+before their created parent is removed via rmdir.
+
+Prepared pruned-directory originals retain a nonrecursive GNU pax archive,
+verified empty metadata replica, complete native attribute body/hashes and an
+independent zero-byte native timestamp reference. Replica identity/ctime,
+archive/body consistency and guarded references are validated; no populated
+installed directory is recursively cloned. GNU tar ACL/xattr/no-recursion
+capabilities are mandatory before mutation. Directory restoration recreates
+owned parents, restores children and clears attempts first, then applies the
+empty replica's attributes, reconciles only attributable extra attributes,
+regenerates the guarded native restore header and restores timestamps last.
+Only fresh full-set/mode/owner/result verification authorizes RESTORED.
+Archives are never extracted over populated live data. No inode/ctime restore
+claim is made. Retained intermediate aliases protect every ordinary ancestor
+skeleton while eligible obsolete siblings remain prunable.
+
+This is **per-entry publication**, not whole-tree visibility atomicity. Callers
+still stop services/quiesce noncooperating writers; readers may see mixed
+generations during application/rollback. There is no SIGKILL, power-loss or
+hostile concurrent-root race guarantee. The transaction returns 250 for
+download failure, 251 for extraction failure, 252 for deployment/preparation or
+recovery failure, 65 for unsupported input, and preserves caught 130/143.
+GitHub's existing `FORCE_DEPLOY` flag forces its prebuild application; Codeberg
+has ordinary idempotence and no new force-variable API. GitHub source/tarball,
+package installs, generic backup/restore and the full RomM build/database flow
+have their existing distinct guarantees.
 
 ### Runtime setups — Each reads version from env, installs, caches version
 
@@ -328,6 +538,7 @@ remain unchanged.
 
 ### Utilities
 
+- **`check_available_storage_bytes(bytes, path...)`** — Pre-mutation available-byte guard. It resolves each absolute path's nearest existing directory ancestor, checks completed GNU stat/df observations, and deduplicates filesystem device identities. Missing/invalid/incomplete command output fails closed; it creates no directories and never prompts or removes data. Returns 0 for sufficient space, 65 for invalid input and 252 for unavailable/insufficient observation. The caller supplies its workload budget and paths; this utility has no application-specific policy.
 - **`create_self_signed_cert()`** — Generate 2048-bit RSA cert with SANs.
 - **`ensure_usr_local_bin_persist()`** — Persist `/usr/local/bin` in PATH across login/non-login shells.
 - **`setup_local_ip_helper()`** — Install networkd-dispatcher hook for dynamic IP tracking.

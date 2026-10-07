@@ -5,16 +5,24 @@ set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 source "$ROOT/misc/tools.func"
 
+if [[ "${1:-}" == --bundle || "${1:-}" == --live ]]; then
+  source "$ROOT/misc/core.func"
+  source "$ROOT/misc/error_handler.func"
+  if [[ "${1:-}" == --bundle ]]; then source "$ROOT/misc/bundle.func"; fi
+  load_functions
+fi
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  if declare -F stop_spinner > /dev/null; then stop_spinner || true; fi
+  rm -rf -- "$work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 failures=0
 
 # Invoke on the disposable PVE guest against an explicitly supplied test CT.
 if [[ "${1:-}" == --bundle ]]; then
-  source "$ROOT/misc/core.func"
-  source "$ROOT/misc/error_handler.func"
-  source "$ROOT/misc/bundle.func"
-  load_functions
   CTID="${2:?supply the disposable container ID}"
   export REPO_BASE="${3:?supply the HTTP-served candidate tree}"
   SESSION_ID=$(openssl rand -hex 4)
@@ -38,9 +46,6 @@ fi
 
 # Exercise real public releases and the actual framework logging wrappers.
 if [[ "${1:-}" == --live ]]; then
-  source "$ROOT/misc/core.func"
-  source "$ROOT/misc/error_handler.func"
-  load_functions
   export HOME="$work/home" INSTALL_LOG="$work/provider.log"
   mkdir "$HOME"
   for spec in \
@@ -152,7 +157,7 @@ run_case() {
       printf 'temporary staging leaked in %s\n' "$TMPDIR" >&2
       exit 1
     fi
-    if [[ -n "$(find "$CASE_ROOT" -name '.codeberg-*' -print -quit)" ]]; then
+    if [[ -n "$(find "$CASE_ROOT" \( -name '.codeberg-*' -o -name '.release-publish.*' -o -name '.release-restore.*' \) -print -quit)" ]]; then
       printf 'deployment staging leaked\n' >&2
       exit 1
     fi
@@ -256,7 +261,9 @@ rollback_publish() {
   printf 'old payload' > "$CASE_ROOT/target/content"
   printf 'old version' > "$HOME/.app"
   mv() {
-    if [[ "$*" == *'/new '* ]]; then
+    local source="${*: -2:1}" destination="${*: -1}"
+    if [[ "$source" == */publish && "$destination" == "$CASE_ROOT/target/content" ]]; then
+      printf 'real leaf publication fault\n' > "$CASE_ROOT/publication-fault"
       return 1
     fi
     command mv "$@"
@@ -266,6 +273,7 @@ rollback_publish() {
   local rc=$?
   set -e
   assert_eq "$rc" 252
+  test -s "$CASE_ROOT/publication-fault"
   assert_eq "$(< "$CASE_ROOT/target/content")" 'old payload'
   assert_eq "$(< "$HOME/.app")" 'old version'
 }
@@ -385,7 +393,10 @@ preserve_failed_copy() {
   printf 'old version' > "$HOME/.app"
   cp() {
     case "$*" in
-      *'/app/content'* | *'/app/.'*) return 1 ;;
+      *'/app/content'* | *'/app/.'*)
+        printf 'real incoming preparation fault\n' > "$CASE_ROOT/copy-fault"
+        return 1
+        ;;
       *) command cp "$@" ;;
     esac
   }
@@ -394,6 +405,7 @@ preserve_failed_copy() {
   local rc=$?
   set -e
   assert_eq "$rc" 252
+  test -s "$CASE_ROOT/copy-fault"
   assert_eq "$(< "$CASE_ROOT/target/content")" 'old payload'
   assert_eq "$(< "$HOME/.app")" 'old version'
 }
