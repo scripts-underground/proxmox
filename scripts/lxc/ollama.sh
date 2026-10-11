@@ -44,17 +44,16 @@ function update_script() {
   check_container_storage
   check_container_resources
 
+  _release_recover_archive /usr/local/lib/ollama "$HOME/.ollama-com" || return $?
   if [[ ! -d /usr/local/lib/ollama ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
 
-  [[ -f /root/.ollama ]] && rm -f /root/.ollama
-
   if check_for_gh_release "ollama-com" "ollama/ollama"; then
-    ensure_dependencies zstd
+    ensure_dependencies zstd || return $?
     msg_info "Stopping Services"
-    systemctl stop ollama
+    systemctl stop ollama || return $?
     msg_ok "Services Stopped"
 
     local OLLAMA_ARCH
@@ -65,19 +64,23 @@ function update_script() {
     esac
 
     OLLAMA_INSTALL_DIR="/usr/local/lib/ollama"
-    rm -rf "$OLLAMA_INSTALL_DIR" /usr/local/bin/ollama
-    mkdir -p "$OLLAMA_INSTALL_DIR"
-    if ! fetch_and_deploy_gh_release "ollama-com" "ollama/ollama" "prebuild" "latest" "$OLLAMA_INSTALL_DIR" "ollama-linux-${OLLAMA_ARCH}.tar.zst"; then
+    if CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ollama-com" "ollama/ollama" "prebuild" "latest" "$OLLAMA_INSTALL_DIR" "ollama-linux-${OLLAMA_ARCH}.tar.zst"; then
+      :
+    else
+      local deploy_status=$?
       msg_error "Download or deployment failed – check network connectivity and GitHub API availability"
-      exit 250
+      return "$deploy_status"
     fi
     ln -sf "$OLLAMA_INSTALL_DIR/bin/ollama" /usr/local/bin/ollama
     msg_ok "Updated Ollama"
 
     msg_info "Starting Services"
-    systemctl start ollama
+    systemctl start ollama || return $?
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

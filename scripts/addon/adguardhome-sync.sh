@@ -175,6 +175,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _release_recover_archive "$var_addon_install_path" "$HOME/.adguardhome-sync" || return $?
   if [[ ! -f "${var_addon_install_path}/adguardhome-sync" ]]; then
     msg_error "${APP} is not installed. Nothing to update."
     exit 233
@@ -190,7 +191,7 @@ function update_script() {
 
     BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz" || return $?
 
     BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
@@ -202,6 +203,9 @@ function update_script() {
     fi
     msg_ok "Started service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

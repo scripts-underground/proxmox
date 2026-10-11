@@ -53,19 +53,23 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
+  _release_recover_archive /opt/beszel "$HOME/.beszel" || return $?
   if [[ ! -d /opt/beszel ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
   if check_for_gh_release "beszel" "henrygd/beszel"; then
     msg_info "Stopping Service"
-    systemctl stop beszel-hub
+    systemctl stop beszel-hub || return $?
     msg_ok "Stopped Service"
-    fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "latest" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz"
+    fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "latest" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz" || return $?
     msg_info "Starting Service"
-    systemctl start beszel-hub
+    systemctl start beszel-hub || return $?
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }
