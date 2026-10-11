@@ -256,7 +256,7 @@ rollback_publish() {
   printf 'old payload' > "$CASE_ROOT/target/content"
   printf 'old version' > "$HOME/.app"
   mv() {
-    if [[ "$*" == *'/new '* ]]; then
+    if [[ "$*" == *'/content '*'deploy-aside'* ]]; then
       return 1
     fi
     command mv "$@"

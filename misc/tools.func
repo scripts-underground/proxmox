@@ -2439,11 +2439,6 @@ fetch_and_deploy_gh_tag() {
     return 7
   }
 
-  mkdir -p "$target"
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    rm -rf "${target:?}/"*
-  fi
-
   tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
     msg_error "Failed to extract tarball"
     rm -rf "$tmpdir"
@@ -2452,10 +2447,17 @@ fetch_and_deploy_gh_tag() {
 
   local unpack_dir
   unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+  if [[ -z "$unpack_dir" || -z "$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    msg_error "Extracted tarball is empty: $app ($version)"
+    rm -rf "$tmpdir"
+    return 251
+  fi
 
-  shopt -s dotglob nullglob
-  cp -r "$unpack_dir"/* "$target/"
-  shopt -u dotglob nullglob
+  _deploy_replace_contents "$unpack_dir" "$target" "${CLEAN_INSTALL:-0}" || {
+    msg_error "Failed to copy contents to $target"
+    rm -rf "$tmpdir"
+    return 252
+  }
 
   rm -rf "$tmpdir"
   echo "$version" > "$version_file"
@@ -3069,60 +3071,68 @@ _diagnose_deb_failure() {
   fi
 }
 
-# Prepare a complete replacement beside the target, so copy failures cannot
-# damage the installed tree. Non-clean deployments merge into the old tree;
-# clean deployments retain existing dotfiles, as the original clean glob did.
-_codeberg_deploy_tree() (
-  local source="$1" target="$2" parent stage
-  target=$(realpath -m "$target") || return 252
-  [[ "$target" != / && ! -f "$target" ]] || return 252
-  parent=$(dirname "$target")
-  mkdir -p "$parent" || return 252
-  stage=$(mktemp -d "$parent/.codeberg-deploy.XXXXXX") || return 252
-  mkdir "$stage/new" || {
-    rm -rf "$stage"
-    return 252
-  }
-  if [[ -d "$target" ]]; then
-    cp -a "$target/." "$stage/new/" || {
-      rm -rf "$stage"
-      return 252
-    }
-    if [[ "${CLEAN_INSTALL:-0}" == 1 ]]; then
-      shopt -u dotglob
-      shopt -s nullglob
-      rm -rf "$stage/new/"* || {
-        rm -rf "$stage"
+# Replace the contents of a deployment target with an extracted, non-empty tree.
+#   $1 - extracted source directory
+#   $2 - target directory
+#   $3 - CLEAN_INSTALL value; 1 moves the old entries aside before copying
+#
+# The target itself is never renamed, so bind-mounted entries stay in place.
+# Old entries move into a hidden directory inside the target (same filesystem),
+# so a failed copy can put them back. Root dotfiles and mount points are neither
+# moved nor removed. Returns 252 when the copy fails; callers must then not write
+# their version marker.
+_deploy_replace_contents() {
+  local source="$1" target="$2" clean="$3" aside="" entry
+  local -a entries=()
+  [[ -n "$target" && "$target" != / ]] || return 252
+  mkdir -p "$target" || return 252
+
+  if [[ "$clean" == 1 ]]; then
+    aside=$(mktemp -d "$target/.deploy-aside.XXXXXX") || return 252
+    mapfile -d '' entries < <(find "$target" -mindepth 1 -maxdepth 1 -not -name '.*' -print0)
+    for entry in "${entries[@]}"; do
+      mountpoint -q "$entry" 2> /dev/null && continue
+      mv "$entry" "$aside/" || {
+        _deploy_restore_aside "$target" "$aside"
         return 252
       }
-    fi
-  else
-    chmod 755 "$stage/new" || {
-      rm -rf "$stage"
-      return 252
-    }
+    done
   fi
-  cp -r "$source/." "$stage/new/" || {
+
+  if ! cp -a "$source/." "$target/"; then
+    if [[ -n "$aside" ]]; then
+      mapfile -d '' entries < <(find "$target" -mindepth 1 -maxdepth 1 -not -name '.*' -print0)
+      for entry in "${entries[@]}"; do
+        mountpoint -q "$entry" 2> /dev/null && continue
+        rm -rf --one-file-system "$entry"
+      done
+      _deploy_restore_aside "$target" "$aside"
+    fi
+    return 252
+  fi
+
+  [[ -z "$aside" ]] || rm -rf --one-file-system "$aside"
+  return 0
+}
+
+# Move the entries of an aside directory back into the target and remove it.
+_deploy_restore_aside() {
+  local target="$1" aside="$2" entry
+  local -a entries=()
+  mapfile -d '' entries < <(find "$aside" -mindepth 1 -maxdepth 1 -print0)
+  for entry in "${entries[@]}"; do
+    mv "$entry" "$target/" || return 1
+  done
+  rmdir "$aside"
+}
+
+_codeberg_deploy_tree() {
+  local source="$1" target="$2"
+  _deploy_replace_contents "$source" "$target" "${CLEAN_INSTALL:-0}" || {
     msg_error "Failed to stage Codeberg release for $target"
-    rm -rf "$stage"
     return 252
   }
-  if [[ -d "$target" ]]; then
-    mv -T "$target" "$stage/previous" || {
-      rm -rf "$stage"
-      return 252
-    }
-  fi
-  if ! mv -T "$stage/new" "$target"; then
-    if [[ -d "$stage/previous" ]] && ! mv -T "$stage/previous" "$target"; then
-      msg_error "Failed to restore $target; previous installation preserved at $stage/previous"
-      return 252
-    fi
-    rm -rf "$stage"
-    return 252
-  fi
-  rm -rf "$stage"
-)
+}
 
 fetch_and_deploy_codeberg_release() {
   local app="$1"
@@ -3793,11 +3803,6 @@ fetch_and_deploy_gh_release() {
       return 250
     }
 
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
       msg_error "Failed to extract tarball"
       rm -rf "$tmpdir"
@@ -3805,10 +3810,17 @@ fetch_and_deploy_gh_release() {
     }
     local unpack_dir
     unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+    if [[ -z "$unpack_dir" || -z "$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Extracted tarball is empty: $app ($version)"
+      rm -rf "$tmpdir"
+      return 251
+    fi
 
-    shopt -s dotglob nullglob
-    cp -r "$unpack_dir"/* "$target/"
-    shopt -u dotglob nullglob
+    _deploy_replace_contents "$unpack_dir" "$target" "${CLEAN_INSTALL:-0}" || {
+      msg_error "Failed to copy contents to $target"
+      rm -rf "$tmpdir"
+      return 252
+    }
 
     ### Binary Mode ###
   elif [[ "$mode" == "binary" ]]; then
@@ -3965,11 +3977,6 @@ fetch_and_deploy_gh_release() {
 
     local unpack_tmp
     unpack_tmp=$(mktemp -d)
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     if [[ "$filename" == *.zip ]]; then
       ensure_dependencies unzip
       unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
@@ -4001,42 +4008,23 @@ fetch_and_deploy_gh_release() {
       return 65
     fi
 
-    local top_dirs
-    top_dirs=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1 -type d | wc -l)
     local top_entries inner_dir
     top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
+    inner_dir="$unpack_tmp"
     if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
       # Strip leading folder
       inner_dir="$top_entries"
-      shopt -s dotglob nullglob
-      if compgen -G "$inner_dir/*" > /dev/null; then
-        cp -r "$inner_dir"/* "$target/" || {
-          msg_error "Failed to copy contents from $inner_dir to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 252
-        }
-      else
-        msg_error "Inner directory is empty: $inner_dir"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      fi
-      shopt -u dotglob nullglob
-    else
-      # Copy all contents
-      shopt -s dotglob nullglob
-      if compgen -G "$unpack_tmp/*" > /dev/null; then
-        cp -r "$unpack_tmp"/* "$target/" || {
-          msg_error "Failed to copy contents to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 252
-        }
-      else
-        msg_error "Unpacked archive is empty"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      fi
-      shopt -u dotglob nullglob
     fi
+    if [[ -z "$(find "$inner_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Unpacked archive is empty"
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 252
+    fi
+    _deploy_replace_contents "$inner_dir" "$target" "${CLEAN_INSTALL:-0}" || {
+      msg_error "Failed to copy contents to $target"
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 252
+    }
     rm -rf "$unpack_tmp"
 
     ### Singlefile Mode ###
@@ -9454,11 +9442,6 @@ fetch_and_deploy_gl_release() {
       return 1
     }
 
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
       msg_error "Failed to extract tarball"
       rm -rf "$tmpdir"
@@ -9466,10 +9449,17 @@ fetch_and_deploy_gl_release() {
     }
     local unpack_dir
     unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+    if [[ -z "$unpack_dir" || -z "$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Extracted tarball is empty: $app ($tag_name)"
+      rm -rf "$tmpdir"
+      return 1
+    fi
 
-    shopt -s dotglob nullglob
-    cp -r "$unpack_dir"/* "$target/"
-    shopt -u dotglob nullglob
+    _deploy_replace_contents "$unpack_dir" "$target" "${CLEAN_INSTALL:-0}" || {
+      msg_error "Failed to copy contents to $target"
+      rm -rf "$tmpdir"
+      return 1
+    }
 
   ### Binary Mode ###
   elif [[ "$mode" == "binary" ]]; then
@@ -9616,11 +9606,6 @@ fetch_and_deploy_gl_release() {
 
     local unpack_tmp
     unpack_tmp=$(mktemp -d)
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     if [[ "$filename" == *.zip ]]; then
       ensure_dependencies unzip
       unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
@@ -9642,36 +9627,21 @@ fetch_and_deploy_gl_release() {
 
     local top_entries inner_dir
     top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
+    inner_dir="$unpack_tmp"
     if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
       inner_dir="$top_entries"
-      shopt -s dotglob nullglob
-      if compgen -G "$inner_dir/*" > /dev/null; then
-        cp -r "$inner_dir"/* "$target/" || {
-          msg_error "Failed to copy contents from $inner_dir to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 1
-        }
-      else
-        msg_error "Inner directory is empty: $inner_dir"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 1
-      fi
-      shopt -u dotglob nullglob
-    else
-      shopt -s dotglob nullglob
-      if compgen -G "$unpack_tmp/*" > /dev/null; then
-        cp -r "$unpack_tmp"/* "$target/" || {
-          msg_error "Failed to copy contents to $target"
-          rm -rf "$tmpdir" "$unpack_tmp"
-          return 1
-        }
-      else
-        msg_error "Unpacked archive is empty"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 1
-      fi
-      shopt -u dotglob nullglob
     fi
+    if [[ -z "$(find "$inner_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      msg_error "Unpacked archive is empty"
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 1
+    fi
+    _deploy_replace_contents "$inner_dir" "$target" "${CLEAN_INSTALL:-0}" || {
+      msg_error "Failed to copy contents to $target"
+      rm -rf "$tmpdir" "$unpack_tmp"
+      return 1
+    }
+    rm -rf "$unpack_tmp"
 
   ### Singlefile Mode ###
   elif [[ "$mode" == "singlefile" ]]; then
