@@ -5956,81 +5956,19 @@ EOF
 # Helper: Setup GPU device permissions
 # ══════════════════════════════════════════════════════════════════════════════
 _setup_gpu_permissions() {
-  local in_ct="$1"
-  local service_user="${2:-}"
-
-  # /dev/dri permissions (Intel/AMD)
-  if [[ "$in_ct" == "0" && -d /dev/dri ]]; then
-    if ls /dev/dri/card* /dev/dri/renderD* &> /dev/null; then
-      chgrp video /dev/dri 2> /dev/null || true
-      chmod 755 /dev/dri 2> /dev/null || true
-      chmod 660 /dev/dri/* 2> /dev/null || true
-      $STD adduser "$(id -u -n)" video 2> /dev/null || true
-      $STD adduser "$(id -u -n)" render 2> /dev/null || true
-
-      # Sync GID with host
-      local host_video_gid host_render_gid
-      host_video_gid=$(getent group video | cut -d: -f3)
-      host_render_gid=$(getent group render | cut -d: -f3)
-      if [[ -n "$host_video_gid" ]]; then
-        sed -i "s/^video:x:[0-9]*:/video:x:$host_video_gid:/" /etc/group 2> /dev/null || true
-      fi
-      if [[ -n "$host_render_gid" ]]; then
-        sed -i "s/^render:x:[0-9]*:/render:x:$host_render_gid:/" /etc/group 2> /dev/null || true
-      fi
-
-      # Verify VA-API
-      if command -v vainfo &> /dev/null; then
-        if vainfo &> /dev/null; then
-          msg_info "VA-API verified and working"
-        else
-          msg_warn "vainfo test failed - check GPU passthrough"
-        fi
-      fi
+  # Keep the first positional argument for existing callers. PVE's mapping owner
+  # sets node attributes for both container types; guest bind inodes are not ours.
+  local service_user="${2:-root}" group
+  for group in render video; do
+    if ! getent group "$group" > /dev/null; then
+      msg_warn "GPU access group '$group' is absent in the container"
+      continue
     fi
-  fi
-
-  # /dev/nvidia* permissions (NVIDIA)
-  if ls /dev/nvidia* &> /dev/null 2>&1; then
-    msg_info "Configuring NVIDIA device permissions"
-    for nvidia_dev in /dev/nvidia*; do
-      [[ -e "$nvidia_dev" ]] && {
-        chgrp video "$nvidia_dev" 2> /dev/null || true
-        chmod 660 "$nvidia_dev" 2> /dev/null || true
-      }
-    done
-    if [[ -d /dev/nvidia-caps ]]; then
-      chmod 755 /dev/nvidia-caps 2> /dev/null || true
-      for caps_dev in /dev/nvidia-caps/*; do
-        [[ -e "$caps_dev" ]] && {
-          chgrp video "$caps_dev" 2> /dev/null || true
-          chmod 660 "$caps_dev" 2> /dev/null || true
-        }
-      done
+    if ! usermod -aG "$group" "$service_user"; then
+      msg_warn "Could not add '$service_user' to GPU access group '$group'"
     fi
-
-    # Verify nvidia-smi
-    if command -v nvidia-smi &> /dev/null; then
-      if nvidia-smi &> /dev/null; then
-        msg_info "nvidia-smi verified and working"
-      else
-        msg_warn "nvidia-smi test failed - check driver version match"
-      fi
-    fi
-  fi
-
-  # /dev/kfd permissions (AMD ROCm)
-  if [[ -e /dev/kfd ]]; then
-    chgrp render /dev/kfd 2> /dev/null || true
-    chmod 660 /dev/kfd 2> /dev/null || true
-    msg_info "AMD ROCm compute device configured"
-  fi
-
-  # Add service user to render and video groups for GPU hardware acceleration
-  if [[ -n "$service_user" ]]; then
-    usermod -aG render "$service_user" 2> /dev/null || true
-    usermod -aG video "$service_user" 2> /dev/null || true
-  fi
+  done
+  return 0
 }
 
 # ------------------------------------------------------------------------------

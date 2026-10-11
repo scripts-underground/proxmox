@@ -307,6 +307,18 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
 - **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`.
 
+GPU device mapping is owned by `build.func`: each character DRM node is attributed
+to its sysfs vendor, mixed stacks default to all when unattended, and NVIDIA card
+selection includes the shared control/UVM/caps nodes. Duplicate selections do not
+duplicate `devN` entries or overwrite unrelated mappings. Effective `ENABLE_GPU`
+overrides an application's default. `fix_gpu_gids()` uses checked guest video/render
+group records and PVE device properties, then verifies restart state; guest helpers
+only add service-account group membership and never change shared device inodes.
+
+Inlined bundles bake `ENABLE_GPU`, selected `GPU_TYPE`, `INSTALL_NVIDIA_DRIVERS` and
+`CTTYPE` alongside the normal application context. This preserves selections in a
+clean environment; it does not certify usable hardware or driver/runtime readiness.
+
 ### Utilities
 
 - **`create_self_signed_cert()`** — Generate 2048-bit RSA cert with SANs.
