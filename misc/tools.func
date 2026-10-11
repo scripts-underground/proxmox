@@ -1437,6 +1437,7 @@ github_api_call() {
 codeberg_api_call() {
   local url="$1"
   local output_file="${2:-/dev/stdout}"
+  local status_file="${3:-}"
   local max_retries=3
   local retry_delay=2
   local api_timeouts=(60 120 240)
@@ -1455,6 +1456,10 @@ codeberg_api_call() {
     # A truncated HTTP 200 response is still a failed transfer.
     if [[ "$curl_ok" != true ]]; then
       http_code=000
+    fi
+    # Optional: callers can read the final HTTP status (e.g. to detect 404).
+    if [[ -n "$status_file" ]]; then
+      printf '%s\n' "$http_code" > "$status_file"
     fi
 
     case "$http_code" in
@@ -1518,27 +1523,40 @@ codeberg_api_call() {
 # Shared release selection for version lookup, update checking and deployment.
 # Emits one validated release object, preserving the upstream tag verbatim.
 _codeberg_release_json() {
-  local repo="$1" version="${2:-latest}" json encoded_tag errors rc
+  local repo="$1" version="${2:-latest}" json encoded_tag errors status rc=0 returned_tag
   local api_url="https://codeberg.org/api/v1/repos/${repo}/releases"
   if [[ "$version" != latest ]]; then
     encoded_tag=$(jq -rn --arg tag "$version" '$tag | @uri') || return 250
     api_url+="/tags/${encoded_tag}"
   fi
 
-  # Numeric pins historically matched both 1.2.3 and v1.2.3. Prefer an exact
-  # tag, then try the prefixed spelling; preserve both diagnostics on failure.
+  # Numeric pins historically matched both 1.2.3 and v1.2.3. Try the prefixed
+  # spelling only when the exact tag is missing (HTTP 404); keep diagnostics on failure.
   if [[ "$version" =~ ^[0-9] ]]; then
     errors=$(mktemp) || return 252
-    if json=$(codeberg_api_call "$api_url" 2> "$errors"); then
+    status=$(mktemp) || {
       rm -f "$errors"
-    elif json=$(codeberg_api_call "https://codeberg.org/api/v1/repos/${repo}/releases/tags/v${encoded_tag}" 2>> "$errors"); then
-      rm -f "$errors"
+      return 252
+    }
+    if json=$(codeberg_api_call "$api_url" /dev/stdout "$status" 2> "$errors"); then
+      rc=0
     else
       rc=$?
+      if [[ "$(< "$status")" == 404 ]]; then
+        if json=$(codeberg_api_call "https://codeberg.org/api/v1/repos/${repo}/releases/tags/v${encoded_tag}" /dev/stdout "$status" 2>> "$errors"); then
+          rc=0
+        else
+          rc=$?
+        fi
+      fi
+    fi
+    rm -f "$status"
+    if [[ "$rc" != 0 ]]; then
       cat "$errors" >&2
       rm -f "$errors"
       return "$rc"
     fi
+    rm -f "$errors"
   elif json=$(codeberg_api_call "$api_url"); then
     :
   else
@@ -1552,6 +1570,12 @@ _codeberg_release_json() {
       msg_error "No stable Codeberg release found for ${repo}" >&2
       return 250
     }
+  else
+    returned_tag=$(jq -r 'if type == "object" then .tag_name // empty else empty end' <<< "$json") || return 250
+    if [[ "${returned_tag#v}" != "${version#v}" ]]; then
+      msg_error "Requested Codeberg release $version, but ${repo} returned ${returned_tag:-no tag}" >&2
+      return 250
+    fi
   fi
   jq -ce '
     select(type == "object") |
@@ -3760,7 +3784,12 @@ fetch_and_deploy_gh_release() {
   done
 
   if ! $success; then
-    tag_name=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -1)
+    if [[ "$version" == latest ]]; then
+      tag_name=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -1)
+    else
+      # A requested release is never replaced by another tag.
+      tag_name=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -Fx -e "${version#v}" -e "v${version#v}" | head -1 || true)
+    fi
     if [[ -z "$tag_name" ]]; then
       if [[ "$http_code" == "000" || -z "$http_code" ]]; then
         msg_error "GitHub API connection failed (no response)."
@@ -3775,6 +3804,10 @@ fetch_and_deploy_gh_release() {
     local json
     json=$(< /tmp/gh_rel.json)
     tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
+    if [[ "$version" != latest && "${tag_name#v}" != "${version#v}" ]]; then
+      msg_error "Requested $app release $version, but GitHub returned $tag_name"
+      return 250
+    fi
     # Only strip leading 'v' when followed by a digit (e.g. v1.2.3), not words like "version/..."
     [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
   fi
