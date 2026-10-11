@@ -8592,17 +8592,23 @@ setup_rust() {
 # Adapted from community-scripts/core's runtime helper (MIT).
 # Only exact required-version pins are used; ranges retain latest behavior.
 _uv_required_version() {
-  local dir="${1:?dir}" f v
-  for f in "$dir/pyproject.toml" "$dir/uv.toml"; do
-    [[ -f "$f" ]] || continue
-    v=$(grep -m1 -E '^[[:space:]]*required-version[[:space:]]*=' "$f" 2> /dev/null |
-      sed -E 's/.*=[[:space:]]*"[[:space:]]*==[[:space:]]*([0-9][0-9A-Za-z.+-]*)"[[:space:]]*$/\1/') || continue
-    if [[ "$v" =~ ^[0-9] ]]; then
-      echo "$v"
-      return 0
-    fi
-  done
-  return 1
+  local dir="${1:?dir}" f want line
+  local q="[\"']"
+  local re="^[^=]*=[[:space:]]*${q}?(==)?([0-9][0-9A-Za-z.+-]*)${q}?[[:space:]]*(#.*)?\$"
+  # uv reads only the first config file it finds: uv.toml, else pyproject.toml.
+  f="$dir/uv.toml"
+  want=""
+  if [[ ! -f "$f" ]]; then
+    f="$dir/pyproject.toml"
+    want="[tool.uv]"
+  fi
+  [[ -f "$f" ]] || return 1
+  line=$(awk -v want="$want" '
+    /^[[:space:]]*\[/ { sec = $0; sub(/#.*/, "", sec); gsub(/[[:space:]]/, "", sec); next }
+    sec == want && /^[[:space:]]*required-version[[:space:]]*=/ { print; exit }
+  ' "$f" 2> /dev/null) || line=""
+  [[ "$line" =~ $re ]] || return 1
+  echo "${BASH_REMATCH[2]}"
 }
 
 setup_uv() {
@@ -8655,6 +8661,7 @@ setup_uv() {
       return 7
     }
   fi
+  TARGET_VERSION="${TARGET_VERSION#==}"
 
   # Get currently installed version
   local INSTALLED_VERSION=""

@@ -46,6 +46,27 @@ if _uv_required_version "$work/range"; then
 fi
 printf 'PASS pyproject.toml and uv.toml exact-pin parsing\n'
 
+parse="$work/parse"
+mkdir -p "$parse"/{precedence,masked,section,quoted,comment,bare}
+printf 'required-version = "==0.12.22"\n' > "$parse/precedence/uv.toml"
+printf '[tool.uv]\nrequired-version = "==0.12.13"\n' > "$parse/precedence/pyproject.toml"
+printf 'python-preference = "managed"\n' > "$parse/masked/uv.toml"
+printf '[tool.uv]\nrequired-version = "==0.12.13"\n' > "$parse/masked/pyproject.toml"
+if _uv_required_version "$parse/masked"; then
+  printf 'A uv.toml without a pin masks the pyproject pin, as uv does.\n' >&2
+  exit 1
+fi
+printf '[project]\nrequired-version = "==9.9.9"\n\n[tool.uv] # uv\nrequired-version = "0.12.13"\n' > "$parse/section/pyproject.toml"
+printf "[tool.uv]\nrequired-version = '==0.12.13' # pinned\n" > "$parse/quoted/pyproject.toml"
+printf '[tool.uv]\n# required-version = "==0.1.0"\nrequired-version = "==0.12.13"\n' > "$parse/comment/pyproject.toml"
+printf '[tool.uv]\nrequired-version = 0.12.13\n' > "$parse/bare/pyproject.toml"
+test "$(_uv_required_version "$parse/precedence")" == 0.12.22
+test "$(_uv_required_version "$parse/section")" == 0.12.13
+test "$(_uv_required_version "$parse/quoted")" == 0.12.13
+test "$(_uv_required_version "$parse/comment")" == 0.12.13
+test "$(_uv_required_version "$parse/bare")" == 0.12.13
+printf 'PASS uv.toml precedence, [tool.uv] only, quotes, comments, bare value\n'
+
 UV_PROJECT_DIR="$work/project" setup_uv
 test "$(/usr/local/bin/uv --version | cut -d' ' -f2)" == 0.12.13
 test "$(get_cached_version uv)" == 0.12.13
