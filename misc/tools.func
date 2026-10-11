@@ -2534,6 +2534,7 @@ check_for_gh_tag() {
 #   - Does not support pre-releases
 # ------------------------------------------------------------------------------
 check_for_gh_release() {
+  CHECK_UPDATE_RELEASE=""
   local app="$1"
   local source="$2"
   local pinned_version_in="${3:-}" # optional
@@ -2541,6 +2542,9 @@ check_for_gh_release() {
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
   local current_file="$HOME/.${app_lc}"
+  if [[ "$pinned_version_in" == latest ]]; then
+    pinned_version_in=""
+  fi
 
   msg_info "Checking for update: ${app}"
 
@@ -2552,6 +2556,9 @@ check_for_gh_release() {
 
   ensure_dependencies jq
 
+  local meta_file
+  meta_file="$(mktemp)"
+
   # Build auth header if token is available
   local header_args=()
   [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
@@ -2562,14 +2569,14 @@ check_for_gh_release() {
   # For pinned versions, query the specific release tag directly
   if [[ -n "$pinned_version_in" ]]; then
     local pinned_version_encoded="${pinned_version_in//\//%2F}"
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o /tmp/gh_check.json \
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       -H 'Accept: application/vnd.github+json' \
       -H 'X-GitHub-Api-Version: 2022-11-28' \
       "${header_args[@]}" \
       "https://api.github.com/repos/${source}/releases/tags/${pinned_version_encoded}" 2> /dev/null) || true
 
-    if [[ "$http_code" == "200" ]] && [[ -s /tmp/gh_check.json ]]; then
-      releases_json="[$(< /tmp/gh_check.json)]"
+    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
+      releases_json="[$(< "$meta_file")]"
     elif [[ "$http_code" == "401" ]]; then
       msg_error "GitHub API authentication failed (HTTP 401)."
       if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -2577,27 +2584,27 @@ check_for_gh_release() {
       else
         msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
       fi
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "403" ]]; then
       msg_error "GitHub API rate limit exceeded (HTTP 403)."
       msg_error "To increase the limit, export a GitHub token before running the script:"
       msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     fi
-    rm -f /tmp/gh_check.json
+    rm -f "$meta_file"
   fi
 
   if [[ -z "$pinned_version_in" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o /tmp/gh_check.json \
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       -H 'Accept: application/vnd.github+json' \
       -H 'X-GitHub-Api-Version: 2022-11-28' \
       "${header_args[@]}" \
       "https://api.github.com/repos/${source}/releases/latest" 2> /dev/null) || true
 
-    if [[ "$http_code" == "200" ]] && [[ -s /tmp/gh_check.json ]]; then
-      releases_json="[$(< /tmp/gh_check.json)]"
+    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
+      releases_json="[$(< "$meta_file")]"
     elif [[ "$http_code" == "401" ]]; then
       msg_error "GitHub API authentication failed (HTTP 401)."
       if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -2605,28 +2612,28 @@ check_for_gh_release() {
       else
         msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
       fi
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "403" ]]; then
       msg_error "GitHub API rate limit exceeded (HTTP 403)."
       msg_error "To increase the limit, export a GitHub token before running the script:"
       msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     fi
-    rm -f /tmp/gh_check.json
+    rm -f "$meta_file"
   fi
 
   # If no releases yet (pinned version OR /latest failed), fetch up to 100
   if [[ -z "$releases_json" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o /tmp/gh_check.json \
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       -H 'Accept: application/vnd.github+json' \
       -H 'X-GitHub-Api-Version: 2022-11-28' \
       "${header_args[@]}" \
       "https://api.github.com/repos/${source}/releases?per_page=100" 2> /dev/null) || true
 
-    if [[ "$http_code" == "200" ]] && [[ -s /tmp/gh_check.json ]]; then
-      releases_json=$(< /tmp/gh_check.json)
+    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
+      releases_json=$(< "$meta_file")
     elif [[ "$http_code" == "401" ]]; then
       msg_error "GitHub API authentication failed (HTTP 401)."
       if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -2634,25 +2641,25 @@ check_for_gh_release() {
       else
         msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
       fi
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "403" ]]; then
       msg_error "GitHub API rate limit exceeded (HTTP 403)."
       msg_error "To increase the limit, export a GitHub token before running the script:"
       msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
       msg_error "GitHub API connection failed (no response)."
       msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 7
     else
       msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
-      rm -f /tmp/gh_check.json
+      rm -f "$meta_file"
       return 22
     fi
-    rm -f /tmp/gh_check.json
+    rm -f "$meta_file"
   fi
 
   mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<< "$releases_json")
@@ -2682,13 +2689,10 @@ check_for_gh_release() {
   if [[ -f "$current_file" ]]; then
     current="$(< "$current_file")"
   else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
-    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2> /dev/null)
-    if ((${#legacy_files[@]} == 1)); then
-      current="$(< "${legacy_files[0]}")"
+    # Migration: adopt only this app's legacy version marker (never another app's)
+    if [[ -f "/opt/${app_lc}_version.txt" ]]; then
+      current="$(< "/opt/${app_lc}_version.txt")"
       echo "${current#v}" > "$current_file"
-      rm -f "${legacy_files[0]}"
     fi
   fi
   if [[ "$current" =~ ^v[0-9] ]]; then
@@ -2769,6 +2773,9 @@ check_for_codeberg_release() {
   app_lc="${app_lc// /}"
   local current_file="$HOME/.${app_lc}"
   CHECK_UPDATE_RELEASE=""
+  if [[ "$pinned_version_in" == latest ]]; then
+    pinned_version_in=""
+  fi
 
   msg_info "Checking for update: ${app}"
 
@@ -2793,14 +2800,11 @@ check_for_codeberg_release() {
   if [[ -f "$current_file" ]]; then
     current="$(< "$current_file")"
   else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
-    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2> /dev/null)
-    if ((${#legacy_files[@]} == 1)); then
-      current="$(< "${legacy_files[0]}")"
+    # Migration: adopt only this app's legacy version marker (never another app's)
+    if [[ -f "/opt/${app_lc}_version.txt" ]]; then
+      current="$(< "/opt/${app_lc}_version.txt")"
       [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
       echo "$current" > "$current_file"
-      rm -f "${legacy_files[0]}"
     fi
   fi
   [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
@@ -9045,12 +9049,16 @@ get_latest_gitlab_release() {
 #   - Does not modify anything, only checks version state
 # ------------------------------------------------------------------------------
 check_for_gl_release() {
+  CHECK_UPDATE_RELEASE=""
   local app="$1"
   local source="$2"
   local pinned_version_in="${3:-}" # optional
   local pin_reason="${4:-}"        # optional reason shown to user
   local app_lc="${app,,}"
   local current_file="$HOME/.${app_lc}"
+  if [[ "$pinned_version_in" == latest ]]; then
+    pinned_version_in=""
+  fi
 
   msg_info "Checking for update: ${app}"
 
@@ -9061,6 +9069,9 @@ check_for_gl_release() {
   fi
 
   ensure_dependencies jq
+
+  local meta_file
+  meta_file="$(mktemp)"
 
   local repo_encoded
   repo_encoded=$(printf '%s' "$source" | sed 's|/|%2F|g')
@@ -9073,23 +9084,23 @@ check_for_gl_release() {
   # For pinned versions, try to fetch the specific release tag first
   if [[ -n "$pinned_version_in" ]]; then
     local pinned_encoded="${pinned_version_in//\//%2F}"
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o /tmp/gl_check.json \
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       "${header[@]}" \
       "https://gitlab.com/api/v4/projects/$repo_encoded/releases/$pinned_encoded" 2> /dev/null) || true
-    if [[ "$http_code" == "200" ]] && [[ -s /tmp/gl_check.json ]]; then
-      releases_json="[$(< /tmp/gl_check.json)]"
+    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
+      releases_json="[$(< "$meta_file")]"
     fi
-    rm -f /tmp/gl_check.json
+    rm -f "$meta_file"
   fi
 
   # Fetch full releases list if needed
   if [[ -z "$releases_json" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o /tmp/gl_check.json \
+    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       "${header[@]}" \
       "https://gitlab.com/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2> /dev/null) || true
 
-    if [[ "$http_code" == "200" ]] && [[ -s /tmp/gl_check.json ]]; then
-      releases_json=$(< /tmp/gl_check.json)
+    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
+      releases_json=$(< "$meta_file")
     elif [[ "$http_code" == "401" ]]; then
       msg_error "GitLab API authentication failed (HTTP 401)."
       if [[ -n "${GITLAB_TOKEN:-}" ]]; then
@@ -9097,28 +9108,28 @@ check_for_gl_release() {
       else
         msg_error "The repository may require authentication. Try: export GITLAB_TOKEN=\"glpat-your_token\""
       fi
-      rm -f /tmp/gl_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "404" ]]; then
       msg_error "GitLab project not found (HTTP 404). Ensure '${source}' is correct and publicly accessible."
-      rm -f /tmp/gl_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "429" ]]; then
       msg_error "GitLab API rate limit exceeded (HTTP 429)."
       msg_error "To increase the limit, export a GitLab token: export GITLAB_TOKEN=\"glpat-your_token_here\""
-      rm -f /tmp/gl_check.json
+      rm -f "$meta_file"
       return 22
     elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
       msg_error "GitLab API connection failed (no response)."
       msg_error "Check your network/DNS: curl -sSL https://gitlab.com/api/v4/version"
-      rm -f /tmp/gl_check.json
+      rm -f "$meta_file"
       return 7
     else
       msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
-      rm -f /tmp/gl_check.json
+      rm -f "$meta_file"
       return 22
     fi
-    rm -f /tmp/gl_check.json
+    rm -f "$meta_file"
   fi
 
   mapfile -t raw_tags < <(jq -r '.[] | .tag_name' <<< "$releases_json")
@@ -9145,13 +9156,10 @@ check_for_gl_release() {
   if [[ -f "$current_file" ]]; then
     current="$(< "$current_file")"
   else
-    # Migration: search for any /opt/*_version.txt
-    local legacy_files
-    mapfile -t legacy_files < <(find /opt -maxdepth 1 -type f -name "*_version.txt" 2> /dev/null)
-    if ((${#legacy_files[@]} == 1)); then
-      current="$(< "${legacy_files[0]}")"
+    # Migration: adopt only this app's legacy version marker (never another app's)
+    if [[ -f "/opt/${app_lc}_version.txt" ]]; then
+      current="$(< "/opt/${app_lc}_version.txt")"
       echo "${current#v}" > "$current_file"
-      rm -f "${legacy_files[0]}"
     fi
   fi
   if [[ "$current" =~ ^v[0-9] ]]; then
