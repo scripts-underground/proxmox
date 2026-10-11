@@ -65,9 +65,7 @@ function update_script() {
     esac
 
     OLLAMA_INSTALL_DIR="/usr/local/lib/ollama"
-    rm -rf "$OLLAMA_INSTALL_DIR" /usr/local/bin/ollama
-    mkdir -p "$OLLAMA_INSTALL_DIR"
-    if ! fetch_and_deploy_gh_release "ollama-com" "ollama/ollama" "prebuild" "latest" "$OLLAMA_INSTALL_DIR" "ollama-linux-${OLLAMA_ARCH}.tar.zst"; then
+    if ! CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ollama-com" "ollama/ollama" "prebuild" "latest" "$OLLAMA_INSTALL_DIR" "ollama-linux-${OLLAMA_ARCH}.tar.zst"; then
       msg_error "Download or deployment failed – check network connectivity and GitHub API availability"
       exit 250
     fi
