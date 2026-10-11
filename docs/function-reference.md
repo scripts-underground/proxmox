@@ -62,6 +62,10 @@ Each is called by `build.func` during `setup_script`:
 - **`is_unattended()`** — Returns 0 if no interactive prompts needed. Reads `MODE`, `PHS_SILENT`, `var_unattended`, TTY state.
 - **`prompt_confirm()`, `prompt_input()`, `prompt_input_required()`, `prompt_select()`, `prompt_password()`** — Interactive whiptail-like prompts with unattended and timeout fallbacks. All use `is_unattended()`. Called by `build.func`, optionally available to user `install_script()`.
 
+### Update runner
+
+- **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Writes the per-app pending flag `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; `on_exit` removes it only when the run exits 0. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`. Other options exit 65. Called by `lxc_setup` and the LXC/addon update bundles.
+
 ### Cleanup
 
 - **`cleanup_lxc()`** — (core.func version) Package-cache cleanup (apt/apk, pip/uv/npm/yarn/pnpm/go/cargo/gem/composer). Errors tolerated. Called by `install.func` wrapper postamble. NOTE: `install.func` defines a competing `cleanup_lxc` that shadows this one (supports all OS families).
@@ -266,7 +270,7 @@ Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgr
 
 ### Version comparators (for update_script authors)
 
-Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
+Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. With `UPDATE_FORCE=1` (set by `run_update_script`) a matching version is reported as due:
 - **`check_for_gh_tag()`** — Compare latest GitHub tag. `$1`=app, `$2`=repo, `$3`=tag prefix.
 - **`check_for_gh_release()`** — Compare latest GitHub release. Supports pinned versions. 28+ callers in `scripts/lxc/`.
 - **`check_for_codeberg_release()`**, **`check_for_gl_release()`** — Same contract for Codeberg/GitLab.
@@ -320,7 +324,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 
 - **`catch_errors()`** — Enables `set -Ee -o pipefail`, installs ERR/EXIT/INT/TERM/HUP traps. Called by `bootstrap/lxc`, `build.func`, wrapper preamble.
 - **`error_handler()`** — ERR-trap handler. Prints error info, writes container failure flag, may offer to destroy broken LXC. Reads exit code from `$1`/`$?`, command from `$2`/`$BASH_COMMAND`.
-- **`on_exit()`** — EXIT-trap handler. Stops orphaned container, cleans lockfile.
+- **`on_exit()`** — EXIT-trap handler. Stops orphaned container, cleans lockfile, removes the `run_update_script` pending flag when the exit status is 0.
 - **`on_interrupt()`** — SIGINT handler. Stops LXC, exits 130.
 - **`on_terminate()`** — SIGTERM handler. Stops LXC. Exits 143.
 - **`on_hangup()`** — SIGHUP handler. Stops LXC. Exits 129.

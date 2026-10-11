@@ -863,6 +863,44 @@ execute_optional_hook() {
 }
 
 # ------------------------------------------------------------------------------
+# run_update_script [--clean]
+#
+# - Runs the update_script hook; terminal (always exits)
+# - Writes a per-app pending flag before the hook; on_exit removes it only when
+#   the run exits 0, so an unfinished update is redone on the next run
+# - Unfinished previous run or --clean: forces the update (UPDATE_FORCE=1,
+#   FORCE_DEPLOY=1) so release checks report "due" and the current version is
+#   redeployed through the app's normal backup/restore path
+# ------------------------------------------------------------------------------
+run_update_script() {
+  local mode=normal pending_dir=/var/lib/scripts-underground/update-pending
+  if [[ $# -eq 1 && "$1" == "--clean" ]]; then
+    mode=clean
+  elif [[ $# -ne 0 ]]; then
+    msg_error "Unsupported update options; use: update  or  update --clean"
+    exit 65
+  fi
+  local slug="${NSAPP:-${APP_SLUG:-}}"
+  if [[ -z "$slug" ]]; then
+    msg_error "Cannot determine the app to update"
+    exit 65
+  fi
+  _UPDATE_PENDING_FLAG="${pending_dir}/${slug}"
+  if [[ "$mode" == "clean" || -e "$_UPDATE_PENDING_FLAG" ]]; then
+    [[ "$mode" == "clean" ]] || msg_warn "Previous ${APP:-$slug} update did not finish - redoing it"
+    export UPDATE_FORCE=1 FORCE_DEPLOY=1
+  fi
+  mkdir -p "$pending_dir" || exit $?
+  printf '%s\n' "$mode" > "$_UPDATE_PENDING_FLAG" || exit $?
+  # Plain call (no if/||): errexit must stay active inside the hook.
+  execute_optional_hook update_script
+  local hook_status=$?
+  [[ $hook_status -eq 0 ]] || exit "$hook_status"
+  cleanup_lxc
+  exit 0
+}
+
+# ------------------------------------------------------------------------------
 # execute_mandatory_hook()
 #
 # - Runs the named function — must be defined or the script exits

@@ -109,6 +109,13 @@ bundles pushed at install time:
 - **Addon variants**: `/usr/local/sbin/update_<slug>`,
   `/usr/local/sbin/uninstall_<slug>` (same lifecycle rules)
 
+Update bundles and `lxc_setup` run `update_script` through `run_update_script`
+(core.func): `update` or `update --clean`, other options exit 65. A flag in
+`/var/lib/scripts-underground/update-pending/<app>` is written before the hook and
+removed only when the run exits 0. If the flag already exists, or `--clean` is
+given, the run sets `UPDATE_FORCE=1 FORCE_DEPLOY=1`: release checks report
+"due" and the current version is redeployed through the app's normal path.
+
 Each bundle carries its own **runtime context**, baked at build time from the
 host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
@@ -341,7 +348,7 @@ The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
      - **Install**: `trap 'rm -f "${BASH_SOURCE[0]}"' EXIT` +
        `setting_up_container`, `network_check`, `update_os`,
        `install_script`, `motd_ssh`, `setup_lxc`, `cleanup_lxc`
-     - **Update**: just `update_script` — no self-destruct
+     - **Update**: `run_update_script "$@"` (calls `update_script`) — no self-destruct
      - **Uninstall**: `if uninstall_script; then rm -f "${BASH_SOURCE[0]}"; fi`
 
 3. **Push into the container** via `pct push` and set the execution mode.
