@@ -94,11 +94,17 @@ function update_script() {
     msg_ok "Updated packages"
 
     msg_info "Backup old Keycloak"
-    cd /opt || exit
-    mv keycloak keycloak.old
+    if [[ ! -d /opt/keycloak.old ]]; then
+      rm -rf /opt/keycloak.old.partial
+      mkdir -p /opt/keycloak.old.partial
+      cp -a /opt/keycloak/conf /opt/keycloak.old.partial/
+      cp -a /opt/keycloak/providers /opt/keycloak.old.partial/ 2> /dev/null || true
+      cp -a /opt/keycloak/themes /opt/keycloak.old.partial/ 2> /dev/null || true
+      mv /opt/keycloak.old.partial /opt/keycloak.old
+    fi
     msg_ok "Backup done"
 
-    fetch_and_deploy_gh_release "keycloak_app" "keycloak/keycloak" "prebuild" "latest" "/opt/keycloak" "keycloak-*.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "keycloak_app" "keycloak/keycloak" "prebuild" "latest" "/opt/keycloak" "keycloak-*.tar.gz"
 
     msg_info "Updating Keycloak"
     cd /opt || exit
