@@ -53,6 +53,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -64,14 +65,14 @@ function update_script() {
 
   if check_for_gh_release "rustypaste" "orhun/rustypaste"; then
     msg_info "Stopping Services"
-    systemctl stop rustypaste
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" rustypaste || return $?
     msg_ok "Stopped Services"
 
-    create_backup /opt/rustypaste/upload /opt/rustypaste/config.toml
+    create_backup /opt/rustypaste/upload /opt/rustypaste/config.toml || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "rustypaste" "orhun/rustypaste" "prebuild" "latest" "/opt/rustypaste" "*x86_64-unknown-linux-gnu.tar.gz"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Services"
     systemctl start rustypaste
@@ -82,6 +83,7 @@ function update_script() {
   if check_for_gh_release "rustypaste-cli" "orhun/rustypaste-cli"; then
     fetch_and_deploy_gh_release "rustypaste-cli" "orhun/rustypaste-cli" "prebuild" "latest" "/usr/local/bin" "*x86_64-unknown-linux-gnu.tar.gz"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

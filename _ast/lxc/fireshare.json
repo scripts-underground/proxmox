@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "fireshare",
   "type": "lxc",
-  "total_lines": 246,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Slaviša Arežina (tremor021)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/ShaneIsrael/fireshare\n\nAPP=\"Fireshare\"\nvar_tags=\"${var_tags:-sharing;video}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-10}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    git \\\n    build-essential \\\n    cmake \\\n    pkg-config \\\n    yasm \\\n    nasm \\\n    libx264-dev \\\n    libx265-dev \\\n    libvpx-dev \\\n    libaom-dev \\\n    libopus-dev \\\n    libvorbis-dev \\\n    libass-dev \\\n    libfreetype6-dev \\\n    libmp3lame-dev \\\n    nginx-extras \\\n    supervisor \\\n    libldap2-dev \\\n    libsasl2-dev \\\n    libssl-dev \\\n    libffi-dev \\\n    libc-dev\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=24 setup_nodejs\n  PYTHON_VERSION=3.14 setup_uv\n\n  fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n\n  msg_info \"Compiling SVT-AV1 (Patience)\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git\n  cd SVT-AV1/Build || exit\n  $STD cmake .. -G \"Unix Makefiles\" -DCMAKE_BUILD_TYPE=Release\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  msg_ok \"Compiled SVT-AV1\"\n\n  msg_info \"Installing NVDEC headers\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git\n  cd nv-codec-headers || exit\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Installed NVDEC headers\"\n\n  msg_info \"Compiling ffmpeg (Patience)\"\n  cd /tmp || exit\n  curl -fsSL https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz -o \"ffmpeg-6.1.tar.xz\"\n  $STD tar -xf ffmpeg-6.1.tar.xz\n  cd ffmpeg-6.1 || exit\n  $STD ./configure \\\n    --prefix=/usr/local \\\n    --enable-gpl \\\n    --enable-version3 \\\n    --enable-nonfree \\\n    --enable-ffnvcodec \\\n    --enable-libx264 \\\n    --enable-libx265 \\\n    --enable-libvpx \\\n    --enable-libaom \\\n    --enable-libopus \\\n    --enable-libvorbis \\\n    --enable-libmp3lame \\\n    --enable-libass \\\n    --enable-libfreetype \\\n    --enable-libsvtav1 \\\n    --disable-debug \\\n    --disable-doc\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Compiled ffmpeg\"\n\n  msg_info \"Configuring Fireshare (Patience)\"\n  ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  SECRET=$(openssl rand -base64 48)\n  mkdir -p /opt/fireshare-{data,videos,images,processed}\n  cd /opt/fireshare || exit\n  $STD uv venv\n  $STD .venv/bin/python -m ensurepip --upgrade\n  $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n  ln -sf /usr/local/bin/ffmpeg /usr/bin/ffmpeg\n  ln -sf /usr/local/bin/ffprobe /usr/bin/ffprobe\n  echo \"/usr/local/lib\" \u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/cuda/lib64\" \u003e\u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/nvidia/lib\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  echo \"/usr/local/nvidia/lib64\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  ldconfig\n  $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n  cp .venv/bin/fireshare /usr/local/bin/fireshare\n  export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n  export DATA_DIRECTORY=/opt/fireshare-data\n  export IMAGE_DIRECTORY=/opt/fireshare-images\n  export VIDEO_DIRECTORY=/opt/fireshare-videos\n  export PROCESSED_DIRECTORY=/opt/fireshare-processed\n  $STD uv run flask db upgrade\n\n  cat \u003c\u003c EOF \u003e /opt/fireshare/fireshare.env\nFLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\nDOMAIN=\nENVIRONMENT=production\nDATA_DIRECTORY=/opt/fireshare-data\nIMAGE_DIRECTORY=/opt/fireshare-images\nVIDEO_DIRECTORY=/opt/fireshare-videos\nPROCESSED_DIRECTORY=/opt/fireshare-processed\nTEMPLATE_PATH=/opt/fireshare/app/server/fireshare/templates\nSECRET_KEY=${SECRET}\nADMIN_PASSWORD=${ADMIN_PASSWORD}\nTZ=UTC\nLD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:\\$LD_LIBRARY_PATH\nPATH=/usr/local/bin:$PATH\nENABLE_TRANSCODING=\nTRANSCODE_GPU=\nNVIDIA_DRIVER_CAPABILITIES=\nEOF\n\n  cd /opt/fireshare/app/client || exit\n  $STD npm install\n  $STD npm run build\n  systemctl stop nginx\n  cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n  sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n  sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n  sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n  sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n  cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n  cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n  systemctl start nginx\n\n  cat \u003c\u003c EOF \u003e ~/fireshare.creds\nFireshare Admin Credentials\n========================\nUsername: admin\nPassword: ${ADMIN_PASSWORD}\nEOF\n  msg_ok \"Configured Fireshare\"\n\n  msg_info \"Creating services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/fireshare.service\n[Unit]\nDescription=Fireshare Service\nAfter=network.target\n\n[Service]\nWorkingDirectory=/opt/fireshare/app/server\nExecStart=/opt/fireshare/.venv/bin/gunicorn --bind=127.0.0.1:5000 \"fireshare:create_app(init_schedule=True)\" --workers 3 --threads 3 --preload\nRestart=always\nEnvironmentFile=/opt/fireshare/fireshare.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now fireshare\n  msg_ok \"Created services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/fireshare ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"fireshare\" \"ShaneIsrael/fireshare\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop fireshare\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/fireshare/fireshare.env\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n    restore_backup\n    rm -f /usr/local/bin/fireshare\n\n    if ! grep -q \"__FIRESHARE_PORT__\" /etc/nginx/nginx.conf; then\n      cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n      sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n      sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n      sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n      sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n      cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n      cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n    fi\n    msg_info \"Configuring Fireshare\"\n\n    cd /opt/fireshare || exit\n    $STD uv venv --clear\n    $STD .venv/bin/python -m ensurepip --upgrade\n    $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n    $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n    cp .venv/bin/fireshare /usr/local/bin/fireshare\n    export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n    export DATA_DIRECTORY=/opt/fireshare-data\n    export IMAGE_DIRECTORY=/opt/fireshare-images\n    export VIDEO_DIRECTORY=/opt/fireshare-videos\n    export PROCESSED_DIRECTORY=/opt/fireshare-processed\n    $STD uv run flask db upgrade\n    cd /opt/fireshare/app/client || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Configured Fireshare\"\n\n    msg_info \"Starting Service\"\n    systemctl start fireshare\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  cleanup_lxc\n\n  exit\n}\n\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 248,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Slaviša Arežina (tremor021)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/ShaneIsrael/fireshare\n\nAPP=\"Fireshare\"\nvar_tags=\"${var_tags:-sharing;video}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-10}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    git \\\n    build-essential \\\n    cmake \\\n    pkg-config \\\n    yasm \\\n    nasm \\\n    libx264-dev \\\n    libx265-dev \\\n    libvpx-dev \\\n    libaom-dev \\\n    libopus-dev \\\n    libvorbis-dev \\\n    libass-dev \\\n    libfreetype6-dev \\\n    libmp3lame-dev \\\n    nginx-extras \\\n    supervisor \\\n    libldap2-dev \\\n    libsasl2-dev \\\n    libssl-dev \\\n    libffi-dev \\\n    libc-dev\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=24 setup_nodejs\n  PYTHON_VERSION=3.14 setup_uv\n\n  fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n\n  msg_info \"Compiling SVT-AV1 (Patience)\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git\n  cd SVT-AV1/Build || exit\n  $STD cmake .. -G \"Unix Makefiles\" -DCMAKE_BUILD_TYPE=Release\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  msg_ok \"Compiled SVT-AV1\"\n\n  msg_info \"Installing NVDEC headers\"\n  cd /tmp || exit\n  $STD git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git\n  cd nv-codec-headers || exit\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Installed NVDEC headers\"\n\n  msg_info \"Compiling ffmpeg (Patience)\"\n  cd /tmp || exit\n  curl -fsSL https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz -o \"ffmpeg-6.1.tar.xz\"\n  $STD tar -xf ffmpeg-6.1.tar.xz\n  cd ffmpeg-6.1 || exit\n  $STD ./configure \\\n    --prefix=/usr/local \\\n    --enable-gpl \\\n    --enable-version3 \\\n    --enable-nonfree \\\n    --enable-ffnvcodec \\\n    --enable-libx264 \\\n    --enable-libx265 \\\n    --enable-libvpx \\\n    --enable-libaom \\\n    --enable-libopus \\\n    --enable-libvorbis \\\n    --enable-libmp3lame \\\n    --enable-libass \\\n    --enable-libfreetype \\\n    --enable-libsvtav1 \\\n    --disable-debug \\\n    --disable-doc\n  $STD make -j\"$(nproc)\"\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Compiled ffmpeg\"\n\n  msg_info \"Configuring Fireshare (Patience)\"\n  ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  SECRET=$(openssl rand -base64 48)\n  mkdir -p /opt/fireshare-{data,videos,images,processed}\n  cd /opt/fireshare || exit\n  $STD uv venv\n  $STD .venv/bin/python -m ensurepip --upgrade\n  $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n  ln -sf /usr/local/bin/ffmpeg /usr/bin/ffmpeg\n  ln -sf /usr/local/bin/ffprobe /usr/bin/ffprobe\n  echo \"/usr/local/lib\" \u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/cuda/lib64\" \u003e\u003e /etc/ld.so.conf.d/usr-local.conf\n  echo \"/usr/local/nvidia/lib\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  echo \"/usr/local/nvidia/lib64\" \u003e\u003e /etc/ld.so.conf.d/nvidia.conf\n  ldconfig\n  $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n  cp .venv/bin/fireshare /usr/local/bin/fireshare\n  export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n  export DATA_DIRECTORY=/opt/fireshare-data\n  export IMAGE_DIRECTORY=/opt/fireshare-images\n  export VIDEO_DIRECTORY=/opt/fireshare-videos\n  export PROCESSED_DIRECTORY=/opt/fireshare-processed\n  $STD uv run flask db upgrade\n\n  cat \u003c\u003c EOF \u003e /opt/fireshare/fireshare.env\nFLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\nDOMAIN=\nENVIRONMENT=production\nDATA_DIRECTORY=/opt/fireshare-data\nIMAGE_DIRECTORY=/opt/fireshare-images\nVIDEO_DIRECTORY=/opt/fireshare-videos\nPROCESSED_DIRECTORY=/opt/fireshare-processed\nTEMPLATE_PATH=/opt/fireshare/app/server/fireshare/templates\nSECRET_KEY=${SECRET}\nADMIN_PASSWORD=${ADMIN_PASSWORD}\nTZ=UTC\nLD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:\\$LD_LIBRARY_PATH\nPATH=/usr/local/bin:$PATH\nENABLE_TRANSCODING=\nTRANSCODE_GPU=\nNVIDIA_DRIVER_CAPABILITIES=\nEOF\n\n  cd /opt/fireshare/app/client || exit\n  $STD npm install\n  $STD npm run build\n  systemctl stop nginx\n  cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n  sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n  sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n  sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n  sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n  cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n  cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n  systemctl start nginx\n\n  cat \u003c\u003c EOF \u003e ~/fireshare.creds\nFireshare Admin Credentials\n========================\nUsername: admin\nPassword: ${ADMIN_PASSWORD}\nEOF\n  msg_ok \"Configured Fireshare\"\n\n  msg_info \"Creating services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/fireshare.service\n[Unit]\nDescription=Fireshare Service\nAfter=network.target\n\n[Service]\nWorkingDirectory=/opt/fireshare/app/server\nExecStart=/opt/fireshare/.venv/bin/gunicorn --bind=127.0.0.1:5000 \"fireshare:create_app(init_schedule=True)\" --workers 3 --threads 3 --preload\nRestart=always\nEnvironmentFile=/opt/fireshare/fireshare.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now fireshare\n  msg_ok \"Created services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/fireshare ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"fireshare\" \"ShaneIsrael/fireshare\"; then\n    msg_info \"Stopping Service\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" fireshare || return $?\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/fireshare/fireshare.env || return $?\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"\n    restore_backup || return $?\n    rm -f /usr/local/bin/fireshare\n\n    if ! grep -q \"__FIRESHARE_PORT__\" /etc/nginx/nginx.conf; then\n      cp /opt/fireshare/app/nginx/prod.conf /etc/nginx/nginx.conf\n      sed -i 's|root /processed/|root /opt/fireshare-processed/|g' /etc/nginx/nginx.conf\n      sed -i 's/^user[[:space:]]\\+nginx;/user  root;/' /etc/nginx/nginx.conf\n      sed -i 's|root[[:space:]]\\+/app/build;|root /opt/fireshare/app/client/build;|' /etc/nginx/nginx.conf\n      sed -i 's/__FIRESHARE_PORT__/80/g' /etc/nginx/nginx.conf\n      cp /opt/fireshare/app/nginx/error.html /etc/nginx/\n      cp /opt/fireshare/app/nginx/api_unavailable.html /etc/nginx/\n    fi\n    msg_info \"Configuring Fireshare\"\n\n    cd /opt/fireshare || exit\n    $STD uv venv --clear\n    $STD .venv/bin/python -m ensurepip --upgrade\n    $STD .venv/bin/python -m pip install --upgrade --break-system-packages pip\n    $STD .venv/bin/python -m pip install --no-cache-dir --break-system-packages --ignore-installed app/server\n    cp .venv/bin/fireshare /usr/local/bin/fireshare\n    export FLASK_APP=\"/opt/fireshare/app/server/fireshare:create_app()\"\n    export DATA_DIRECTORY=/opt/fireshare-data\n    export IMAGE_DIRECTORY=/opt/fireshare-images\n    export VIDEO_DIRECTORY=/opt/fireshare-videos\n    export PROCESSED_DIRECTORY=/opt/fireshare-processed\n    $STD uv run flask db upgrade\n    cd /opt/fireshare/app/client || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Configured Fireshare\"\n\n    msg_info \"Starting Service\"\n    systemctl start fireshare\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  cleanup_lxc\n\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -191,6 +191,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -201,12 +202,12 @@
     "",
     "  if check_for_gh_release \"fireshare\" \"ShaneIsrael/fireshare\"; then",
     "    msg_info \"Stopping Service\"",
-    "    systemctl stop fireshare",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" fireshare || return $?",
     "    msg_ok \"Stopped Service\"",
     "",
-    "    create_backup /opt/fireshare/fireshare.env",
+    "    create_backup /opt/fireshare/fireshare.env || return $?",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"fireshare\" \"ShaneIsrael/fireshare\" \"tarball\"",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "    rm -f /usr/local/bin/fireshare",
     "",
     "    if ! grep -q \"__FIRESHARE_PORT__\" /etc/nginx/nginx.conf; then",
@@ -244,6 +245,7 @@
     "  fi",
     "  cleanup_lxc",
     "",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -280,7 +282,7 @@
     {
       "name": "update_script",
       "start_line": 186,
-      "end_line": 241,
+      "end_line": 243,
       "name_span": {
         "start_line": 186,
         "start_col": 10,
@@ -2365,373 +2367,482 @@
       "start_line": 187,
       "start_col": 3,
       "end_line": 187,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 187,
+      "start_col": 27,
+      "end_line": 187,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 187,
+      "start_col": 30,
+      "end_line": 187,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 187,
+      "start_col": 37,
+      "end_line": 187,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 188,
       "start_col": 3,
       "end_line": 188,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 189,
       "start_col": 3,
       "end_line": 189,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 3,
+      "end_line": 190,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 3,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 6,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 9,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 11,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 29,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 31
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 31,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 32
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 33,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 37
-    },
-    {
-      "kind": "command",
-      "start_line": 191,
-      "start_col": 5,
-      "end_line": 191,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 191,
-      "start_col": 15,
-      "end_line": 191,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 191,
-      "start_col": 19,
-      "end_line": 191,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 192,
       "start_col": 5,
       "end_line": 192,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 192,
+      "start_col": 15,
+      "end_line": 192,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 192,
+      "start_col": 19,
+      "end_line": 192,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 5,
+      "end_line": 193,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 193,
+      "start_line": 194,
       "start_col": 3,
-      "end_line": 193,
+      "end_line": 194,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 3,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 6,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 27,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 38
     },
     {
       "kind": "string-dq",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 39,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 62
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 62,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 63
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 64,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 68
-    },
-    {
-      "kind": "command",
-      "start_line": 196,
-      "start_col": 5,
-      "end_line": 196,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 196,
-      "start_col": 14,
-      "end_line": 196,
-      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 197,
       "start_col": 5,
       "end_line": 197,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 197,
+      "start_col": 14,
+      "end_line": 197,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 198,
       "start_col": 5,
       "end_line": 198,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 198,
+      "start_col": 27,
+      "end_line": 198,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 28,
+      "end_line": 198,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 37,
+      "end_line": 198,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 198,
+      "start_col": 66,
+      "end_line": 198,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 69,
+      "end_line": 198,
+      "end_col": 75
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 76,
+      "end_line": 198,
+      "end_col": 78
+    },
+    {
+      "kind": "command",
+      "start_line": 199,
+      "start_col": 5,
+      "end_line": 199,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 198,
+      "start_line": 199,
       "start_col": 12,
-      "end_line": 198,
+      "end_line": 199,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 200,
-      "start_col": 5,
-      "end_line": 200,
-      "end_col": 18
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 201,
-      "start_col": 5,
-      "end_line": 201,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
       "start_line": 201,
       "start_col": 5,
       "end_line": 201,
       "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 201,
+      "start_col": 48,
+      "end_line": 201,
+      "end_col": 50
     },
     {
       "kind": "command",
       "start_line": 201,
-      "start_col": 21,
+      "start_col": 51,
       "end_line": 201,
-      "end_col": 48
+      "end_col": 57
     },
     {
-      "kind": "string-dq",
+      "kind": "param-exp",
       "start_line": 201,
-      "start_col": 49,
+      "start_col": 58,
       "end_line": 201,
       "end_col": 60
     },
     {
-      "kind": "string-dq",
-      "start_line": 201,
-      "start_col": 61,
-      "end_line": 201,
-      "end_col": 84
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 202,
+      "start_col": 5,
+      "end_line": 202,
+      "end_col": 20
     },
     {
-      "kind": "string-dq",
-      "start_line": 201,
-      "start_col": 85,
-      "end_line": 201,
-      "end_col": 94
+      "kind": "var-name",
+      "start_line": 202,
+      "start_col": 5,
+      "end_line": 202,
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 202,
-      "start_col": 5,
+      "start_col": 21,
       "end_line": 202,
-      "end_col": 19
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 202,
+      "start_col": 49,
+      "end_line": 202,
+      "end_col": 60
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 202,
+      "start_col": 61,
+      "end_line": 202,
+      "end_col": 84
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 202,
+      "start_col": 85,
+      "end_line": 202,
+      "end_col": 94
     },
     {
       "kind": "command",
       "start_line": 203,
       "start_col": 5,
       "end_line": 203,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 203,
+      "start_col": 20,
+      "end_line": 203,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 23,
+      "end_line": 203,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 203,
+      "start_col": 30,
+      "end_line": 203,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 204,
+      "start_col": 5,
+      "end_line": 204,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 205,
+      "start_line": 206,
       "start_col": 5,
-      "end_line": 205,
+      "end_line": 206,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 205,
-      "start_col": 8,
-      "end_line": 205,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 205,
-      "start_col": 10,
-      "end_line": 205,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 205,
-      "start_col": 18,
-      "end_line": 205,
-      "end_col": 38
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 205,
-      "start_col": 60,
-      "end_line": 205,
-      "end_col": 61
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 205,
-      "start_col": 62,
-      "end_line": 205,
-      "end_col": 66
-    },
-    {
-      "kind": "command",
       "start_line": 206,
-      "start_col": 7,
+      "start_col": 8,
       "end_line": 206,
       "end_col": 9
     },
     {
       "kind": "command",
+      "start_line": 206,
+      "start_col": 10,
+      "end_line": 206,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 18,
+      "end_line": 206,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 206,
+      "start_col": 60,
+      "end_line": 206,
+      "end_col": 61
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 206,
+      "start_col": 62,
+      "end_line": 206,
+      "end_col": 66
+    },
+    {
+      "kind": "command",
       "start_line": 207,
       "start_col": 7,
       "end_line": 207,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 208,
+      "start_col": 7,
+      "end_line": 208,
       "end_col": 10
     },
     {
       "kind": "string-sq",
-      "start_line": 207,
+      "start_line": 208,
       "start_col": 14,
-      "end_line": 207,
+      "end_line": 208,
       "end_col": 67
     },
     {
       "kind": "command",
-      "start_line": 208,
+      "start_line": 209,
       "start_col": 7,
-      "end_line": 208,
+      "end_line": 209,
       "end_col": 10
     },
     {
       "kind": "string-sq",
-      "start_line": 208,
+      "start_line": 209,
       "start_col": 14,
-      "end_line": 208,
+      "end_line": 209,
       "end_col": 55
     },
     {
       "kind": "command",
-      "start_line": 209,
+      "start_line": 210,
       "start_col": 7,
-      "end_line": 209,
+      "end_line": 210,
       "end_col": 10
     },
     {
       "kind": "string-sq",
-      "start_line": 209,
+      "start_line": 210,
       "start_col": 14,
-      "end_line": 209,
+      "end_line": 210,
       "end_col": 85
-    },
-    {
-      "kind": "command",
-      "start_line": 210,
-      "start_col": 7,
-      "end_line": 210,
-      "end_col": 10
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 210,
-      "start_col": 14,
-      "end_line": 210,
-      "end_col": 41
     },
     {
       "kind": "command",
       "start_line": 211,
       "start_col": 7,
       "end_line": 211,
-      "end_col": 9
+      "end_col": 10
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 211,
+      "start_col": 14,
+      "end_line": 211,
+      "end_col": 41
     },
     {
       "kind": "command",
@@ -2741,79 +2852,72 @@
       "end_col": 9
     },
     {
+      "kind": "command",
+      "start_line": 213,
+      "start_col": 7,
+      "end_line": 213,
+      "end_col": 9
+    },
+    {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 213,
+      "start_line": 214,
       "start_col": 5,
-      "end_line": 213,
+      "end_line": 214,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 214,
+      "start_line": 215,
       "start_col": 5,
-      "end_line": 214,
+      "end_line": 215,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 214,
+      "start_line": 215,
       "start_col": 14,
-      "end_line": 214,
+      "end_line": 215,
       "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 216,
+      "start_line": 217,
       "start_col": 5,
-      "end_line": 216,
+      "end_line": 217,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 216,
+      "start_line": 217,
       "start_col": 23,
-      "end_line": 216,
+      "end_line": 217,
       "end_col": 25
     },
     {
       "kind": "command",
-      "start_line": 216,
+      "start_line": 217,
       "start_col": 26,
-      "end_line": 216,
+      "end_line": 217,
       "end_col": 30
     },
     {
       "kind": "param-exp",
-      "start_line": 217,
+      "start_line": 218,
       "start_col": 5,
-      "end_line": 217,
+      "end_line": 218,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 217,
+      "start_line": 218,
       "start_col": 10,
-      "end_line": 217,
+      "end_line": 218,
       "end_col": 12
     },
     {
       "kind": "param-exp",
-      "start_line": 218,
-      "start_col": 5,
-      "end_line": 218,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 218,
-      "start_col": 10,
-      "end_line": 218,
-      "end_col": 26
-    },
-    {
-      "kind": "param-exp",
       "start_line": 219,
       "start_col": 5,
       "end_line": 219,
@@ -2839,93 +2943,84 @@
       "start_col": 10,
       "end_line": 220,
       "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 221,
+      "start_col": 5,
+      "end_line": 221,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 221,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 221,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 222,
+      "start_col": 5,
+      "end_line": 222,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 222,
+      "start_line": 223,
       "start_col": 5,
-      "end_line": 222,
+      "end_line": 223,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 222,
+      "start_line": 223,
       "start_col": 12,
-      "end_line": 222,
+      "end_line": 223,
       "end_col": 72
     },
     {
       "kind": "var-name",
-      "start_line": 222,
+      "start_line": 223,
       "start_col": 12,
-      "end_line": 222,
+      "end_line": 223,
       "end_col": 21
     },
     {
       "kind": "string-dq",
-      "start_line": 222,
+      "start_line": 223,
       "start_col": 22,
-      "end_line": 222,
+      "end_line": 223,
       "end_col": 72
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 223,
+      "start_line": 224,
       "start_col": 5,
-      "end_line": 223,
+      "end_line": 224,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 223,
+      "start_line": 224,
       "start_col": 12,
-      "end_line": 223,
+      "end_line": 224,
       "end_col": 46
     },
     {
       "kind": "var-name",
-      "start_line": 223,
+      "start_line": 224,
       "start_col": 12,
-      "end_line": 223,
+      "end_line": 224,
       "end_col": 26
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 224,
-      "start_col": 5,
-      "end_line": 224,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 224,
-      "start_col": 12,
-      "end_line": 224,
-      "end_col": 49
-    },
-    {
-      "kind": "var-name",
-      "start_line": 224,
-      "start_col": 12,
-      "end_line": 224,
-      "end_col": 27
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
       "start_line": 225,
       "start_col": 5,
       "end_line": 225,
@@ -2960,223 +3055,296 @@
       "start_line": 226,
       "start_col": 12,
       "end_line": 226,
+      "end_col": 49
+    },
+    {
+      "kind": "var-name",
+      "start_line": 226,
+      "start_col": 12,
+      "end_line": 226,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 227,
+      "start_col": 5,
+      "end_line": 227,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 227,
+      "start_col": 12,
+      "end_line": 227,
       "end_col": 56
     },
     {
       "kind": "var-name",
-      "start_line": 226,
+      "start_line": 227,
       "start_col": 12,
-      "end_line": 226,
+      "end_line": 227,
       "end_col": 31
     },
     {
       "kind": "param-exp",
-      "start_line": 227,
+      "start_line": 228,
       "start_col": 5,
-      "end_line": 227,
+      "end_line": 228,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 227,
+      "start_line": 228,
       "start_col": 10,
-      "end_line": 227,
+      "end_line": 228,
       "end_col": 12
     },
     {
       "kind": "command",
-      "start_line": 228,
+      "start_line": 229,
       "start_col": 5,
-      "end_line": 228,
+      "end_line": 229,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 228,
+      "start_line": 229,
       "start_col": 34,
-      "end_line": 228,
+      "end_line": 229,
       "end_col": 36
     },
     {
       "kind": "command",
-      "start_line": 228,
+      "start_line": 229,
       "start_col": 37,
-      "end_line": 228,
+      "end_line": 229,
       "end_col": 41
     },
     {
       "kind": "param-exp",
-      "start_line": 229,
+      "start_line": 230,
       "start_col": 5,
-      "end_line": 229,
+      "end_line": 230,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 229,
+      "start_line": 230,
       "start_col": 10,
-      "end_line": 229,
+      "end_line": 230,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 230,
+      "start_line": 231,
       "start_col": 5,
-      "end_line": 230,
+      "end_line": 231,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 230,
+      "start_line": 231,
       "start_col": 10,
-      "end_line": 230,
+      "end_line": 231,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 231,
+      "start_line": 232,
       "start_col": 5,
-      "end_line": 231,
+      "end_line": 232,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 231,
+      "start_line": 232,
       "start_col": 12,
-      "end_line": 231,
+      "end_line": 232,
       "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 233,
-      "start_col": 5,
-      "end_line": 233,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 233,
-      "start_col": 14,
-      "end_line": 233,
-      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 234,
       "start_col": 5,
       "end_line": 234,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 234,
+      "start_col": 14,
+      "end_line": 234,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 235,
+      "start_col": 5,
+      "end_line": 235,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 235,
+      "start_line": 236,
       "start_col": 5,
-      "end_line": 235,
+      "end_line": 236,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 235,
+      "start_line": 236,
       "start_col": 12,
-      "end_line": 235,
+      "end_line": 236,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 236,
+      "start_line": 237,
       "start_col": 5,
-      "end_line": 236,
+      "end_line": 237,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 236,
+      "start_line": 237,
       "start_col": 12,
-      "end_line": 236,
+      "end_line": 237,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 237,
+      "start_line": 238,
       "start_col": 3,
-      "end_line": 237,
+      "end_line": 238,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 238,
+      "start_line": 239,
       "start_col": 3,
-      "end_line": 238,
+      "end_line": 239,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 240,
+      "start_line": 241,
       "start_col": 3,
-      "end_line": 240,
+      "end_line": 241,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 241,
+      "start_col": 27,
+      "end_line": 241,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 241,
+      "start_col": 28,
+      "end_line": 241,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 241,
+      "start_col": 37,
+      "end_line": 241,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 241,
+      "start_col": 56,
+      "end_line": 241,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 241,
+      "start_col": 59,
+      "end_line": 241,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 241,
+      "start_col": 66,
+      "end_line": 241,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 242,
+      "start_col": 3,
+      "end_line": 242,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 241,
+      "start_line": 243,
       "start_col": 1,
-      "end_line": 241,
+      "end_line": 243,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 243,
+      "start_line": 245,
       "start_col": 1,
-      "end_line": 243,
+      "end_line": 245,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 244,
+      "start_line": 246,
       "start_col": 1,
-      "end_line": 244,
+      "end_line": 246,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 245,
+      "start_line": 247,
       "start_col": 1,
-      "end_line": 245,
+      "end_line": 247,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 245,
+      "start_line": 247,
       "start_col": 8,
-      "end_line": 245,
+      "end_line": 247,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 245,
+      "start_line": 247,
       "start_col": 10,
-      "end_line": 245,
+      "end_line": 247,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 245,
+      "start_line": 247,
       "start_col": 21,
-      "end_line": 245,
+      "end_line": 247,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 245,
+      "start_line": 247,
       "start_col": 22,
-      "end_line": 245,
+      "end_line": 247,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 245,
+  "bootstrap_line": 247,
   "hooks": {
     "header_info": false,
     "install_script": true,

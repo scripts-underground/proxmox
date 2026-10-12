@@ -63,6 +63,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -74,18 +75,19 @@ function update_script() {
 
   if check_for_gh_release "leafwiki" "perber/leafwiki"; then
     msg_info "Stopping Service"
-    systemctl stop leafwiki
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" leafwiki || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/leafwiki/data
+    create_backup /opt/leafwiki/data || return $?
     fetch_and_deploy_gh_release "leafwiki" "perber/leafwiki" "singlefile" "latest" "/usr/local/bin" "leafwiki-v*-linux-$(get_system_arch)"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start leafwiki
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

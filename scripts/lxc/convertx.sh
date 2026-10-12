@@ -92,6 +92,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -101,16 +102,16 @@ function update_script() {
   fi
   if check_for_gh_release "ConvertX" "C4illin/ConvertX"; then
     msg_info "Stopping Service"
-    systemctl stop convertx
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" convertx || return $?
     msg_ok "Stopped Service"
 
     ensure_dependencies libreoffice-writer
 
-    create_backup /opt/convertx/data
+    create_backup /opt/convertx/data || return $?
 
     fetch_and_deploy_gh_release "ConvertX" "C4illin/ConvertX" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating ConvertX"
     cd /opt/convertx || exit
@@ -122,6 +123,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

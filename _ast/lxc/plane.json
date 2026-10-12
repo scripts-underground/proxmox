@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "plane",
   "type": "lxc",
-  "total_lines": 464,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: onionrings29\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://plane.so | GitHub: https://github.com/makeplane/plane\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Plane\"\nvar_tags=\"${var_tags:-project-management}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-6144}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    nginx \\\n    build-essential \\\n    libpq-dev \\\n    libxml2-dev \\\n    libxslt1-dev \\\n    libxmlsec1-dev \\\n    libxmlsec1-openssl \\\n    pkg-config \\\n    python3-dev \\\n    python3-venv \\\n    redis-server \\\n    erlang-base \\\n    erlang-{asn1,crypto,eldap,ftp,inets,mnesia,os-mon,parsetools} \\\n    erlang-{public-key,runtime-tools,snmp,ssl,syntax-tools,tftp,tools,xmerl} \\\n    rabbitmq-server\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n  PG_VERSION=\"16\" setup_postgresql\n  PG_DB_NAME=\"plane\" PG_DB_USER=\"plane\" setup_postgresql_db\n\n  msg_info \"Configuring RabbitMQ\"\n  RABBITMQ_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c16)\n  $STD rabbitmqctl add_vhost plane\n  $STD rabbitmqctl add_user plane \"${RABBITMQ_PASS}\"\n  $STD rabbitmqctl set_permissions -p plane plane \".*\" \".*\" \".*\"\n  msg_ok \"Configured RabbitMQ\"\n\n  msg_info \"Installing MinIO\"\n  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')\n  curl -fsSL \"https://dl.min.io/server/minio/release/linux-${ARCH}/minio\" -o /usr/local/bin/minio\n  chmod +x /usr/local/bin/minio\n  mkdir -p /opt/minio/data\n  MINIO_ACCESS_KEY=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c16)\n  MINIO_SECRET_KEY=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c32)\n  cat \u003c\u003c EOF \u003e /etc/default/minio\nMINIO_ROOT_USER=\"${MINIO_ACCESS_KEY}\"\nMINIO_ROOT_PASSWORD=\"${MINIO_SECRET_KEY}\"\nMINIO_VOLUMES=\"/opt/minio/data\"\nEOF\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/minio.service\n[Unit]\nDescription=MinIO Object Storage\nAfter=network.target\n\n[Service]\nType=simple\nEnvironmentFile=/etc/default/minio\nExecStart=/usr/local/bin/minio server \\$MINIO_VOLUMES --console-address \":9090\"\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now minio\n  msg_ok \"Installed MinIO\"\n\n  fetch_and_deploy_gh_release \"plane\" \"makeplane/plane\" \"tarball\"\n\n  msg_info \"Building Frontend Apps (Patience)\"\n  cd /opt/plane || exit\n  FRONTEND_ENV=\"VITE_API_BASE_URL=http://${LOCAL_IP}\nVITE_WEB_BASE_URL=http://${LOCAL_IP}\nVITE_ADMIN_BASE_URL=http://${LOCAL_IP}\nVITE_ADMIN_BASE_PATH=/god-mode\nVITE_SPACE_BASE_URL=http://${LOCAL_IP}\nVITE_SPACE_BASE_PATH=/spaces\nVITE_LIVE_BASE_URL=http://${LOCAL_IP}\nVITE_LIVE_BASE_PATH=/live\"\n  for frontend_app in web admin space; do\n    echo \"$FRONTEND_ENV\" \u003e \"/opt/plane/apps/${frontend_app}/.env\"\n  done\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n\n  $STD pnpm install --frozen-lockfile\n  $STD pnpm turbo run build --filter=web --filter=admin --filter=space --filter=live\n  msg_ok \"Built Frontend Apps\"\n\n  msg_info \"Setting up Python API\"\n  setup_uv\n  $STD uv venv /opt/plane-venv\n  export VIRTUAL_ENV=/opt/plane-venv\n  $STD uv pip install -r /opt/plane/apps/api/requirements/production.txt\n  msg_ok \"Set up Python API\"\n\n  msg_info \"Configuring Plane\"\n  SECRET_KEY=$(openssl rand -hex 32)\n  MACHINE_SIG=$(echo -n \"$(hostname)-$(date +%s)\" | sha256sum | head -c64)\n  LIVE_SECRET=$(openssl rand -hex 16)\n  cat \u003c\u003c EOF \u003e /opt/plane/apps/api/.env\nDEBUG=0\nCORS_ALLOWED_ORIGINS=http://${LOCAL_IP}\n\nPOSTGRES_USER=plane\nPOSTGRES_PASSWORD=${PG_DB_PASS}\nPOSTGRES_HOST=localhost\nPOSTGRES_DB=plane\nPOSTGRES_PORT=5432\nDATABASE_URL=postgresql://plane:${PG_DB_PASS}@localhost:5432/plane\n\nREDIS_HOST=localhost\nREDIS_PORT=6379\nREDIS_URL=redis://localhost:6379/\n\nRABBITMQ_HOST=localhost\nRABBITMQ_PORT=5672\nRABBITMQ_USER=plane\nRABBITMQ_PASSWORD=${RABBITMQ_PASS}\nRABBITMQ_VHOST=plane\nAMQP_URL=amqp://plane:${RABBITMQ_PASS}@localhost:5672/plane\n\nAWS_REGION=us-east-1\nAWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}\nAWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}\nAWS_S3_ENDPOINT_URL=http://localhost:9000\nAWS_S3_BUCKET_NAME=uploads\nFILE_SIZE_LIMIT=104857600\n\nUSE_MINIO=1\nMINIO_ENDPOINT_SSL=0\nSECRET_KEY=${SECRET_KEY}\nMACHINE_SIGNATURE=${MACHINE_SIG}\n\nWEB_URL=http://${LOCAL_IP}\nADMIN_BASE_URL=http://${LOCAL_IP}\nADMIN_BASE_PATH=/god-mode\nSPACE_BASE_URL=http://${LOCAL_IP}\nSPACE_BASE_PATH=/spaces\nAPP_BASE_URL=http://${LOCAL_IP}\nAPP_BASE_PATH=\nLIVE_BASE_URL=http://${LOCAL_IP}\nLIVE_BASE_PATH=/live\n\nGUNICORN_WORKERS=2\nLIVE_SERVER_SECRET_KEY=${LIVE_SECRET}\nAPI_KEY_RATE_LIMIT=60/minute\nEOF\n  cat \u003c\u003c EOF \u003e /opt/plane/.env\nAPI_BASE_URL=http://localhost:8000\nLIVE_SERVER_SECRET_KEY=${LIVE_SECRET}\nREDIS_HOST=localhost\nREDIS_PORT=6379\nREDIS_URL=redis://localhost:6379/\nPORT=3100\nEOF\n  msg_ok \"Configured Plane\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/plane/apps/api || exit\n  set -a\n  source /opt/plane/apps/api/.env\n  set +a\n  $STD /opt/plane-venv/bin/python manage.py migrate\n  $STD /opt/plane-venv/bin/python manage.py collectstatic --noinput\n  $STD /opt/plane-venv/bin/python manage.py configure_instance\n  $STD /opt/plane-venv/bin/python manage.py register_instance \"${MACHINE_SIG}\"\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services and MinIO Bucket\"\n  curl -fsSL \"https://dl.min.io/client/mc/release/linux-${ARCH}/mc\" -o /usr/local/bin/mcli\n  chmod +x /usr/local/bin/mcli\n  $STD /usr/local/bin/mcli alias set plane http://localhost:9000 \"${MINIO_ACCESS_KEY}\" \"${MINIO_SECRET_KEY}\"\n  $STD /usr/local/bin/mcli mb plane/uploads --ignore-existing\n  $STD /usr/local/bin/mcli anonymous set download plane/uploads\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-api.service\n[Unit]\nDescription=Plane API\nAfter=network.target postgresql.service redis-server.service rabbitmq-server.service minio.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker plane.asgi:application --bind 0.0.0.0:8000 --max-requests 1200 --max-requests-jitter 1000 --access-logfile -\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-worker.service\n[Unit]\nDescription=Plane Celery Worker\nAfter=plane-api.service\nRequires=plane-api.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/celery -A plane worker -l info\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-beat.service\n[Unit]\nDescription=Plane Celery Beat\nAfter=plane-api.service\nRequires=plane-api.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/celery -A plane beat -l info\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-live.service\n[Unit]\nDescription=Plane Live Server\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane\nEnvironmentFile=/opt/plane/.env\nExecStart=/usr/bin/node apps/live/dist/start.mjs\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-space.service\n[Unit]\nDescription=Plane Space Server\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/space\nEnvironment=PORT=3002\nEnvironment=NODE_ENV=production\nExecStart=/opt/plane/apps/space/node_modules/.bin/react-router-serve ./build/server/index.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl daemon-reload\n  systemctl enable -q --now plane-api plane-worker plane-beat plane-live plane-space\n  cat \u003c\u003c EOF \u003e ~/plane.creds\nRabbitMQ User: plane\nRabbitMQ Password: ${RABBITMQ_PASS}\nMinIO Access Key: ${MINIO_ACCESS_KEY}\nMinIO Secret Key: ${MINIO_SECRET_KEY}\nSecret Key: ${SECRET_KEY}\nConfig: /opt/plane/apps/api/.env\nEOF\n  msg_ok \"Created Services and MinIO Bucket\"\n\n  msg_info \"Configuring Nginx\"\n  cat \u003c\u003c 'EOF' \u003e /etc/nginx/sites-available/plane.conf\nupstream plane-api {\n    server 127.0.0.1:8000;\n}\n\nupstream plane-live {\n    server 127.0.0.1:3100;\n}\n\nupstream plane-space {\n    server 127.0.0.1:3002;\n}\n\nupstream plane-minio {\n    server 127.0.0.1:9000;\n}\n\nserver {\n    listen 80 default_server;\n    server_name _;\n    client_max_body_size 100M;\n\n    location /api/ {\n        proxy_pass http://plane-api;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /auth/ {\n        proxy_pass http://plane-api;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /static/ {\n        alias /opt/plane/apps/api/plane/static-assets/collected-static/;\n    }\n\n    location /live/ {\n        proxy_pass http://plane-live;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location = /uploads {\n        proxy_pass http://plane-minio;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n\n    location /uploads/ {\n        proxy_pass http://plane-minio;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n\n    location /spaces/ {\n        proxy_pass http://plane-space;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /spaces {\n        return 301 /spaces/;\n    }\n\n    location /god-mode/ {\n        alias /opt/plane/apps/admin/build/client/;\n        try_files $uri $uri/ /god-mode/index.html;\n    }\n\n    location /god-mode {\n        return 301 /god-mode/;\n    }\n\n    location / {\n        root /opt/plane/apps/web/build/client;\n        try_files $uri $uri/ /index.html;\n    }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/plane.conf /etc/nginx/sites-enabled/plane.conf\n  rm -f /etc/nginx/sites-enabled/default\n  $STD systemctl reload nginx\n  msg_ok \"Configured Nginx\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n  echo -e \"${INFO}${YW}Credentials and keys stored in: ~/plane.creds${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/plane ]]; then\n    msg_error \"No Plane Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  if check_for_gh_release \"plane\" \"makeplane/plane\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop plane-api plane-worker plane-beat plane-live plane-space\n    msg_ok \"Stopped Services\"\n\n    create_backup /opt/plane/.env \\\n      /opt/plane/apps/admin/.env \\\n      /opt/plane/apps/api/.env \\\n      /opt/plane/apps/space/.env \\\n      /opt/plane/apps/web/.env\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"plane\" \"makeplane/plane\" \"tarball\"\n\n    restore_backup\n\n    msg_info \"Rebuilding Frontend (Patience)\"\n    cd /opt/plane || exit\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n\n    $STD pnpm install --frozen-lockfile\n    $STD pnpm turbo run build --filter=web --filter=admin --filter=space --filter=live\n    msg_ok \"Rebuilt Frontend\"\n\n    msg_info \"Updating Python Dependencies\"\n    cd /opt/plane/apps/api || exit\n    export VIRTUAL_ENV=/opt/plane-venv\n    $STD uv pip install --upgrade -r requirements/production.txt\n    msg_ok \"Updated Python Dependencies\"\n\n    msg_info \"Running Migrations\"\n    cd /opt/plane/apps/api || exit\n    set -a\n    source /opt/plane/apps/api/.env\n    set +a\n    $STD /opt/plane-venv/bin/python manage.py migrate\n    $STD /opt/plane-venv/bin/python manage.py collectstatic --noinput\n    $STD /opt/plane-venv/bin/python manage.py configure_instance\n    msg_ok \"Ran Migrations\"\n\n    msg_info \"Starting Services\"\n    systemctl start plane-api plane-worker plane-beat plane-live plane-space\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 466,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: onionrings29\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://plane.so | GitHub: https://github.com/makeplane/plane\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Plane\"\nvar_tags=\"${var_tags:-project-management}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-6144}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    nginx \\\n    build-essential \\\n    libpq-dev \\\n    libxml2-dev \\\n    libxslt1-dev \\\n    libxmlsec1-dev \\\n    libxmlsec1-openssl \\\n    pkg-config \\\n    python3-dev \\\n    python3-venv \\\n    redis-server \\\n    erlang-base \\\n    erlang-{asn1,crypto,eldap,ftp,inets,mnesia,os-mon,parsetools} \\\n    erlang-{public-key,runtime-tools,snmp,ssl,syntax-tools,tftp,tools,xmerl} \\\n    rabbitmq-server\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n  PG_VERSION=\"16\" setup_postgresql\n  PG_DB_NAME=\"plane\" PG_DB_USER=\"plane\" setup_postgresql_db\n\n  msg_info \"Configuring RabbitMQ\"\n  RABBITMQ_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c16)\n  $STD rabbitmqctl add_vhost plane\n  $STD rabbitmqctl add_user plane \"${RABBITMQ_PASS}\"\n  $STD rabbitmqctl set_permissions -p plane plane \".*\" \".*\" \".*\"\n  msg_ok \"Configured RabbitMQ\"\n\n  msg_info \"Installing MinIO\"\n  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')\n  curl -fsSL \"https://dl.min.io/server/minio/release/linux-${ARCH}/minio\" -o /usr/local/bin/minio\n  chmod +x /usr/local/bin/minio\n  mkdir -p /opt/minio/data\n  MINIO_ACCESS_KEY=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c16)\n  MINIO_SECRET_KEY=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c32)\n  cat \u003c\u003c EOF \u003e /etc/default/minio\nMINIO_ROOT_USER=\"${MINIO_ACCESS_KEY}\"\nMINIO_ROOT_PASSWORD=\"${MINIO_SECRET_KEY}\"\nMINIO_VOLUMES=\"/opt/minio/data\"\nEOF\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/minio.service\n[Unit]\nDescription=MinIO Object Storage\nAfter=network.target\n\n[Service]\nType=simple\nEnvironmentFile=/etc/default/minio\nExecStart=/usr/local/bin/minio server \\$MINIO_VOLUMES --console-address \":9090\"\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now minio\n  msg_ok \"Installed MinIO\"\n\n  fetch_and_deploy_gh_release \"plane\" \"makeplane/plane\" \"tarball\"\n\n  msg_info \"Building Frontend Apps (Patience)\"\n  cd /opt/plane || exit\n  FRONTEND_ENV=\"VITE_API_BASE_URL=http://${LOCAL_IP}\nVITE_WEB_BASE_URL=http://${LOCAL_IP}\nVITE_ADMIN_BASE_URL=http://${LOCAL_IP}\nVITE_ADMIN_BASE_PATH=/god-mode\nVITE_SPACE_BASE_URL=http://${LOCAL_IP}\nVITE_SPACE_BASE_PATH=/spaces\nVITE_LIVE_BASE_URL=http://${LOCAL_IP}\nVITE_LIVE_BASE_PATH=/live\"\n  for frontend_app in web admin space; do\n    echo \"$FRONTEND_ENV\" \u003e \"/opt/plane/apps/${frontend_app}/.env\"\n  done\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n\n  $STD pnpm install --frozen-lockfile\n  $STD pnpm turbo run build --filter=web --filter=admin --filter=space --filter=live\n  msg_ok \"Built Frontend Apps\"\n\n  msg_info \"Setting up Python API\"\n  setup_uv\n  $STD uv venv /opt/plane-venv\n  export VIRTUAL_ENV=/opt/plane-venv\n  $STD uv pip install -r /opt/plane/apps/api/requirements/production.txt\n  msg_ok \"Set up Python API\"\n\n  msg_info \"Configuring Plane\"\n  SECRET_KEY=$(openssl rand -hex 32)\n  MACHINE_SIG=$(echo -n \"$(hostname)-$(date +%s)\" | sha256sum | head -c64)\n  LIVE_SECRET=$(openssl rand -hex 16)\n  cat \u003c\u003c EOF \u003e /opt/plane/apps/api/.env\nDEBUG=0\nCORS_ALLOWED_ORIGINS=http://${LOCAL_IP}\n\nPOSTGRES_USER=plane\nPOSTGRES_PASSWORD=${PG_DB_PASS}\nPOSTGRES_HOST=localhost\nPOSTGRES_DB=plane\nPOSTGRES_PORT=5432\nDATABASE_URL=postgresql://plane:${PG_DB_PASS}@localhost:5432/plane\n\nREDIS_HOST=localhost\nREDIS_PORT=6379\nREDIS_URL=redis://localhost:6379/\n\nRABBITMQ_HOST=localhost\nRABBITMQ_PORT=5672\nRABBITMQ_USER=plane\nRABBITMQ_PASSWORD=${RABBITMQ_PASS}\nRABBITMQ_VHOST=plane\nAMQP_URL=amqp://plane:${RABBITMQ_PASS}@localhost:5672/plane\n\nAWS_REGION=us-east-1\nAWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}\nAWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY}\nAWS_S3_ENDPOINT_URL=http://localhost:9000\nAWS_S3_BUCKET_NAME=uploads\nFILE_SIZE_LIMIT=104857600\n\nUSE_MINIO=1\nMINIO_ENDPOINT_SSL=0\nSECRET_KEY=${SECRET_KEY}\nMACHINE_SIGNATURE=${MACHINE_SIG}\n\nWEB_URL=http://${LOCAL_IP}\nADMIN_BASE_URL=http://${LOCAL_IP}\nADMIN_BASE_PATH=/god-mode\nSPACE_BASE_URL=http://${LOCAL_IP}\nSPACE_BASE_PATH=/spaces\nAPP_BASE_URL=http://${LOCAL_IP}\nAPP_BASE_PATH=\nLIVE_BASE_URL=http://${LOCAL_IP}\nLIVE_BASE_PATH=/live\n\nGUNICORN_WORKERS=2\nLIVE_SERVER_SECRET_KEY=${LIVE_SECRET}\nAPI_KEY_RATE_LIMIT=60/minute\nEOF\n  cat \u003c\u003c EOF \u003e /opt/plane/.env\nAPI_BASE_URL=http://localhost:8000\nLIVE_SERVER_SECRET_KEY=${LIVE_SECRET}\nREDIS_HOST=localhost\nREDIS_PORT=6379\nREDIS_URL=redis://localhost:6379/\nPORT=3100\nEOF\n  msg_ok \"Configured Plane\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/plane/apps/api || exit\n  set -a\n  source /opt/plane/apps/api/.env\n  set +a\n  $STD /opt/plane-venv/bin/python manage.py migrate\n  $STD /opt/plane-venv/bin/python manage.py collectstatic --noinput\n  $STD /opt/plane-venv/bin/python manage.py configure_instance\n  $STD /opt/plane-venv/bin/python manage.py register_instance \"${MACHINE_SIG}\"\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services and MinIO Bucket\"\n  curl -fsSL \"https://dl.min.io/client/mc/release/linux-${ARCH}/mc\" -o /usr/local/bin/mcli\n  chmod +x /usr/local/bin/mcli\n  $STD /usr/local/bin/mcli alias set plane http://localhost:9000 \"${MINIO_ACCESS_KEY}\" \"${MINIO_SECRET_KEY}\"\n  $STD /usr/local/bin/mcli mb plane/uploads --ignore-existing\n  $STD /usr/local/bin/mcli anonymous set download plane/uploads\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-api.service\n[Unit]\nDescription=Plane API\nAfter=network.target postgresql.service redis-server.service rabbitmq-server.service minio.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker plane.asgi:application --bind 0.0.0.0:8000 --max-requests 1200 --max-requests-jitter 1000 --access-logfile -\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-worker.service\n[Unit]\nDescription=Plane Celery Worker\nAfter=plane-api.service\nRequires=plane-api.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/celery -A plane worker -l info\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-beat.service\n[Unit]\nDescription=Plane Celery Beat\nAfter=plane-api.service\nRequires=plane-api.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/api\nEnvironmentFile=/opt/plane/apps/api/.env\nExecStart=/opt/plane-venv/bin/celery -A plane beat -l info\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-live.service\n[Unit]\nDescription=Plane Live Server\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane\nEnvironmentFile=/opt/plane/.env\nExecStart=/usr/bin/node apps/live/dist/start.mjs\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/plane-space.service\n[Unit]\nDescription=Plane Space Server\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/plane/apps/space\nEnvironment=PORT=3002\nEnvironment=NODE_ENV=production\nExecStart=/opt/plane/apps/space/node_modules/.bin/react-router-serve ./build/server/index.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl daemon-reload\n  systemctl enable -q --now plane-api plane-worker plane-beat plane-live plane-space\n  cat \u003c\u003c EOF \u003e ~/plane.creds\nRabbitMQ User: plane\nRabbitMQ Password: ${RABBITMQ_PASS}\nMinIO Access Key: ${MINIO_ACCESS_KEY}\nMinIO Secret Key: ${MINIO_SECRET_KEY}\nSecret Key: ${SECRET_KEY}\nConfig: /opt/plane/apps/api/.env\nEOF\n  msg_ok \"Created Services and MinIO Bucket\"\n\n  msg_info \"Configuring Nginx\"\n  cat \u003c\u003c 'EOF' \u003e /etc/nginx/sites-available/plane.conf\nupstream plane-api {\n    server 127.0.0.1:8000;\n}\n\nupstream plane-live {\n    server 127.0.0.1:3100;\n}\n\nupstream plane-space {\n    server 127.0.0.1:3002;\n}\n\nupstream plane-minio {\n    server 127.0.0.1:9000;\n}\n\nserver {\n    listen 80 default_server;\n    server_name _;\n    client_max_body_size 100M;\n\n    location /api/ {\n        proxy_pass http://plane-api;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /auth/ {\n        proxy_pass http://plane-api;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /static/ {\n        alias /opt/plane/apps/api/plane/static-assets/collected-static/;\n    }\n\n    location /live/ {\n        proxy_pass http://plane-live;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location = /uploads {\n        proxy_pass http://plane-minio;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n\n    location /uploads/ {\n        proxy_pass http://plane-minio;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    }\n\n    location /spaces/ {\n        proxy_pass http://plane-space;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location /spaces {\n        return 301 /spaces/;\n    }\n\n    location /god-mode/ {\n        alias /opt/plane/apps/admin/build/client/;\n        try_files $uri $uri/ /god-mode/index.html;\n    }\n\n    location /god-mode {\n        return 301 /god-mode/;\n    }\n\n    location / {\n        root /opt/plane/apps/web/build/client;\n        try_files $uri $uri/ /index.html;\n    }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/plane.conf /etc/nginx/sites-enabled/plane.conf\n  rm -f /etc/nginx/sites-enabled/default\n  $STD systemctl reload nginx\n  msg_ok \"Configured Nginx\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n  echo -e \"${INFO}${YW}Credentials and keys stored in: ~/plane.creds${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/plane ]]; then\n    msg_error \"No Plane Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  if check_for_gh_release \"plane\" \"makeplane/plane\"; then\n    msg_info \"Stopping Services\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" plane-api plane-worker plane-beat plane-live plane-space || return $?\n    msg_ok \"Stopped Services\"\n\n    create_backup /opt/plane/.env \\\n      /opt/plane/apps/admin/.env \\\n      /opt/plane/apps/api/.env \\\n      /opt/plane/apps/space/.env \\\n      /opt/plane/apps/web/.env || return $?\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"plane\" \"makeplane/plane\" \"tarball\"\n\n    restore_backup || return $?\n\n    msg_info \"Rebuilding Frontend (Patience)\"\n    cd /opt/plane || exit\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n\n    $STD pnpm install --frozen-lockfile\n    $STD pnpm turbo run build --filter=web --filter=admin --filter=space --filter=live\n    msg_ok \"Rebuilt Frontend\"\n\n    msg_info \"Updating Python Dependencies\"\n    cd /opt/plane/apps/api || exit\n    export VIRTUAL_ENV=/opt/plane-venv\n    $STD uv pip install --upgrade -r requirements/production.txt\n    msg_ok \"Updated Python Dependencies\"\n\n    msg_info \"Running Migrations\"\n    cd /opt/plane/apps/api || exit\n    set -a\n    source /opt/plane/apps/api/.env\n    set +a\n    $STD /opt/plane-venv/bin/python manage.py migrate\n    $STD /opt/plane-venv/bin/python manage.py collectstatic --noinput\n    $STD /opt/plane-venv/bin/python manage.py configure_instance\n    msg_ok \"Ran Migrations\"\n\n    msg_info \"Starting Services\"\n    systemctl start plane-api plane-worker plane-beat plane-live plane-space\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2155,SC2046",
@@ -405,6 +405,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -418,18 +419,18 @@
     "",
     "  if check_for_gh_release \"plane\" \"makeplane/plane\"; then",
     "    msg_info \"Stopping Services\"",
-    "    systemctl stop plane-api plane-worker plane-beat plane-live plane-space",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" plane-api plane-worker plane-beat plane-live plane-space || return $?",
     "    msg_ok \"Stopped Services\"",
     "",
     "    create_backup /opt/plane/.env \\",
     "      /opt/plane/apps/admin/.env \\",
     "      /opt/plane/apps/api/.env \\",
     "      /opt/plane/apps/space/.env \\",
-    "      /opt/plane/apps/web/.env",
+    "      /opt/plane/apps/web/.env || return $?",
     "",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"plane\" \"makeplane/plane\" \"tarball\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Rebuilding Frontend (Patience)\"",
     "    cd /opt/plane || exit",
@@ -461,6 +462,7 @@
     "    msg_ok \"Started Services\"",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -498,7 +500,7 @@
     {
       "name": "update_script",
       "start_line": 400,
-      "end_line": 458,
+      "end_line": 460,
       "name_span": {
         "start_line": 400,
         "start_col": 10,
@@ -3590,586 +3592,688 @@
       "start_line": 401,
       "start_col": 3,
       "end_line": 401,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 401,
+      "start_col": 27,
+      "end_line": 401,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 401,
+      "start_col": 30,
+      "end_line": 401,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 401,
+      "start_col": 37,
+      "end_line": 401,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 402,
       "start_col": 3,
       "end_line": 402,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 403,
       "start_col": 3,
       "end_line": 403,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 404,
+      "start_col": 3,
+      "end_line": 404,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 3,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 6,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 9,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 11,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 25,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 27
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 27,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 405,
+      "start_line": 406,
       "start_col": 29,
-      "end_line": 405,
+      "end_line": 406,
       "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 406,
-      "start_col": 5,
-      "end_line": 406,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 406,
-      "start_col": 15,
-      "end_line": 406,
-      "end_col": 45
     },
     {
       "kind": "command",
       "start_line": 407,
       "start_col": 5,
       "end_line": 407,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 407,
+      "start_col": 15,
+      "end_line": 407,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 408,
+      "start_col": 5,
+      "end_line": 408,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 408,
+      "start_line": 409,
       "start_col": 3,
-      "end_line": 408,
+      "end_line": 409,
       "end_col": 5
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 3,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 3,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 16,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 20
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 21,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 43
     },
     {
       "kind": "var-name",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 21,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 33,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 43
     },
     {
       "kind": "command",
-      "start_line": 410,
+      "start_line": 411,
       "start_col": 44,
-      "end_line": 410,
+      "end_line": 411,
       "end_col": 56
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 3,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 6,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 27,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 34
     },
     {
       "kind": "string-dq",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 35,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 52
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 52,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 53
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 412,
+      "start_line": 413,
       "start_col": 54,
-      "end_line": 412,
+      "end_line": 413,
       "end_col": 58
-    },
-    {
-      "kind": "command",
-      "start_line": 413,
-      "start_col": 5,
-      "end_line": 413,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 413,
-      "start_col": 14,
-      "end_line": 413,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 414,
       "start_col": 5,
       "end_line": 414,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 415,
-      "start_col": 5,
-      "end_line": 415,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 415,
-      "start_col": 12,
-      "end_line": 415,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 417,
-      "start_col": 5,
-      "end_line": 417,
-      "end_col": 18
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 423,
-      "start_col": 5,
-      "end_line": 423,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
-      "start_line": 423,
-      "start_col": 5,
-      "end_line": 423,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
-      "start_line": 423,
-      "start_col": 21,
-      "end_line": 423,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 423,
-      "start_col": 49,
-      "end_line": 423,
-      "end_col": 56
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 423,
-      "start_col": 57,
-      "end_line": 423,
-      "end_col": 74
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 423,
-      "start_col": 75,
-      "end_line": 423,
-      "end_col": 84
-    },
-    {
-      "kind": "command",
-      "start_line": 425,
-      "start_col": 5,
-      "end_line": 425,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 427,
-      "start_col": 5,
-      "end_line": 427,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 427,
+      "start_line": 414,
       "start_col": 14,
-      "end_line": 427,
-      "end_col": 46
+      "end_line": 414,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 415,
+      "start_col": 5,
+      "end_line": 415,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 415,
+      "start_col": 27,
+      "end_line": 415,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 415,
+      "start_col": 28,
+      "end_line": 415,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 415,
+      "start_col": 37,
+      "end_line": 415,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 415,
+      "start_col": 113,
+      "end_line": 415,
+      "end_col": 115
+    },
+    {
+      "kind": "command",
+      "start_line": 415,
+      "start_col": 116,
+      "end_line": 415,
+      "end_col": 122
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 415,
+      "start_col": 123,
+      "end_line": 415,
+      "end_col": 125
+    },
+    {
+      "kind": "command",
+      "start_line": 416,
+      "start_col": 5,
+      "end_line": 416,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 416,
+      "start_col": 12,
+      "end_line": 416,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 418,
+      "start_col": 5,
+      "end_line": 418,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 422,
+      "start_col": 32,
+      "end_line": 422,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 422,
+      "start_col": 35,
+      "end_line": 422,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 422,
+      "start_col": 42,
+      "end_line": 422,
+      "end_col": 44
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 424,
+      "start_col": 5,
+      "end_line": 424,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 424,
+      "start_col": 5,
+      "end_line": 424,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 424,
+      "start_col": 21,
+      "end_line": 424,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 424,
+      "start_col": 49,
+      "end_line": 424,
+      "end_col": 56
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 424,
+      "start_col": 57,
+      "end_line": 424,
+      "end_col": 74
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 424,
+      "start_col": 75,
+      "end_line": 424,
+      "end_col": 84
+    },
+    {
+      "kind": "command",
+      "start_line": 426,
+      "start_col": 5,
+      "end_line": 426,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 426,
+      "start_col": 20,
+      "end_line": 426,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 426,
+      "start_col": 23,
+      "end_line": 426,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 426,
+      "start_col": 30,
+      "end_line": 426,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 428,
       "start_col": 5,
       "end_line": 428,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 428,
+      "start_col": 14,
+      "end_line": 428,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 429,
+      "start_col": 5,
+      "end_line": 429,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 428,
+      "start_line": 429,
       "start_col": 19,
-      "end_line": 428,
+      "end_line": 429,
       "end_col": 21
     },
     {
       "kind": "command",
-      "start_line": 428,
+      "start_line": 429,
       "start_col": 22,
-      "end_line": 428,
+      "end_line": 429,
       "end_col": 26
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 429,
+      "start_line": 430,
       "start_col": 5,
-      "end_line": 429,
+      "end_line": 430,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 429,
+      "start_line": 430,
       "start_col": 12,
-      "end_line": 429,
+      "end_line": 430,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 429,
+      "start_line": 430,
       "start_col": 12,
-      "end_line": 429,
+      "end_line": 430,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 429,
+      "start_line": 430,
       "start_col": 25,
-      "end_line": 429,
+      "end_line": 430,
       "end_col": 52
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 430,
+      "start_line": 431,
       "start_col": 5,
-      "end_line": 430,
+      "end_line": 431,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 430,
+      "start_line": 431,
       "start_col": 12,
-      "end_line": 430,
+      "end_line": 431,
       "end_col": 45
     },
     {
       "kind": "var-name",
-      "start_line": 430,
+      "start_line": 431,
       "start_col": 12,
-      "end_line": 430,
+      "end_line": 431,
       "end_col": 43
     },
     {
       "kind": "param-exp",
-      "start_line": 432,
+      "start_line": 433,
       "start_col": 5,
-      "end_line": 432,
+      "end_line": 433,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 432,
+      "start_line": 433,
       "start_col": 10,
-      "end_line": 432,
+      "end_line": 433,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 433,
+      "start_line": 434,
       "start_col": 5,
-      "end_line": 433,
+      "end_line": 434,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 433,
+      "start_line": 434,
       "start_col": 10,
-      "end_line": 433,
+      "end_line": 434,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 434,
+      "start_line": 435,
       "start_col": 5,
-      "end_line": 434,
+      "end_line": 435,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 434,
+      "start_line": 435,
       "start_col": 12,
-      "end_line": 434,
+      "end_line": 435,
       "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 436,
-      "start_col": 5,
-      "end_line": 436,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 436,
-      "start_col": 14,
-      "end_line": 436,
-      "end_col": 44
     },
     {
       "kind": "command",
       "start_line": 437,
       "start_col": 5,
       "end_line": 437,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 437,
+      "start_col": 14,
+      "end_line": 437,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 438,
+      "start_col": 5,
+      "end_line": 438,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 437,
+      "start_line": 438,
       "start_col": 28,
-      "end_line": 437,
+      "end_line": 438,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 437,
+      "start_line": 438,
       "start_col": 31,
-      "end_line": 437,
+      "end_line": 438,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 438,
+      "start_line": 439,
       "start_col": 5,
-      "end_line": 438,
+      "end_line": 439,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 438,
+      "start_line": 439,
       "start_col": 12,
-      "end_line": 438,
+      "end_line": 439,
       "end_col": 39
     },
     {
       "kind": "var-name",
-      "start_line": 438,
+      "start_line": 439,
       "start_col": 12,
-      "end_line": 438,
+      "end_line": 439,
       "end_col": 23
     },
     {
       "kind": "param-exp",
-      "start_line": 439,
+      "start_line": 440,
       "start_col": 5,
-      "end_line": 439,
+      "end_line": 440,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 439,
+      "start_line": 440,
       "start_col": 10,
-      "end_line": 439,
+      "end_line": 440,
       "end_col": 12
     },
     {
       "kind": "command",
-      "start_line": 440,
+      "start_line": 441,
       "start_col": 5,
-      "end_line": 440,
+      "end_line": 441,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 440,
+      "start_line": 441,
       "start_col": 12,
-      "end_line": 440,
+      "end_line": 441,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 442,
+      "start_line": 443,
       "start_col": 5,
-      "end_line": 442,
+      "end_line": 443,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 442,
+      "start_line": 443,
       "start_col": 14,
-      "end_line": 442,
+      "end_line": 443,
       "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 443,
-      "start_col": 5,
-      "end_line": 443,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 443,
-      "start_col": 28,
-      "end_line": 443,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 443,
-      "start_col": 31,
-      "end_line": 443,
-      "end_col": 35
     },
     {
       "kind": "command",
       "start_line": 444,
       "start_col": 5,
       "end_line": 444,
-      "end_col": 8
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 444,
+      "start_col": 28,
+      "end_line": 444,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 444,
+      "start_col": 31,
+      "end_line": 444,
+      "end_col": 35
     },
     {
       "kind": "command",
       "start_line": 445,
       "start_col": 5,
       "end_line": 445,
-      "end_col": 11
+      "end_col": 8
     },
     {
       "kind": "command",
       "start_line": 446,
       "start_col": 5,
       "end_line": 446,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 447,
+      "start_col": 5,
+      "end_line": 447,
       "end_col": 8
     },
     {
       "kind": "param-exp",
-      "start_line": 447,
-      "start_col": 5,
-      "end_line": 447,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 447,
-      "start_col": 10,
-      "end_line": 447,
-      "end_col": 36
-    },
-    {
-      "kind": "param-exp",
       "start_line": 448,
       "start_col": 5,
       "end_line": 448,
@@ -4195,151 +4299,215 @@
       "start_col": 10,
       "end_line": 449,
       "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 450,
+      "start_col": 5,
+      "end_line": 450,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 450,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 450,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 451,
+      "start_col": 5,
+      "end_line": 451,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 450,
+      "start_line": 451,
       "start_col": 12,
-      "end_line": 450,
+      "end_line": 451,
       "end_col": 28
-    },
-    {
-      "kind": "command",
-      "start_line": 452,
-      "start_col": 5,
-      "end_line": 452,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 452,
-      "start_col": 14,
-      "end_line": 452,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 453,
       "start_col": 5,
       "end_line": 453,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 453,
+      "start_col": 14,
+      "end_line": 453,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 454,
+      "start_col": 5,
+      "end_line": 454,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 454,
+      "start_line": 455,
       "start_col": 5,
-      "end_line": 454,
+      "end_line": 455,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 454,
+      "start_line": 455,
       "start_col": 12,
-      "end_line": 454,
+      "end_line": 455,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 455,
+      "start_line": 456,
       "start_col": 5,
-      "end_line": 455,
+      "end_line": 456,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 455,
+      "start_line": 456,
       "start_col": 12,
-      "end_line": 455,
+      "end_line": 456,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 456,
+      "start_line": 457,
       "start_col": 3,
-      "end_line": 456,
+      "end_line": 457,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 457,
+      "start_line": 458,
       "start_col": 3,
-      "end_line": 457,
+      "end_line": 458,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 458,
+      "start_col": 27,
+      "end_line": 458,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 458,
+      "start_col": 28,
+      "end_line": 458,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 458,
+      "start_col": 37,
+      "end_line": 458,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 458,
+      "start_col": 56,
+      "end_line": 458,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 458,
+      "start_col": 59,
+      "end_line": 458,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 458,
+      "start_col": 66,
+      "end_line": 458,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 459,
+      "start_col": 3,
+      "end_line": 459,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 458,
-      "start_col": 1,
-      "end_line": 458,
-      "end_col": 2
-    },
-    {
-      "kind": "comment",
       "start_line": 460,
       "start_col": 1,
       "end_line": 460,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 461,
-      "start_col": 1,
-      "end_line": 461,
-      "end_col": 28
+      "end_col": 2
     },
     {
       "kind": "comment",
       "start_line": 462,
       "start_col": 1,
       "end_line": 462,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 463,
+      "start_col": 1,
+      "end_line": 463,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 464,
+      "start_col": 1,
+      "end_line": 464,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 463,
+      "start_line": 465,
       "start_col": 1,
-      "end_line": 463,
+      "end_line": 465,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 463,
+      "start_line": 465,
       "start_col": 8,
-      "end_line": 463,
+      "end_line": 465,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 463,
+      "start_line": 465,
       "start_col": 10,
-      "end_line": 463,
+      "end_line": 465,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 465,
       "start_col": 21,
-      "end_line": 463,
+      "end_line": 465,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 463,
+      "start_line": 465,
       "start_col": 22,
-      "end_line": 463,
+      "end_line": 465,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 463,
+  "bootstrap_line": 465,
   "hooks": {
     "header_info": false,
     "install_script": true,

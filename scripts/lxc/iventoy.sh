@@ -66,6 +66,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -86,9 +87,9 @@ function update_script() {
     $STD /opt/iventoy/iventoy.sh stop
     msg_ok "Stopped iVentoy"
 
-    create_backup /opt/iventoy/data /opt/iventoy/iso
+    create_backup /opt/iventoy/data /opt/iventoy/iso || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "iventoy" "ventoy/PXE" "prebuild" "latest" "/opt/iventoy" "iventoy-*-linux-${IVENTOY_ARCH}.tar.gz"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting iVentoy"
     $STD /opt/iventoy/iventoy.sh -R start

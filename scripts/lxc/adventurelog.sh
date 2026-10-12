@@ -135,6 +135,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -145,12 +146,12 @@ function update_script() {
   $STD apt install -y memcached libmemcached-tools
   if check_for_gh_release "adventurelog" "seanmorley15/adventurelog"; then
     msg_info "Stopping Services"
-    systemctl stop adventurelog-backend
-    systemctl stop adventurelog-frontend
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" adventurelog-backend || return $?
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" adventurelog-frontend || return $?
     msg_ok "Services Stopped"
 
     create_backup /opt/adventurelog/backend/server/.env \
-      /opt/adventurelog/backend/server/media
+      /opt/adventurelog/backend/server/media || return $?
 
     fetch_and_deploy_gh_release "adventurelog" "seanmorley15/adventurelog" "tarball"
     PYTHON_VERSION="3.13" setup_uv
@@ -159,7 +160,7 @@ function update_script() {
     $STD sudo -u postgres psql -d adventurelog_db -c "CREATE EXTENSION IF NOT EXISTS postgis;"
     msg_ok "PostgreSQL Extensions Ready"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating AdventureLog"
     cd /opt/adventurelog/backend/server || exit
@@ -186,6 +187,7 @@ function update_script() {
     msg_ok "Services Started"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

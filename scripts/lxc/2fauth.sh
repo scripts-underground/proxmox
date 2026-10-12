@@ -96,6 +96,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -113,7 +114,7 @@ function update_script() {
     msg_info "Creating Backup"
     create_backup \
       /opt/2fauth/.env \
-      /opt/2fauth/storage
+      /opt/2fauth/storage || return $?
 
     if ! dpkg -l | grep -q 'php8.4'; then
       cp /etc/nginx/conf.d/2fauth.conf /etc/nginx/conf.d/2fauth.conf.bak
@@ -127,7 +128,7 @@ function update_script() {
 
     fetch_and_deploy_gh_release "2fauth" "Bubka/2FAuth" "tarball"
     setup_composer
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring 2FAuth"
     cd /opt/2fauth || exit

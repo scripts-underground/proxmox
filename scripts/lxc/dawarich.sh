@@ -195,6 +195,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -208,12 +209,12 @@ function update_script() {
 
   if check_for_gh_release "dawarich" "$var_lxc_git_repo"; then
     msg_info "Stopping Services"
-    systemctl stop dawarich-web dawarich-worker
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" dawarich-web dawarich-worker || return $?
     msg_ok "Stopped Services"
 
     create_backup /opt/dawarich/app/storage \
       /opt/dawarich/app/config/master.key \
-      /opt/dawarich/app/config/credentials.yml.enc
+      /opt/dawarich/app/config/credentials.yml.enc || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "dawarich" "Freika/dawarich" "tarball" "latest" "/opt/dawarich/app"
 
@@ -257,13 +258,14 @@ function update_script() {
     $STD bundle exec rake data:migrate
     msg_ok "Ran Migrations"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Services"
     systemctl start dawarich-web dawarich-worker
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

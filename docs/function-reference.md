@@ -250,17 +250,18 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 
 ### Backup & restore (for `update_script()` authors)
 
-- **`create_backup <path> [...]`** — Copies each path into a manifest-tracked store (default `/opt/<NSAPP>.backup`, override with `BACKUP_DIR`), mirroring absolute paths under `<store>/files`. Idempotent per path; missing paths and mount points are skipped with a warning; aborts the update on copy failure.
-- **`restore_backup()`** — Restores every manifest-recorded path back to its origin (replacing whatever the update left), then deletes the store. No-op with a warning when no store exists.
+- **`create_backup <path> [...]`** — Copies each path into a private manifest-tracked store (default `/opt/<NSAPP>.backup`, override with `BACKUP_DIR`), mirroring absolute paths under `<store>/files`. A fresh staging object prevents nested partial-copy retries. Required failures return their checked status; callers must propagate it. Missing paths and mount points are skipped with a warning.
+- **`restore_backup()`** — Checks the complete manifest and saved cohort, prepares replacements before touching live paths, and retires the active store to a unique retained `.restored.*` sibling after complete restoration. Failed copies retain the original store and current live object. Previous live objects remain in `.backup-restore.*` siblings. No-op when no store exists.
+- **`_recover_update_backups [store ...]`** — Enters archive recovery through its existing owner, then restores the caller's default/custom backup stores before comparing release freshness. A current marker never skips pending protected-data recovery.
 
-Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgrade; call `restore_backup` on the failure path. The store name falls back to `$APP_SLUG` when `$NSAPP` is unset (addon bundles).
+Typical update flow: `_recover_update_backups || return $?` before comparison; `create_backup /opt/app/.env /opt/app/data || return $?` before deployment; `restore_backup || return $?` after deployment/build. Pass custom stores explicitly to recovery. The store name falls back to `$APP_SLUG` when `$NSAPP` is unset (addon bundles). Retained copies consume storage and are operator cleanup decisions.
 
 ### GitHub / Codeberg / GitLab API
 
 - **`validate_github_token()`** — Tests PAT against GitHub `/user`. Returns 0/1/2/3.
 - **`prompt_for_github_token()`** — Interactive PAT entry; exports `GITHUB_TOKEN`.
 - **`github_api_call()`** — Authenticated GET with rate-limit backoff. Reads `GITHUB_TOKEN`.
-- **`codeberg_api_call()`** — Codeberg API GET (no auth needed).
+- **`codeberg_api_call <url> [output_file] [status_file]`** — Codeberg API GET (no auth needed). The optional third file records the final HTTP status; incomplete or curl-failed transfers record `000`. The existing two-argument/stdout interface and error codes remain supported.
 - **`get_latest_gh_tag()`**, **`get_latest_github_release()`**, **`get_latest_codeberg_release()`**, **`get_latest_gitlab_release()`** — Latest version probes.
 - **`extract_version_from_json()`** — `jq` field extraction from release JSON.
 
@@ -274,10 +275,234 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 ### Release fetch & deploy
 
 - **`fetch_and_deploy_gh_tag()`** — Download tag archive via `refs/tags/<tag>.tar.gz`, extract to target. Modes: tag-only repos.
-- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback.
+- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback. `FORCE_DEPLOY=1` explicitly redeploys the selected release without changing its version marker; normal same-version calls remain idempotent.
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and extraction.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
+
+Codeberg pins prefer the exact tag endpoint. Only a completed HTTP 404 permits
+the alternate numeric-v spelling (`1.0.0` ↔ `v1.0.0`). Authentication,
+rate-limit and incomplete-transfer failures do not trigger that fallback.
+Explicit metadata must match the requested tag or its permitted equivalent;
+raw tags such as `version/2` remain intact and URL-encoded. Selection and
+already-current comparisons do not depend on the first release-list page.
+Agreement is checked against raw JSON strings inside jq before Bash extraction.
+Forbidden control/whitespace metadata rejects with250; valid slash/non-ASCII
+spellings remain intact. Trailing newlines cannot turn a different raw tag into
+an accepted requested pin, and stale selection/installed markers stay protected.
+
+#### Archive transaction and retained recovery data
+
+Codeberg `tag`, `tarball`/`source`, `prebuild`, and GitHub **prebuild** use one
+private archive transaction owner. Public positional signatures are unchanged.
+The canonical root is never renamed away; root binds, descendant directory
+mounts and their ancestor skeletons remain attached. Ordinary files inside a
+mounted directory can be replaced in their actual parent. Mounted-file
+collisions, conflicting aliases, changed directory-link ancestors, unsupported
+incoming links/special entries, and changed/pruned hardlinked files reject
+before application. An existing internal leaf alias receiving regular data
+keeps its link text while publication addresses the ordinary internal referent.
+
+The complete incoming payload is extracted and validated before application.
+Original overwritten/pruned leaves and the old marker are prepared before the
+first live operation. JSON intent records precede individual prunes, directory
+creations and same-parent leaf publication. The marker is published last through
+the same protocol, then verified with the payload before `COMMITTED` is written.
+Merge mode retains unrelated data; `CLEAN_INSTALL=1` prunes eligible absent
+entries under non-hidden root names, preserves absent root dot entries, and
+never prunes inside a proper descendant mount. Existing directories retain
+their permissions, existing regular leaves retain owner/mode, and new files
+take source mode subject to the caller's umask. No live directory is recursively
+removed by this transaction.
+
+Cooperating archive calls serialize on a stable lock in the executing guest's
+`/var/lib/scripts-underground/release-deploy` (120-second acquisition bound).
+Unique `txn-*` directories retain manifests, plans, operation state and
+originals after commit or rollback. There is no automatic backup pruning or
+store-path override. Unfinished records are validated and recovered before a
+same-version shortcut. Invalid records or incompatible boot/mount-namespace or
+mount topology changes refuse new mutation and identify the retained path.
+
+Returned errors and caught INT/TERM cause reverse rollback under that lock.
+Restoration copies retained originals to fresh same-parent candidates rather
+than consuming backups. If a live entry matches neither the original nor the
+transaction's expected result, preserve it and the backup, report
+`RECOVERY_REQUIRED`, and continue independent safe undo steps. Recovery trouble
+does not become successful deployment; an on-disk committed decision is never
+undone by a later cleanup failure. Disposable cleanup problems after commit are
+warnings. Caller EXIT/INT/TERM traps remain caller-owned.
+
+Journal publication requires a completed successful producer and exactly one
+complete JSON document with the caller's required record shape. Empty,
+multiple-document and truncated input cannot replace the previous valid
+destination. A producer that emits valid bytes but exits nonzero cannot
+authorize publication; this contract is independent of caller pipefail/errexit.
+Schedule readers complete and validate cardinality, row types and expected
+counts before their rows are consumed. A failed reader or partial prefix is not
+a successful empty verification/undo. Scalar/path reads retain trailing
+newlines and check the producer's status before assigning the value.
+
+Current finalization requires validated committed records and checked actual
+payload/marker readback, or an explicit recovered same-version no-op, before
+returning success. Returning status 0 followed by rollback is still a deployment
+failure. A valid committed publication remains accepted if its rename reports
+a later error; failed decision/outcome reads are reported as failure rather
+than downgraded to disposable-cleanup warnings. Historical journal validation
+does not create reader artifacts inside those retained records.
+
+New manifest, decision, operation and fingerprint records use **schema 2**.
+The decision records monotone `application_started`, complete `plan_count`,
+and sealed plan/alias SHA-256 values. `APPLYING` authorizes application only
+after every planned original/input and operation has been validated. Once true,
+`application_started` is never reset. Application-capable phases require the
+entire sealed record set; missing plan, alias or operation data is invalid
+recovery, not an empty undo schedule. Historical completed decisions are
+structurally inspected without comparing them to a later legitimate live
+generation. Unknown or contradictory records refuse mutation.
+
+Decision and operation writers validate the complete candidate shape before its
+rename and check the legal predecessor. Completed decisions cannot return to
+application, and applied operations cannot return to preparation. Recovery may
+repeat its restoring steps and finalize directory metadata under `ROLLING_BACK`;
+these retries do not reopen a committed or rolled-back decision. Rejected
+candidates leave the previous valid document intact.
+
+Record inspection uses a record-local context. It cannot change the current
+request's target, marker, input root, fingerprint revision, root identity or plan
+seals. Recovery and finalization explicitly load a validated record's context;
+the loader assigns that context only after all required reads succeed.
+
+Single-binary archive callers may use `_gh_deploy_archive_binary` to fetch into
+private staging, prepare only the requested archive member, and publish the final
+binary with its real version marker through the same owner. Archive-only README
+and license files stay outside the binary directory. Filebrowser uses this route
+for installation and update, requesting mode755 explicitly; a failed publication
+keeps the previous binary/version and returns an error.
+
+The private prepared-tree owner accepts an optional regular-payload publication
+mode, recorded as `publish_mode`. It applies to regular published payload files,
+never the marker. An absent/empty field preserves existing metadata as before;
+historical records retain that default. Recovery validates the requested mode and
+the expected incoming mode. Explicit callers can therefore retain their executable
+installation policy without weakening the default metadata-preserving route.
+
+New schema-2 manifests declare `fingerprint_revision: 2`, requiring exact native
+UTC nanosecond leaf mtime alongside bytes, owner, mode and the complete native
+attribute set. An unchanged symlink referent does not make a timestamp-only link
+edit safe to overwrite. Historical schema-2 records without this declaration
+retain revision-1 comparisons; unknown revisions and malformed extensions refuse
+mutation. Historical records are not rewritten to fabricate timestamps.
+
+Private Boolean readers distinguish a successfully read false value from producer
+failure. Checked record writers/loaders return 0 on success and 252 on rejection
+or failed reads; shape predicates return the completed jq predicate status, which
+their callers must check. These conventions do not change public provider status
+codes or transfer service ownership from callers into the engine.
+
+Initialization allocates a private retained `init-*` directory, prepares and
+validates its complete bootstrap plus a preallocated preparation-only terminal
+decision, then publishes its unused `txn-*` name. Unpublished allocations never
+authorize application or become active recovery records; failed allocations
+remain evidence without poisoning unrelated later calls. Aliases publish before
+the plan. PREPARING/false may contain a valid PREPARED prefix and a partial next
+copy, but never application progress/candidates. A checked preparation abort
+verifies unchanged planned originals and renames the preallocated ROLLED_BACK/
+false decision without allocating a new state temporary into a full store.
+Incomplete legacy application recovery is refused rather than guessing stronger
+original/ownership evidence from current live data.
+The schema1 dispatcher requires a complete structurally usable record set for
+completed history. Fully initialized PREPARING with a valid exclusive PREPARED
+prefix/no candidates can terminate without application changes; its checked
+schema1 terminal decision records `preparation_only:true`, preserving every
+legacy artifact. Missing files alone never establish that proof. Unsafe active
+schema1 application/recovery remains explicitly refused at its exact retained
+path because it lacks the new ownership/directory-original guarantee; new
+finalization cannot enter the former permissive recovery branch. Completed
+history is neither rewritten nor recertified as schema2 metadata evidence.
+
+Recovery rechecks PREPARED and already-RESTORED originals. A later edit to a
+RESTORED object is a conflict even if it matches the former incoming value;
+it does not authorize restoring again or starting a new deployment. Independent
+safe undo may continue, but ROLLED_BACK requires a complete checked original/
+alias/root/mount outcome, including untouched PREPARED operations. Completed
+historical generations are not compared against later legitimate live bytes.
+
+Physical exclusion covers effective roots and proper descendant mount origins
+of target, prepared input and store, plus each changed entry and same-parent
+candidate. Explicit kernel mount parentage resolves visible stacked attachments;
+hidden/ambiguous mappings reject rather than choosing an arbitrary mount row.
+Store-covering/descendant attachments participate in topology guards.
+Prepared-tree source roots are recorded as `input_root` and their covering/
+descendant attachments are checked during preparation and recovery; owned
+archive staging is covered by the store's topology guard. The lock
+opens without truncating its contents; held descriptor and pathname must retain
+the same device/inode/type/owner/link count, and the store identity is guarded.
+An archive owner never unlinks, replaces or repairs that lock inode.
+
+Each locked call allocates a separate private `.read-*` workspace before prior
+journal inspection. Its fixed native-output/diagnostic/canonical-body buffers
+and checksum checkpoint are allocated once and reused serially, including
+fingerprint subshells. Completed checked native getfattr output is accepted only
+with no diagnostics and valid exactly-one-object framing (or the characterized
+successful empty set); duplicate names, missing separators, NUL bytes and
+partial/multiple/failed producers reject. Encoded names/hex values remain in
+canonical files rather than binary Bash/JSON values. Historical journal reads
+never create those buffers inside retained records.
+
+Reader directory/buffer identity, ownership, link count, current content and
+native metadata govern cleanup. Only known owned disposable buffers are
+unlinked; replacements, hardlinks, unexpected entries/edits or ambiguous
+initialization retain the workspace. Older reader leftovers are not recovery
+authorities or adopted cleanup targets. Reusing allocated buffers supports the
+bounded preparation ENOSPC case; it is not an arbitrary-growth-on-full-storage
+guarantee. Standard attr (`getfattr`/`setfattr`) is a transaction prerequisite.
+
+Schema-2 non-absent fingerprints include the full canonical xattr-set SHA-256
+and count, including access/default ACLs exposed by the native utility.
+Allocation identity and link count are distinct from content/basic metadata.
+New-directory preparation records only the requested mode with
+`metadata_pending`; native mkdir's actual inherited group/setgid/default-ACL
+fingerprint and identity replace that request before APPLIED. Caught INT/TERM
+are deferred through a bounded immune primitive child until actual creation
+and ownership observation finish; the single owner's pending130/143 remains
+authoritative and caller traps stay isolated.
+
+Operation `attempts` replace string temporaries/shared per-purpose fingerprints.
+Each attempt records canonical purpose/number/path, guarded parent/directory,
+retained source fingerprint/size, exclusive candidate identity/initial metadata,
+copy result/status, readiness and cleanup state. Regular data copies into a
+preallocated inode do not preserve attributes; full data/prefix/identity and
+initial metadata observations establish ownership even after a genuine copy
+error. Attributes are then applied and verified separately. Links use literal
+exclusive creation and no dereferenced placeholder copy. Later attempts cannot
+lend ownership to earlier partials. Unexpected bytes/mode/ACL/xattrs/inodes/
+hardlinks retain their conflicts and gate retry. Verified attempts are cleared
+before their created parent is removed via rmdir.
+
+Prepared pruned-directory originals retain a nonrecursive GNU pax archive,
+verified empty metadata replica, complete native attribute body/hashes and an
+independent zero-byte native timestamp reference. Replica identity/ctime,
+archive/body consistency and guarded references are validated; no populated
+installed directory is recursively cloned. GNU tar ACL/xattr/no-recursion
+capabilities are mandatory before mutation. Directory restoration recreates
+owned parents, restores children and clears attempts first, then applies the
+empty replica's attributes, reconciles only attributable extra attributes,
+regenerates the guarded native restore header and restores timestamps last.
+Only fresh full-set/mode/owner/result verification authorizes RESTORED.
+Archives are never extracted over populated live data. No inode/ctime restore
+claim is made. Retained intermediate aliases protect every ordinary ancestor
+skeleton while eligible obsolete siblings remain prunable.
+
+This is **per-entry publication**, not whole-tree visibility atomicity. Callers
+still stop services/quiesce noncooperating writers; readers may see mixed
+generations during application/rollback. There is no SIGKILL, power-loss or
+hostile concurrent-root race guarantee. The transaction returns 250 for
+download failure, 251 for extraction failure, 252 for deployment/preparation or
+recovery failure, 65 for unsupported input, and preserves caught 130/143.
+GitHub's existing `FORCE_DEPLOY` flag forces its prebuild application; Codeberg
+has ordinary idempotence and no new force-variable API. GitHub source/tarball,
+package installs, generic backup/restore and the full RomM build/database flow
+have their existing distinct guarantees.
 
 ### Runtime setups — Each reads version from env, installs, caches version
 
@@ -301,14 +526,50 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`setup_postgresql_db()`** — Provision role + database. Reads `PG_DB_NAME`/`USER`/`PASS`. Exports DB vars.
 - **`setup_ruby()`** — Install rbenv + ruby-build. Reads `RUBY_VERSION`, `RUBY_INSTALL_RAILS`.
 - **`setup_rust()`** — Install rustup + toolchain + crates. Reads `RUST_TOOLCHAIN`, `RUST_CRATES`.
-- **`setup_uv()`** — Install `uv` (astral-sh) binary. Reads `USE_UVX`, `PYTHON_VERSION`.
+- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then the effective exact project pin, then latest. A present `uv.toml` masks pyproject settings even when its root-level pin is absent/non-exact; otherwise only direct `[tool.uv]` is inspected. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
-- **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`.
+- **`setup_hwaccel [service-user]`** — Provisions only selected, actually mapped character-device stacks using sysfs vendor attribution. Honors baked `ENABLE_GPU`, `GPU_TYPE`, `INSTALL_NVIDIA_DRIVERS`; supports NVIDIA1-only/manual userspace. Exports prerequisite-only `HWACCEL_VENDOR`/`HWACCEL_VENDORS`, not inference/VRAM/ABI proof. Optional quiet package failures cannot exit the parent. NVIDIA uses checked OS-specific package/dependency plans; Intel installs one selected compute-runtime/IGC cohort and never unrelated latest IGC. Mapping owns device permissions; this helper only adds service-user membership.
+
+Model-server private adapters `_ollama_deploy`, `_llama_cpp_deploy` and `_strata_deploy` prepare complete coherent payloads and enter the existing archive owner once. Checked selected metadata prevents release substitution; safe internal ABI aliases become ordinary file bytes. Persistent models, configuration and versioned Python/build workspaces stay outside binary publication. `_gh_deploy_selected_source` retains the non-engine source-copy contract while enforcing exact selected identity.
+
+Update service intents use `_update_services_stop`/`_update_services_stop_optional` before stopping units, and `_update_services_finish` after required work even on current-version retries. Required units are checked active; optional units retain best-effort behavior. Systemd and OpenRC share this contract. `_release_service_deploy` combines archive recovery with native model-server service completion.
+
+GPU device mapping is owned by `build.func`: each character DRM node is attributed
+to its sysfs vendor, mixed stacks default to all when unattended, and NVIDIA card
+selection includes the shared control/UVM/caps nodes. Duplicate selections do not
+duplicate `devN` entries or overwrite unrelated mappings. Effective `ENABLE_GPU`
+overrides an application's default. `fix_gpu_gids()` uses checked guest video/render
+group records and PVE device properties, then verifies restart state; guest helpers
+only add service-account group membership and never change shared device inodes.
+
+Inlined bundles bake `ENABLE_GPU`, selected `GPU_TYPE`, `INSTALL_NVIDIA_DRIVERS` and
+`CTTYPE` alongside the normal application context. This preserves selections in a
+clean environment; it does not certify usable hardware or driver/runtime readiness.
+
+The shell-based uv extractor supports ordinary single-line basic/double or
+literal/single quoted `required-version` values, horizontal whitespace, and a
+comment after the closing quote. It tracks tables and unrelated quoted/multiline
+text, preserves internal `#`, and does not claim general TOML compliance.
+Bare numeric version tokens and complete `==` requirements select exact tags;
+wildcards/compound ranges retain latest fallback rather than becoming exact.
+Recognized complete `==...` explicit overrides normalize to the version before
+comparison/download/cache; other explicit override spellings retain their
+existing interpretation and precedence. Escaped/multiline targeted values,
+invalid types, duplicate settings and unsupported targeted syntax return an
+actionable parse error, not a latest installation. Private parser statuses are
+0 = exact version on stdout, 1 = absent/non-exact, 2 = invalid/unsupported;
+`setup_uv` maps status 2 to 250. Diagnostics go to stderr. No production
+Python/TOML parser dependency is introduced and ranges are not resolved.
+LF and CRLF records use the same lexical path: only a terminal record-ending CR
+is removed before header/target parsing. Quoted/interior data is not stripped or
+rewritten; effective-file precedence, exact/range handling and status mapping
+remain unchanged.
 
 ### Utilities
 
+- **`check_available_storage_bytes(bytes, path...)`** — Pre-mutation available-byte guard. It resolves each absolute path's nearest existing directory ancestor, checks completed GNU stat/df observations, and deduplicates filesystem device identities. Missing/invalid/incomplete command output fails closed; it creates no directories and never prompts or removes data. Returns 0 for sufficient space, 65 for invalid input and 252 for unavailable/insufficient observation. The caller supplies its workload budget and paths; this utility has no application-specific policy. RomM's baked context defaults to an 8 GiB operational budget, checked before installation or update service stop, with a recommended 32 GiB root allocation plus separate library/retention growth.
 - **`create_self_signed_cert()`** — Generate 2048-bit RSA cert with SANs.
 - **`ensure_usr_local_bin_persist()`** — Persist `/usr/local/bin` in PATH across login/non-login shells.
 - **`setup_local_ip_helper()`** — Install networkd-dispatcher hook for dynamic IP tracking.
@@ -329,7 +590,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 
 ---
 
- 
+
 
 ---
 

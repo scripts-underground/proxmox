@@ -143,6 +143,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -157,7 +158,7 @@ function update_script() {
 
   if check_for_gh_release "gramps-web-api" "gramps-project/gramps-web-api"; then
     msg_info "Stopping Service"
-    systemctl stop gramps-web
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" gramps-web || return $?
     msg_ok "Stopped Service"
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gramps-web-api" "gramps-project/gramps-web-api" "tarball" "latest" "/opt/gramps-web-api"
@@ -198,7 +199,7 @@ function update_script() {
 
   if check_for_gh_release "gramps-web" "gramps-project/gramps-web"; then
     msg_info "Stopping Service"
-    systemctl stop gramps-web
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" gramps-web || return $?
     msg_ok "Stopped Service"
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gramps-web" "gramps-project/gramps-web" "tarball" "latest" "/opt/gramps-web/frontend"
@@ -207,12 +208,12 @@ function update_script() {
     cd /opt/gramps-web/frontend || exit
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-    create_backup /opt/gramps-web/frontend/dist/config.js
+    create_backup /opt/gramps-web/frontend/dist/config.js || return $?
 
     $STD npm install
     $STD npm run build
 
-    restore_backup
+    restore_backup || return $?
 
     msg_ok "Updated Gramps Web Frontend"
 
@@ -220,6 +221,7 @@ function update_script() {
     systemctl start gramps-web
     msg_ok "Started Service"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

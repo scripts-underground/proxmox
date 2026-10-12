@@ -63,6 +63,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -73,18 +74,19 @@ function update_script() {
 
   if check_for_gh_release "UmlautAdaptarr" "PCJones/Umlautadaptarr"; then
     msg_info "Stopping Service"
-    systemctl stop umlautadaptarr
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" umlautadaptarr || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/UmlautAdaptarr/appsettings.json
+    create_backup /opt/UmlautAdaptarr/appsettings.json || return $?
     fetch_and_deploy_gh_release "UmlautAdaptarr" "PCJones/Umlautadaptarr" "prebuild" "latest" "/opt/UmlautAdaptarr" "linux-x64.zip"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start umlautadaptarr
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

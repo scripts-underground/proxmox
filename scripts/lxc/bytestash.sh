@@ -81,6 +81,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -91,13 +92,13 @@ function update_script() {
 
   if check_for_gh_release "bytestash" "jordan-dalby/ByteStash"; then
     msg_info "Stopping Services"
-    systemctl stop bytestash-backend bytestash-frontend
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" bytestash-backend bytestash-frontend || return $?
     msg_ok "Services Stopped"
 
-    [[ -d /opt/bytestash/data ]] && create_backup /opt/bytestash/data
-    [[ -d /opt/data ]] && create_backup /opt/data
+    [[ -d /opt/bytestash/data ]] && { create_backup /opt/bytestash/data || return $?; }
+    [[ -d /opt/data ]] && { create_backup /opt/data || return $?; }
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bytestash" "jordan-dalby/ByteStash" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring ByteStash"
     cd /opt/bytestash/server || exit
@@ -112,6 +113,7 @@ function update_script() {
 
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -274,6 +274,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -297,12 +298,12 @@ function update_script() {
 
   if check_for_gh_release "pangolin" "fosrl/pangolin" "$PANGOLIN_VERSION" "Pinned to a tested release because Pangolin's schema changes have repeatedly broken unattended updates. To try a newer version at your own risk, run: 'export PANGOLIN_VERSION=<tag>' and re-run update. If it breaks, please open an issue at https://github.com/community-scripts/ProxmoxVE/issues with the error log."; then
     msg_info "Stopping Service"
-    systemctl stop pangolin
-    systemctl stop gerbil
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" pangolin || return $?
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" gerbil || return $?
     msg_info "Service stopped"
 
     DB_URL=$(sed -n 's/.*connection_string: "\(.*\)".*/\1/p' /opt/pangolin/config/config.yml)
-    create_backup /opt/pangolin/config
+    create_backup /opt/pangolin/config || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "pangolin" "fosrl/pangolin" "tarball" "$PANGOLIN_VERSION"
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gerbil" "fosrl/gerbil" "singlefile" "latest" "/usr/bin" "gerbil_linux_$(get_system_arch)"
@@ -324,7 +325,7 @@ function update_script() {
     cp server/db/mac_models.json ./dist/mac_models.json
     msg_ok "Updated Pangolin"
 
-    restore_backup
+    restore_backup || return $?
 
     if ! grep -q '^ExecStartPre=/usr/bin/node dist/migrations.mjs' /etc/systemd/system/pangolin.service 2> /dev/null; then
       msg_info "Adding migration step to pangolin.service"
@@ -350,6 +351,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

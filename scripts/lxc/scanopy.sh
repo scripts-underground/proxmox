@@ -116,6 +116,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -127,15 +128,15 @@ function update_script() {
 
   if check_for_gh_release "Scanopy" "scanopy/scanopy"; then
     msg_info "Stopping services"
-    systemctl stop scanopy-server
-    [[ -f /etc/systemd/system/scanopy-daemon.service ]] && systemctl stop scanopy-daemon
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" scanopy-server || return $?
+    [[ -f /etc/systemd/system/scanopy-daemon.service ]] && { _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" scanopy-daemon || return $?; }
     msg_ok "Stopped services"
 
-    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml
+    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Scanopy" "scanopy/scanopy" "tarball" "latest" "/opt/scanopy"
 
-    restore_backup
+    restore_backup || return $?
 
     ensure_dependencies pkg-config libssl-dev
     TOOLCHAIN="$(grep "channel" /opt/scanopy/backend/rust-toolchain.toml | awk -F\" '{print $2}')"
@@ -178,6 +179,7 @@ function update_script() {
     [[ -f /etc/systemd/system/scanopy-daemon.service ]] && systemctl start scanopy-daemon
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

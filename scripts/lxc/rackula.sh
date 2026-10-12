@@ -95,6 +95,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -106,12 +107,12 @@ function update_script() {
 
   if check_for_gh_release "rackula" "RackulaLives/Rackula"; then
     msg_info "Stopping Services"
-    systemctl stop rackula-api nginx
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" rackula-api nginx || return $?
     msg_ok "Stopped Services"
 
-    create_backup /opt/rackula/data
+    create_backup /opt/rackula/data || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "rackula" "RackulaLives/Rackula" "prebuild" "latest" "/opt/rackula" "rackula-lxc-*.tar.gz"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Configuration"
     cp /opt/rackula/config/nginx.conf /etc/nginx/sites-available/rackula
@@ -142,6 +143,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

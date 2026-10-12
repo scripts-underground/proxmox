@@ -96,6 +96,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -108,14 +109,14 @@ function update_script() {
   if check_for_gh_release "webtrees" "fisharebest/webtrees"; then
     msg_info "Stopping Service"
     PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
-    systemctl stop caddy php${PHP_VER}-fpm
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" caddy php${PHP_VER}-fpm || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/webtrees/data
+    create_backup /opt/webtrees/data || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "webtrees" "fisharebest/webtrees" "prebuild" "latest" "/opt/webtrees" "webtrees-*.zip"
 
-    restore_backup
+    restore_backup || return $?
     chown -R www-data:www-data /opt/webtrees
 
     msg_info "Starting Service"
@@ -123,6 +124,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 
