@@ -150,10 +150,6 @@ function update_script() {
     create_backup /opt/invidious/config/config.yml
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious" "iv-org/invidious" "tarball" "latest" "/opt/invidious"
-    if check_for_gh_release "Invidious-Companion" "iv-org/invidious-companion"; then
-      COMPANION_ARCH="$(uname -m)"
-      CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious-Companion" "iv-org/invidious-companion" "prebuild" "latest" "/opt/invidious-companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz"
-    fi
 
     msg_info "Rebuilding Invidious"
     cd /opt/invidious || exit
@@ -175,6 +171,21 @@ function update_script() {
     $STD systemctl start invidious invidious-companion
     msg_ok "Started services"
     msg_ok "Updated successfully!"
+  fi
+
+  local companion_force="${UPDATE_FORCE:-0}"
+  [[ -x /opt/invidious-companion/invidious_companion ]] || companion_force=1
+  if UPDATE_FORCE="$companion_force" check_for_gh_release "Invidious Companion" "iv-org/invidious-companion"; then
+    COMPANION_ARCH="$(uname -m)"
+    msg_info "Stopping companion"
+    $STD systemctl stop invidious-companion
+    msg_ok "Stopped companion"
+
+    CLEAN_INSTALL=1 FORCE_DEPLOY="$((companion_force || ${FORCE_DEPLOY:-0}))" fetch_and_deploy_gh_release "Invidious Companion" "iv-org/invidious-companion" "prebuild" "latest" "/opt/invidious-companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz"
+
+    msg_info "Starting companion"
+    $STD systemctl start invidious-companion
+    msg_ok "Started companion"
   fi
   exit
 }
