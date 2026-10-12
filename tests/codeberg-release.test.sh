@@ -45,7 +45,6 @@ if [[ "${1:-}" == --live ]]; then
   mkdir "$HOME"
   for spec in \
     'autocaliweb|gelbphoenix/autocaliweb|tarball|README.md|' \
-    'endurain|endurain-project/endurain|tarball|README.md|' \
     'forgejo|forgejo/forgejo|singlefile|forgejo|forgejo-*-linux-amd64' \
     'readeck|readeck/readeck|singlefile|readeck|readeck-*-linux-amd64'; do
     IFS='|' read -r app repo mode required pattern <<< "$spec"
