@@ -109,6 +109,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -122,10 +123,10 @@ function update_script() {
 
   if check_for_gh_release "databasus" "databasus/databasus"; then
     msg_info "Stopping Databasus"
-    $STD systemctl stop databasus
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" databasus || return $?
     msg_ok "Stopped Databasus"
 
-    create_backup /opt/databasus/.env
+    create_backup /opt/databasus/.env || return $?
 
     msg_info "Ensuring Database Clients"
     for v in 12 13 14 15 16 18; do
@@ -176,7 +177,7 @@ function update_script() {
     chown -R postgres:postgres /opt/databasus
     msg_ok "Updated Databasus"
 
-    restore_backup
+    restore_backup || return $?
 
     if ! grep -q "EnvironmentFile=/.env" /etc/systemd/system/databasus.service; then
       msg_info "Updating Service"
@@ -190,6 +191,7 @@ function update_script() {
     msg_ok "Started Databasus"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

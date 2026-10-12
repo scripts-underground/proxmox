@@ -100,6 +100,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -112,17 +113,17 @@ function update_script() {
   ensure_dependencies git
   if check_for_gh_release "bookstack" "BookStackApp/BookStack"; then
     msg_info "Stopping Apache2"
-    systemctl stop apache2
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" apache2 || return $?
     msg_ok "Services Stopped"
 
     create_backup /opt/bookstack/.env \
       /opt/bookstack/public/uploads \
       /opt/bookstack/storage/uploads \
-      /opt/bookstack/themes
+      /opt/bookstack/themes || return $?
     fetch_and_deploy_gh_release "bookstack" "BookStackApp/BookStack" "tarball"
     PHP_VERSION="8.3" PHP_APACHE="YES" PHP_FPM="YES" PHP_MODULE="ldap,tidy,mysqli" setup_php
     setup_composer
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring BookStack"
     cd /opt/bookstack || exit
@@ -140,6 +141,7 @@ function update_script() {
     msg_ok "Started Apache2"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

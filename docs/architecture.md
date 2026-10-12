@@ -114,6 +114,23 @@ host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
 
+Bundles select a guest-owned temporary directory: `TMPDIR=/var/tmp` by default,
+or the explicit `var_lxc_tmpdir` override. The creator's inherited `TMPDIR`
+belongs to a different filesystem and is not transported implicitly.
+
+Updates using framework backups enter `_recover_update_backups` before checking
+release freshness. Callers pass their custom stores explicitly; archive recovery
+and backup recovery retain separate owners. Required backup failures propagate
+even when a hook is invoked conditionally. Restores prepare a fresh object before
+replacing a live path, and completed stores/previous live objects remain retained
+for inspection instead of being discarded to complete a retry.
+
+Services stopped by an update are recorded through `_update_services_stop` before
+the stop. `_update_services_finish` completes that pending service list even when
+release markers are already current; an ordinary no-update invocation with no
+intent has no service effects. Optional units retain their best-effort semantics,
+and the same framework service contract supports systemd and OpenRC.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
@@ -367,6 +384,10 @@ error traps enabled from `core.func`/`error_handler.func`). Any future
 modification to the wrapper prelude or postamble must respect this
 convention — new error paths must write the failure flag to prevent
 silently swallowed failures.
+
+Development keep mode preserves a failed container without changing the failure
+status. Both the build failure path and generic host error handler honor that
+policy; a kept failure never advances to `complete_install` or a cleanup menu.
 
 #### 4.1.7 Persistent update and uninstall bundles
 

@@ -107,6 +107,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -120,10 +121,10 @@ function update_script() {
 
   if check_for_gh_release "bookorbit" "bookorbit/bookorbit"; then
     msg_info "Stopping Service"
-    systemctl stop bookorbit
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" bookorbit || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/bookorbit/.env
+    create_backup /opt/bookorbit/.env || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bookorbit" "bookorbit/bookorbit" "tarball"
 
@@ -139,7 +140,7 @@ function update_script() {
     mkdir -p /opt/bookorbit/server/migrations
     cp -r /opt/bookorbit/server/src/db/migrations/. /opt/bookorbit/server/migrations/
     chmod +x /opt/bookorbit/server/bin/kepubify/*
-    restore_backup
+    restore_backup || return $?
     APP_VER=$(cat ~/.bookorbit)
     sed -i "s/^APP_VERSION=.*/APP_VERSION=v$APP_VER/" /opt/bookorbit/.env
     msg_ok "Rebuilt Application"
@@ -153,6 +154,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

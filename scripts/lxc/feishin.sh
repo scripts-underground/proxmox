@@ -78,6 +78,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -90,7 +91,7 @@ function update_script() {
   NODE_VERSION="24" NODE_MODULE="corepack" setup_nodejs
 
   if check_for_gh_release "feishin" "jeffvli/feishin"; then
-    create_backup /opt/feishin/.env
+    create_backup /opt/feishin/.env || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "feishin" "jeffvli/feishin" "tarball"
 
@@ -102,7 +103,7 @@ function update_script() {
     $STD pnpm run build:web
     msg_ok "Rebuilt Feishin Web"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Publishing Web Assets"
     rm -rf /usr/share/nginx/html

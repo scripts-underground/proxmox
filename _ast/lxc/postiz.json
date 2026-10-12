@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "postiz",
   "type": "lxc",
-  "total_lines": 309,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/gitroomhq/postiz-app\n\n# shellcheck disable=SC2034\nAPP=\"Postiz\"\nvar_tags=\"${var_tags:-social-media;scheduling;automation}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    nginx\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" setup_postgresql\n  PG_DB_NAME=\"postiz\" PG_DB_USER=\"postiz\" setup_postgresql_db\n  NODE_VERSION=\"24\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"temporal\" \"temporalio/cli\" \"prebuild\" \"latest\" \"/opt/temporal\" \"temporal_cli_*_linux_amd64.tar.gz\"\n  chmod +x /opt/temporal/temporal\n  fetch_and_deploy_gh_release \"postiz\" \"gitroomhq/postiz-app\" \"tarball\"\n\n  msg_info \"Installing pnpm\"\n  PNPM_VERSION=$(sed -n 's/.*\"packageManager\":\\s*\"pnpm@\\([^\"]*\\)\".*/\\1/p' /opt/postiz/package.json)\n  $STD npm install -g \"pnpm@${PNPM_VERSION}\"\n  msg_ok \"Installed pnpm\"\n\n  msg_info \"Configuring Application\"\n  JWT_SECRET=$(openssl rand -base64 32)\n  mkdir -p /opt/postiz/uploads\n  cat \u003c\u003c EOF \u003e /opt/postiz/.env\nDATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nREDIS_URL=redis://localhost:6379\nJWT_SECRET=${JWT_SECRET}\nMAIN_URL=http://${LOCAL_IP}\nFRONTEND_URL=http://${LOCAL_IP}\nNEXT_PUBLIC_BACKEND_URL=http://${LOCAL_IP}/api\nBACKEND_INTERNAL_URL=http://localhost:3000\nNOT_SECURED=true\nTEMPORAL_ADDRESS=localhost:7233\nIS_GENERAL=true\nSTORAGE_PROVIDER=local\nUPLOAD_DIRECTORY=/opt/postiz/uploads\nNEXT_PUBLIC_UPLOAD_DIRECTORY=/uploads\nNX_ADD_PLUGINS=false\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Building Application\"\n  cd /opt/postiz || exit\n  set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD pnpm install\n  $STD pnpm run build\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/postiz || exit\n  set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n  $STD pnpm run prisma-db-push\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services\"\n  PNPM_BIN=\"$(command -v pnpm)\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-temporal.service\n[Unit]\nDescription=Temporal Dev Server (Postiz)\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nExecStart=/opt/temporal/temporal server start-dev --db-filename /opt/temporal/temporal.db --log-format json --log-level warn\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-backend.service\n[Unit]\nDescription=Postiz Backend\nAfter=network.target postgresql.service redis-server.service postiz-temporal.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nExecStart=${PNPM_BIN} run start:prod:backend\nEnvironment=NODE_OPTIONS=--max-old-space-size=512\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-frontend.service\n[Unit]\nDescription=Postiz Frontend\nAfter=network.target postiz-backend.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nEnvironment=PORT=4200\nExecStart=${PNPM_BIN} run start:prod:frontend\nEnvironment=NODE_OPTIONS=--max-old-space-size=512\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-orchestrator.service\n[Unit]\nDescription=Postiz Orchestrator\nAfter=network.target postiz-temporal.service postiz-backend.service\nRequires=postiz-temporal.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nExecStart=${PNPM_BIN} run start:prod:orchestrator\nEnvironment=NODE_OPTIONS=--max-old-space-size=384\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  systemctl enable -q --now redis-server postiz-temporal postiz-backend postiz-frontend postiz-orchestrator\n  msg_ok \"Created Services\"\n\n  msg_info \"Creating Helper Scripts\"\n  cat \u003c\u003c 'EOF' \u003e /usr/local/bin/postiz-rebuild\n#!/usr/bin/env bash\necho \"=== Postiz Rebuild ===\"\necho \"Stopping services...\"\nsystemctl stop postiz-orchestrator postiz-frontend postiz-backend\n\ncd /opt/postiz\nset -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\nexport NODE_OPTIONS=\"--max-old-space-size=4096\"\n\necho \"Building application (this may take a while)...\"\npnpm run build\nBUILD_RC=$?\nunset NODE_OPTIONS\n\nif [[ $BUILD_RC -ne 0 ]]; then\n  echo \"ERROR: Build failed! Check the output above.\"\n  echo \"Starting services with previous build...\"\n  systemctl start postiz-backend postiz-frontend postiz-orchestrator\n  exit 1\nfi\n\necho \"Running database migrations...\"\npnpm run prisma-db-push\n\necho \"Starting services...\"\nsystemctl start postiz-backend postiz-frontend postiz-orchestrator\necho \"=== Rebuild complete ===\"\nEOF\n  chmod +x /usr/local/bin/postiz-rebuild\n  msg_ok \"Created Helper Scripts\"\n\n  msg_info \"Configuring Nginx\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/postiz\nserver {\n  listen 80 default_server;\n  server_name _;\n\n  client_max_body_size 100M;\n\n  gzip on;\n  gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\n\n  location /api/ {\n    proxy_pass http://127.0.0.1:3000/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade \\$http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header Host \\$host;\n    proxy_set_header X-Real-IP \\$remote_addr;\n    proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto \\$scheme;\n    proxy_set_header Reload \\$http_reload;\n    proxy_set_header Onboarding \\$http_onboarding;\n    proxy_set_header Activate \\$http_activate;\n    proxy_set_header Auth \\$http_auth;\n    proxy_set_header Showorg \\$http_showorg;\n    proxy_set_header Impersonate \\$http_impersonate;\n    proxy_set_header Accept-Language \\$http_accept_language;\n  }\n\n  location /uploads/ {\n    alias /opt/postiz/uploads/;\n  }\n\n  location / {\n    proxy_pass http://127.0.0.1:4200/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade \\$http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header Host \\$host;\n    proxy_set_header X-Real-IP \\$remote_addr;\n    proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto \\$scheme;\n    proxy_set_header Reload \\$http_reload;\n    proxy_set_header Onboarding \\$http_onboarding;\n    proxy_set_header Activate \\$http_activate;\n    proxy_set_header Auth \\$http_auth;\n    proxy_set_header Showorg \\$http_showorg;\n    proxy_set_header Impersonate \\$http_impersonate;\n    proxy_set_header Accept-Language \\$http_accept_language;\n    proxy_set_header i18next \\$http_i18next;\n  }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/postiz /etc/nginx/sites-enabled/postiz\n  rm -f /etc/nginx/sites-enabled/default\n  $STD nginx -t\n  systemctl enable -q nginx\n  systemctl reload -q nginx\n  msg_ok \"Configured Nginx\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/postiz ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"postiz\" \"gitroomhq/postiz-app\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop postiz-orchestrator postiz-frontend postiz-backend\n    msg_ok \"Stopped Services\"\n\n    create_backup /opt/postiz/.env \\\n      /opt/postiz/uploads\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"postiz\" \"gitroomhq/postiz-app\" \"tarball\"\n\n    restore_backup\n\n    msg_info \"Building Application\"\n    cd /opt/postiz || exit\n    set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n    $STD pnpm install\n    $STD pnpm run build\n    unset NODE_OPTIONS\n    msg_ok \"Built Application\"\n\n    msg_info \"Running Database Migrations\"\n    cd /opt/postiz || exit\n    $STD pnpm run prisma-db-push\n    msg_ok \"Ran Database Migrations\"\n\n    mkdir -p /opt/postiz/uploads\n\n    msg_info \"Starting Services\"\n    systemctl start postiz-backend postiz-frontend postiz-orchestrator\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 311,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/gitroomhq/postiz-app\n\n# shellcheck disable=SC2034\nAPP=\"Postiz\"\nvar_tags=\"${var_tags:-social-media;scheduling;automation}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    nginx\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" setup_postgresql\n  PG_DB_NAME=\"postiz\" PG_DB_USER=\"postiz\" setup_postgresql_db\n  NODE_VERSION=\"24\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"temporal\" \"temporalio/cli\" \"prebuild\" \"latest\" \"/opt/temporal\" \"temporal_cli_*_linux_amd64.tar.gz\"\n  chmod +x /opt/temporal/temporal\n  fetch_and_deploy_gh_release \"postiz\" \"gitroomhq/postiz-app\" \"tarball\"\n\n  msg_info \"Installing pnpm\"\n  PNPM_VERSION=$(sed -n 's/.*\"packageManager\":\\s*\"pnpm@\\([^\"]*\\)\".*/\\1/p' /opt/postiz/package.json)\n  $STD npm install -g \"pnpm@${PNPM_VERSION}\"\n  msg_ok \"Installed pnpm\"\n\n  msg_info \"Configuring Application\"\n  JWT_SECRET=$(openssl rand -base64 32)\n  mkdir -p /opt/postiz/uploads\n  cat \u003c\u003c EOF \u003e /opt/postiz/.env\nDATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nREDIS_URL=redis://localhost:6379\nJWT_SECRET=${JWT_SECRET}\nMAIN_URL=http://${LOCAL_IP}\nFRONTEND_URL=http://${LOCAL_IP}\nNEXT_PUBLIC_BACKEND_URL=http://${LOCAL_IP}/api\nBACKEND_INTERNAL_URL=http://localhost:3000\nNOT_SECURED=true\nTEMPORAL_ADDRESS=localhost:7233\nIS_GENERAL=true\nSTORAGE_PROVIDER=local\nUPLOAD_DIRECTORY=/opt/postiz/uploads\nNEXT_PUBLIC_UPLOAD_DIRECTORY=/uploads\nNX_ADD_PLUGINS=false\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Building Application\"\n  cd /opt/postiz || exit\n  set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD pnpm install\n  $STD pnpm run build\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/postiz || exit\n  set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n  $STD pnpm run prisma-db-push\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services\"\n  PNPM_BIN=\"$(command -v pnpm)\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-temporal.service\n[Unit]\nDescription=Temporal Dev Server (Postiz)\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nExecStart=/opt/temporal/temporal server start-dev --db-filename /opt/temporal/temporal.db --log-format json --log-level warn\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-backend.service\n[Unit]\nDescription=Postiz Backend\nAfter=network.target postgresql.service redis-server.service postiz-temporal.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nExecStart=${PNPM_BIN} run start:prod:backend\nEnvironment=NODE_OPTIONS=--max-old-space-size=512\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-frontend.service\n[Unit]\nDescription=Postiz Frontend\nAfter=network.target postiz-backend.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nEnvironment=PORT=4200\nExecStart=${PNPM_BIN} run start:prod:frontend\nEnvironment=NODE_OPTIONS=--max-old-space-size=512\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/postiz-orchestrator.service\n[Unit]\nDescription=Postiz Orchestrator\nAfter=network.target postiz-temporal.service postiz-backend.service\nRequires=postiz-temporal.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/postiz\nEnvironmentFile=/opt/postiz/.env\nExecStart=${PNPM_BIN} run start:prod:orchestrator\nEnvironment=NODE_OPTIONS=--max-old-space-size=384\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  systemctl enable -q --now redis-server postiz-temporal postiz-backend postiz-frontend postiz-orchestrator\n  msg_ok \"Created Services\"\n\n  msg_info \"Creating Helper Scripts\"\n  cat \u003c\u003c 'EOF' \u003e /usr/local/bin/postiz-rebuild\n#!/usr/bin/env bash\necho \"=== Postiz Rebuild ===\"\necho \"Stopping services...\"\nsystemctl stop postiz-orchestrator postiz-frontend postiz-backend\n\ncd /opt/postiz\nset -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\nexport NODE_OPTIONS=\"--max-old-space-size=4096\"\n\necho \"Building application (this may take a while)...\"\npnpm run build\nBUILD_RC=$?\nunset NODE_OPTIONS\n\nif [[ $BUILD_RC -ne 0 ]]; then\n  echo \"ERROR: Build failed! Check the output above.\"\n  echo \"Starting services with previous build...\"\n  systemctl start postiz-backend postiz-frontend postiz-orchestrator\n  exit 1\nfi\n\necho \"Running database migrations...\"\npnpm run prisma-db-push\n\necho \"Starting services...\"\nsystemctl start postiz-backend postiz-frontend postiz-orchestrator\necho \"=== Rebuild complete ===\"\nEOF\n  chmod +x /usr/local/bin/postiz-rebuild\n  msg_ok \"Created Helper Scripts\"\n\n  msg_info \"Configuring Nginx\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/postiz\nserver {\n  listen 80 default_server;\n  server_name _;\n\n  client_max_body_size 100M;\n\n  gzip on;\n  gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\n\n  location /api/ {\n    proxy_pass http://127.0.0.1:3000/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade \\$http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header Host \\$host;\n    proxy_set_header X-Real-IP \\$remote_addr;\n    proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto \\$scheme;\n    proxy_set_header Reload \\$http_reload;\n    proxy_set_header Onboarding \\$http_onboarding;\n    proxy_set_header Activate \\$http_activate;\n    proxy_set_header Auth \\$http_auth;\n    proxy_set_header Showorg \\$http_showorg;\n    proxy_set_header Impersonate \\$http_impersonate;\n    proxy_set_header Accept-Language \\$http_accept_language;\n  }\n\n  location /uploads/ {\n    alias /opt/postiz/uploads/;\n  }\n\n  location / {\n    proxy_pass http://127.0.0.1:4200/;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade \\$http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    proxy_set_header Host \\$host;\n    proxy_set_header X-Real-IP \\$remote_addr;\n    proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto \\$scheme;\n    proxy_set_header Reload \\$http_reload;\n    proxy_set_header Onboarding \\$http_onboarding;\n    proxy_set_header Activate \\$http_activate;\n    proxy_set_header Auth \\$http_auth;\n    proxy_set_header Showorg \\$http_showorg;\n    proxy_set_header Impersonate \\$http_impersonate;\n    proxy_set_header Accept-Language \\$http_accept_language;\n    proxy_set_header i18next \\$http_i18next;\n  }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/postiz /etc/nginx/sites-enabled/postiz\n  rm -f /etc/nginx/sites-enabled/default\n  $STD nginx -t\n  systemctl enable -q nginx\n  systemctl reload -q nginx\n  msg_ok \"Configured Nginx\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/postiz ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"postiz\" \"gitroomhq/postiz-app\"; then\n    msg_info \"Stopping Services\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" postiz-orchestrator postiz-frontend postiz-backend || return $?\n    msg_ok \"Stopped Services\"\n\n    create_backup /opt/postiz/.env \\\n      /opt/postiz/uploads || return $?\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"postiz\" \"gitroomhq/postiz-app\" \"tarball\"\n\n    restore_backup || return $?\n\n    msg_info \"Building Application\"\n    cd /opt/postiz || exit\n    set -a \u0026\u0026 source /opt/postiz/.env \u0026\u0026 set +a\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n    $STD pnpm install\n    $STD pnpm run build\n    unset NODE_OPTIONS\n    msg_ok \"Built Application\"\n\n    msg_info \"Running Database Migrations\"\n    cd /opt/postiz || exit\n    $STD pnpm run prisma-db-push\n    msg_ok \"Ran Database Migrations\"\n\n    mkdir -p /opt/postiz/uploads\n\n    msg_info \"Starting Services\"\n    systemctl start postiz-backend postiz-frontend postiz-orchestrator\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2155",
@@ -265,6 +265,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -276,15 +277,15 @@
     "",
     "  if check_for_gh_release \"postiz\" \"gitroomhq/postiz-app\"; then",
     "    msg_info \"Stopping Services\"",
-    "    systemctl stop postiz-orchestrator postiz-frontend postiz-backend",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" postiz-orchestrator postiz-frontend postiz-backend || return $?",
     "    msg_ok \"Stopped Services\"",
     "",
     "    create_backup /opt/postiz/.env \\",
-    "      /opt/postiz/uploads",
+    "      /opt/postiz/uploads || return $?",
     "",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"postiz\" \"gitroomhq/postiz-app\" \"tarball\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Building Application\"",
     "    cd /opt/postiz || exit",
@@ -307,6 +308,7 @@
     "    msg_ok \"Started Services\"",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -343,7 +345,7 @@
     {
       "name": "update_script",
       "start_line": 260,
-      "end_line": 304,
+      "end_line": 306,
       "name_span": {
         "start_line": 260,
         "start_col": 10,
@@ -2360,597 +2362,763 @@
       "start_line": 261,
       "start_col": 3,
       "end_line": 261,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 261,
+      "start_col": 27,
+      "end_line": 261,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 261,
+      "start_col": 30,
+      "end_line": 261,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 261,
+      "start_col": 37,
+      "end_line": 261,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 262,
       "start_col": 3,
       "end_line": 262,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 263,
       "start_col": 3,
       "end_line": 263,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 264,
+      "start_col": 3,
+      "end_line": 264,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 3,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 6,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 9,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 11,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 26,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 28
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 28,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 29
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 265,
+      "start_line": 266,
       "start_col": 30,
-      "end_line": 265,
+      "end_line": 266,
       "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 266,
-      "start_col": 5,
-      "end_line": 266,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 266,
-      "start_col": 15,
-      "end_line": 266,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 266,
-      "start_col": 19,
-      "end_line": 266,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 267,
       "start_col": 5,
       "end_line": 267,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 267,
+      "start_col": 15,
+      "end_line": 267,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 267,
+      "start_col": 19,
+      "end_line": 267,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 268,
+      "start_col": 5,
+      "end_line": 268,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 268,
+      "start_line": 269,
       "start_col": 3,
-      "end_line": 268,
+      "end_line": 269,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 3,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 6,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 27,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 36,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 58
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 58,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 59
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 270,
+      "start_line": 271,
       "start_col": 60,
-      "end_line": 270,
+      "end_line": 271,
       "end_col": 64
-    },
-    {
-      "kind": "command",
-      "start_line": 271,
-      "start_col": 5,
-      "end_line": 271,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 271,
-      "start_col": 14,
-      "end_line": 271,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 272,
       "start_col": 5,
       "end_line": 272,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 273,
-      "start_col": 5,
-      "end_line": 273,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 273,
-      "start_col": 12,
-      "end_line": 273,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 275,
-      "start_col": 5,
-      "end_line": 275,
-      "end_col": 18
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 278,
-      "start_col": 5,
-      "end_line": 278,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
-      "start_line": 278,
-      "start_col": 5,
-      "end_line": 278,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
-      "start_line": 278,
-      "start_col": 21,
-      "end_line": 278,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 278,
-      "start_col": 49,
-      "end_line": 278,
-      "end_col": 57
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 278,
-      "start_col": 58,
-      "end_line": 278,
-      "end_col": 80
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 278,
-      "start_col": 81,
-      "end_line": 278,
-      "end_col": 90
-    },
-    {
-      "kind": "command",
-      "start_line": 280,
-      "start_col": 5,
-      "end_line": 280,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 282,
-      "start_col": 5,
-      "end_line": 282,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 282,
+      "start_line": 272,
       "start_col": 14,
-      "end_line": 282,
+      "end_line": 272,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 273,
+      "start_col": 5,
+      "end_line": 273,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 273,
+      "start_col": 27,
+      "end_line": 273,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 273,
+      "start_col": 28,
+      "end_line": 273,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 273,
+      "start_col": 37,
+      "end_line": 273,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 273,
+      "start_col": 107,
+      "end_line": 273,
+      "end_col": 109
+    },
+    {
+      "kind": "command",
+      "start_line": 273,
+      "start_col": 110,
+      "end_line": 273,
+      "end_col": 116
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 273,
+      "start_col": 117,
+      "end_line": 273,
+      "end_col": 119
+    },
+    {
+      "kind": "command",
+      "start_line": 274,
+      "start_col": 5,
+      "end_line": 274,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 274,
+      "start_col": 12,
+      "end_line": 274,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 276,
+      "start_col": 5,
+      "end_line": 276,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 277,
+      "start_col": 27,
+      "end_line": 277,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 277,
+      "start_col": 30,
+      "end_line": 277,
       "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 277,
+      "start_col": 37,
+      "end_line": 277,
+      "end_col": 39
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 279,
+      "start_col": 5,
+      "end_line": 279,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 279,
+      "start_col": 5,
+      "end_line": 279,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 279,
+      "start_col": 21,
+      "end_line": 279,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 279,
+      "start_col": 49,
+      "end_line": 279,
+      "end_col": 57
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 279,
+      "start_col": 58,
+      "end_line": 279,
+      "end_col": 80
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 279,
+      "start_col": 81,
+      "end_line": 279,
+      "end_col": 90
+    },
+    {
+      "kind": "command",
+      "start_line": 281,
+      "start_col": 5,
+      "end_line": 281,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 281,
+      "start_col": 20,
+      "end_line": 281,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 281,
+      "start_col": 23,
+      "end_line": 281,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 281,
+      "start_col": 30,
+      "end_line": 281,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 283,
       "start_col": 5,
       "end_line": 283,
-      "end_col": 7
+      "end_col": 13
     },
     {
-      "kind": "operator",
-      "op": "||",
+      "kind": "string-dq",
       "start_line": 283,
-      "start_col": 20,
+      "start_col": 14,
       "end_line": 283,
-      "end_col": 22
-    },
-    {
-      "kind": "command",
-      "start_line": 283,
-      "start_col": 23,
-      "end_line": 283,
-      "end_col": 27
+      "end_col": 36
     },
     {
       "kind": "command",
       "start_line": 284,
       "start_col": 5,
       "end_line": 284,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 284,
+      "start_col": 20,
+      "end_line": 284,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 284,
+      "start_col": 23,
+      "end_line": 284,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 285,
+      "start_col": 5,
+      "end_line": 285,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 284,
+      "start_line": 285,
       "start_col": 12,
-      "end_line": 284,
+      "end_line": 285,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 284,
+      "start_line": 285,
       "start_col": 15,
-      "end_line": 284,
+      "end_line": 285,
       "end_col": 21
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 284,
+      "start_line": 285,
       "start_col": 39,
-      "end_line": 284,
+      "end_line": 285,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 284,
+      "start_line": 285,
       "start_col": 42,
-      "end_line": 284,
+      "end_line": 285,
       "end_col": 45
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 285,
+      "start_line": 286,
       "start_col": 5,
-      "end_line": 285,
+      "end_line": 286,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 285,
+      "start_line": 286,
       "start_col": 12,
-      "end_line": 285,
+      "end_line": 286,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 285,
+      "start_line": 286,
       "start_col": 12,
-      "end_line": 285,
+      "end_line": 286,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 285,
+      "start_line": 286,
       "start_col": 25,
-      "end_line": 285,
+      "end_line": 286,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 286,
+      "start_line": 287,
       "start_col": 5,
-      "end_line": 286,
+      "end_line": 287,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 286,
+      "start_line": 287,
       "start_col": 10,
-      "end_line": 286,
+      "end_line": 287,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 287,
+      "start_line": 288,
       "start_col": 5,
-      "end_line": 287,
+      "end_line": 288,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 287,
+      "start_line": 288,
       "start_col": 10,
-      "end_line": 287,
+      "end_line": 288,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 288,
+      "start_line": 289,
       "start_col": 5,
-      "end_line": 288,
+      "end_line": 289,
       "end_col": 10
     },
     {
       "kind": "command",
-      "start_line": 289,
+      "start_line": 290,
       "start_col": 5,
-      "end_line": 289,
+      "end_line": 290,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 289,
+      "start_line": 290,
       "start_col": 12,
-      "end_line": 289,
+      "end_line": 290,
       "end_col": 31
-    },
-    {
-      "kind": "command",
-      "start_line": 291,
-      "start_col": 5,
-      "end_line": 291,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 291,
-      "start_col": 14,
-      "end_line": 291,
-      "end_col": 43
     },
     {
       "kind": "command",
       "start_line": 292,
       "start_col": 5,
       "end_line": 292,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 292,
+      "start_col": 14,
+      "end_line": 292,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 293,
+      "start_col": 5,
+      "end_line": 293,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 292,
+      "start_line": 293,
       "start_col": 20,
-      "end_line": 292,
+      "end_line": 293,
       "end_col": 22
     },
     {
       "kind": "command",
-      "start_line": 292,
+      "start_line": 293,
       "start_col": 23,
-      "end_line": 292,
+      "end_line": 293,
       "end_col": 27
     },
     {
       "kind": "param-exp",
-      "start_line": 293,
+      "start_line": 294,
       "start_col": 5,
-      "end_line": 293,
+      "end_line": 294,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 293,
+      "start_line": 294,
       "start_col": 10,
-      "end_line": 293,
+      "end_line": 294,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 294,
+      "start_line": 295,
       "start_col": 5,
-      "end_line": 294,
+      "end_line": 295,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 294,
+      "start_line": 295,
       "start_col": 12,
-      "end_line": 294,
+      "end_line": 295,
       "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 296,
+      "start_line": 297,
       "start_col": 5,
-      "end_line": 296,
+      "end_line": 297,
       "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 298,
-      "start_col": 5,
-      "end_line": 298,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 298,
-      "start_col": 14,
-      "end_line": 298,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 299,
       "start_col": 5,
       "end_line": 299,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 299,
+      "start_col": 14,
+      "end_line": 299,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 300,
+      "start_col": 5,
+      "end_line": 300,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 300,
+      "start_line": 301,
       "start_col": 5,
-      "end_line": 300,
+      "end_line": 301,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 300,
+      "start_line": 301,
       "start_col": 12,
-      "end_line": 300,
+      "end_line": 301,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 301,
+      "start_line": 302,
       "start_col": 5,
-      "end_line": 301,
+      "end_line": 302,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 301,
+      "start_line": 302,
       "start_col": 12,
-      "end_line": 301,
+      "end_line": 302,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 302,
+      "start_line": 303,
       "start_col": 3,
-      "end_line": 302,
+      "end_line": 303,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 303,
+      "start_line": 304,
       "start_col": 3,
-      "end_line": 303,
+      "end_line": 304,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 304,
+      "start_col": 27,
+      "end_line": 304,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 304,
+      "start_col": 28,
+      "end_line": 304,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 304,
+      "start_col": 37,
+      "end_line": 304,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 304,
+      "start_col": 56,
+      "end_line": 304,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 304,
+      "start_col": 59,
+      "end_line": 304,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 304,
+      "start_col": 66,
+      "end_line": 304,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 305,
+      "start_col": 3,
+      "end_line": 305,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 304,
+      "start_line": 306,
       "start_col": 1,
-      "end_line": 304,
+      "end_line": 306,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 306,
+      "start_line": 308,
       "start_col": 1,
-      "end_line": 306,
+      "end_line": 308,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 307,
+      "start_line": 309,
       "start_col": 1,
-      "end_line": 307,
+      "end_line": 309,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 308,
+      "start_line": 310,
       "start_col": 1,
-      "end_line": 308,
+      "end_line": 310,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 308,
+      "start_line": 310,
       "start_col": 8,
-      "end_line": 308,
+      "end_line": 310,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 308,
+      "start_line": 310,
       "start_col": 10,
-      "end_line": 308,
+      "end_line": 310,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 308,
+      "start_line": 310,
       "start_col": 21,
-      "end_line": 308,
+      "end_line": 310,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 308,
+      "start_line": 310,
       "start_col": 22,
-      "end_line": 308,
+      "end_line": 310,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 308,
+  "bootstrap_line": 310,
   "hooks": {
     "header_info": false,
     "install_script": true,

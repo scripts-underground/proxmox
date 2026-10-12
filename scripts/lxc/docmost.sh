@@ -84,6 +84,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -100,13 +101,13 @@ function update_script() {
 
   if check_for_gh_release "docmost" "docmost/docmost"; then
     msg_info "Stopping Service"
-    systemctl stop docmost
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" docmost || return $?
     msg_ok "Stopped Service"
 
     create_backup /opt/docmost/.env \
-      /opt/docmost/data
+      /opt/docmost/data || return $?
     fetch_and_deploy_gh_release "docmost" "docmost/docmost" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     # Fix: Docmost EE (audit logs etc.) lives in a git submodule that is NOT
     # included in GitHub tarballs.
@@ -127,6 +128,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

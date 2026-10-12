@@ -74,6 +74,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -84,7 +85,7 @@ function update_script() {
   fi
   if check_for_gh_release "cryptpad" "cryptpad/cryptpad"; then
     msg_info "Stopping Service"
-    systemctl stop cryptpad
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" cryptpad || return $?
     msg_ok "Stopped Service"
 
     create_backup /opt/cryptpad/config/config.js \
@@ -94,11 +95,11 @@ function update_script() {
       /opt/cryptpad/data \
       /opt/cryptpad/datastore \
       /opt/cryptpad/www/common/onlyoffice/dist \
-      /opt/cryptpad/onlyoffice-conf
+      /opt/cryptpad/onlyoffice-conf || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cryptpad" "cryptpad/cryptpad" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating CryptPad"
     cd /opt/cryptpad || exit
@@ -115,6 +116,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -139,6 +139,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -151,12 +152,12 @@ function update_script() {
 
   if check_for_gh_release "bentopdf" "alam00000/bentopdf"; then
     msg_info "Stopping Service"
-    systemctl stop bentopdf
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" bentopdf || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/bentopdf/.env.production
+    create_backup /opt/bentopdf/.env.production || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bentopdf" "alam00000/bentopdf" "tarball" "latest" "/opt/bentopdf"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring BentoPDF"
     cd /opt/bentopdf || exit
@@ -260,6 +261,7 @@ EOF
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

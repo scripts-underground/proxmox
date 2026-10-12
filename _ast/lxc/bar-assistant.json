@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "bar-assistant",
   "type": "lxc",
-  "total_lines": 240,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: bvdberg01 | CanbiZ\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/karlomikus/bar-assistant\n\n# shellcheck disable=SC2034\nAPP=\"Bar-Assistant\"\nvar_tags=\"${var_tags:-cocktails;drinks}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  LOCAL_IP=$(hostname -I | awk '{print $1}')\n\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    redis-server \\\n    nginx \\\n    lsb-release \\\n    libvips\n  msg_ok \"Installed Dependencies\"\n\n  PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" PHP_MODULE=\"pdo-sqlite\" setup_php\n  setup_composer\n  NODE_VERSION=\"22\" setup_nodejs\n  setup_meilisearch\n\n  fetch_and_deploy_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\" \"tarball\" \"latest\" \"/opt/bar-assistant\"\n  fetch_and_deploy_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\" \"tarball\" \"latest\" \"/opt/vue-salt-rim\"\n\n  msg_info \"Configuring PHP\"\n  PHPVER=$(php -r 'echo PHP_MAJOR_VERSION . \".\" . PHP_MINOR_VERSION;')\n  sed -i.bak -E 's/^\\s*;?\\s*ffi\\.enable\\s*=.*/ffi.enable=true/' /etc/php/${PHPVER}/fpm/php.ini\n  $STD systemctl reload php${PHPVER}-fpm\n  msg_ok \"Configured PHP\"\n\n  msg_info \"Installing Bar Assistant\"\n  cd /opt/bar-assistant || exit\n  cp .env.dist .env\n  mkdir -p /opt/bar-assistant/resources/data\n  curl -fsSL https://github.com/bar-assistant/data/archive/refs/heads/v5.tar.gz | tar -xz --strip-components=1 -C /opt/bar-assistant/resources/data\n  sed -i \\\n    -e \"s|^APP_URL=|APP_URL=http://${LOCAL_IP}/bar/|\" \\\n    -e \"s|^MEILISEARCH_HOST=|MEILISEARCH_HOST=http://127.0.0.1:7700|\" \\\n    -e \"s|^MEILISEARCH_KEY=|MEILISEARCH_KEY=${MEILISEARCH_MASTER_KEY}|\" \\\n    -e \"s|^MEILISEARCH_API_KEY=|MEILISEARCH_API_KEY=${MEILISEARCH_API_KEY}|\" \\\n    -e \"s|^MEILISEARCH_API_KEY_UID=|MEILISEARCH_API_KEY_UID=${MEILISEARCH_API_KEY_UID}|\" \\\n    /opt/bar-assistant/.env\n  $STD composer install --no-interaction\n  $STD php artisan key:generate\n  touch storage/bar-assistant/database.ba3.sqlite\n  $STD php artisan migrate --force\n  $STD php artisan storage:link\n  $STD php artisan bar:setup-meilisearch\n  $STD php artisan scout:sync-index-settings\n  $STD php artisan config:cache\n  $STD php artisan route:cache\n  $STD php artisan event:cache\n  mkdir -p /opt/bar-assistant/storage/bar-assistant/uploads/temp\n  chown -R www-data:www-data /opt/bar-assistant\n  msg_ok \"Installed Bar Assistant\"\n\n  msg_info \"Installing Salt Rim\"\n  cd /opt/vue-salt-rim || exit\n  cat \u003c\u003c EOF \u003e /opt/vue-salt-rim/public/config.js\nwindow.srConfig = {}\nwindow.srConfig.API_URL = \"http://${LOCAL_IP}/bar\"\nwindow.srConfig.MEILISEARCH_URL = \"http://${LOCAL_IP}/search\"\nEOF\n  $STD npm install\n  $STD npm run build\n  msg_ok \"Installed Salt Rim\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/barassistant.conf\nserver {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    server_name _;\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location = /robots.txt  { access_log off; log_not_found off; }\n\n    client_max_body_size 100M;\n\n    location /bar/ {\n        proxy_pass http://127.0.0.1:8080/;\n        proxy_set_header Host \\$host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n\n    location /search/ {\n        proxy_pass http://127.0.0.1:7700/;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8081/;\n        proxy_set_header Host \\$host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n}\n\nserver {\n    listen 127.0.0.1:8080;\n    server_name example.com;\n    root /opt/bar-assistant/public;\n\n    add_header X-Frame-Options \"SAMEORIGIN\";\n    add_header X-Content-Type-Options \"nosniff\";\n\n    index index.php;\n    charset utf-8;\n\n    location / {\n        try_files \\$uri \\$uri/ /index.php?\\$query_string;\n    }\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location = /robots.txt  { access_log off; log_not_found off; }\n\n    error_page 404 /index.php;\n\n    location ~ ^/index\\.php(/|$) {\n        fastcgi_pass unix:/var/run/php/php${PHPVER}-fpm.sock;\n        fastcgi_param SCRIPT_FILENAME \\$realpath_root\\$fastcgi_script_name;\n        include fastcgi_params;\n        fastcgi_hide_header X-Powered-By;\n    }\n\n    location ~ /\\.(?!well-known).* {\n        deny all;\n    }\n}\n\nserver {\n    listen 127.0.0.1:8081;\n    server_name _;\n    root /opt/vue-salt-rim/dist;\n\n    location / {\n        try_files \\$uri \\$uri/ /index.html;\n    }\n}\nEOF\n\n  ln -s /etc/nginx/sites-available/barassistant.conf /etc/nginx/sites-enabled/\n  rm -f /etc/nginx/sites-enabled/default\n  $STD systemctl reload nginx\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/bar-assistant ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\"; then\n    msg_info \"Stopping nginx\"\n    systemctl stop nginx\n    msg_ok \"Stopped nginx\"\n\n    PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" PHP_MODULE=\"pdo-sqlite\" setup_php\n\n    create_backup /opt/bar-assistant/.env \\\n      /opt/bar-assistant/storage/bar-assistant\n\n    fetch_and_deploy_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\" \"tarball\" \"latest\" \"/opt/bar-assistant\"\n    setup_composer\n\n    restore_backup\n\n    msg_info \"Configuring Bar-Assistant\"\n    cd /opt/bar-assistant || exit\n    $STD composer install --no-interaction\n    $STD php artisan migrate --force\n    $STD php artisan storage:link\n    $STD php artisan bar:setup-meilisearch\n    $STD php artisan scout:sync-index-settings\n    $STD php artisan config:cache\n    $STD php artisan route:cache\n    $STD php artisan event:cache\n    chown -R www-data:www-data /opt/bar-assistant\n    msg_ok \"Configured Bar-Assistant\"\n\n    msg_info \"Starting nginx\"\n    systemctl start nginx\n    msg_ok \"Started nginx\"\n  fi\n\n  if check_for_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\"; then\n    create_backup /opt/vue-salt-rim/public/config.js\n\n    msg_info \"Stopping nginx\"\n    systemctl stop nginx\n    msg_ok \"Stopped nginx\"\n\n    fetch_and_deploy_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\" \"tarball\" \"latest\" \"/opt/vue-salt-rim\"\n    restore_backup\n\n    msg_info \"Configuring Vue Salt Rim\"\n    cd /opt/vue-salt-rim || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Configured Vue Salt Rim\"\n\n    msg_info \"Starting nginx\"\n    systemctl start nginx\n    msg_ok \"Started nginx\"\n  fi\n\n  setup_meilisearch\n\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 242,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: bvdberg01 | CanbiZ\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/karlomikus/bar-assistant\n\n# shellcheck disable=SC2034\nAPP=\"Bar-Assistant\"\nvar_tags=\"${var_tags:-cocktails;drinks}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  LOCAL_IP=$(hostname -I | awk '{print $1}')\n\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    redis-server \\\n    nginx \\\n    lsb-release \\\n    libvips\n  msg_ok \"Installed Dependencies\"\n\n  PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" PHP_MODULE=\"pdo-sqlite\" setup_php\n  setup_composer\n  NODE_VERSION=\"22\" setup_nodejs\n  setup_meilisearch\n\n  fetch_and_deploy_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\" \"tarball\" \"latest\" \"/opt/bar-assistant\"\n  fetch_and_deploy_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\" \"tarball\" \"latest\" \"/opt/vue-salt-rim\"\n\n  msg_info \"Configuring PHP\"\n  PHPVER=$(php -r 'echo PHP_MAJOR_VERSION . \".\" . PHP_MINOR_VERSION;')\n  sed -i.bak -E 's/^\\s*;?\\s*ffi\\.enable\\s*=.*/ffi.enable=true/' /etc/php/${PHPVER}/fpm/php.ini\n  $STD systemctl reload php${PHPVER}-fpm\n  msg_ok \"Configured PHP\"\n\n  msg_info \"Installing Bar Assistant\"\n  cd /opt/bar-assistant || exit\n  cp .env.dist .env\n  mkdir -p /opt/bar-assistant/resources/data\n  curl -fsSL https://github.com/bar-assistant/data/archive/refs/heads/v5.tar.gz | tar -xz --strip-components=1 -C /opt/bar-assistant/resources/data\n  sed -i \\\n    -e \"s|^APP_URL=|APP_URL=http://${LOCAL_IP}/bar/|\" \\\n    -e \"s|^MEILISEARCH_HOST=|MEILISEARCH_HOST=http://127.0.0.1:7700|\" \\\n    -e \"s|^MEILISEARCH_KEY=|MEILISEARCH_KEY=${MEILISEARCH_MASTER_KEY}|\" \\\n    -e \"s|^MEILISEARCH_API_KEY=|MEILISEARCH_API_KEY=${MEILISEARCH_API_KEY}|\" \\\n    -e \"s|^MEILISEARCH_API_KEY_UID=|MEILISEARCH_API_KEY_UID=${MEILISEARCH_API_KEY_UID}|\" \\\n    /opt/bar-assistant/.env\n  $STD composer install --no-interaction\n  $STD php artisan key:generate\n  touch storage/bar-assistant/database.ba3.sqlite\n  $STD php artisan migrate --force\n  $STD php artisan storage:link\n  $STD php artisan bar:setup-meilisearch\n  $STD php artisan scout:sync-index-settings\n  $STD php artisan config:cache\n  $STD php artisan route:cache\n  $STD php artisan event:cache\n  mkdir -p /opt/bar-assistant/storage/bar-assistant/uploads/temp\n  chown -R www-data:www-data /opt/bar-assistant\n  msg_ok \"Installed Bar Assistant\"\n\n  msg_info \"Installing Salt Rim\"\n  cd /opt/vue-salt-rim || exit\n  cat \u003c\u003c EOF \u003e /opt/vue-salt-rim/public/config.js\nwindow.srConfig = {}\nwindow.srConfig.API_URL = \"http://${LOCAL_IP}/bar\"\nwindow.srConfig.MEILISEARCH_URL = \"http://${LOCAL_IP}/search\"\nEOF\n  $STD npm install\n  $STD npm run build\n  msg_ok \"Installed Salt Rim\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/barassistant.conf\nserver {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    server_name _;\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location = /robots.txt  { access_log off; log_not_found off; }\n\n    client_max_body_size 100M;\n\n    location /bar/ {\n        proxy_pass http://127.0.0.1:8080/;\n        proxy_set_header Host \\$host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n\n    location /search/ {\n        proxy_pass http://127.0.0.1:7700/;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8081/;\n        proxy_set_header Host \\$host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n}\n\nserver {\n    listen 127.0.0.1:8080;\n    server_name example.com;\n    root /opt/bar-assistant/public;\n\n    add_header X-Frame-Options \"SAMEORIGIN\";\n    add_header X-Content-Type-Options \"nosniff\";\n\n    index index.php;\n    charset utf-8;\n\n    location / {\n        try_files \\$uri \\$uri/ /index.php?\\$query_string;\n    }\n\n    location = /favicon.ico { access_log off; log_not_found off; }\n    location = /robots.txt  { access_log off; log_not_found off; }\n\n    error_page 404 /index.php;\n\n    location ~ ^/index\\.php(/|$) {\n        fastcgi_pass unix:/var/run/php/php${PHPVER}-fpm.sock;\n        fastcgi_param SCRIPT_FILENAME \\$realpath_root\\$fastcgi_script_name;\n        include fastcgi_params;\n        fastcgi_hide_header X-Powered-By;\n    }\n\n    location ~ /\\.(?!well-known).* {\n        deny all;\n    }\n}\n\nserver {\n    listen 127.0.0.1:8081;\n    server_name _;\n    root /opt/vue-salt-rim/dist;\n\n    location / {\n        try_files \\$uri \\$uri/ /index.html;\n    }\n}\nEOF\n\n  ln -s /etc/nginx/sites-available/barassistant.conf /etc/nginx/sites-enabled/\n  rm -f /etc/nginx/sites-enabled/default\n  $STD systemctl reload nginx\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/bar-assistant ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\"; then\n    msg_info \"Stopping nginx\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" nginx || return $?\n    msg_ok \"Stopped nginx\"\n\n    PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" PHP_MODULE=\"pdo-sqlite\" setup_php\n\n    create_backup /opt/bar-assistant/.env \\\n      /opt/bar-assistant/storage/bar-assistant || return $?\n\n    fetch_and_deploy_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\" \"tarball\" \"latest\" \"/opt/bar-assistant\"\n    setup_composer\n\n    restore_backup || return $?\n\n    msg_info \"Configuring Bar-Assistant\"\n    cd /opt/bar-assistant || exit\n    $STD composer install --no-interaction\n    $STD php artisan migrate --force\n    $STD php artisan storage:link\n    $STD php artisan bar:setup-meilisearch\n    $STD php artisan scout:sync-index-settings\n    $STD php artisan config:cache\n    $STD php artisan route:cache\n    $STD php artisan event:cache\n    chown -R www-data:www-data /opt/bar-assistant\n    msg_ok \"Configured Bar-Assistant\"\n\n    msg_info \"Starting nginx\"\n    systemctl start nginx\n    msg_ok \"Started nginx\"\n  fi\n\n  if check_for_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\"; then\n    create_backup /opt/vue-salt-rim/public/config.js || return $?\n\n    msg_info \"Stopping nginx\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" nginx || return $?\n    msg_ok \"Stopped nginx\"\n\n    fetch_and_deploy_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\" \"tarball\" \"latest\" \"/opt/vue-salt-rim\"\n    restore_backup || return $?\n\n    msg_info \"Configuring Vue Salt Rim\"\n    cd /opt/vue-salt-rim || exit\n    $STD npm install\n    $STD npm run build\n    msg_ok \"Configured Vue Salt Rim\"\n\n    msg_info \"Starting nginx\"\n    systemctl start nginx\n    msg_ok \"Started nginx\"\n  fi\n\n  setup_meilisearch\n\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -176,6 +176,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -185,18 +186,18 @@
     "  fi",
     "  if check_for_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\"; then",
     "    msg_info \"Stopping nginx\"",
-    "    systemctl stop nginx",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" nginx || return $?",
     "    msg_ok \"Stopped nginx\"",
     "",
     "    PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" PHP_MODULE=\"pdo-sqlite\" setup_php",
     "",
     "    create_backup /opt/bar-assistant/.env \\",
-    "      /opt/bar-assistant/storage/bar-assistant",
+    "      /opt/bar-assistant/storage/bar-assistant || return $?",
     "",
     "    fetch_and_deploy_gh_release \"bar-assistant\" \"karlomikus/bar-assistant\" \"tarball\" \"latest\" \"/opt/bar-assistant\"",
     "    setup_composer",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Configuring Bar-Assistant\"",
     "    cd /opt/bar-assistant || exit",
@@ -217,14 +218,14 @@
     "  fi",
     "",
     "  if check_for_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\"; then",
-    "    create_backup /opt/vue-salt-rim/public/config.js",
+    "    create_backup /opt/vue-salt-rim/public/config.js || return $?",
     "",
     "    msg_info \"Stopping nginx\"",
-    "    systemctl stop nginx",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" nginx || return $?",
     "    msg_ok \"Stopped nginx\"",
     "",
     "    fetch_and_deploy_gh_release \"vue-salt-rim\" \"karlomikus/vue-salt-rim\" \"tarball\" \"latest\" \"/opt/vue-salt-rim\"",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Configuring Vue Salt Rim\"",
     "    cd /opt/vue-salt-rim || exit",
@@ -239,6 +240,7 @@
     "",
     "  setup_meilisearch",
     "",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -274,7 +276,7 @@
     {
       "name": "update_script",
       "start_line": 171,
-      "end_line": 236,
+      "end_line": 238,
       "name_span": {
         "start_line": 171,
         "start_col": 10,
@@ -1942,396 +1944,498 @@
       "start_line": 172,
       "start_col": 3,
       "end_line": 172,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 172,
+      "start_col": 27,
+      "end_line": 172,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 30,
+      "end_line": 172,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 37,
+      "end_line": 172,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 173,
       "start_col": 3,
       "end_line": 173,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 174,
       "start_col": 3,
       "end_line": 174,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 175,
+      "start_col": 3,
+      "end_line": 175,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 3,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 6,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 9,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 11,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 33,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 35,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 36
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 37,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 41
-    },
-    {
-      "kind": "command",
-      "start_line": 176,
-      "start_col": 5,
-      "end_line": 176,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 176,
-      "start_col": 15,
-      "end_line": 176,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 176,
-      "start_col": 19,
-      "end_line": 176,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 177,
       "start_col": 5,
       "end_line": 177,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 177,
+      "start_col": 15,
+      "end_line": 177,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 177,
+      "start_col": 19,
+      "end_line": 177,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 178,
+      "start_col": 5,
+      "end_line": 178,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 3,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 3,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 6,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 27,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 42
     },
     {
       "kind": "string-dq",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 43,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 69
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 69,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 70
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 71,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 75
-    },
-    {
-      "kind": "command",
-      "start_line": 180,
-      "start_col": 5,
-      "end_line": 180,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 180,
-      "start_col": 14,
-      "end_line": 180,
-      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 181,
       "start_col": 5,
       "end_line": 181,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 181,
+      "start_col": 14,
+      "end_line": 181,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 182,
       "start_col": 5,
       "end_line": 182,
-      "end_col": 11
+      "end_col": 26
     },
     {
       "kind": "string-dq",
       "start_line": 182,
-      "start_col": 12,
+      "start_col": 27,
       "end_line": 182,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 28,
+      "end_line": 182,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 37,
+      "end_line": 182,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 182,
+      "start_col": 62,
+      "end_line": 182,
+      "end_col": 64
+    },
+    {
+      "kind": "command",
+      "start_line": 182,
+      "start_col": 65,
+      "end_line": 182,
+      "end_col": 71
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 72,
+      "end_line": 182,
+      "end_col": 74
+    },
+    {
+      "kind": "command",
+      "start_line": 183,
+      "start_col": 5,
+      "end_line": 183,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 183,
+      "start_col": 12,
+      "end_line": 183,
       "end_col": 27
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 5,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 22
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 5,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 16
     },
     {
       "kind": "string-dq",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 17,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 22
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 23,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 36
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 23,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 30
     },
     {
       "kind": "string-dq",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 31,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 36
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 37,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 60
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 37,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 47
     },
     {
       "kind": "string-dq",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 48,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 60
     },
     {
       "kind": "command",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 61,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 70
     },
     {
       "kind": "command",
-      "start_line": 186,
+      "start_line": 187,
       "start_col": 5,
-      "end_line": 186,
+      "end_line": 187,
       "end_col": 18
     },
     {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 188,
+      "start_col": 48,
+      "end_line": 188,
+      "end_col": 50
+    },
+    {
       "kind": "command",
-      "start_line": 189,
-      "start_col": 5,
-      "end_line": 189,
-      "end_col": 32
+      "start_line": 188,
+      "start_col": 51,
+      "end_line": 188,
+      "end_col": 57
     },
     {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 33,
-      "end_line": 189,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 49,
-      "end_line": 189,
-      "end_col": 75
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 76,
-      "end_line": 189,
-      "end_col": 85
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 86,
-      "end_line": 189,
-      "end_col": 94
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 95,
-      "end_line": 189,
-      "end_col": 115
+      "kind": "param-exp",
+      "start_line": 188,
+      "start_col": 58,
+      "end_line": 188,
+      "end_col": 60
     },
     {
       "kind": "command",
       "start_line": 190,
       "start_col": 5,
       "end_line": 190,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 192,
-      "start_col": 5,
-      "end_line": 192,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 194,
-      "start_col": 5,
-      "end_line": 194,
-      "end_col": 13
+      "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 194,
-      "start_col": 14,
-      "end_line": 194,
-      "end_col": 41
+      "start_line": 190,
+      "start_col": 33,
+      "end_line": 190,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 49,
+      "end_line": 190,
+      "end_col": 75
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 76,
+      "end_line": 190,
+      "end_col": 85
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 86,
+      "end_line": 190,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 95,
+      "end_line": 190,
+      "end_col": 115
+    },
+    {
+      "kind": "command",
+      "start_line": 191,
+      "start_col": 5,
+      "end_line": 191,
+      "end_col": 19
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 5,
+      "end_line": 193,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 193,
+      "start_col": 20,
+      "end_line": 193,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 23,
+      "end_line": 193,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 193,
+      "start_col": 30,
+      "end_line": 193,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 195,
       "start_col": 5,
       "end_line": 195,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 14,
+      "end_line": 195,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 196,
+      "start_col": 5,
+      "end_line": 196,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 27,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 195,
+      "start_line": 196,
       "start_col": 30,
-      "end_line": 195,
+      "end_line": 196,
       "end_col": 34
     },
     {
       "kind": "param-exp",
-      "start_line": 196,
+      "start_line": 197,
       "start_col": 5,
-      "end_line": 196,
+      "end_line": 197,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 196,
+      "start_line": 197,
       "start_col": 10,
-      "end_line": 196,
+      "end_line": 197,
       "end_col": 18
     },
     {
       "kind": "param-exp",
-      "start_line": 197,
-      "start_col": 5,
-      "end_line": 197,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 197,
-      "start_col": 10,
-      "end_line": 197,
-      "end_col": 13
-    },
-    {
-      "kind": "param-exp",
       "start_line": 198,
       "start_col": 5,
       "end_line": 198,
@@ -2413,394 +2517,545 @@
       "start_col": 10,
       "end_line": 203,
       "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 204,
+      "start_col": 5,
+      "end_line": 204,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 204,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 204,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 205,
+      "start_col": 5,
+      "end_line": 205,
       "end_col": 10
     },
     {
       "kind": "command",
-      "start_line": 205,
+      "start_line": 206,
       "start_col": 5,
-      "end_line": 205,
+      "end_line": 206,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 205,
+      "start_line": 206,
       "start_col": 12,
-      "end_line": 205,
+      "end_line": 206,
       "end_col": 38
-    },
-    {
-      "kind": "command",
-      "start_line": 207,
-      "start_col": 5,
-      "end_line": 207,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 207,
-      "start_col": 14,
-      "end_line": 207,
-      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 208,
       "start_col": 5,
       "end_line": 208,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 208,
+      "start_col": 14,
+      "end_line": 208,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 209,
       "start_col": 5,
       "end_line": 209,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 210,
+      "start_col": 5,
+      "end_line": 210,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 209,
+      "start_line": 210,
       "start_col": 12,
-      "end_line": 209,
+      "end_line": 210,
       "end_col": 27
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 210,
+      "start_line": 211,
       "start_col": 3,
-      "end_line": 210,
+      "end_line": 211,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 3,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 6,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 27,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 41
     },
     {
       "kind": "string-dq",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 42,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 67
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 67,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 68
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 212,
+      "start_line": 213,
       "start_col": 69,
-      "end_line": 212,
+      "end_line": 213,
       "end_col": 73
     },
     {
       "kind": "command",
-      "start_line": 213,
+      "start_line": 214,
       "start_col": 5,
-      "end_line": 213,
+      "end_line": 214,
       "end_col": 18
     },
     {
-      "kind": "command",
-      "start_line": 215,
-      "start_col": 5,
-      "end_line": 215,
-      "end_col": 13
+      "kind": "operator",
+      "op": "||",
+      "start_line": 214,
+      "start_col": 54,
+      "end_line": 214,
+      "end_col": 56
     },
     {
-      "kind": "string-dq",
-      "start_line": 215,
-      "start_col": 14,
-      "end_line": 215,
-      "end_col": 30
+      "kind": "command",
+      "start_line": 214,
+      "start_col": 57,
+      "end_line": 214,
+      "end_col": 63
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 214,
+      "start_col": 64,
+      "end_line": 214,
+      "end_col": 66
     },
     {
       "kind": "command",
       "start_line": 216,
       "start_col": 5,
       "end_line": 216,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 216,
+      "start_col": 14,
+      "end_line": 216,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 217,
       "start_col": 5,
       "end_line": 217,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 217,
+      "start_col": 27,
+      "end_line": 217,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 217,
+      "start_col": 28,
+      "end_line": 217,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 217,
+      "start_col": 37,
+      "end_line": 217,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 217,
+      "start_col": 62,
+      "end_line": 217,
+      "end_col": 64
+    },
+    {
+      "kind": "command",
+      "start_line": 217,
+      "start_col": 65,
+      "end_line": 217,
+      "end_col": 71
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 217,
+      "start_col": 72,
+      "end_line": 217,
+      "end_col": 74
+    },
+    {
+      "kind": "command",
+      "start_line": 218,
+      "start_col": 5,
+      "end_line": 218,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 217,
+      "start_line": 218,
       "start_col": 12,
-      "end_line": 217,
+      "end_line": 218,
       "end_col": 27
-    },
-    {
-      "kind": "command",
-      "start_line": 219,
-      "start_col": 5,
-      "end_line": 219,
-      "end_col": 32
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 219,
-      "start_col": 33,
-      "end_line": 219,
-      "end_col": 47
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 219,
-      "start_col": 48,
-      "end_line": 219,
-      "end_col": 73
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 219,
-      "start_col": 74,
-      "end_line": 219,
-      "end_col": 83
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 219,
-      "start_col": 84,
-      "end_line": 219,
-      "end_col": 92
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 219,
-      "start_col": 93,
-      "end_line": 219,
-      "end_col": 112
     },
     {
       "kind": "command",
       "start_line": 220,
       "start_col": 5,
       "end_line": 220,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 222,
-      "start_col": 5,
-      "end_line": 222,
-      "end_col": 13
+      "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 222,
-      "start_col": 14,
-      "end_line": 222,
-      "end_col": 40
+      "start_line": 220,
+      "start_col": 33,
+      "end_line": 220,
+      "end_col": 47
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 48,
+      "end_line": 220,
+      "end_col": 73
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 74,
+      "end_line": 220,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 84,
+      "end_line": 220,
+      "end_col": 92
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 93,
+      "end_line": 220,
+      "end_col": 112
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 5,
+      "end_line": 221,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 221,
+      "start_col": 20,
+      "end_line": 221,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 23,
+      "end_line": 221,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 221,
+      "start_col": 30,
+      "end_line": 221,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 223,
       "start_col": 5,
       "end_line": 223,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 223,
+      "start_col": 14,
+      "end_line": 223,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 224,
+      "start_col": 5,
+      "end_line": 224,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 223,
+      "start_line": 224,
       "start_col": 26,
-      "end_line": 223,
+      "end_line": 224,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 223,
+      "start_line": 224,
       "start_col": 29,
-      "end_line": 223,
+      "end_line": 224,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 224,
+      "start_line": 225,
       "start_col": 5,
-      "end_line": 224,
+      "end_line": 225,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 224,
+      "start_line": 225,
       "start_col": 10,
-      "end_line": 224,
+      "end_line": 225,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 225,
+      "start_line": 226,
       "start_col": 5,
-      "end_line": 225,
+      "end_line": 226,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 225,
+      "start_line": 226,
       "start_col": 10,
-      "end_line": 225,
+      "end_line": 226,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 226,
+      "start_line": 227,
       "start_col": 5,
-      "end_line": 226,
+      "end_line": 227,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 226,
+      "start_line": 227,
       "start_col": 12,
-      "end_line": 226,
+      "end_line": 227,
       "end_col": 37
-    },
-    {
-      "kind": "command",
-      "start_line": 228,
-      "start_col": 5,
-      "end_line": 228,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 228,
-      "start_col": 14,
-      "end_line": 228,
-      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 229,
       "start_col": 5,
       "end_line": 229,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 229,
+      "start_col": 14,
+      "end_line": 229,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 230,
       "start_col": 5,
       "end_line": 230,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 231,
+      "start_col": 5,
+      "end_line": 231,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 230,
+      "start_line": 231,
       "start_col": 12,
-      "end_line": 230,
+      "end_line": 231,
       "end_col": 27
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 231,
+      "start_line": 232,
       "start_col": 3,
-      "end_line": 231,
+      "end_line": 232,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 233,
+      "start_line": 234,
       "start_col": 3,
-      "end_line": 233,
+      "end_line": 234,
       "end_col": 20
     },
     {
       "kind": "command",
-      "start_line": 235,
+      "start_line": 236,
       "start_col": 3,
-      "end_line": 235,
+      "end_line": 236,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 236,
+      "start_col": 27,
+      "end_line": 236,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 236,
+      "start_col": 28,
+      "end_line": 236,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 236,
+      "start_col": 37,
+      "end_line": 236,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 236,
+      "start_col": 56,
+      "end_line": 236,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 236,
+      "start_col": 59,
+      "end_line": 236,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 236,
+      "start_col": 66,
+      "end_line": 236,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 237,
+      "start_col": 3,
+      "end_line": 237,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 236,
+      "start_line": 238,
       "start_col": 1,
-      "end_line": 236,
+      "end_line": 238,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 238,
+      "start_line": 240,
       "start_col": 1,
-      "end_line": 238,
+      "end_line": 240,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 239,
+      "start_line": 241,
       "start_col": 1,
-      "end_line": 239,
+      "end_line": 241,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 239,
+      "start_line": 241,
       "start_col": 8,
-      "end_line": 239,
+      "end_line": 241,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 239,
+      "start_line": 241,
       "start_col": 10,
-      "end_line": 239,
+      "end_line": 241,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 239,
+      "start_line": 241,
       "start_col": 21,
-      "end_line": 239,
+      "end_line": 241,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 239,
+      "start_line": 241,
       "start_col": 22,
-      "end_line": 239,
+      "end_line": 241,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 239,
+  "bootstrap_line": 241,
   "hooks": {
     "header_info": false,
     "install_script": true,

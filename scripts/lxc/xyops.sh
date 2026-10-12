@@ -82,6 +82,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -93,14 +94,14 @@ function update_script() {
 
   if check_for_gh_release "xyops" "pixlcore/xyops"; then
     msg_info "Stopping Service"
-    systemctl stop xyops
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" xyops || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/xyops/data /opt/xyops/conf
+    create_backup /opt/xyops/data /opt/xyops/conf || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "xyops" "pixlcore/xyops" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Rebuilding Application"
     cd /opt/xyops || exit
@@ -114,6 +115,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -46,10 +46,20 @@ function install_script() {
   msg_ok "Installed wanderer"
 
   msg_info "Installing wanderer plugins"
+  local plugin plugins_failed=false
   for plugin in hammerhead komoot strava; do
-    fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "latest" "/opt/wanderer/data/plugins" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
+    if fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "latest" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz"; then
+      :
+    else
+      plugins_failed=true
+      msg_warn "Failed to install wanderer plugin: ${plugin}; run update to retry"
+    fi
   done
-  msg_ok "Installed wanderer plugins"
+  if [[ "$plugins_failed" == true ]]; then
+    msg_warn "Some wanderer plugins were not installed; the application can run without them"
+  else
+    msg_ok "Installed wanderer plugins"
+  fi
 
   msg_info "Creating Service"
   MEILI_KEY=$(openssl rand -hex 32)
@@ -125,55 +135,119 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
+  _recover_update_backups || return $?
+  _release_recover_archive /opt/wanderer/data/plugins || return $?
 
   if [[ ! -f /opt/wanderer/start.sh ]]; then
     msg_error "No wanderer Installation Found!"
     exit
   fi
 
+  local restart_services=false plugins_failed=false plugin plugin_status plugin_release plugin_repair plugin_manifest_status
   if check_for_gh_release "wanderer" "open-wanderer/wanderer"; then
     msg_info "Stopping service"
-    systemctl stop wanderer-web
+    _update_services_stop wanderer wanderer-web || return $?
+    restart_services=true
     msg_ok "Stopped service"
 
-    create_backup /opt/wanderer/source/search
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "wanderer" "open-wanderer/wanderer" "tarball" "latest" "/opt/wanderer/source"
-    restore_backup
+    create_backup /opt/wanderer/source/search || return $?
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "wanderer" "open-wanderer/wanderer" "tarball" "latest" "/opt/wanderer/source" || return $?
+    restore_backup || return $?
 
     msg_info "Updating wanderer"
     cd /opt/wanderer/source/db || exit
-    $STD go mod tidy
-    $STD go build
+    $STD go mod tidy || return $?
+    $STD go build || return $?
     cd /opt/wanderer/source/web || exit
-    $STD npm ci
-    $STD npm run build
-    mkdir -p /opt/wanderer/data/plugins /opt/wanderer/source/db/data
-    [[ -e /opt/wanderer/source/db/data/plugins ]] || ln -sfn /opt/wanderer/data/plugins /opt/wanderer/source/db/data/plugins
-    msg_info "Installing wanderer plugins"
-    for plugin in hammerhead komoot strava; do
-      fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/data/plugins" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
-    done
-    msg_ok "Installed wanderer plugins"
+    $STD npm ci || return $?
+    $STD npm run build || return $?
+    mkdir -p /opt/wanderer/data/plugins /opt/wanderer/source/db/data || return $?
+    [[ -e /opt/wanderer/source/db/data/plugins ]] || ln -sfn /opt/wanderer/data/plugins /opt/wanderer/source/db/data/plugins || return $?
     msg_ok "Updated wanderer"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
+  fi
 
+  # Plugins have independent markers and must remain retryable when the app is current.
+  for plugin in hammerhead komoot strava; do
+    if check_for_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer"; then
+      plugin_status=0
+      plugin_release="$CHECK_UPDATE_RELEASE"
+    else
+      plugin_status=$?
+      plugin_release=latest
+      if [[ "$plugin_status" != 1 ]]; then
+        plugins_failed=true
+        msg_warn "Failed to check wanderer plugin: ${plugin}; run update to retry"
+        continue
+      fi
+    fi
+
+    plugin_repair=0
+    if [[ ! -f "/opt/wanderer/data/plugins/${plugin}/plugin.json" || ! -s "/opt/wanderer/data/plugins/${plugin}/plugin.json" || -L "/opt/wanderer/data/plugins/${plugin}/plugin.json" ||
+      ! -f "/opt/wanderer/data/plugins/${plugin}/plugin.wasm" || ! -s "/opt/wanderer/data/plugins/${plugin}/plugin.wasm" || -L "/opt/wanderer/data/plugins/${plugin}/plugin.wasm" ||
+      -e /opt/wanderer/data/plugins/plugin.json || -L /opt/wanderer/data/plugins/plugin.json ||
+      -e /opt/wanderer/data/plugins/plugin.wasm || -L /opt/wanderer/data/plugins/plugin.wasm ]]; then
+      # Earlier shared-root deployments advanced markers without updating child bundles.
+      # Preserve those root files; rehydrate each plugin through its proper destination.
+      plugin_repair=1
+    elif jq -e --arg plugin "$plugin" '.id == $plugin' "/opt/wanderer/data/plugins/${plugin}/plugin.json" > /dev/null; then
+      :
+    else
+      plugin_manifest_status=$?
+      if [[ "$plugin_manifest_status" == 1 ]]; then
+        plugin_repair=1
+      else
+        plugins_failed=true
+        msg_warn "Failed to inspect wanderer plugin: ${plugin}; run update to retry"
+        continue
+      fi
+    fi
+    [[ "$plugin_status" == 0 || "$plugin_repair" == 1 ]] || continue
+
+    if [[ "$restart_services" == false ]]; then
+      _update_services_stop wanderer wanderer-web || return $?
+      restart_services=true
+    fi
+    if FORCE_DEPLOY="$plugin_repair" CLEAN_INSTALL=0 fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "$plugin_release" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz"; then
+      msg_ok "Updated wanderer plugin: ${plugin}"
+    else
+      plugins_failed=true
+      msg_warn "Failed to install wanderer plugin: ${plugin}; run update to retry"
+    fi
+  done
+  if [[ "$restart_services" == true ]]; then
     msg_info "Starting service"
-    systemctl start wanderer-web
+    systemctl start wanderer-web || return $?
     msg_ok "Started service"
-    msg_ok "Update Successful"
+    if [[ "$plugins_failed" == true ]]; then
+      msg_warn "Wanderer update completed with plugin warnings; run update to retry"
+    else
+      msg_ok "Update Successful"
+    fi
   fi
   if check_for_gh_release "meilisearch" "meilisearch/meilisearch"; then
     msg_info "Stopping service"
-    systemctl stop wanderer-web
+    systemctl stop wanderer-web || return $?
     msg_ok "Stopped service"
 
-    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" "latest" "/opt/wanderer/source/search"
-    grep -q -- '--experimental-dumpless-upgrade' /opt/wanderer/start.sh || sed -i 's|meilisearch --master-key|meilisearch --experimental-dumpless-upgrade --master-key|' /opt/wanderer/start.sh
+    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" "latest" "/opt/wanderer/source/search" || return $?
+    grep -q -- '--experimental-dumpless-upgrade' /opt/wanderer/start.sh || sed -i 's|meilisearch --master-key|meilisearch --experimental-dumpless-upgrade --master-key|' /opt/wanderer/start.sh || return $?
 
     msg_info "Starting service"
-    systemctl start wanderer-web
+    systemctl start wanderer-web || return $?
     msg_ok "Started service"
-    msg_ok "Update Successful"
+    if [[ "$plugins_failed" == true ]]; then
+      msg_warn "Wanderer update completed with plugin warnings; run update to retry"
+    else
+      msg_ok "Update Successful"
+    fi
+  else
+    local meili_status=$?
+    [[ "$meili_status" == 1 ]] || return "$meili_status"
   fi
+  _update_services_finish wanderer || return $?
   exit
 }
 

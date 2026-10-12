@@ -324,24 +324,22 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
+  _release_recover_archive /opt/autocaliweb "$HOME/.autocaliweb" || return $?
   if [[ ! -d /opt/autocaliweb ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
 
-  setup_uv
-
-  # shellcheck disable=SC2034
-  RELEASE=$(get_latest_codeberg_release "gelbphoenix/autocaliweb")
   if check_for_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb"; then
+    setup_uv || return $?
     msg_info "Stopping Services"
-    systemctl stop autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper
+    systemctl stop autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper || return $?
     msg_ok "Stopped Services"
 
     INSTALL_DIR="/opt/autocaliweb"
     export VIRTUAL_ENV="${INSTALL_DIR}/venv"
     $STD tar -cf ~/autocaliweb_bkp.tar "$INSTALL_DIR"/{metadata_change_logs,dirs.json,.env,scripts/ingest_watcher.sh,scripts/auto_zipper_wrapper.sh,scripts/metadata_change_detector_wrapper.sh}
-    fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "tarball" "latest" "/opt/autocaliweb"
+    fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "tarball" "latest" "/opt/autocaliweb" || return $?
 
     msg_info "Updating Autocaliweb"
     cd "$INSTALL_DIR" || exit
@@ -377,10 +375,13 @@ function update_script() {
     msg_ok "Updated Autocaliweb"
 
     msg_info "Starting Services"
-    systemctl start autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper
+    systemctl start autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper || return $?
     msg_ok "Started Services"
 
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

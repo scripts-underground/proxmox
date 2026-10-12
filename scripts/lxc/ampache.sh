@@ -83,6 +83,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -94,7 +95,7 @@ function update_script() {
 
   if check_for_gh_release "Ampache" "ampache/ampache"; then
     msg_info "Stopping Service"
-    systemctl stop apache2
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" apache2 || return $?
     msg_ok "Stopped Service"
 
     msg_info "Creating Backup"
@@ -102,12 +103,12 @@ function update_script() {
       /opt/ampache/config/ampache.cfg.php \
       /opt/ampache/public/rest/.htaccess \
       /opt/ampache/public/play/.htaccess \
-      /opt/ampache/advanced-config
+      /opt/ampache/advanced-config || return $?
     msg_ok "Backup Created"
 
     fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "latest" "/opt/ampache" "ampache-*_all_php8.4.zip"
 
-    restore_backup
+    restore_backup || return $?
     chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
     chown -R www-data:www-data /opt/ampache
 
@@ -117,6 +118,7 @@ function update_script() {
     msg_ok "Updated successfully!"
     msg_info "Complete database update by visiting: http://${IP}/update.php"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

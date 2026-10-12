@@ -94,6 +94,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -104,7 +105,7 @@ function update_script() {
 
   if check_for_gl_release "Crafty-Controller" "crafty-controller/crafty-4"; then
     msg_info "Stopping Crafty-Controller"
-    systemctl stop crafty-controller
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" crafty-controller || return $?
     msg_ok "Stopped Crafty-Controller"
 
     create_backup \
@@ -113,11 +114,11 @@ function update_script() {
       "/opt/crafty-controller/crafty/crafty-4/app/config/web" \
       "/opt/crafty-controller/crafty/crafty-4/servers" \
       "/opt/crafty-controller/crafty/crafty-4/backups" \
-      "/opt/crafty-controller/crafty/crafty-4/import"
+      "/opt/crafty-controller/crafty/crafty-4/import" || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gl_release "Crafty-Controller" "crafty-controller/crafty-4" "tarball" "latest" "/opt/crafty-controller/crafty/crafty-4"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating TemurinJDK"
     setup_java
@@ -140,6 +141,7 @@ function update_script() {
 
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

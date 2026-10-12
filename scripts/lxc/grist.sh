@@ -73,6 +73,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -87,14 +88,14 @@ function update_script() {
 
   if check_for_gh_release "grist" "gristlabs/grist-core"; then
     msg_info "Stopping Service"
-    systemctl stop grist
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" grist || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/grist/.env /opt/grist/grist-sessions.db /opt/grist/landing.db
+    create_backup /opt/grist/.env /opt/grist/grist-sessions.db /opt/grist/landing.db || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "grist" "gristlabs/grist-core" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Grist"
     mkdir -p /opt/grist/docs
@@ -110,6 +111,7 @@ function update_script() {
 
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

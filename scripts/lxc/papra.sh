@@ -90,6 +90,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -101,14 +102,14 @@ function update_script() {
 
   if check_for_gh_release "papra" "papra-hq/papra"; then
     msg_info "Stopping Service"
-    systemctl stop papra
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" papra || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/papra/apps/papra-server/.env
+    create_backup /opt/papra/apps/papra-server/.env || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "papra" "papra-hq/papra" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     pnpm_version=$(grep -oP '"packageManager":\s*"pnpm@\K[^"]+' /opt/papra/package.json)
     NODE_VERSION="26" NODE_MODULE="pnpm@$pnpm_version" setup_nodejs
@@ -146,6 +147,7 @@ EOF
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

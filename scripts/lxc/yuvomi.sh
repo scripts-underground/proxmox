@@ -83,6 +83,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -94,10 +95,10 @@ function update_script() {
 
   if check_for_gh_release "yuvomi" "ulsklyc/yuvomi"; then
     msg_info "Stopping Service"
-    systemctl stop yuvomi
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" yuvomi || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/yuvomi/data /opt/yuvomi/.env
+    create_backup /opt/yuvomi/data /opt/yuvomi/.env || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "yuvomi" "ulsklyc/yuvomi" "tarball"
 
@@ -106,13 +107,14 @@ function update_script() {
     $STD npm ci --omit=dev
     msg_ok "Installed Node.js Dependencies"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start yuvomi
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

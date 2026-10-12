@@ -115,6 +115,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -132,14 +133,14 @@ function update_script() {
       /etc/systemd/system/trek.service && MIGRATION=1
 
     msg_info "Stopping Service"
-    systemctl stop trek
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" trek || return $?
     msg_ok "Stopped Service"
 
     ensure_dependencies "libkitinerary-bin"
 
     create_backup /opt/trek/server/.env \
       /opt/trek/data \
-      /opt/trek/uploads
+      /opt/trek/uploads || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "trek" "liketrek/TREK" "tarball"
 
@@ -157,7 +158,7 @@ function update_script() {
     cp -a /opt/trek/client/dist/. /opt/trek/server/public/
     cp -a /opt/trek/client/public/fonts/. /opt/trek/server/public/fonts/
 
-    restore_backup
+    restore_backup || return $?
 
     rm -rf /opt/trek/server/data /opt/trek/server/uploads
     ln -s /opt/trek/data /opt/trek/server/data
@@ -201,6 +202,7 @@ EOF
     msg_ok "Updated Successfully!"
   fi
 
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

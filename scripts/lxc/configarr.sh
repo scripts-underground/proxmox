@@ -59,6 +59,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -68,16 +69,17 @@ function update_script() {
   fi
   if check_for_gh_release "configarr" "raydak-labs/configarr"; then
     msg_info "Stopping Timer"
-    systemctl stop configarr-task.timer
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" configarr-task.timer || return $?
     msg_ok "Stopped Timer"
-    create_backup /opt/configarr/config.yml /opt/configarr/secrets.yml /opt/configarr/.env
+    create_backup /opt/configarr/config.yml /opt/configarr/secrets.yml /opt/configarr/.env || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "configarr" "raydak-labs/configarr" "prebuild" "latest" "/opt/configarr" "configarr-linux-$(get_system_arch).tar.xz"
-    restore_backup
+    restore_backup || return $?
     msg_info "Starting Timer"
     systemctl start configarr-task.timer
     msg_ok "Started Timer"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

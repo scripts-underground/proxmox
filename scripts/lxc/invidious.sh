@@ -133,6 +133,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -142,22 +143,34 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "Invidious" "iv-org/invidious"; then
+  _release_recover_archive /opt/invidious-companion "$HOME/.invidiouscompanion" || return $?
+  local main_status companion_status main_release companion_release companion_arch
+  if check_for_gh_release "Invidious" "iv-org/invidious" "${var_appversion:-}"; then
+    main_status=0 main_release=$CHECK_UPDATE_RELEASE
+  else
+    main_status=$?
+    [[ "$main_status" == 1 ]] || return "$main_status"
+  fi
+  if check_for_gh_release "Invidious Companion" "iv-org/invidious-companion"; then
+    companion_status=0 companion_release=$CHECK_UPDATE_RELEASE
+  else
+    companion_status=$?
+    [[ "$companion_status" == 1 ]] || return "$companion_status"
+  fi
+
+  if [[ "$main_status" == 0 ]]; then
     msg_info "Stopping services"
-    $STD systemctl stop invidious-companion invidious
+    _update_services_begin invidious invidious-companion invidious || return $?
+    $STD systemctl stop invidious-companion invidious || return $?
     msg_ok "Stopped services"
 
-    create_backup /opt/invidious/config/config.yml
+    create_backup /opt/invidious/config/config.yml || return $?
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious" "iv-org/invidious" "tarball" "latest" "/opt/invidious"
-    if check_for_gh_release "Invidious-Companion" "iv-org/invidious-companion"; then
-      COMPANION_ARCH="$(uname -m)"
-      CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious-Companion" "iv-org/invidious-companion" "prebuild" "latest" "/opt/invidious-companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz"
-    fi
+    CLEAN_INSTALL=1 _gh_deploy_selected_source Invidious iv-org/invidious "$main_release" /opt/invidious || return $?
 
     msg_info "Rebuilding Invidious"
     cd /opt/invidious || exit
-    INVIDIOUS_VERSION="$(cat ~/.invidious 2> /dev/null || echo "unknown")"
+    INVIDIOUS_VERSION=$(cat "$HOME/.invidious") || return $?
     INVIDIOUS_VERSION="${INVIDIOUS_VERSION#v}"
     sed -i \
       -e "s~^\(\s*CURRENT_BRANCH\s*=\).*~\1 \"master\"~" \
@@ -165,17 +178,28 @@ function update_script() {
       -e "s~^\(\s*CURRENT_VERSION\s*=\).*~\1 \"${INVIDIOUS_VERSION}\"~" \
       -e "s~^\(\s*CURRENT_TAG\s*=\).*~\1 \"${INVIDIOUS_VERSION}\"~" \
       -e "s~^\(\s*ASSET_COMMIT\s*=\).*~\1 \"\"~" \
-      src/invidious.cr
-    $STD make
+      src/invidious.cr || return $?
+    $STD make || return $?
     msg_ok "Rebuilt Invidious"
 
-    restore_backup
+    restore_backup || return $?
 
-    msg_info "Starting services"
-    $STD systemctl start invidious invidious-companion
-    msg_ok "Started services"
-    msg_ok "Updated successfully!"
   fi
+
+  if [[ "$companion_status" == 0 ]]; then
+    if [[ "$main_status" == 1 ]]; then
+      _update_services_begin invidious invidious-companion || return $?
+      $STD systemctl stop invidious-companion || return $?
+    fi
+    companion_arch=$(uname -m) || return $?
+    local companion_json
+    _gh_read_release_metadata companion_json iv-org/invidious-companion "$companion_release" selected || return $?
+    CLEAN_INSTALL=1 _gh_deploy_verified_assets invidiouscompanion iv-org/invidious-companion "$companion_json" \
+      /opt/invidious-companion "${companion_release#v}" flat invidious_companion \
+      "invidious_companion-${companion_arch}-unknown-linux-gnu.tar.gz" || return $?
+  fi
+  _update_services_finish invidious || return $?
+  if [[ "$main_status" == 0 || "$companion_status" == 0 ]]; then msg_ok "Updated successfully!"; fi
   exit
 }
 

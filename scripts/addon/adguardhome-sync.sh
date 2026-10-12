@@ -175,6 +175,8 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups "$var_addon_backup_dir" || return $?
+  _release_recover_archive "$var_addon_install_path" "$HOME/.adguardhome-sync" || return $?
   if [[ ! -f "${var_addon_install_path}/adguardhome-sync" ]]; then
     msg_error "${APP} is not installed. Nothing to update."
     exit 233
@@ -182,17 +184,17 @@ function update_script() {
   if check_for_gh_release "adguardhome-sync" "$var_addon_repo"; then
     msg_info "Stopping service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service "$var_addon_service" stop &> /dev/null || true
+      _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" "$var_addon_service" || return $?
     else
-      systemctl stop "$var_addon_service" &> /dev/null || true
+      _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" "$var_addon_service" || return $?
     fi
     msg_ok "Stopped service"
 
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
+    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path" || return $?
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz" || return $?
 
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
+    BACKUP_DIR="$var_addon_backup_dir" restore_backup || return $?
 
     msg_info "Starting service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
@@ -202,7 +204,11 @@ function update_script() {
     fi
     msg_ok "Started service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

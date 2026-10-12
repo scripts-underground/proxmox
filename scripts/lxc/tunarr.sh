@@ -75,6 +75,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -84,10 +85,10 @@ function update_script() {
   fi
   if check_for_gh_release "tunarr" "chrisbenincasa/tunarr"; then
     msg_info "Stopping Tunarr"
-    systemctl stop tunarr
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" tunarr || return $?
     msg_ok "Stopped Tunarr"
 
-    create_backup /root/.local/share/tunarr
+    create_backup /root/.local/share/tunarr || return $?
 
     ARCH=$(uname -m)
     if [ "$ARCH" = "x86_64" ]; then
@@ -98,7 +99,7 @@ function update_script() {
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "tunarr" "chrisbenincasa/tunarr" "prebuild" "latest" "/opt/tunarr" "*linux-${TUN_ARCH}.tar.gz"
     cd /opt/tunarr || exit
     mv tunarr* tunarr
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Tunarr"
     systemctl start tunarr
@@ -108,7 +109,7 @@ function update_script() {
 
   if check_for_gh_release "ersatztv-ffmpeg" "ErsatzTV/ErsatzTV-ffmpeg"; then
     msg_info "Stopping Tunarr"
-    systemctl stop tunarr
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" tunarr || return $?
     msg_ok "Stopped Tunarr"
 
     ARCH=$(uname -m)
@@ -131,6 +132,7 @@ function update_script() {
     msg_ok "Started Tunarr"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -116,6 +116,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -129,13 +130,13 @@ function update_script() {
 
   if check_for_gh_release "twenty" "twentyhq/twenty"; then
     msg_info "Stopping Services"
-    systemctl stop twenty-worker twenty-server
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" twenty-worker twenty-server || return $?
     msg_ok "Stopped Services"
 
     create_backup /opt/twenty/.env \
-      /opt/twenty/packages/twenty-server/.local-storage
+      /opt/twenty/packages/twenty-server/.local-storage || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "twenty" "twentyhq/twenty" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Building Application"
     cd /opt/twenty || exit
@@ -161,6 +162,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

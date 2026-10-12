@@ -72,6 +72,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -81,17 +82,18 @@ function update_script() {
   fi
   if check_for_gh_release "bichon" "rustmailer/bichon"; then
     msg_info "Stopping Service"
-    systemctl stop bichon
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" bichon || return $?
     msg_ok "Stopped Service"
-    create_backup /opt/bichon/bichon.env
+    create_backup /opt/bichon/bichon.env || return $?
     ARCH=$(uname -m)
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "latest" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
-    restore_backup
+    restore_backup || return $?
     msg_info "Starting Service"
     systemctl start bichon
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 
