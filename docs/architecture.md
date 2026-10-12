@@ -114,6 +114,10 @@ host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
 
+Bundles select a guest-owned temporary directory: `TMPDIR=/var/tmp` by default,
+or the explicit `var_lxc_tmpdir` override. The creator's inherited `TMPDIR`
+belongs to a different filesystem and is not transported implicitly.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
@@ -367,6 +371,10 @@ error traps enabled from `core.func`/`error_handler.func`). Any future
 modification to the wrapper prelude or postamble must respect this
 convention — new error paths must write the failure flag to prevent
 silently swallowed failures.
+
+Development keep mode preserves a failed container without changing the failure
+status. Both the build failure path and generic host error handler honor that
+policy; a kept failure never advances to `complete_install` or a cleanup menu.
 
 #### 4.1.7 Persistent update and uninstall bundles
 
