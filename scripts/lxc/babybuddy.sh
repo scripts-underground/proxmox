@@ -111,6 +111,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -123,11 +124,11 @@ function update_script() {
     setup_uv
 
     msg_info "Stopping Services"
-    systemctl stop nginx
-    systemctl stop uwsgi
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" nginx || return $?
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" uwsgi || return $?
     msg_ok "Services Stopped"
 
-    create_backup /opt/babybuddy/babybuddy/settings/production.py
+    create_backup /opt/babybuddy/babybuddy/settings/production.py || return $?
 
     msg_info "Cleaning old files"
     cd /opt/babybuddy || exit || exit
@@ -135,7 +136,7 @@ function update_script() {
     msg_ok "Cleaned old files"
 
     fetch_and_deploy_gh_release "babybuddy" "babybuddy/babybuddy" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating ${APP}"
     cd /opt/babybuddy || exit
@@ -158,6 +159,7 @@ function update_script() {
     msg_ok "Services Started"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

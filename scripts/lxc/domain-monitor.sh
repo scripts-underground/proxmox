@@ -75,6 +75,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -94,10 +95,10 @@ function update_script() {
 
   if check_for_gh_release "domain-monitor" "Hosteroid/domain-monitor"; then
     msg_info "Stopping Service"
-    systemctl stop apache2
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" apache2 || return $?
     msg_info "Service stopped"
 
-    create_backup /opt/domain-monitor/.env
+    create_backup /opt/domain-monitor/.env || return $?
 
     setup_composer
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "domain-monitor" "Hosteroid/domain-monitor" "prebuild" "latest" "/opt/domain-monitor" "domain-monitor-v*.zip"
@@ -108,13 +109,14 @@ function update_script() {
     chown -R www-data:www-data /opt/domain-monitor
     msg_ok "Updated Domain Monitor"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Restarting Services"
     systemctl start apache2
     msg_ok "Restarted Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

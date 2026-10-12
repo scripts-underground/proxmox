@@ -75,6 +75,7 @@ function post_install_script() {
   echo -e "${TAB}${GATEWAY}${BGN}http://${IP}${CL}"
 }
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -84,16 +85,16 @@ function update_script() {
   fi
   if check_for_gh_release "lychee" "LycheeOrg/Lychee"; then
     msg_info "Stopping Services"
-    systemctl stop caddy
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" caddy || return $?
     PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
-    systemctl stop "php${PHP_VER}-fpm"
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" "php${PHP_VER}-fpm" || return $?
     msg_ok "Stopped Services"
 
-    create_backup /opt/lychee/.env /opt/lychee/storage /opt/lychee/public/uploads /opt/lychee/public/dist
+    create_backup /opt/lychee/.env /opt/lychee/storage /opt/lychee/public/uploads /opt/lychee/public/dist || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "lychee" "LycheeOrg/Lychee" "prebuild" "latest" "/opt/lychee" "Lychee.zip"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Application"
     cd /opt/lychee || exit
@@ -113,6 +114,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 # shellcheck disable=SC1090

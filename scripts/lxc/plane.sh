@@ -398,6 +398,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -411,18 +412,18 @@ function update_script() {
 
   if check_for_gh_release "plane" "makeplane/plane"; then
     msg_info "Stopping Services"
-    systemctl stop plane-api plane-worker plane-beat plane-live plane-space
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" plane-api plane-worker plane-beat plane-live plane-space || return $?
     msg_ok "Stopped Services"
 
     create_backup /opt/plane/.env \
       /opt/plane/apps/admin/.env \
       /opt/plane/apps/api/.env \
       /opt/plane/apps/space/.env \
-      /opt/plane/apps/web/.env
+      /opt/plane/apps/web/.env || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "plane" "makeplane/plane" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Rebuilding Frontend (Patience)"
     cd /opt/plane || exit
@@ -454,6 +455,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

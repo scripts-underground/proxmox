@@ -51,6 +51,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -60,16 +61,17 @@ function update_script() {
   fi
   if check_for_gh_release "dagu" "dagucloud/dagu"; then
     msg_info "Stopping Service"
-    systemctl stop dagu
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" dagu || return $?
     msg_ok "Stopped Service"
-    create_backup /opt/dagu/data
+    create_backup /opt/dagu/data || return $?
     fetch_and_deploy_gh_release "dagu" "dagucloud/dagu" "prebuild" "latest" "/opt/dagu" "dagu_*_linux_$(get_system_arch).tar.gz"
-    restore_backup
+    restore_backup || return $?
     msg_info "Starting Service"
     systemctl start dagu
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

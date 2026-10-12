@@ -169,6 +169,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -178,18 +179,18 @@ function update_script() {
   fi
   if check_for_gh_release "bar-assistant" "karlomikus/bar-assistant"; then
     msg_info "Stopping nginx"
-    systemctl stop nginx
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" nginx || return $?
     msg_ok "Stopped nginx"
 
     PHP_VERSION="8.4" PHP_FPM="YES" PHP_MODULE="pdo-sqlite" setup_php
 
     create_backup /opt/bar-assistant/.env \
-      /opt/bar-assistant/storage/bar-assistant
+      /opt/bar-assistant/storage/bar-assistant || return $?
 
     fetch_and_deploy_gh_release "bar-assistant" "karlomikus/bar-assistant" "tarball" "latest" "/opt/bar-assistant"
     setup_composer
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring Bar-Assistant"
     cd /opt/bar-assistant || exit
@@ -210,14 +211,14 @@ function update_script() {
   fi
 
   if check_for_gh_release "vue-salt-rim" "karlomikus/vue-salt-rim"; then
-    create_backup /opt/vue-salt-rim/public/config.js
+    create_backup /opt/vue-salt-rim/public/config.js || return $?
 
     msg_info "Stopping nginx"
-    systemctl stop nginx
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" nginx || return $?
     msg_ok "Stopped nginx"
 
     fetch_and_deploy_gh_release "vue-salt-rim" "karlomikus/vue-salt-rim" "tarball" "latest" "/opt/vue-salt-rim"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Configuring Vue Salt Rim"
     cd /opt/vue-salt-rim || exit
@@ -232,6 +233,7 @@ function update_script() {
 
   setup_meilisearch
 
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

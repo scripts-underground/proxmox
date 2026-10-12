@@ -47,6 +47,7 @@ function post_install_script() {
   echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}"
 }
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -57,16 +58,17 @@ function update_script() {
   if check_for_gh_release "jotty" "fccview/jotty"; then
     NODE_VERSION="22" NODE_MODULE="yarn" setup_nodejs
     msg_info "Stopping Service"
-    systemctl stop jotty
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" jotty || return $?
     msg_ok "Stopped Service"
-    create_backup /opt/jotty/.env /opt/jotty/data
+    create_backup /opt/jotty/.env /opt/jotty/data || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jotty" "fccview/jotty" "prebuild" "latest" "/opt/jotty" "jotty_*_prebuild.tar.gz"
-    restore_backup
+    restore_backup || return $?
     msg_info "Starting Service"
     systemctl start jotty
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 # shellcheck disable=SC1090

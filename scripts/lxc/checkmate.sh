@@ -143,6 +143,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -154,11 +155,11 @@ function update_script() {
 
   if check_for_gh_release "checkmate" "bluewave-labs/Checkmate"; then
     msg_info "Stopping Services"
-    systemctl stop checkmate-server checkmate-client nginx
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" checkmate-server checkmate-client nginx || return $?
     msg_ok "Stopped Services"
 
     create_backup /opt/checkmate/server/.env \
-      /opt/checkmate/client/.env.local
+      /opt/checkmate/client/.env.local || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "checkmate" "bluewave-labs/Checkmate" "tarball"
 
@@ -176,13 +177,14 @@ function update_script() {
     VITE_APP_API_BASE_URL="/api/v1" UPTIME_APP_API_BASE_URL="/api/v1" VITE_APP_LOG_LEVEL="warn" $STD npm run build
     msg_ok "Updated Checkmate Client"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Services"
     systemctl start checkmate-server checkmate-client nginx
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

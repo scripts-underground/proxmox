@@ -121,6 +121,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -136,14 +137,14 @@ function update_script() {
 
   if check_for_gh_release "kimai" "kimai/kimai"; then
     msg_info "Stopping Apache2"
-    systemctl stop apache2
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" apache2 || return $?
     msg_ok "Stopped Apache2"
 
     create_backup /opt/kimai/var \
       /opt/kimai/.env \
-      /opt/kimai/config/packages/local.yaml
+      /opt/kimai/config/packages/local.yaml || return $?
     fetch_and_deploy_gh_release "kimai" "kimai/kimai" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Kimai"
     if grep -q "^APP_SECRET=$" /opt/kimai/.env; then
@@ -170,6 +171,7 @@ function update_script() {
     msg_ok "Setup Permissions"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

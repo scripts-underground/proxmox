@@ -184,6 +184,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -194,12 +195,12 @@ function update_script() {
 
   if check_for_gh_release "fireshare" "ShaneIsrael/fireshare"; then
     msg_info "Stopping Service"
-    systemctl stop fireshare
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" fireshare || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/fireshare/fireshare.env
+    create_backup /opt/fireshare/fireshare.env || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "fireshare" "ShaneIsrael/fireshare" "tarball"
-    restore_backup
+    restore_backup || return $?
     rm -f /usr/local/bin/fireshare
 
     if ! grep -q "__FIRESHARE_PORT__" /etc/nginx/nginx.conf; then
@@ -237,6 +238,7 @@ function update_script() {
   fi
   cleanup_lxc
 
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

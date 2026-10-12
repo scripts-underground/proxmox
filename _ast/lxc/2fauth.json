@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "2fauth",
   "type": "lxc",
-  "total_lines": 152,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: jkrgr0\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://docs.2fauth.app/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"2FAuth\"\nvar_tags=\"${var_tags:-2fa;authenticator}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-2}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y nginx\n  msg_ok \"Installed Dependencies\"\n\n  export PHP_VERSION=\"8.4\"\n  PHP_FPM=\"YES\" setup_php\n  setup_composer\n  setup_mariadb\n  MARIADB_DB_NAME=\"2fauth_db\" MARIADB_DB_USER=\"2fauth\" setup_mariadb_db\n\n  fetch_and_deploy_gh_release \"2fauth\" \"Bubka/2FAuth\" \"tarball\"\n\n  msg_info \"Setup 2FAuth\"\n  cd /opt/2fauth || exit\n  cp .env.example .env\n  sed -i -e \"s|^APP_URL=.*|APP_URL=http://$LOCAL_IP|\" \\\n    -e \"s|^DB_CONNECTION=$|DB_CONNECTION=mysql|\" \\\n    -e \"s|^DB_DATABASE=$|DB_DATABASE=$MARIADB_DB_NAME|\" \\\n    -e \"s|^DB_HOST=$|DB_HOST=127.0.0.1|\" \\\n    -e \"s|^DB_PORT=$|DB_PORT=3306|\" \\\n    -e \"s|^DB_USERNAME=$|DB_USERNAME=$MARIADB_DB_USER|\" \\\n    -e \"s|^DB_PASSWORD=$|DB_PASSWORD=$MARIADB_DB_PASS|\" .env\n  export COMPOSER_ALLOW_SUPERUSER=1\n  $STD composer update --no-plugins --no-scripts\n  $STD composer install --no-dev --prefer-dist --no-plugins --no-scripts\n  $STD php artisan key:generate --force\n  $STD php artisan migrate:refresh\n  $STD php artisan passport:install -q -n\n  $STD php artisan storage:link\n  $STD php artisan config:cache\n  $STD php artisan 2fauth:fix-passport-key-permissions\n  chown -R www-data: /opt/2fauth\n  chmod -R 755 /opt/2fauth\n  msg_ok \"Setup 2FAuth\"\n\n  msg_info \"Configure Service\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/conf.d/2fauth.conf\nserver {\n  listen 80;\n  root /opt/2fauth/public;\n  server_name $LOCAL_IP;\n  index index.php;\n  charset utf-8;\n\n  location / {\n    try_files \\$uri \\$uri/ /index.php?\\$query_string;\n  }\n\n  location = /favicon.ico { access_log off; log_not_found off; }\n  location = /robots.txt { access_log off; log_not_found off; }\n\n  error_page 404 /index.php;\n\n  location ~ \\.php\\$ {\n    fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;\n    fastcgi_param SCRIPT_FILENAME \\$realpath_root\\$fastcgi_script_name;\n    include fastcgi_params;\n  }\n\n  location ~ /\\.(?!well-known).* {\n    deny all;\n  }\n}\nEOF\n  systemctl reload nginx\n  msg_ok \"Configured Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/2fauth ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  setup_mariadb\n  if check_for_gh_release \"2fauth\" \"Bubka/2FAuth\"; then\n    $STD apt update\n    $STD apt -y upgrade\n\n    msg_info \"Creating Backup\"\n    create_backup \\\n      /opt/2fauth/.env \\\n      /opt/2fauth/storage\n\n    if ! dpkg -l | grep -q 'php8.4'; then\n      cp /etc/nginx/conf.d/2fauth.conf /etc/nginx/conf.d/2fauth.conf.bak\n    fi\n    msg_ok \"Backup Created\"\n\n    if ! dpkg -l | grep -q 'php8.4'; then\n      PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" setup_php\n      sed -i 's/php8\\.[0-9]/php8.4/g' /etc/nginx/conf.d/2fauth.conf\n    fi\n\n    fetch_and_deploy_gh_release \"2fauth\" \"Bubka/2FAuth\" \"tarball\"\n    setup_composer\n    restore_backup\n\n    msg_info \"Configuring 2FAuth\"\n    cd /opt/2fauth || exit\n    export COMPOSER_ALLOW_SUPERUSER=1\n    $STD composer install --no-dev --prefer-dist\n    php artisan 2fauth:install\n    chown -R www-data: /opt/2fauth\n    chmod -R 755 /opt/2fauth\n    $STD php artisan 2fauth:fix-passport-key-permissions\n    $STD systemctl restart php8.4-fpm\n    $STD systemctl restart nginx\n    msg_ok \"Configured 2FAuth\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 153,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: jkrgr0\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://docs.2fauth.app/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"2FAuth\"\nvar_tags=\"${var_tags:-2fa;authenticator}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-2}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y nginx\n  msg_ok \"Installed Dependencies\"\n\n  export PHP_VERSION=\"8.4\"\n  PHP_FPM=\"YES\" setup_php\n  setup_composer\n  setup_mariadb\n  MARIADB_DB_NAME=\"2fauth_db\" MARIADB_DB_USER=\"2fauth\" setup_mariadb_db\n\n  fetch_and_deploy_gh_release \"2fauth\" \"Bubka/2FAuth\" \"tarball\"\n\n  msg_info \"Setup 2FAuth\"\n  cd /opt/2fauth || exit\n  cp .env.example .env\n  sed -i -e \"s|^APP_URL=.*|APP_URL=http://$LOCAL_IP|\" \\\n    -e \"s|^DB_CONNECTION=$|DB_CONNECTION=mysql|\" \\\n    -e \"s|^DB_DATABASE=$|DB_DATABASE=$MARIADB_DB_NAME|\" \\\n    -e \"s|^DB_HOST=$|DB_HOST=127.0.0.1|\" \\\n    -e \"s|^DB_PORT=$|DB_PORT=3306|\" \\\n    -e \"s|^DB_USERNAME=$|DB_USERNAME=$MARIADB_DB_USER|\" \\\n    -e \"s|^DB_PASSWORD=$|DB_PASSWORD=$MARIADB_DB_PASS|\" .env\n  export COMPOSER_ALLOW_SUPERUSER=1\n  $STD composer update --no-plugins --no-scripts\n  $STD composer install --no-dev --prefer-dist --no-plugins --no-scripts\n  $STD php artisan key:generate --force\n  $STD php artisan migrate:refresh\n  $STD php artisan passport:install -q -n\n  $STD php artisan storage:link\n  $STD php artisan config:cache\n  $STD php artisan 2fauth:fix-passport-key-permissions\n  chown -R www-data: /opt/2fauth\n  chmod -R 755 /opt/2fauth\n  msg_ok \"Setup 2FAuth\"\n\n  msg_info \"Configure Service\"\n  cat \u003c\u003c EOF \u003e /etc/nginx/conf.d/2fauth.conf\nserver {\n  listen 80;\n  root /opt/2fauth/public;\n  server_name $LOCAL_IP;\n  index index.php;\n  charset utf-8;\n\n  location / {\n    try_files \\$uri \\$uri/ /index.php?\\$query_string;\n  }\n\n  location = /favicon.ico { access_log off; log_not_found off; }\n  location = /robots.txt { access_log off; log_not_found off; }\n\n  error_page 404 /index.php;\n\n  location ~ \\.php\\$ {\n    fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;\n    fastcgi_param SCRIPT_FILENAME \\$realpath_root\\$fastcgi_script_name;\n    include fastcgi_params;\n  }\n\n  location ~ /\\.(?!well-known).* {\n    deny all;\n  }\n}\nEOF\n  systemctl reload nginx\n  msg_ok \"Configured Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/2fauth ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  setup_mariadb\n  if check_for_gh_release \"2fauth\" \"Bubka/2FAuth\"; then\n    $STD apt update\n    $STD apt -y upgrade\n\n    msg_info \"Creating Backup\"\n    create_backup \\\n      /opt/2fauth/.env \\\n      /opt/2fauth/storage || return $?\n\n    if ! dpkg -l | grep -q 'php8.4'; then\n      cp /etc/nginx/conf.d/2fauth.conf /etc/nginx/conf.d/2fauth.conf.bak\n    fi\n    msg_ok \"Backup Created\"\n\n    if ! dpkg -l | grep -q 'php8.4'; then\n      PHP_VERSION=\"8.4\" PHP_FPM=\"YES\" setup_php\n      sed -i 's/php8\\.[0-9]/php8.4/g' /etc/nginx/conf.d/2fauth.conf\n    fi\n\n    fetch_and_deploy_gh_release \"2fauth\" \"Bubka/2FAuth\" \"tarball\"\n    setup_composer\n    restore_backup || return $?\n\n    msg_info \"Configuring 2FAuth\"\n    cd /opt/2fauth || exit\n    export COMPOSER_ALLOW_SUPERUSER=1\n    $STD composer install --no-dev --prefer-dist\n    php artisan 2fauth:install\n    chown -R www-data: /opt/2fauth\n    chmod -R 755 /opt/2fauth\n    $STD php artisan 2fauth:fix-passport-key-permissions\n    $STD systemctl restart php8.4-fpm\n    $STD systemctl restart nginx\n    msg_ok \"Configured 2FAuth\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -103,6 +103,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -120,7 +121,7 @@
     "    msg_info \"Creating Backup\"",
     "    create_backup \\",
     "      /opt/2fauth/.env \\",
-    "      /opt/2fauth/storage",
+    "      /opt/2fauth/storage || return $?",
     "",
     "    if ! dpkg -l | grep -q 'php8.4'; then",
     "      cp /etc/nginx/conf.d/2fauth.conf /etc/nginx/conf.d/2fauth.conf.bak",
@@ -134,7 +135,7 @@
     "",
     "    fetch_and_deploy_gh_release \"2fauth\" \"Bubka/2FAuth\" \"tarball\"",
     "    setup_composer",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Configuring 2FAuth\"",
     "    cd /opt/2fauth || exit",
@@ -186,7 +187,7 @@
     {
       "name": "update_script",
       "start_line": 98,
-      "end_line": 146,
+      "end_line": 147,
       "name_span": {
         "start_line": 98,
         "start_col": 10,
@@ -1471,473 +1472,517 @@
       "start_line": 99,
       "start_col": 3,
       "end_line": 99,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 99,
+      "start_col": 27,
+      "end_line": 99,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 99,
+      "start_col": 30,
+      "end_line": 99,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 99,
+      "start_col": 37,
+      "end_line": 99,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 100,
       "start_col": 3,
       "end_line": 100,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 101,
       "start_col": 3,
       "end_line": 101,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 3,
+      "end_line": 102,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 3,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 6,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 9,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 11,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 26,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 28
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 28,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 29
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 103,
+      "start_line": 104,
       "start_col": 30,
-      "end_line": 103,
+      "end_line": 104,
       "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 104,
-      "start_col": 5,
-      "end_line": 104,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 104,
-      "start_col": 15,
-      "end_line": 104,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 104,
-      "start_col": 19,
-      "end_line": 104,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 105,
       "start_col": 5,
       "end_line": 105,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 105,
+      "start_col": 15,
+      "end_line": 105,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 105,
+      "start_col": 19,
+      "end_line": 105,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 106,
+      "start_col": 5,
+      "end_line": 106,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 106,
+      "start_line": 107,
       "start_col": 3,
-      "end_line": 106,
+      "end_line": 107,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 108,
+      "start_line": 109,
       "start_col": 3,
-      "end_line": 108,
+      "end_line": 109,
       "end_col": 16
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 3,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 6,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 27,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 36,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 50
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 50,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 51
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 109,
+      "start_line": 110,
       "start_col": 52,
-      "end_line": 109,
+      "end_line": 110,
       "end_col": 56
     },
     {
       "kind": "param-exp",
-      "start_line": 110,
+      "start_line": 111,
       "start_col": 5,
-      "end_line": 110,
+      "end_line": 111,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 110,
+      "start_line": 111,
       "start_col": 10,
-      "end_line": 110,
+      "end_line": 111,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 111,
+      "start_line": 112,
       "start_col": 5,
-      "end_line": 111,
+      "end_line": 112,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 111,
+      "start_line": 112,
       "start_col": 10,
-      "end_line": 111,
+      "end_line": 112,
       "end_col": 13
-    },
-    {
-      "kind": "command",
-      "start_line": 113,
-      "start_col": 5,
-      "end_line": 113,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 113,
-      "start_col": 14,
-      "end_line": 113,
-      "end_col": 31
     },
     {
       "kind": "command",
       "start_line": 114,
       "start_col": 5,
       "end_line": 114,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 114,
+      "start_col": 14,
+      "end_line": 114,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 115,
+      "start_col": 5,
+      "end_line": 115,
       "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 117,
+      "start_col": 27,
+      "end_line": 117,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 30,
+      "end_line": 117,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 117,
+      "start_col": 37,
+      "end_line": 117,
+      "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 5,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 8,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 10,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "|",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 18,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 20,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 24
     },
     {
       "kind": "string-sq",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 28,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 36,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 37
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 118,
+      "start_line": 119,
       "start_col": 38,
-      "end_line": 118,
+      "end_line": 119,
       "end_col": 42
     },
     {
       "kind": "command",
-      "start_line": 119,
+      "start_line": 120,
       "start_col": 7,
-      "end_line": 119,
+      "end_line": 120,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 120,
+      "start_line": 121,
       "start_col": 5,
-      "end_line": 120,
+      "end_line": 121,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 121,
+      "start_line": 122,
       "start_col": 5,
-      "end_line": 121,
+      "end_line": 122,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 121,
+      "start_line": 122,
       "start_col": 12,
-      "end_line": 121,
+      "end_line": 122,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 5,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 8,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 10,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "|",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 18,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 20,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 24
     },
     {
       "kind": "string-sq",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 28,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 36,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 37
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 38,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 42
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 7,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 24
     },
     {
       "kind": "var-name",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 7,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 18
     },
     {
       "kind": "string-dq",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 19,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 24
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 25,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 38
     },
     {
       "kind": "var-name",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 25,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 33,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 39,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 48
     },
     {
       "kind": "command",
-      "start_line": 125,
+      "start_line": 126,
       "start_col": 7,
-      "end_line": 125,
+      "end_line": 126,
       "end_col": 10
     },
     {
       "kind": "string-sq",
-      "start_line": 125,
+      "start_line": 126,
       "start_col": 14,
-      "end_line": 125,
+      "end_line": 126,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 126,
+      "start_line": 127,
       "start_col": 5,
-      "end_line": 126,
+      "end_line": 127,
       "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 128,
-      "start_col": 5,
-      "end_line": 128,
-      "end_col": 32
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 128,
-      "start_col": 33,
-      "end_line": 128,
-      "end_col": 41
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 128,
-      "start_col": 42,
-      "end_line": 128,
-      "end_col": 56
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 128,
-      "start_col": 57,
-      "end_line": 128,
-      "end_col": 66
     },
     {
       "kind": "command",
       "start_line": 129,
       "start_col": 5,
       "end_line": 129,
-      "end_col": 19
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 33,
+      "end_line": 129,
+      "end_col": 41
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 42,
+      "end_line": 129,
+      "end_col": 56
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 129,
+      "start_col": 57,
+      "end_line": 129,
+      "end_col": 66
     },
     {
       "kind": "command",
@@ -1948,90 +1993,112 @@
     },
     {
       "kind": "command",
-      "start_line": 132,
+      "start_line": 131,
       "start_col": 5,
-      "end_line": 132,
-      "end_col": 13
+      "end_line": 131,
+      "end_col": 19
     },
     {
-      "kind": "string-dq",
-      "start_line": 132,
-      "start_col": 14,
-      "end_line": 132,
-      "end_col": 34
+      "kind": "operator",
+      "op": "||",
+      "start_line": 131,
+      "start_col": 20,
+      "end_line": 131,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 23,
+      "end_line": 131,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 30,
+      "end_line": 131,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 133,
       "start_col": 5,
       "end_line": 133,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 14,
+      "end_line": 133,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 133,
+      "start_line": 134,
       "start_col": 20,
-      "end_line": 133,
+      "end_line": 134,
       "end_col": 22
     },
     {
       "kind": "command",
-      "start_line": 133,
+      "start_line": 134,
       "start_col": 23,
-      "end_line": 133,
+      "end_line": 134,
       "end_col": 27
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 134,
+      "start_line": 135,
       "start_col": 5,
-      "end_line": 134,
+      "end_line": 135,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 134,
+      "start_line": 135,
       "start_col": 12,
-      "end_line": 134,
+      "end_line": 135,
       "end_col": 38
     },
     {
       "kind": "var-name",
-      "start_line": 134,
+      "start_line": 135,
       "start_col": 12,
-      "end_line": 134,
+      "end_line": 135,
       "end_col": 36
     },
     {
       "kind": "param-exp",
-      "start_line": 135,
+      "start_line": 136,
       "start_col": 5,
-      "end_line": 135,
+      "end_line": 136,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 135,
-      "start_col": 10,
-      "end_line": 135,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
       "start_line": 136,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 136,
-      "end_col": 8
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 137,
       "start_col": 5,
       "end_line": 137,
-      "end_col": 10
+      "end_col": 8
     },
     {
       "kind": "command",
@@ -2041,156 +2108,163 @@
       "end_col": 10
     },
     {
-      "kind": "param-exp",
+      "kind": "command",
       "start_line": 139,
       "start_col": 5,
       "end_line": 139,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 140,
+      "start_col": 5,
+      "end_line": 140,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 139,
+      "start_line": 140,
       "start_col": 10,
-      "end_line": 139,
+      "end_line": 140,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 140,
+      "start_line": 141,
       "start_col": 5,
-      "end_line": 140,
+      "end_line": 141,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 140,
+      "start_line": 141,
       "start_col": 10,
-      "end_line": 140,
+      "end_line": 141,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 10,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 5,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 12,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 143,
+      "start_line": 144,
       "start_col": 5,
-      "end_line": 143,
+      "end_line": 144,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 143,
+      "start_line": 144,
       "start_col": 12,
-      "end_line": 143,
+      "end_line": 144,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 3,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 3,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 1,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 2
-    },
-    {
-      "kind": "comment",
-      "start_line": 148,
-      "start_col": 1,
-      "end_line": 148,
-      "end_col": 22
     },
     {
       "kind": "comment",
       "start_line": 149,
       "start_col": 1,
       "end_line": 149,
-      "end_col": 28
+      "end_col": 22
     },
     {
       "kind": "comment",
       "start_line": 150,
       "start_col": 1,
       "end_line": 150,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 151,
+      "start_col": 1,
+      "end_line": 151,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 1,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 8,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 10,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 21,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 22,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 151,
+  "bootstrap_line": 152,
   "hooks": {
     "header_info": false,
     "install_script": true,

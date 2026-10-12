@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "adventurelog",
   "type": "lxc",
-  "total_lines": 196,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (Canbiz)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/seanmorley15/AdventureLog\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"AdventureLog\"\nvar_tags=\"${var_tags:-traveling}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-7}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    gdal-bin \\\n    libgdal-dev \\\n    git \\\n    memcached \\\n    libmemcached-tools\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"22\" NODE_MODULE=\"pnpm@latest\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"adventurelog_db\" PG_DB_USER=\"adventurelog_user\" PG_DB_EXTENSIONS=\"postgis\" setup_postgresql_db\n\n  fetch_and_deploy_gh_release \"adventurelog\" \"seanmorley15/adventurelog\" \"tarball\"\n\n  msg_info \"Installing AdventureLog (Patience)\"\n  SECRET_KEY=\"$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | cut -c1-32)\"\n  echo \"AdventureLog Secret: $SECRET_KEY\" \u003e\u003e ~/adventurelog.creds\n  DJANGO_ADMIN_USER=\"djangoadmin\"\n  DJANGO_ADMIN_PASS=\"$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\"\n  cat \u003c\u003c EOF \u003e /opt/adventurelog/backend/server/.env\nPGHOST='localhost'\nPGDATABASE='${PG_DB_NAME}'\nPGUSER='${PG_DB_USER}'\nPGPASSWORD='${PG_DB_PASS}'\nSECRET_KEY='${SECRET_KEY}'\nPUBLIC_URL='http://$LOCAL_IP:8000'\nDEBUG=True\nFRONTEND_URL='http://$LOCAL_IP:3000'\nCSRF_TRUSTED_ORIGINS='http://127.0.0.1:3000,http://localhost:3000,http://$LOCAL_IP:3000'\nDJANGO_ADMIN_USERNAME='${DJANGO_ADMIN_USER}'\nDJANGO_ADMIN_PASSWORD='${DJANGO_ADMIN_PASS}'\nDISABLE_REGISTRATION=False\nEOF\n  cd /opt/adventurelog/backend/server || exit\n  mkdir -p /opt/adventurelog/backend/server/media\n  $STD uv venv --clear /opt/adventurelog/backend/server/.venv\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m ensurepip --upgrade\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install --upgrade pip\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install -r requirements.txt\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install 'djangorestframework\u003c3.15'\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage collectstatic --noinput\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage migrate\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage download-countries\n  cat \u003c\u003c EOF \u003e /opt/adventurelog/frontend/.env\nPUBLIC_SERVER_URL=http://$LOCAL_IP:8000\nBODY_SIZE_LIMIT=Infinity\nORIGIN='http://$LOCAL_IP:3000'\nEOF\n  cd /opt/adventurelog/frontend || exit\n  grep -q \"^dangerouslyAllowAllBuilds:\" ./pnpm-workspace.yaml 2\u003e /dev/null || echo \"dangerouslyAllowAllBuilds: true\" \u003e\u003e ./pnpm-workspace.yaml\n  $STD pnpm i\n  $STD pnpm build\n  msg_ok \"Installed AdventureLog\"\n\n  msg_info \"Setting up Django Admin\"\n  cd /opt/adventurelog/backend/server || exit\n  $STD .venv/bin/python -m manage shell \u003c\u003c EOF\nfrom django.contrib.auth import get_user_model\nUserModel = get_user_model()\nuser = UserModel.objects.create_user('$DJANGO_ADMIN_USER', password='$DJANGO_ADMIN_PASS')\nuser.is_superuser = True\nuser.is_staff = True\nuser.save()\nEOF\n  cat \u003c\u003c EOF \u003e\u003e ~/adventurelog.creds\nDjango-Credentials\nDjango Admin User: $DJANGO_ADMIN_USER\nDjango Admin Password: $DJANGO_ADMIN_PASS\nEOF\n  msg_ok \"Setup Django Admin\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/adventurelog-backend.service\n[Unit]\nDescription=AdventureLog Backend Service\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/adventurelog/backend/server\nExecStart=/opt/adventurelog/backend/server/.venv/bin/python -m manage runserver 0.0.0.0:8000\nRestart=always\nEnvironmentFile=/opt/adventurelog/backend/server/.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/adventurelog-frontend.service\n[Unit]\nDescription=AdventureLog SvelteKit Frontend Service\nAfter=network.target\n\n[Service]\nWorkingDirectory=/opt/adventurelog/frontend\nExecStart=/usr/bin/node build 127.0.0.1:3000\nRestart=always\nEnvironmentFile=/opt/adventurelog/frontend/.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now adventurelog-backend\n  systemctl enable -q --now adventurelog-frontend\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/adventurelog ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  $STD apt install -y memcached libmemcached-tools\n  if check_for_gh_release \"adventurelog\" \"seanmorley15/adventurelog\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop adventurelog-backend\n    systemctl stop adventurelog-frontend\n    msg_ok \"Services Stopped\"\n\n    create_backup /opt/adventurelog/backend/server/.env \\\n      /opt/adventurelog/backend/server/media\n\n    fetch_and_deploy_gh_release \"adventurelog\" \"seanmorley15/adventurelog\" \"tarball\"\n    PYTHON_VERSION=\"3.13\" setup_uv\n\n    msg_info \"Ensuring PostgreSQL Extensions\"\n    $STD sudo -u postgres psql -d adventurelog_db -c \"CREATE EXTENSION IF NOT EXISTS postgis;\"\n    msg_ok \"PostgreSQL Extensions Ready\"\n\n    restore_backup\n\n    msg_info \"Updating AdventureLog\"\n    cd /opt/adventurelog/backend/server || exit\n    if [[ ! -x .venv/bin/python ]]; then\n      $STD uv venv --clear .venv\n      $STD .venv/bin/python -m ensurepip --upgrade\n    fi\n    $STD .venv/bin/python -m pip install --upgrade pip\n    $STD .venv/bin/python -m pip install -r requirements.txt\n    $STD .venv/bin/python -m pip install 'djangorestframework\u003c3.15'\n    $STD .venv/bin/python -m manage collectstatic --noinput\n    $STD .venv/bin/python -m manage migrate\n\n    cd /opt/adventurelog/frontend || exit\n    grep -q \"^dangerouslyAllowAllBuilds:\" ./pnpm-workspace.yaml 2\u003e /dev/null || echo \"dangerouslyAllowAllBuilds: true\" \u003e\u003e ./pnpm-workspace.yaml\n    $STD pnpm i\n    $STD pnpm build\n    msg_ok \"Updated AdventureLog\"\n\n    msg_info \"Starting Services\"\n    systemctl daemon-reexec\n    systemctl start adventurelog-backend\n    systemctl start adventurelog-frontend\n    msg_ok \"Services Started\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 198,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (Canbiz)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/seanmorley15/AdventureLog\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"AdventureLog\"\nvar_tags=\"${var_tags:-traveling}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-7}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    gdal-bin \\\n    libgdal-dev \\\n    git \\\n    memcached \\\n    libmemcached-tools\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"22\" NODE_MODULE=\"pnpm@latest\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"adventurelog_db\" PG_DB_USER=\"adventurelog_user\" PG_DB_EXTENSIONS=\"postgis\" setup_postgresql_db\n\n  fetch_and_deploy_gh_release \"adventurelog\" \"seanmorley15/adventurelog\" \"tarball\"\n\n  msg_info \"Installing AdventureLog (Patience)\"\n  SECRET_KEY=\"$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | cut -c1-32)\"\n  echo \"AdventureLog Secret: $SECRET_KEY\" \u003e\u003e ~/adventurelog.creds\n  DJANGO_ADMIN_USER=\"djangoadmin\"\n  DJANGO_ADMIN_PASS=\"$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\"\n  cat \u003c\u003c EOF \u003e /opt/adventurelog/backend/server/.env\nPGHOST='localhost'\nPGDATABASE='${PG_DB_NAME}'\nPGUSER='${PG_DB_USER}'\nPGPASSWORD='${PG_DB_PASS}'\nSECRET_KEY='${SECRET_KEY}'\nPUBLIC_URL='http://$LOCAL_IP:8000'\nDEBUG=True\nFRONTEND_URL='http://$LOCAL_IP:3000'\nCSRF_TRUSTED_ORIGINS='http://127.0.0.1:3000,http://localhost:3000,http://$LOCAL_IP:3000'\nDJANGO_ADMIN_USERNAME='${DJANGO_ADMIN_USER}'\nDJANGO_ADMIN_PASSWORD='${DJANGO_ADMIN_PASS}'\nDISABLE_REGISTRATION=False\nEOF\n  cd /opt/adventurelog/backend/server || exit\n  mkdir -p /opt/adventurelog/backend/server/media\n  $STD uv venv --clear /opt/adventurelog/backend/server/.venv\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m ensurepip --upgrade\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install --upgrade pip\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install -r requirements.txt\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m pip install 'djangorestframework\u003c3.15'\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage collectstatic --noinput\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage migrate\n  $STD /opt/adventurelog/backend/server/.venv/bin/python -m manage download-countries\n  cat \u003c\u003c EOF \u003e /opt/adventurelog/frontend/.env\nPUBLIC_SERVER_URL=http://$LOCAL_IP:8000\nBODY_SIZE_LIMIT=Infinity\nORIGIN='http://$LOCAL_IP:3000'\nEOF\n  cd /opt/adventurelog/frontend || exit\n  grep -q \"^dangerouslyAllowAllBuilds:\" ./pnpm-workspace.yaml 2\u003e /dev/null || echo \"dangerouslyAllowAllBuilds: true\" \u003e\u003e ./pnpm-workspace.yaml\n  $STD pnpm i\n  $STD pnpm build\n  msg_ok \"Installed AdventureLog\"\n\n  msg_info \"Setting up Django Admin\"\n  cd /opt/adventurelog/backend/server || exit\n  $STD .venv/bin/python -m manage shell \u003c\u003c EOF\nfrom django.contrib.auth import get_user_model\nUserModel = get_user_model()\nuser = UserModel.objects.create_user('$DJANGO_ADMIN_USER', password='$DJANGO_ADMIN_PASS')\nuser.is_superuser = True\nuser.is_staff = True\nuser.save()\nEOF\n  cat \u003c\u003c EOF \u003e\u003e ~/adventurelog.creds\nDjango-Credentials\nDjango Admin User: $DJANGO_ADMIN_USER\nDjango Admin Password: $DJANGO_ADMIN_PASS\nEOF\n  msg_ok \"Setup Django Admin\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/adventurelog-backend.service\n[Unit]\nDescription=AdventureLog Backend Service\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/adventurelog/backend/server\nExecStart=/opt/adventurelog/backend/server/.venv/bin/python -m manage runserver 0.0.0.0:8000\nRestart=always\nEnvironmentFile=/opt/adventurelog/backend/server/.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/adventurelog-frontend.service\n[Unit]\nDescription=AdventureLog SvelteKit Frontend Service\nAfter=network.target\n\n[Service]\nWorkingDirectory=/opt/adventurelog/frontend\nExecStart=/usr/bin/node build 127.0.0.1:3000\nRestart=always\nEnvironmentFile=/opt/adventurelog/frontend/.env\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now adventurelog-backend\n  systemctl enable -q --now adventurelog-frontend\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/adventurelog ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  $STD apt install -y memcached libmemcached-tools\n  if check_for_gh_release \"adventurelog\" \"seanmorley15/adventurelog\"; then\n    msg_info \"Stopping Services\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" adventurelog-backend || return $?\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" adventurelog-frontend || return $?\n    msg_ok \"Services Stopped\"\n\n    create_backup /opt/adventurelog/backend/server/.env \\\n      /opt/adventurelog/backend/server/media || return $?\n\n    fetch_and_deploy_gh_release \"adventurelog\" \"seanmorley15/adventurelog\" \"tarball\"\n    PYTHON_VERSION=\"3.13\" setup_uv\n\n    msg_info \"Ensuring PostgreSQL Extensions\"\n    $STD sudo -u postgres psql -d adventurelog_db -c \"CREATE EXTENSION IF NOT EXISTS postgis;\"\n    msg_ok \"PostgreSQL Extensions Ready\"\n\n    restore_backup || return $?\n\n    msg_info \"Updating AdventureLog\"\n    cd /opt/adventurelog/backend/server || exit\n    if [[ ! -x .venv/bin/python ]]; then\n      $STD uv venv --clear .venv\n      $STD .venv/bin/python -m ensurepip --upgrade\n    fi\n    $STD .venv/bin/python -m pip install --upgrade pip\n    $STD .venv/bin/python -m pip install -r requirements.txt\n    $STD .venv/bin/python -m pip install 'djangorestframework\u003c3.15'\n    $STD .venv/bin/python -m manage collectstatic --noinput\n    $STD .venv/bin/python -m manage migrate\n\n    cd /opt/adventurelog/frontend || exit\n    grep -q \"^dangerouslyAllowAllBuilds:\" ./pnpm-workspace.yaml 2\u003e /dev/null || echo \"dangerouslyAllowAllBuilds: true\" \u003e\u003e ./pnpm-workspace.yaml\n    $STD pnpm i\n    $STD pnpm build\n    msg_ok \"Updated AdventureLog\"\n\n    msg_info \"Starting Services\"\n    systemctl daemon-reexec\n    systemctl start adventurelog-backend\n    systemctl start adventurelog-frontend\n    msg_ok \"Services Started\"\n    msg_ok \"Updated successfully!\"\n  fi\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -142,6 +142,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -152,12 +153,12 @@
     "  $STD apt install -y memcached libmemcached-tools",
     "  if check_for_gh_release \"adventurelog\" \"seanmorley15/adventurelog\"; then",
     "    msg_info \"Stopping Services\"",
-    "    systemctl stop adventurelog-backend",
-    "    systemctl stop adventurelog-frontend",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" adventurelog-backend || return $?",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" adventurelog-frontend || return $?",
     "    msg_ok \"Services Stopped\"",
     "",
     "    create_backup /opt/adventurelog/backend/server/.env \\",
-    "      /opt/adventurelog/backend/server/media",
+    "      /opt/adventurelog/backend/server/media || return $?",
     "",
     "    fetch_and_deploy_gh_release \"adventurelog\" \"seanmorley15/adventurelog\" \"tarball\"",
     "    PYTHON_VERSION=\"3.13\" setup_uv",
@@ -166,7 +167,7 @@
     "    $STD sudo -u postgres psql -d adventurelog_db -c \"CREATE EXTENSION IF NOT EXISTS postgis;\"",
     "    msg_ok \"PostgreSQL Extensions Ready\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Updating AdventureLog\"",
     "    cd /opt/adventurelog/backend/server || exit",
@@ -193,6 +194,7 @@
     "    msg_ok \"Services Started\"",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -230,7 +232,7 @@
     {
       "name": "update_script",
       "start_line": 137,
-      "end_line": 190,
+      "end_line": 192,
       "name_span": {
         "start_line": 137,
         "start_col": 10,
@@ -2247,479 +2249,624 @@
       "start_line": 138,
       "start_col": 3,
       "end_line": 138,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 138,
+      "start_col": 27,
+      "end_line": 138,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 30,
+      "end_line": 138,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 138,
+      "start_col": 37,
+      "end_line": 138,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 139,
       "start_col": 3,
       "end_line": 139,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 140,
       "start_col": 3,
       "end_line": 140,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 3,
+      "end_line": 141,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 3,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 6,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 9,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 11,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 32,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 34
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 34,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 36,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 40
-    },
-    {
-      "kind": "command",
-      "start_line": 142,
-      "start_col": 5,
-      "end_line": 142,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 142,
-      "start_col": 15,
-      "end_line": 142,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 142,
-      "start_col": 19,
-      "end_line": 142,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 143,
       "start_col": 5,
       "end_line": 143,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 143,
+      "start_col": 15,
+      "end_line": 143,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 143,
+      "start_col": 19,
+      "end_line": 143,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 3,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 5
     },
     {
       "kind": "param-exp",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 3,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 8,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 11
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 3,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 6,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 27,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 41
     },
     {
       "kind": "string-dq",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 42,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 69
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 69,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 70
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 71,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 75
-    },
-    {
-      "kind": "command",
-      "start_line": 147,
-      "start_col": 5,
-      "end_line": 147,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 147,
-      "start_col": 14,
-      "end_line": 147,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 148,
       "start_col": 5,
       "end_line": 148,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 148,
+      "start_col": 14,
+      "end_line": 148,
+      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 149,
       "start_col": 5,
       "end_line": 149,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 149,
+      "start_col": 27,
+      "end_line": 149,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 149,
+      "start_col": 28,
+      "end_line": 149,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 149,
+      "start_col": 37,
+      "end_line": 149,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 149,
+      "start_col": 77,
+      "end_line": 149,
+      "end_col": 79
+    },
+    {
+      "kind": "command",
+      "start_line": 149,
+      "start_col": 80,
+      "end_line": 149,
+      "end_col": 86
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 149,
+      "start_col": 87,
+      "end_line": 149,
+      "end_col": 89
     },
     {
       "kind": "command",
       "start_line": 150,
       "start_col": 5,
       "end_line": 150,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 150,
+      "start_col": 27,
+      "end_line": 150,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 150,
+      "start_col": 28,
+      "end_line": 150,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 150,
+      "start_col": 37,
+      "end_line": 150,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 150,
+      "start_col": 78,
+      "end_line": 150,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 81,
+      "end_line": 150,
+      "end_col": 87
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 150,
+      "start_col": 88,
+      "end_line": 150,
+      "end_col": 90
+    },
+    {
+      "kind": "command",
+      "start_line": 151,
+      "start_col": 5,
+      "end_line": 151,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 12,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 152,
+      "start_line": 153,
       "start_col": 5,
-      "end_line": 152,
+      "end_line": 153,
       "end_col": 18
     },
     {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 154,
+      "start_col": 46,
+      "end_line": 154,
+      "end_col": 48
+    },
+    {
       "kind": "command",
-      "start_line": 155,
+      "start_line": 154,
+      "start_col": 49,
+      "end_line": 154,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 154,
+      "start_col": 56,
+      "end_line": 154,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
       "start_col": 5,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 33,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 47
     },
     {
       "kind": "string-dq",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 48,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 75
     },
     {
       "kind": "string-dq",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 76,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 85
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 5,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 26
     },
     {
       "kind": "var-name",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 5,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 19
     },
     {
       "kind": "string-dq",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 20,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 26
     },
     {
       "kind": "command",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 27,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 158,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 158,
+      "end_line": 159,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 158,
+      "start_line": 159,
       "start_col": 14,
-      "end_line": 158,
+      "end_line": 159,
       "end_col": 46
     },
     {
       "kind": "param-exp",
-      "start_line": 159,
+      "start_line": 160,
       "start_col": 5,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 159,
+      "start_line": 160,
       "start_col": 15,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 17
     },
     {
       "kind": "string-dq",
-      "start_line": 159,
+      "start_line": 160,
       "start_col": 54,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 95
     },
     {
       "kind": "command",
-      "start_line": 160,
+      "start_line": 161,
       "start_col": 5,
-      "end_line": 160,
+      "end_line": 161,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 160,
+      "start_line": 161,
       "start_col": 12,
-      "end_line": 160,
+      "end_line": 161,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 162,
+      "start_line": 163,
       "start_col": 5,
-      "end_line": 162,
+      "end_line": 163,
       "end_col": 19
     },
     {
-      "kind": "command",
-      "start_line": 164,
-      "start_col": 5,
-      "end_line": 164,
-      "end_col": 13
+      "kind": "operator",
+      "op": "||",
+      "start_line": 163,
+      "start_col": 20,
+      "end_line": 163,
+      "end_col": 22
     },
     {
-      "kind": "string-dq",
-      "start_line": 164,
-      "start_col": 14,
-      "end_line": 164,
-      "end_col": 37
+      "kind": "command",
+      "start_line": 163,
+      "start_col": 23,
+      "end_line": 163,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 163,
+      "start_col": 30,
+      "end_line": 163,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 165,
       "start_col": 5,
       "end_line": 165,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 165,
+      "start_col": 14,
+      "end_line": 165,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 166,
+      "start_col": 5,
+      "end_line": 166,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 41,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 43
     },
     {
       "kind": "command",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 44,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 48
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 5,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 8,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 11,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 12
     },
     {
       "kind": "test-operator",
       "op": "-x",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 13,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 15
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 33,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 35,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 36
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 37,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 41
     },
     {
       "kind": "param-exp",
-      "start_line": 167,
+      "start_line": 168,
       "start_col": 7,
-      "end_line": 167,
+      "end_line": 168,
       "end_col": 11
     },
     {
       "kind": "command",
-      "start_line": 167,
+      "start_line": 168,
       "start_col": 12,
-      "end_line": 167,
+      "end_line": 168,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 168,
+      "start_line": 169,
       "start_col": 7,
-      "end_line": 168,
+      "end_line": 169,
       "end_col": 11
     },
     {
       "kind": "command",
-      "start_line": 168,
+      "start_line": 169,
       "start_col": 12,
-      "end_line": 168,
+      "end_line": 169,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 5,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 7
     },
     {
       "kind": "param-exp",
-      "start_line": 170,
-      "start_col": 5,
-      "end_line": 170,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 170,
-      "start_col": 10,
-      "end_line": 170,
-      "end_col": 26
-    },
-    {
-      "kind": "param-exp",
       "start_line": 171,
       "start_col": 5,
       "end_line": 171,
@@ -2744,179 +2891,186 @@
       "start_line": 172,
       "start_col": 10,
       "end_line": 172,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 173,
+      "start_col": 5,
+      "end_line": 173,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 173,
+      "start_col": 10,
+      "end_line": 173,
       "end_col": 26
     },
     {
       "kind": "string-sq",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 42,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 68
     },
     {
       "kind": "param-exp",
-      "start_line": 173,
+      "start_line": 174,
       "start_col": 5,
-      "end_line": 173,
+      "end_line": 174,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 173,
+      "start_line": 174,
       "start_col": 10,
-      "end_line": 173,
+      "end_line": 174,
       "end_col": 26
     },
     {
       "kind": "param-exp",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 5,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 10,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 26
     },
     {
       "kind": "command",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 5,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 35,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 38,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 42
     },
     {
       "kind": "command",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 5,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 13,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 42
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 66,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 67
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 78,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 80
     },
     {
       "kind": "command",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 81,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 85
     },
     {
       "kind": "string-dq",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 86,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 119
     },
     {
       "kind": "operator",
       "op": "\u003e\u003e",
-      "start_line": 177,
+      "start_line": 178,
       "start_col": 120,
-      "end_line": 177,
+      "end_line": 178,
       "end_col": 122
     },
     {
       "kind": "param-exp",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 5,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 10,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 5,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 10,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 5,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 12,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 182,
-      "start_col": 5,
-      "end_line": 182,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 182,
-      "start_col": 14,
-      "end_line": 182,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 183,
       "start_col": 5,
       "end_line": 183,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 183,
+      "start_col": 14,
+      "end_line": 183,
+      "end_col": 33
     },
     {
       "kind": "command",
@@ -2937,14 +3091,7 @@
       "start_line": 186,
       "start_col": 5,
       "end_line": 186,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 186,
-      "start_col": 12,
-      "end_line": 186,
-      "end_col": 30
+      "end_col": 14
     },
     {
       "kind": "command",
@@ -2958,89 +3105,153 @@
       "start_line": 187,
       "start_col": 12,
       "end_line": 187,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 188,
+      "start_col": 5,
+      "end_line": 188,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 188,
+      "start_col": 12,
+      "end_line": 188,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 188,
+      "start_line": 189,
       "start_col": 3,
-      "end_line": 188,
+      "end_line": 189,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 189,
+      "start_line": 190,
       "start_col": 3,
-      "end_line": 189,
+      "end_line": 190,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 190,
+      "start_col": 27,
+      "end_line": 190,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 190,
+      "start_col": 28,
+      "end_line": 190,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 190,
+      "start_col": 37,
+      "end_line": 190,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 190,
+      "start_col": 56,
+      "end_line": 190,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 59,
+      "end_line": 190,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 190,
+      "start_col": 66,
+      "end_line": 190,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 191,
+      "start_col": 3,
+      "end_line": 191,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 190,
-      "start_col": 1,
-      "end_line": 190,
-      "end_col": 2
-    },
-    {
-      "kind": "comment",
       "start_line": 192,
       "start_col": 1,
       "end_line": 192,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 193,
-      "start_col": 1,
-      "end_line": 193,
-      "end_col": 28
+      "end_col": 2
     },
     {
       "kind": "comment",
       "start_line": 194,
       "start_col": 1,
       "end_line": 194,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 195,
+      "start_col": 1,
+      "end_line": 195,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 196,
+      "start_col": 1,
+      "end_line": 196,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 195,
+      "start_line": 197,
       "start_col": 1,
-      "end_line": 195,
+      "end_line": 197,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 195,
+      "start_line": 197,
       "start_col": 8,
-      "end_line": 195,
+      "end_line": 197,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 195,
+      "start_line": 197,
       "start_col": 10,
-      "end_line": 195,
+      "end_line": 197,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 195,
+      "start_line": 197,
       "start_col": 21,
-      "end_line": 195,
+      "end_line": 197,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 195,
+      "start_line": 197,
       "start_col": 22,
-      "end_line": 195,
+      "end_line": 197,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 195,
+  "bootstrap_line": 197,
   "hooks": {
     "header_info": false,
     "install_script": true,

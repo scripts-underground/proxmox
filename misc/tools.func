@@ -1211,73 +1211,147 @@ create_temp_dir() {
 #     that failed).
 #
 # restore_backup
-#   - Copies every path recorded in the manifest back to its origin (replacing
-#     whatever the update left there), then deletes the store.
+#   - Stages every replacement before touching its live path. Retires the active
+#     store to a retained sibling only after every required restore succeeds.
 #   - No-op (with a warning) if no store exists.
 #
 # Override the store location with BACKUP_DIR if the default does not fit.
 # Store name falls back to APP_SLUG (addon bundles bake APP_SLUG, not NSAPP).
 # ------------------------------------------------------------------------------
+_backup_path_valid() {
+  [[ "$1" == /* && "$1" != / && "$1" != *$'\n'* && "$1" != *$'\r'* &&
+    "/$1/" != */../* && "/$1/" != */./* ]]
+}
+
+_backup_store_guard() {
+  local backup_guard_store=$1 backup_guard_manifest="$1/.manifest" backup_guard_mode
+  _backup_path_valid "$backup_guard_store" || return 65
+  [[ -d "$backup_guard_store" && ! -L "$backup_guard_store" && "$(stat -c %u -- "$backup_guard_store")" == "$(id -u)" ]] || return 252
+  backup_guard_mode=$(stat -c %a -- "$backup_guard_store") || return $?
+  (( (8#$backup_guard_mode & 0022) == 0 )) || return 252
+  [[ -f "$backup_guard_manifest" && ! -L "$backup_guard_manifest" && "$(stat -c '%u:%h' -- "$backup_guard_manifest")" == "$(id -u):1" ]] || return 252
+  backup_guard_mode=$(stat -c %a -- "$backup_guard_manifest") || return $?
+  (( (8#$backup_guard_mode & 0022) == 0 )) || return 252
+}
+
+_backup_read_paths() {
+  local backup_manifest=$1 backup_output=$2 backup_body backup_path
+  local -n backup_result="$backup_output"
+  backup_body=$(cat -- "$backup_manifest") || return $?
+  backup_result=()
+  while IFS= read -r backup_path; do
+    [[ -n "$backup_path" ]] || continue
+    _backup_path_valid "$backup_path" || return 252
+    backup_result+=("$backup_path")
+  done <<< "$backup_body"
+}
+
 create_backup() {
-  local store manifest path dest
-  store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}"
-  manifest="${store}/.manifest"
-
-  [[ $# -eq 0 ]] && {
-    msg_warn "create_backup called without any paths"
-    return 0
-  }
-
-  if ! mkdir -p "$store" || ! touch "$manifest"; then
-    msg_error "Backup failed: could not create store at ${store} - aborting update"
-    exit 1
+  local store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}" manifest path dest stage parent retained recorded
+  local -a backup_paths=()
+  (($#)) || return 0
+  _backup_path_valid "$store" || return 65
+  [[ ! -L "$store" && (! -e "$store" || -d "$store") ]] || return 252
+  (umask 077; mkdir -p -- "$store") || return $?
+  manifest="$store/.manifest"
+  if [[ ! -e "$manifest" && ! -L "$manifest" ]]; then
+    (umask 077; set -o noclobber; : > "$manifest") || return $?
   fi
-
-  msg_info "Backing up data"
+  _backup_store_guard "$store" || return $?
+  chmod 700 -- "$store" || return $?
+  _backup_read_paths "$manifest" backup_paths || return $?
+  ensure_dependencies coreutils diffutils || return $?
   for path in "$@"; do
-    path="${path%/}"
-    if grep -qxF "$path" "$manifest" 2> /dev/null; then
+    path=${path%/}
+    _backup_path_valid "$path" || return 65
+    [[ "$store" != "$path" && "$store" != "$path/"* ]] || return 65
+    recorded=0
+    for dest in "${backup_paths[@]}"; do [[ "$dest" != "$path" ]] || recorded=1; done
+    if [[ "$recorded" == 1 ]]; then
+      [[ -e "$store/files$path" || -L "$store/files$path" ]] || return 252
       continue
     fi
-    if [[ ! -e "$path" ]]; then
-      msg_warn "Skipping backup of '${path}' (not found)"
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
+      msg_warn "Skipping backup of '$path' (not found)"
       continue
     fi
-    if mountpoint -q "$path" 2> /dev/null; then
-      msg_warn "Skipping backup of '${path}' (is a mount point)"
+    if mountpoint -q -- "$path"; then
+      msg_warn "Skipping backup of '$path' (is a mount point)"
       continue
     fi
-    dest="${store}/files${path}"
-    if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
-      msg_error "Backup of '${path}' failed - aborting update"
-      exit 1
+    dest="$store/files$path"
+    parent=${dest%/*}
+    mkdir -p -- "$parent" || return $?
+    stage=$(mktemp -d "$parent/.backup-capture.XXXXXX") || return $?
+    cp -a -- "$path" "$stage/payload" || return $?
+    diff -r --no-dereference -- "$path" "$stage/payload" || return 252
+    if [[ -e "$dest" || -L "$dest" ]]; then
+      retained=$(mktemp -d "$parent/.backup-incomplete.XXXXXX") || return $?
+      mv -nT -- "$dest" "$retained/payload" || return $?
+      [[ ! -e "$dest" && ! -L "$dest" ]] || return 252
+      msg_warn "Unrecorded previous backup retained at $retained"
     fi
-    echo "$path" >> "$manifest"
+    mv -nT -- "$stage/payload" "$dest" || return $?
+    [[ ! -e "$stage/payload" && ! -L "$stage/payload" ]] || return 252
+    printf '%s\n' "$path" >> "$manifest" || return $?
+    backup_paths+=("$path")
+    rmdir -- "$stage" || return $?
   done
-  msg_ok "Backed up data to ${store}"
+  msg_ok "Backed up data to $store"
 }
 
 restore_backup() {
-  local store manifest path src
-  store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}"
-  manifest="${store}/.manifest"
+  local store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}" path src stage parent retained
+  local -a backup_paths=()
+  [[ -e "$store" || -L "$store" ]] || return 0
+  _backup_store_guard "$store" || return $?
+  chmod 700 -- "$store" || return $?
+  _backup_read_paths "$store/.manifest" backup_paths || return $?
+  ensure_dependencies coreutils diffutils || return $?
+  # Validate the entire saved cohort before touching any live destination.
+  for path in "${backup_paths[@]}"; do
+    src="$store/files$path"
+    [[ -e "$src" || -L "$src" ]] || return 252
+    [[ "$store" != "$path" && "$store" != "$path/"* ]] || return 252
+    if mountpoint -q -- "$path"; then return 252; fi
+  done
+  for path in "${backup_paths[@]}"; do
+    src="$store/files$path"
+    parent=${path%/*}
+    mkdir -p -- "$parent" || return $?
+    stage=$(mktemp -d "$parent/.backup-restore.XXXXXX") || return $?
+    cp -a -- "$src" "$stage/payload" || return $?
+    diff -r --no-dereference -- "$src" "$stage/payload" || return 252
+    if [[ -e "$path" || -L "$path" ]]; then
+      mv -nT -- "$path" "$stage/previous" || return $?
+      [[ ! -e "$path" && ! -L "$path" ]] || return 252
+    fi
+    if mv -nT -- "$stage/payload" "$path"; then :; else
+      local backup_restore_status=$?
+      if [[ ! -e "$path" && ! -L "$path" && (-e "$stage/previous" || -L "$stage/previous") ]]; then
+        mv -nT -- "$stage/previous" "$path" || msg_warn "Previous live object retained at $stage/previous"
+      fi
+      return "$backup_restore_status"
+    fi
+    [[ ! -e "$stage/payload" && ! -L "$stage/payload" ]] || return 252
+    diff -r --no-dereference -- "$src" "$path" || return 252
+  done
+  # Retirement removes the active store name without discarding originals or
+  # incomplete historical copies. A retry cannot recapture these as new data.
+  retained=$(mktemp -d "$store.restored.XXXXXX") || return $?
+  rmdir -- "$retained" || return $?
+  mv -nT -- "$store" "$retained" || return $?
+  [[ ! -e "$store" && ! -L "$store" && -d "$retained" ]] || return 252
+  msg_ok "Restored data; originals retained at $retained"
+}
 
-  if [[ ! -f "$manifest" ]]; then
-    msg_warn "No backup found to restore"
-    return 0
-  fi
-
-  msg_info "Restoring data"
-  while IFS= read -r path; do
-    [[ -z "$path" ]] && continue
-    src="${store}/files${path}"
-    [[ -e "$src" ]] || continue
-    mkdir -p "$(dirname "$path")"
-    rm -rf "$path"
-    cp -a "$src" "$path"
-  done < "$manifest"
-  rm -rf "$store"
-  msg_ok "Restored data"
+_recover_update_backups() {
+  local backup_recovery_store
+  _release_recover_archive /opt || return $?
+  if (($# == 0)); then set -- "${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}"; fi
+  for backup_recovery_store in "$@"; do
+    BACKUP_DIR="$backup_recovery_store" restore_backup || return $?
+  done
 }
 
 # ------------------------------------------------------------------------------
@@ -5719,6 +5793,466 @@ _release_deploy_archive() { _release_transaction archive "$@"; }
 _codeberg_deploy_tree() { _release_transaction prepared-tree "$1" '' tree "$2" '' '' "${CLEAN_INSTALL:-0}" 0; }
 _release_recover_archive() { _release_transaction recovery-only '' '' '' "$1" "${2:-}" '' 0 0; }
 
+_update_services_begin() {
+  local us_app=$1 us_root=/var/lib/scripts-underground/service-updates us_file us_body='' us_unit us_stage us_mode
+  shift
+  [[ "$us_app" =~ ^[A-Za-z0-9_-]+$ && $# -gt 0 ]] || return 65
+  [[ ! -L /var/lib/scripts-underground && ! -L "$us_root" ]] || return 252
+  (umask 077; mkdir -p -- "$us_root") || return $?
+  [[ "$(stat -c %u -- "$us_root")" == "$(id -u)" ]] || return 252
+  us_mode=$(stat -c %a -- "$us_root") || return $?
+  (( (8#$us_mode & 0022) == 0 )) || return 252
+  us_file="$us_root/$us_app"
+  if [[ -e "$us_file" || -L "$us_file" ]]; then
+    [[ -f "$us_file" && ! -L "$us_file" && "$(stat -c '%u:%h' -- "$us_file")" == "$(id -u):1" ]] || return 252
+    us_body=$(cat -- "$us_file") || return $?
+  fi
+  for us_unit in "$@"; do
+    [[ "$us_unit" =~ ^\??[A-Za-z0-9_.@-]+$ && "${us_unit#\?}" != -* ]] || return 65
+    us_body+=$'\n'"$us_unit"
+  done
+  us_stage=$(mktemp "$us_root/.intent.XXXXXX") || return $?
+  printf '%s\n' "$us_body" | LC_ALL=C sort -u | sed '/^$/d' > "$us_stage" || return $?
+  mv -T -- "$us_stage" "$us_file" || return $?
+}
+
+_update_service_command() {
+  local us_action=$1 us_service
+  shift
+  if [[ "${INIT_SYSTEM:-systemd}" == openrc ]]; then
+    for us_service in "$@"; do
+      [[ "$us_service" == -* ]] && continue
+      if [[ "$us_action" == is-active ]]; then
+        rc-service "$us_service" status || return $?
+      else
+        rc-service "$us_service" "$us_action" || return $?
+      fi
+    done
+  else
+    systemctl "$us_action" "$@"
+  fi
+}
+
+_update_services_finish() {
+  local us_app=$1 us_file="/var/lib/scripts-underground/service-updates/$1" us_body us_unit
+  [[ "$us_app" =~ ^[A-Za-z0-9_-]+$ ]] || return 65
+  [[ -e "$us_file" || -L "$us_file" ]] || return 0
+  [[ -f "$us_file" && ! -L "$us_file" && "$(stat -c '%u:%h' -- "$us_file")" == "$(id -u):1" ]] || return 252
+  us_body=$(cat -- "$us_file") || return $?
+  local -a us_units=() us_optional_units=()
+  while IFS= read -r us_unit; do
+    [[ "$us_unit" =~ ^\??[A-Za-z0-9_.@-]+$ && "${us_unit#\?}" != -* ]] || return 252
+    if [[ "$us_unit" == \?* ]]; then us_optional_units+=("${us_unit#\?}"); else us_units+=("$us_unit"); fi
+  done <<< "$us_body"
+  ((${#us_units[@]} + ${#us_optional_units[@]} > 0)) || return 252
+  if ((${#us_units[@]} > 0)); then _update_service_command start "${us_units[@]}" || return $?; fi
+  for us_unit in "${us_units[@]}"; do _update_service_command is-active --quiet "$us_unit" || return 150; done
+  for us_unit in "${us_optional_units[@]}"; do _update_service_command start "$us_unit" || msg_warn "Optional service could not resume: $us_unit"; done
+  rm -f -- "$us_file" || return $?
+}
+
+_update_services_stop() {
+  local us_scope=$1 us_argument
+  shift
+  local -a us_stopped_units=()
+  for us_argument in "$@"; do
+    [[ "$us_argument" == -* ]] || us_stopped_units+=("$us_argument")
+  done
+  ((${#us_stopped_units[@]} > 0)) || return 65
+  _update_services_begin "$us_scope" "${us_stopped_units[@]}" || return $?
+  _update_service_command stop "$@"
+}
+
+_update_services_stop_optional() {
+  local us_scope=$1 us_argument
+  shift
+  local -a us_optional_stop_units=()
+  for us_argument in "$@"; do
+    [[ "$us_argument" == -* ]] || us_optional_stop_units+=("?$us_argument")
+  done
+  ((${#us_optional_stop_units[@]} > 0)) || return 65
+  _update_services_begin "$us_scope" "${us_optional_stop_units[@]}" || return $?
+  _update_service_command stop "$@" || msg_warn "Optional service stop incomplete"
+}
+
+# Model-server update lifecycle: the archive owner alone recovers/publishes bytes.
+# A current marker is not service readiness; a retry must finish the start step.
+# With no deployment command this completes a current-release retry idempotently.
+_release_service_deploy() {
+  local service=$1 target=$2 marker=$3 status
+  shift 3
+  _release_recover_archive "$target" "$marker" || return $?
+  if (($#)); then
+    systemctl stop "$service" || return $?
+    if "$@"; then
+      :
+    else
+      status=$?
+      # Do not start an incomplete publication when rollback itself is pending.
+      if _release_recover_archive "$target" "$marker"; then
+        systemctl start "$service" || msg_warn "Restored release but $service could not restart"
+      else
+        msg_warn "Recovery remains pending; $service retained stopped"
+      fi
+      return "$status"
+    fi
+  fi
+  systemctl start "$service" || return $?
+  systemctl is-active --quiet "$service" || return 150
+}
+
+# Checked metadata for one requested/selected release; no older-release fallback.
+_gh_read_release_metadata() {
+  local output_name=$1 repo=$2 request=${3:-latest} kind=${4:-requested}
+  local metadata_dir metadata_body metadata_http metadata_status encoded_tag metadata_url metadata_tag metadata_identity observed_identity
+  local -a metadata_headers=()
+  [[ "$output_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ &&
+    -n "$request" && ("$kind" == requested || "$kind" == selected) ]] || return 65
+  ensure_dependencies jq || return $?
+  printf -v "$output_name" '%s' ''
+  metadata_url="https://api.github.com/repos/$repo/releases/latest"
+  if [[ "$kind" == selected || "$request" != latest ]]; then
+    encoded_tag=$(jq -rn --arg value "$request" '$value | @uri') || return 250
+    metadata_url="https://api.github.com/repos/$repo/releases/tags/$encoded_tag"
+  fi
+  metadata_dir=$(mktemp -d) || return 252
+  metadata_identity=$(stat -c '%d:%i:%u:%g:%a' -- "$metadata_dir") || return 252
+  [[ -z "${GITHUB_TOKEN:-}" ]] || metadata_headers=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  if metadata_http=$(curl -sSL --connect-timeout 10 --max-time 60 -w '%{http_code}' -o "$metadata_dir/release.json" "${metadata_headers[@]}" "$metadata_url"); then
+    metadata_status=0
+  else metadata_status=$?; fi
+  if [[ "$metadata_status" != 0 || "$metadata_http" != 200 ]]; then
+    msg_warn "Selected release metadata unavailable; retained at $metadata_dir"
+    return 22
+  fi
+  [[ -f "$metadata_dir/release.json" && ! -L "$metadata_dir/release.json" ]] || return 250
+  observed_identity=$(stat -c '%d:%i:%u:%g:%a' -- "$metadata_dir") || return 252
+  [[ "$observed_identity" == "$metadata_identity" ]] || return 252
+  metadata_body=$(cat -- "$metadata_dir/release.json") || return 250
+  jq -es 'length == 1 and (.[0] | type == "object" and .draft == false and
+    (.prerelease | type == "boolean") and (.tag_name | type == "string" and length > 0 and
+      (test("[[:space:][:cntrl:]]") | not)) and (.assets | type == "array"))' <<< "$metadata_body" > /dev/null || return 250
+  metadata_tag=$(jq -r .tag_name <<< "$metadata_body") || return 250
+  [[ "$kind" != selected && "$request" == latest || "$metadata_tag" == "$request" ]] || return 250
+  rm -f -- "$metadata_dir/release.json" && rmdir -- "$metadata_dir" || return 252
+  printf -v "$output_name" '%s' "$metadata_body"
+}
+
+_gh_select_verified_asset() {
+  local selection_output=$1 selection_repo=$2 selection_release=$3 selection_pattern=$4
+  local selection_tag selection_rows selection_row selection_name selection_url selection_digest selection_found=''
+  local selection_encoded_tag selection_encoded_name selection_expected
+  [[ "$selection_output" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$selection_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 65
+  selection_tag=$(jq -er '.tag_name | strings | select(length > 0 and (test("[[:space:][:cntrl:]]") | not))' <<< "$selection_release") || return 250
+  selection_encoded_tag=$(jq -rn --arg value "$selection_tag" '$value | @uri') || return 250
+  selection_rows=$(jq -c '.assets[]' <<< "$selection_release") || return 250
+  while IFS= read -r selection_row; do
+    [[ -n "$selection_row" ]] || continue
+    selection_name=$(jq -er '.name | strings | select(length > 0 and . != "." and . != ".." and (test("[[:space:][:cntrl:]/]") | not))' <<< "$selection_row") || return 250
+    # shellcheck disable=SC2254
+    case "$selection_name" in $selection_pattern)
+      [[ -z "$selection_found" ]] || return 250
+      selection_url=$(jq -er '.browser_download_url | strings' <<< "$selection_row") || return 250
+      selection_encoded_name=$(jq -rn --arg value "$selection_name" '$value | @uri') || return 250
+      selection_expected="https://github.com/$selection_repo/releases/download/$selection_encoded_tag/$selection_encoded_name"
+      [[ "$selection_url" == "$selection_expected" ]] || return 250
+      selection_digest=$(jq -r '.digest // ""' <<< "$selection_row") || return 250
+      [[ -z "$selection_digest" || "$selection_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || return 250
+      selection_found=$selection_row
+      ;;
+    esac
+  done <<< "$selection_rows"
+  [[ -n "$selection_found" ]] || return 252
+  printf -v "$selection_output" '%s' "$selection_found"
+}
+
+# The existing non-engine source copy contract, shared by requested and strictly
+# selected adapters. Extraction completes before CLEAN can affect the target.
+_gh_publish_source_tree() {
+  local source_tree=$1 source_target=$2 source_marker=$3 source_version=$4 source_mounts source_resolved
+  [[ -d "$source_tree" && ! -L "$source_tree" && "$source_target" == /* && "$source_target" != / ]] || return 65
+  source_resolved=$(realpath -m -- "$source_target") || return 251
+  [[ "$source_resolved" != / ]] || return 65
+  if [[ "${CLEAN_INSTALL:-0}" == 1 ]]; then
+    source_mounts=$(findmnt --json --list --output TARGET) || return 252
+    jq -e --arg target "$source_resolved" \
+      '[.filesystems[].target | select(. == $target or startswith($target + "/"))] | length == 0' <<< "$source_mounts" > /dev/null || return 252
+  fi
+  mkdir -p -- "$source_target" || return 251
+  if [[ "${CLEAN_INSTALL:-0}" == 1 ]]; then
+    (shopt -s nullglob; rm -rf -- "${source_target:?}/"*) || return 251
+  fi
+  cp -r -- "$source_tree/." "$source_target/" || return 251
+  printf '%s\n' "$source_version" > "$source_marker" || return 252
+}
+
+_gh_deploy_selected_source() {
+  local selected_source_app=$1 selected_source_repo=$2 selected_source_tag=$3 selected_source_target=$4
+  local selected_source_body selected_source_work selected_source_encoded selected_source_version selected_source_dir
+  local -a selected_source_roots=()
+  selected_source_app=${selected_source_app// /}
+  [[ "$selected_source_app" =~ ^[A-Za-z0-9_.-]+$ && "$selected_source_app" != . && "$selected_source_app" != .. ]] || return 65
+  _gh_read_release_metadata selected_source_body "$selected_source_repo" "$selected_source_tag" selected || return $?
+  jq -e '.prerelease == false' <<< "$selected_source_body" > /dev/null || return 250
+  selected_source_encoded=$(jq -rn --arg value "$selected_source_tag" '$value | @uri') || return 250
+  selected_source_work=$(mktemp -d) || return 252
+  mkdir -m 700 -- "$selected_source_work/tree" || return 252
+  curl_download "$selected_source_work/source.tar.gz" "https://github.com/$selected_source_repo/archive/refs/tags/$selected_source_encoded.tar.gz" || return $?
+  tar --no-same-owner -xzf "$selected_source_work/source.tar.gz" -C "$selected_source_work/tree" || return 251
+  find -P "$selected_source_work/tree" -mindepth 1 -maxdepth 1 -print0 > "$selected_source_work/roots" || return 252
+  mapfile -d '' -t selected_source_roots < "$selected_source_work/roots" || return 252
+  ((${#selected_source_roots[@]} == 1)) || return 251
+  selected_source_dir=${selected_source_roots[0]}
+  [[ -d "$selected_source_dir" && ! -L "$selected_source_dir" ]] || return 251
+  selected_source_version=$selected_source_tag
+  [[ ! "$selected_source_version" =~ ^v[0-9] ]] || selected_source_version=${selected_source_version:1}
+  _gh_publish_source_tree "$selected_source_dir" "$selected_source_target" "$HOME/.${selected_source_app,,}" "$selected_source_version" || return $?
+  rm -rf -- "$selected_source_work" || msg_warn "Selected source staging retained at $selected_source_work"
+}
+
+# Prepare all selected layers before the existing owner's single publication.
+# The metadata is supplied by the checked caller, including its stable/designated
+# release policy. The public provider's fallback/prerelease semantics are unchanged.
+_gh_deploy_verified_assets() {
+  local app=$1 repo=$2 release=$3 target=$4 version=$5 layout=$6 required_member=$7
+  shift 7
+  local app_lc=${app,,} pattern row name url digest
+  local stage asset number=0 source resolved temporary listing archive_entry entry_type listed_path arrow link_target
+  local _listing_owner listing_size _listing_date _listing_time deployment_status
+  local -a selected=() roots=() paths=()
+  local -A names=()
+  app_lc=${app_lc// /}
+  [[ -n "$app_lc" && "$app_lc" != */* && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ &&
+    "$target" == /* && "$target" != / && -n "$version" && ("$layout" == flat || "$layout" == prefix) && $# -gt 0 &&
+    "$required_member" =~ ^[A-Za-z0-9_./+-]+$ && "$required_member" != /* && "/$required_member/" != */../* ]] || return 65
+  ensure_dependencies jq coreutils tar zstd || return $?
+  for pattern in "$@"; do
+    _gh_select_verified_asset asset "$repo" "$release" "$pattern" || return $?
+    name=$(jq -r .name <<< "$asset") || return 250
+    [[ -z "${names[$name]:-}" ]] || continue
+    names[$name]=1
+    selected+=("$asset")
+  done
+  stage=$(mktemp -d) || return 252
+  mkdir -m 700 -- "$stage/tree" || return 252
+  for asset in "${selected[@]}"; do
+    ((number += 1))
+    name=$(jq -r .name <<< "$asset") && url=$(jq -r .browser_download_url <<< "$asset") && digest=$(jq -r '.digest // ""' <<< "$asset") || return 250
+    curl_download "$stage/$name" "$url" || return 250
+    if [[ -n "$digest" ]]; then
+      printf '%s  %s\n' "${digest#sha256:}" "$stage/$name" | sha256sum --check --status || return 250
+    fi
+    mkdir -m 700 -- "$stage/layer-$number" || return 252
+    # These Linux distribution assets use ordinary ASCII package paths. Reject
+    # ambiguous/escaping names and non-sibling aliases before extracting.
+    listing=$(LC_ALL=C tar -tf "$stage/$name" --quoting-style=escape) || return 251
+    while IFS= read -r archive_entry; do
+      [[ "$archive_entry" =~ ^[A-Za-z0-9_./@+=-]+$ && "$archive_entry" != /* &&
+        "/$archive_entry/" != */../* ]] || return 251
+    done <<< "$listing"
+    listing=$(LC_ALL=C tar -tvf "$stage/$name" --quoting-style=escape) || return 251
+    while IFS= read -r archive_entry; do
+      read -r entry_type _listing_owner listing_size _listing_date _listing_time listed_path arrow link_target <<< "$archive_entry" || return 251
+      [[ "$listing_size" =~ ^[0-9]+$ && "$listed_path" =~ ^[A-Za-z0-9_./@+=-]+$ && "$listed_path" != /* &&
+        "/$listed_path/" != */../* ]] || return 251
+      case "${entry_type:0:1}" in
+        - | d) ;;
+        l)
+          [[ "$arrow" == '->' && "$link_target" =~ ^[A-Za-z0-9_.+@=-]+$ && "$link_target" != . && "$link_target" != .. ]] || return 251
+          ;;
+        *) return 251 ;;
+      esac
+    done <<< "$listing"
+    tar --no-same-owner -xf "$stage/$name" -C "$stage/layer-$number" || return 251
+    source="$stage/layer-$number"
+    if [[ "$layout" == flat ]]; then
+      find -P "$source" -mindepth 1 -maxdepth 1 -print0 > "$stage/roots" || return 252
+      mapfile -d '' -t roots < "$stage/roots"
+      if ((${#roots[@]} == 1)) && [[ -d "${roots[0]}" && ! -L "${roots[0]}" ]]; then source=${roots[0]}; fi
+    fi
+    find -P "$source" -mindepth 1 -print0 > "$stage/paths" || return 252
+    mapfile -d '' -t paths < "$stage/paths"
+    for row in "${paths[@]}"; do
+      if [[ -L "$row" ]]; then
+        resolved=$(realpath -e -- "$row") || return 251
+        [[ "$resolved" == "$source/"* && -f "$resolved" && ! -L "$resolved" ]] || return 251
+        temporary=$(mktemp "${row%/*}/.library-alias.XXXXXX") || return 252
+        cp -p -- "$resolved" "$temporary" && mv -T -- "$temporary" "$row" || return 252
+      elif [[ ! -f "$row" && ! -d "$row" ]]; then return 251; fi
+    done
+    cp -a -- "$source/." "$stage/tree/" || return 252
+  done
+  [[ -f "$stage/tree/$required_member" && -s "$stage/tree/$required_member" && -x "$stage/tree/$required_member" && ! -L "$stage/tree/$required_member" ]] || return 252
+  if _release_transaction prepared-tree "$stage/tree" '' tree "$target" "$HOME/.$app_lc" "$version" "${CLEAN_INSTALL:-0}" "${FORCE_DEPLOY:-0}"; then
+    rm -rf -- "$stage" || msg_warn "Installed release; staging cleanup incomplete at $stage"
+    return 0
+  else
+    deployment_status=$?
+    msg_warn "Release preparation retained at $stage"
+    return "$deployment_status"
+  fi
+}
+
+_llama_cpp_deploy() {
+  local target=$1 request=$2 backend=$3 arch=$4 kind=${5:-requested} stable_release binary_release designation asset_url asset_digest build stable_version descriptor_work
+  local -a patterns=()
+  _gh_read_release_metadata stable_release ggml-org/llama.cpp "$request" "$kind" || return $?
+  jq -e '.prerelease == false' <<< "$stable_release" > /dev/null || return 250
+  _gh_select_verified_asset designation ggml-org/llama.cpp "$stable_release" nightly-tag.txt || return $?
+  asset_url=$(jq -r .browser_download_url <<< "$designation") && asset_digest=$(jq -r '.digest // ""' <<< "$designation") || return 250
+  descriptor_work=$(mktemp -d) || return 252
+  curl_download "$descriptor_work/nightly-tag.txt" "$asset_url" || return 250
+  if [[ -n "$asset_digest" ]]; then
+    printf '%s  %s\n' "${asset_digest#sha256:}" "$descriptor_work/nightly-tag.txt" | sha256sum --check --status || return 250
+  fi
+  build=$(cat -- "$descriptor_work/nightly-tag.txt") || return 250
+  [[ "$build" =~ ^b[0-9]+$ ]] || return 250
+  _gh_read_release_metadata binary_release ggml-org/llama.cpp "$build" selected || return $?
+  stable_version=$(jq -r .tag_name <<< "$stable_release") || return 250
+  [[ ! "$stable_version" =~ ^v[0-9] ]] || stable_version=${stable_version:1}
+  case "$backend-$arch" in
+    cpu-x64 | cpu-arm64) patterns=("llama-$build-bin-ubuntu-$arch.tar.gz") ;;
+    vulkan-x64 | vulkan-arm64) patterns=("llama-$build-bin-ubuntu-vulkan-$arch.tar.gz") ;;
+    cuda-x64) patterns=("llama-$build-bin-ubuntu-cuda-12.8-x64.tar.gz" "cudart-llama-$build-bin-ubuntu-cuda-12.8-x64.tar.gz") ;;
+    *) msg_error "No qualified llama.cpp asset/runtime combination for $backend $arch"; return 65 ;;
+  esac
+  _gh_deploy_verified_assets llama-cpp ggml-org/llama.cpp "$binary_release" "$target" "$stable_version" flat llama-server "${patterns[@]}" || return $?
+  rm -rf -- "$descriptor_work" || msg_warn "Designated release descriptor retained at $descriptor_work"
+}
+
+_ollama_deploy() {
+  local target=$1 request=$2 arch=$3 amd_layer=${4:-0} kind=${5:-requested} release_body version
+  local -a patterns=("ollama-linux-$arch.tar.zst")
+  [[ "$arch" == amd64 || "$arch" == arm64 ]] || return 65
+  _gh_read_release_metadata release_body ollama/ollama "$request" "$kind" || return $?
+  jq -e '.prerelease == false' <<< "$release_body" > /dev/null || return 250
+  version=$(jq -r .tag_name <<< "$release_body") || return 250
+  [[ ! "$version" =~ ^v[0-9] ]] || version=${version:1}
+  if [[ "$amd_layer" == 1 ]]; then
+    [[ "$arch" == amd64 ]] || return 65
+    patterns+=(ollama-linux-amd64-rocm.tar.zst)
+  fi
+  _gh_deploy_verified_assets ollama-com ollama/ollama "$release_body" "$target" "$version" prefix bin/ollama "${patterns[@]}"
+}
+
+_strata_deploy() {
+  local sd_target=$1 sd_commit=$2 sd_ggml_commit=$3 sd_arch=$4 sd_jobs=$5 sd_work sd_python sd_venv sd_source_head sd_ggml_head
+  [[ "$sd_target" == /opt/strata && "$sd_commit" =~ ^[a-f0-9]{40}$ && "$sd_ggml_commit" =~ ^[a-f0-9]{40}$ &&
+    "$sd_arch" =~ ^[0-9]+$ && "$sd_jobs" =~ ^[1-9][0-9]*$ ]] || return 65
+  [[ ! -L /opt/strata-builds && ! -L /opt/strata-venvs ]] || return 252
+  install -d -m 755 /opt/strata-builds /opt/strata-venvs || return $?
+  sd_work=$(mktemp -d /opt/strata-builds/build.XXXXXX) || return $?
+  mkdir -m 700 -- "$sd_work/home" || return $?
+  GIT_LFS_SKIP_SMUDGE=1 HOME="$sd_work/home" clone_and_deploy_gh_commit strata-source Niko1221/Strata main '' "$sd_commit" "$sd_work/source" || return $?
+  GIT_LFS_SKIP_SMUDGE=1 HOME="$sd_work/home" clone_and_deploy_gh_commit strata-ggml ggml-org/llama.cpp master '' "$sd_ggml_commit" "$sd_work/ggml" || return $?
+  sd_source_head=$(git -C "$sd_work/source" rev-parse HEAD) && sd_ggml_head=$(git -C "$sd_work/ggml" rev-parse HEAD) || return $?
+  [[ "$sd_source_head" == "$sd_commit" && "$sd_ggml_head" == "$sd_ggml_commit" ]] || return 250
+  sd_venv=$(mktemp -d /opt/strata-venvs/env.XXXXXX) || return $?
+  chmod 755 -- "$sd_venv" || return $?
+  $STD uv venv --python /usr/bin/python3 "$sd_venv" || return $?
+  sd_python="$sd_venv/bin/python"
+  $STD uv pip install --python "$sd_python" -r "$sd_work/source/requirements.txt" || return $?
+  $STD "$sd_venv/bin/cmake" -S "$sd_work/source" -B "$sd_work/build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
+    -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+    -DCMAKE_MAKE_PROGRAM="$sd_venv/bin/ninja" -DCMAKE_CUDA_ARCHITECTURES="$sd_arch" -DSTRATA_PORTABLE=ON \
+    -DSTRATA_GGML_DIR="$sd_work/ggml" -DSTRATA_BUILD_TESTS=OFF || return $?
+  $STD "$sd_venv/bin/cmake" --build "$sd_work/build" --target strata -j "$sd_jobs" || return $?
+  "$sd_work/build/strata" --help > "$sd_work/native-help.txt" 2>&1 || return $?
+  install -d -m 755 "$sd_work/payload/bin" || return $?
+  cp -a -- "$sd_work/source/serve" "$sd_work/source/tools" "$sd_work/source/data" "$sd_work/payload/" || return $?
+  cp -- "$sd_work/source/requirements.txt" "$sd_work/payload/requirements.txt" || return $?
+  [[ ! -f "$sd_work/source/LICENSE" ]] || cp -- "$sd_work/source/LICENSE" "$sd_work/payload/LICENSE" || return $?
+  install -m 755 -- "$sd_work/build/strata" "$sd_work/payload/bin/strata" || return $?
+  jq -n --arg source "$sd_commit" --arg ggml "$sd_ggml_commit" --arg python "$sd_python" --arg arch "$sd_arch" \
+    '{source_commit:$source,ggml_commit:$ggml,python:$python,cuda_arch:$arch,cuda:"12.8",portable:true}' > "$sd_work/payload/runtime.json" || return $?
+  cat << 'PY' > "$sd_work/payload/bin/strata-launch"
+#!/usr/bin/env python3
+import json, os, pathlib, re, sys
+root = pathlib.Path(__file__).resolve().parents[1]
+try:
+    config = json.loads(pathlib.Path('/etc/strata/config.json').read_text())
+    args = config['args']
+    paths = [pathlib.Path(config['tokenizer']) / name for name in ('vocab.json', 'merges.txt', 'token_type.json')]
+    pack = pathlib.Path(args[args.index('--pack') + 1])
+    paths += [pack / 'index.txt', pack / 'dense.bin']
+    native = pathlib.Path(args[args.index('--native') + 1])
+    paths.append(native)
+    split = re.fullmatch(r'(.*)-00001-of-(\d{5})\.gguf', native.name)
+    if split:
+        count = int(split[2])
+        if not 1 <= count <= 128:
+            raise ValueError('invalid shard count')
+        paths += [native.with_name(f'{split[1]}-{i:05d}-of-{count:05d}.gguf') for i in range(2, count + 1)]
+    if '--mtp' in args:
+        paths.append(pathlib.Path(args[args.index('--mtp') + 1]) / 'draft_vocab.bin')
+    missing = [str(path) for path in paths if not path.is_file() or path.stat().st_size == 0]
+    if missing:
+        print('Strata awaiting administrator model pack/tokenizer: ' + ', '.join(missing), flush=True)
+        raise SystemExit(1)
+    if '--check-data' in sys.argv:
+        raise SystemExit(0)
+    runtime = json.loads((root / 'runtime.json').read_text())
+except (OSError, ValueError, KeyError, IndexError) as error:
+    print('Strata configuration error: ' + str(error), file=sys.stderr)
+    raise SystemExit(255)
+os.chdir(root)
+os.execv(runtime['python'], [runtime['python'], '-B', '-u', '-m', 'serve.server', '--engine', 'strata',
+                           '--config', '/etc/strata/config.json', '--host', config['host'], '--port', str(config['port'])])
+PY
+  cat << 'PY' > "$sd_work/payload/bin/strata-engine-guard"
+#!/usr/bin/env python3
+import json, math, os, pathlib, subprocess, sys
+root = pathlib.Path(__file__).resolve().parents[1]
+try:
+    policy = json.loads(pathlib.Path('/etc/strata/admission.json').read_text())
+    if '--resident-budget-gib' not in sys.argv:
+        raise ValueError('a bounded --resident-budget-gib is required for managed admission')
+    resident = float(sys.argv[sys.argv.index('--resident-budget-gib') + 1])
+    reserve = float(policy.get('reserve_ram_gib', 8))
+    floor = float(policy['min_free_ram_gib'])
+    if not all(math.isfinite(value) for value in (resident, reserve, floor)) or resident <= 0 or reserve < 8 or floor <= 0:
+        raise ValueError('resident budget must be positive and RAM reserve at least 8 GiB')
+    minimum_ram = int(max(floor, resident + reserve) * (1 << 30))
+    minimum_vram = int(policy['min_free_vram_mib'])
+    if minimum_ram <= 0 or minimum_vram <= 0:
+        raise ValueError('admission floors must be positive')
+    meminfo = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+    available = int(meminfo['MemAvailable'].split()[0]) * 1024
+    cgroup_root = pathlib.Path('/sys/fs/cgroup')
+    relative = next(line.split(':', 2)[2] for line in pathlib.Path('/proc/self/cgroup').read_text().splitlines() if line.startswith('0::'))
+    current = (cgroup_root / relative.lstrip('/')).resolve()
+    if not current.is_relative_to(cgroup_root) or not current.is_dir():
+        raise ValueError('cannot identify own memory cgroup')
+    while current.is_relative_to(cgroup_root):
+        limit_file = current / 'memory.max'
+        if limit_file.exists():
+            limit = limit_file.read_text().strip()
+            if limit != 'max':
+                usage = int((current / 'memory.current').read_text())
+                available = min(available, max(0, int(limit) - usage))
+        if current == cgroup_root:
+            break
+        current = current.parent
+    if available < minimum_ram:
+        raise ValueError(f'RAM admission refused: {available} bytes available, {minimum_ram} required')
+    gpu = subprocess.run(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
+                         capture_output=True, text=True, timeout=15)
+    if gpu.returncode != 0:
+        raise ValueError('NVIDIA admission query failed: ' + gpu.stderr.strip())
+    free = [int(line.strip()) for line in gpu.stdout.splitlines() if line.strip()]
+    if not free or min(free) < minimum_vram:
+        raise ValueError(f'VRAM admission refused: observed {free}, required {minimum_vram} MiB')
+except (OSError, ValueError, KeyError, IndexError, StopIteration, subprocess.TimeoutExpired) as error:
+    print('Strata engine not started: ' + str(error), file=sys.stderr, flush=True)
+    raise SystemExit(75)
+os.execv(str(root / 'bin/strata'), [str(root / 'bin/strata'), *sys.argv[1:]])
+PY
+  chmod 755 -- "$sd_work/payload/bin/strata-launch" "$sd_work/payload/bin/strata-engine-guard" || return $?
+  CLEAN_INSTALL=1 _release_transaction prepared-tree "$sd_work/payload" '' tree "$sd_target" "$HOME/.strata" "$sd_commit" 1 "${FORCE_DEPLOY:-0}" || return $?
+  msg_ok "Published pinned Strata CUDA engine; build retained at $sd_work"
+}
+
 # Install one archive member and its real version marker through the same owner.
 # The provider's staging marker belongs to a private HOME, never the caller's HOME.
 _gh_deploy_archive_binary() {
@@ -6377,22 +6911,22 @@ fetch_and_deploy_gh_release() {
       return 250
     }
 
-    mkdir -p "$target"
-    if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-      rm -rf "${target:?}/"*
-    fi
-
     tar --no-same-owner -xzf "$tmpdir/$filename" -C "$tmpdir" || {
       msg_error "Failed to extract tarball"
       rm -rf "$tmpdir"
       return 251
     }
-    local unpack_dir
-    unpack_dir=$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
-
-    shopt -s dotglob nullglob
-    cp -r "$unpack_dir"/* "$target/"
-    shopt -u dotglob nullglob
+    local unpack_dir source_entries
+    local -a source_roots=()
+    source_entries=$(mktemp "$tmpdir/.source-roots.XXXXXX") || return 252
+    find -P "$tmpdir" -mindepth 1 -maxdepth 1 -type d -print0 > "$source_entries" || return 251
+    mapfile -d '' -t source_roots < "$source_entries" || return 251
+    ((${#source_roots[@]} == 1)) || return 251
+    unpack_dir=${source_roots[0]}
+    _gh_publish_source_tree "$unpack_dir" "$target" "$version_file" "$version" || return $?
+    rm -rf -- "$tmpdir" || msg_warn "Source staging retained at $tmpdir"
+    msg_ok "Deployed: $app ($version)"
+    return 0
 
     ### Binary Mode ###
   elif [[ "$mode" == "binary" ]]; then
@@ -7571,264 +8105,98 @@ setup_gs() {
 #   - Some Intel packages are fetched from GitHub due to missing Debian packages
 #   - NVIDIA requires matching host driver version
 # ------------------------------------------------------------------------------
-setup_hwaccel() {
-  local service_user="${1:-}"
+_hwaccel_optional_command() (
+  # silent() can exit; contain that exit and its trap/options changes here.
+  $STD "$@"
+)
 
-  # Check if user explicitly disabled GPU in advanced settings
-  # ENABLE_GPU is exported from build.func
-  if [[ "${ENABLE_GPU:-no}" == "no" ]]; then
-    return 0
-  fi
-
-  # Check if GPU passthrough is enabled (device nodes must exist)
-  if [[ ! -d /dev/dri && ! -e /dev/nvidia0 && ! -e /dev/kfd ]]; then
-    msg_warn "No GPU passthrough detected (/dev/dri, /dev/nvidia*, /dev/kfd not found) - skipping hardware acceleration setup"
-    return 0
-  fi
-
-  msg_info "Setup Hardware Acceleration"
-
-  # Install pciutils if needed
-  if ! command -v lspci &> /dev/null; then
-    $STD apt -y update || {
-      msg_warn "Failed to update package list"
-      return 0
-    }
-    $STD apt -y install pciutils || {
-      msg_warn "Failed to install pciutils"
-      return 0
-    }
-  fi
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # GPU Detection - Build list of all available GPUs with details
-  # ═══════════════════════════════════════════════════════════════════════════
-  local -a GPU_LIST=()
-  local -a GPU_TYPES=()
-  local -a GPU_NAMES=()
-  local gpu_count=0
-
-  # Get all GPU entries from lspci
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    local pci_addr gpu_name gpu_type=""
-
-    pci_addr=$(echo "$line" | awk '{print $1}')
-    gpu_name=$(echo "$line" | sed 's/^[^ ]* [^:]*: //')
-
-    # Determine GPU type
-    # Note: Use -w (word boundary) for ATI to avoid matching "CorporATIon"
-    if echo "$gpu_name" | grep -qi 'Intel'; then
-      gpu_type="INTEL"
-      # Subtype detection for Intel
-      # Order matters: Check Arc first, then Gen9+ (UHD/Iris/HD 5xx-6xx), then Legacy (HD 2xxx-5xxx)
-      # HD Graphics 530/630 = Gen 9 (Skylake/Kaby Lake) - 3 digits
-      # HD Graphics 4600/5500 = Gen 7-8 (Haswell/Broadwell) - 4 digits starting with 2-5
-      if echo "$gpu_name" | grep -qiE 'Arc|DG[12]'; then
-        gpu_type="INTEL_ARC"
-      elif echo "$gpu_name" | grep -qiE 'UHD|Iris|HD Graphics [5-6][0-9]{2}[^0-9]|HD Graphics [5-6][0-9]{2}$'; then
-        # HD Graphics 5xx/6xx (3 digits) = Gen 9+ (Skylake onwards)
-        gpu_type="INTEL_GEN9+"
-      elif echo "$gpu_name" | grep -qiE 'HD Graphics [2-5][0-9]{3}'; then
-        # HD Graphics 2xxx-5xxx (4 digits) = Gen 6-8 Legacy
-        gpu_type="INTEL_LEGACY"
-      fi
-    elif echo "$gpu_name" | grep -qiwE 'AMD|ATI|Radeon|Advanced Micro Devices'; then
-      gpu_type="AMD"
-    elif echo "$gpu_name" | grep -qi 'NVIDIA'; then
-      gpu_type="NVIDIA"
-    fi
-
-    if [[ -n "$gpu_type" ]]; then
-      GPU_LIST+=("$pci_addr")
-      GPU_TYPES+=("$gpu_type")
-      GPU_NAMES+=("$gpu_name")
-      ((gpu_count++)) || true
-    fi
-  done < <(lspci 2> /dev/null | grep -Ei 'vga|3d|display')
-
-  # Check for AMD APU via CPU vendor if no discrete GPU found
-  local cpu_vendor
-  cpu_vendor=$(lscpu 2> /dev/null | grep -i 'Vendor ID' | awk '{print $3}' 2> /dev/null || echo "")
-
-  if [[ $gpu_count -eq 0 ]]; then
-    if [[ "$cpu_vendor" == "AuthenticAMD" ]]; then
-      GPU_LIST+=("integrated")
-      GPU_TYPES+=("AMD_APU")
-      GPU_NAMES+=("AMD APU (Integrated Graphics)")
-      ((gpu_count++)) || true
+_hwaccel_apt_optional() {
+  (($# > 0)) || return 0
+  if _hwaccel_optional_command apt -y install "$@"; then return 0; fi
+  local package policy
+  for package in "$@"; do
+    if _hwaccel_optional_command apt -y install "$package"; then continue; fi
+    if policy=$(apt-cache policy "$package" 2> /dev/null) && [[ "$policy" == *'Candidate: (none)'* ]]; then
+      msg_warn "GPU package unavailable on this release: $package"
     else
-      msg_warn "No GPU detected - skipping hardware acceleration setup"
-      return 0
-    fi
-  fi
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # GPU Selection - Let user choose which GPU(s) to configure
-  # ═══════════════════════════════════════════════════════════════════════════
-  local -a SELECTED_INDICES=()
-  local install_nvidia_drivers="yes"
-
-  if [[ $gpu_count -eq 1 ]]; then
-    # Single GPU - auto-select
-    SELECTED_INDICES=(0)
-    msg_ok "Detected GPU: ${GPU_NAMES[0]} (${GPU_TYPES[0]})"
-  else
-    # Multiple GPUs - show selection menu
-    echo ""
-    msg_custom "⚠" "${YW}" "Multiple GPUs detected:"
-    echo ""
-    for i in "${!GPU_LIST[@]}"; do
-      local type_display="${GPU_TYPES[$i]}"
-      case "${GPU_TYPES[$i]}" in
-        INTEL_ARC) type_display="Intel Arc" ;;
-        INTEL_GEN9+) type_display="Intel Gen9+" ;;
-        INTEL_LEGACY) type_display="Intel Legacy" ;;
-        INTEL) type_display="Intel" ;;
-        AMD) type_display="AMD" ;;
-        AMD_APU) type_display="AMD APU" ;;
-        NVIDIA) type_display="NVIDIA" ;;
-      esac
-      printf "  %d) [%s] %s\n" "$((i + 1))" "$type_display" "${GPU_NAMES[$i]}"
-    done
-    printf "  A) Configure ALL GPUs\n"
-    echo ""
-
-    # Read with 60 second timeout
-    local selection=""
-    echo -n "Select GPU(s) to configure (1-${gpu_count}, A=all) [timeout 60s, default=all]: "
-    if read -r -t 60 selection; then
-      selection="${selection^^}" # uppercase
-    else
-      echo ""
-      msg_info "Timeout - configuring all GPUs automatically"
-      selection="A"
-    fi
-
-    # Parse selection
-    if [[ "$selection" == "A" || -z "$selection" ]]; then
-      # Select all
-      for i in "${!GPU_LIST[@]}"; do
-        SELECTED_INDICES+=("$i")
-      done
-    elif [[ "$selection" =~ ^[0-9,]+$ ]]; then
-      # Parse comma-separated numbers
-      IFS=',' read -ra nums <<< "$selection"
-      for num in "${nums[@]}"; do
-        num=$(echo "$num" | tr -d ' ')
-        if [[ "$num" =~ ^[0-9]+$ ]] && ((num >= 1 && num <= gpu_count)); then
-          SELECTED_INDICES+=("$((num - 1))")
-        fi
-      done
-    else
-      # Invalid - default to all
-      msg_warn "Invalid selection - configuring all GPUs"
-      for i in "${!GPU_LIST[@]}"; do
-        SELECTED_INDICES+=("$i")
-      done
-    fi
-  fi
-
-  # Ask whether to install NVIDIA drivers in the container
-  local nvidia_selected="no"
-  for idx in "${SELECTED_INDICES[@]}"; do
-    if [[ "${GPU_TYPES[$idx]}" == "NVIDIA" ]]; then
-      nvidia_selected="yes"
-      break
+      msg_warn "GPU package could not be installed: $package"
     fi
   done
+  return 0
+}
 
-  if [[ "$nvidia_selected" == "yes" ]]; then
-    if [[ -n "${INSTALL_NVIDIA_DRIVERS:-}" ]]; then
-      install_nvidia_drivers="${INSTALL_NVIDIA_DRIVERS}"
-    else
-      echo ""
-      msg_custom "🎮" "${GN}" "NVIDIA GPU passthrough detected"
-      local nvidia_reply=""
-      read -r -t 60 -p "${TAB3}⚙️ Install NVIDIA driver libraries in the container? [Y/n] (auto-yes in 60s): " nvidia_reply || nvidia_reply=""
-      case "${nvidia_reply,,}" in
-        n | no) install_nvidia_drivers="no" ;;
-        *) install_nvidia_drivers="yes" ;;
+setup_hwaccel() {
+  local service_user="${1:-}" device node vendor type address description libraries
+  local os_id os_codename os_version nvidia_card=0 driver_choice="${INSTALL_NVIDIA_DRIVERS:-yes}"
+  local -A eligible=() intel_types=()
+  local -a configured=()
+  export HWACCEL_VENDOR=none HWACCEL_VENDORS=''
+  [[ "${ENABLE_GPU:-no}" != no ]] || return 0
+  for device in /dev/dri/renderD* /dev/dri/card*; do
+    [[ -c "$device" && ! -L "$device" ]] || continue
+    node=${device##*/}
+    vendor=''
+    [[ -r "/sys/class/drm/$node/device/vendor" ]] || continue
+    read -r vendor < "/sys/class/drm/$node/device/vendor" || continue
+    case "$vendor" in
+      0x8086) type=INTEL ;;
+      0x1002 | 0x1022) type=AMD ;;
+      *) continue ;;
+    esac
+    [[ -z "${GPU_TYPE:-}" || " ${GPU_TYPE^^} " == *" $type "* ]] || continue
+    eligible[$type]=1
+    if [[ "$type" == INTEL ]]; then
+      type=modern description=''
+      if address=$(readlink -f "/sys/class/drm/$node/device") && [[ "${address##*/}" =~ ^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$ ]] && command -v lspci > /dev/null; then
+        description=$(lspci -s "${address##*/}") || description=''
+      fi
+      case "$description" in
+        *Arc* | *DG1* | *DG2*) type=arc ;;
+        *'HD Graphics '[2-5][0-9][0-9][0-9]*) type=legacy ;;
       esac
+      intel_types[$type]=1
     fi
+  done
+  for device in /dev/nvidia[0-9]*; do
+    [[ -c "$device" && ! -L "$device" && "$device" =~ ^/dev/nvidia[0-9]+$ ]] || continue
+    nvidia_card=1
+  done
+  if [[ "$nvidia_card" == 1 && (-z "${GPU_TYPE:-}" || " ${GPU_TYPE^^} " == *' NVIDIA '*) ]]; then eligible[NVIDIA]=1; fi
+  if ((${#eligible[@]} == 0)); then
+    msg_info "No selected mapped GPU nodes; retaining CPU operation"
+    return 0
   fi
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # OS Detection
-  # ═══════════════════════════════════════════════════════════════════════════
-  local os_id os_codename os_version
-  os_id=$(get_os_info id)
-  os_codename=$(get_os_info codename)
-  os_version=$(get_os_info version)
-  [[ -z "$os_id" ]] && os_id="debian"
-
-  local in_ct="${CTTYPE:-0}"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Process Selected GPUs
-  # ═══════════════════════════════════════════════════════════════════════════
-  for idx in "${SELECTED_INDICES[@]}"; do
-    local gpu_type="${GPU_TYPES[$idx]}"
-    local gpu_name="${GPU_NAMES[$idx]}"
-
-    msg_info "Configuring: ${gpu_name}"
-
-    case "$gpu_type" in
-      # ─────────────────────────────────────────────────────────────────────────
-      # Intel Arc GPUs (DG1, DG2, Arc A-series)
-      # ─────────────────────────────────────────────────────────────────────────
-      INTEL_ARC)
-        _setup_intel_arc "$os_id" "$os_codename"
-        ;;
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # Intel Gen 9+ (Skylake 2015+: UHD, Iris, HD 6xx+)
-      # ─────────────────────────────────────────────────────────────────────────
-      INTEL_GEN9+ | INTEL)
-        _setup_intel_modern "$os_id" "$os_codename"
-        ;;
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # Intel Legacy (Gen 6-8: HD 2000-5999, Sandy Bridge to Broadwell)
-      # ─────────────────────────────────────────────────────────────────────────
-      INTEL_LEGACY)
-        _setup_intel_legacy "$os_id" "$os_codename"
-        ;;
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # AMD Discrete GPUs
-      # ─────────────────────────────────────────────────────────────────────────
-      AMD)
-        _setup_amd_gpu "$os_id" "$os_codename"
-        ;;
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # AMD APU (Integrated Graphics)
-      # ─────────────────────────────────────────────────────────────────────────
-      AMD_APU)
-        _setup_amd_apu "$os_id" "$os_codename"
-        ;;
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # NVIDIA GPUs
-      # ─────────────────────────────────────────────────────────────────────────
-      NVIDIA)
-        if [[ "$install_nvidia_drivers" == "yes" ]]; then
-          _setup_nvidia_gpu "$os_id" "$os_codename" "$os_version"
-        else
-          msg_warn "Skipping NVIDIA driver installation (user opted to install manually)"
-        fi
-        ;;
+  os_id=$(get_os_info id) && os_codename=$(get_os_info codename) && os_version=$(get_os_info version) || return $?
+  for type in "${!intel_types[@]}"; do
+    case "$type" in
+      arc) (_setup_intel_arc "$os_id" "$os_codename") || msg_warn "Intel Arc userspace setup incomplete" ;;
+      legacy) (_setup_intel_legacy "$os_id" "$os_codename") || msg_warn "Legacy Intel userspace setup incomplete" ;;
+      modern) (_setup_intel_modern "$os_id" "$os_codename") || msg_warn "Intel userspace setup incomplete" ;;
     esac
   done
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Device Permissions
-  # ═══════════════════════════════════════════════════════════════════════════
-  _setup_gpu_permissions "$in_ct" "$service_user"
-
-  cache_installed_version "hwaccel" "1.0"
-  msg_ok "Setup Hardware Acceleration"
+  if [[ -n "${eligible[AMD]:-}" ]]; then (_setup_amd_gpu "$os_id" "$os_codename") || msg_warn "AMD userspace setup incomplete"; fi
+  if [[ -n "${eligible[NVIDIA]:-}" && "${driver_choice,,}" != no && "${driver_choice,,}" != n ]]; then
+    (_setup_nvidia_gpu "$os_id" "$os_codename" "$os_version") || msg_warn "NVIDIA userspace setup incomplete"
+  fi
+  _setup_gpu_permissions "${CTTYPE:-1}" "$service_user"
+  libraries=$(ldconfig -p 2> /dev/null) || {
+    msg_warn "GPU library enumeration failed; configuration remains unverified"
+    return 0
+  }
+  if [[ -n "${eligible[INTEL]:-}" && ("$libraries" == *libvulkan.so.1* || "$libraries" == *libva.so.*) ]]; then configured+=(intel); fi
+  if [[ -n "${eligible[AMD]:-}" && ("$libraries" == *libvulkan.so.1* || "$libraries" == *libva.so.*) ]]; then configured+=(amd); fi
+  if [[ -n "${eligible[NVIDIA]:-}" && -c /dev/nvidiactl && -c /dev/nvidia-uvm && "$libraries" == *libcuda.so.1* ]]; then configured+=(nvidia); fi
+  HWACCEL_VENDORS="${configured[*]}"
+  if [[ " $HWACCEL_VENDORS " == *' nvidia '* ]]; then HWACCEL_VENDOR=nvidia
+  elif [[ " $HWACCEL_VENDORS " == *' amd '* ]]; then HWACCEL_VENDOR=amd
+  elif [[ " $HWACCEL_VENDORS " == *' intel '* ]]; then HWACCEL_VENDOR=intel; fi
+  export HWACCEL_VENDOR HWACCEL_VENDORS
+  if [[ "$HWACCEL_VENDOR" != none ]]; then
+    cache_installed_version hwaccel 1.0
+    msg_ok "GPU userspace prerequisites configured: $HWACCEL_VENDORS"
+  else
+    msg_warn "Mapped GPUs lack userspace prerequisites; retaining CPU operation"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7839,14 +8207,49 @@ setup_hwaccel() {
 # ══════════════════════════════════════════════════════════════════════════════
 _resolve_igc_tag() {
   local -n _out_ref="${1:-igc_tag}"
-  local release_json="${2:-}" _body
-  local igc_pattern='intel-graphics-compiler/releases/tag/([^[:space:])]+)'
-  _out_ref="latest"
-  [[ -n "$release_json" ]] || return 0
-  _body=$(jq -r '.body // empty' <<< "$release_json") || return 250
-  if [[ "$_body" =~ $igc_pattern ]]; then
-    _out_ref="${BASH_REMATCH[1]}"
-  fi
+  local release_json="${2:-}" igc_candidates
+  _out_ref=''
+  [[ -n "$release_json" ]] || return 250
+  igc_candidates=$(jq -er '[.body | strings | scan("intel-graphics-compiler/releases/tag/([^\\s\\)\\]>\"#]+)") | .[0]] |
+    unique | select(length == 1) | .[0] | select(. != "latest" and (test("[[:space:][:cntrl:]/]") | not))' <<< "$release_json") || return 250
+  _out_ref=$igc_candidates
+}
+
+# All five Debian artifacts belong to one selected compute-runtime/IGC pair.
+# Optional callers may warn/degrade, but cannot install unrelated latest IGC.
+_setup_intel_compute_cohort() {
+  local ic_compute ic_compiler ic_tag ic_work ic_asset ic_name ic_url ic_digest ic_package ic_arch
+  local -a ic_assets=() ic_patterns=('libigdgmm12_*_amd64.deb' 'intel-opencl-icd_*_amd64.deb' 'libze-intel-gpu1_*_amd64.deb')
+  local -a ic_files=() ic_expected=(libigdgmm12 intel-opencl-icd libze-intel-gpu1 intel-igc-core-2 intel-igc-opencl-2)
+  [[ "$(get_system_arch dpkg)" == amd64 ]] || return 65
+  _gh_read_release_metadata ic_compute intel/compute-runtime latest requested || return $?
+  jq -e '.prerelease == false' <<< "$ic_compute" > /dev/null || return 250
+  _resolve_igc_tag ic_tag "$ic_compute" || return $?
+  _gh_read_release_metadata ic_compiler intel/intel-graphics-compiler "$ic_tag" selected || return $?
+  jq -e '.prerelease == false' <<< "$ic_compiler" > /dev/null || return 250
+  for ic_name in "${ic_patterns[@]}"; do
+    _gh_select_verified_asset ic_asset intel/compute-runtime "$ic_compute" "$ic_name" || return $?
+    ic_assets+=("$ic_asset")
+  done
+  for ic_name in 'intel-igc-core-2_*_amd64.deb' 'intel-igc-opencl-2_*_amd64.deb'; do
+    _gh_select_verified_asset ic_asset intel/intel-graphics-compiler "$ic_compiler" "$ic_name" || return $?
+    ic_assets+=("$ic_asset")
+  done
+  ic_work=$(mktemp -d) || return 252
+  local ic_index=0
+  for ic_asset in "${ic_assets[@]}"; do
+    ic_name=$(jq -r .name <<< "$ic_asset") && ic_url=$(jq -r .browser_download_url <<< "$ic_asset") && ic_digest=$(jq -r '.digest // ""' <<< "$ic_asset") || return 250
+    curl_download "$ic_work/$ic_name" "$ic_url" || return $?
+    if [[ -n "$ic_digest" ]]; then
+      printf '%s  %s\n' "${ic_digest#sha256:}" "$ic_work/$ic_name" | sha256sum --check --status || return 250
+    fi
+    ic_package=$(dpkg-deb -f "$ic_work/$ic_name" Package) && ic_arch=$(dpkg-deb -f "$ic_work/$ic_name" Architecture) || return 250
+    [[ "$ic_package" == "${ic_expected[$ic_index]}" && "$ic_arch" == amd64 ]] || return 250
+    ic_files+=("$ic_work/$ic_name")
+    ((ic_index += 1))
+  done
+  _hwaccel_optional_command apt -y install --no-install-recommends "${ic_files[@]}" || return $?
+  rm -rf -- "$ic_work" || msg_warn "Intel cohort staging retained at $ic_work"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7859,10 +8262,11 @@ _setup_intel_arc() {
 
   if [[ "$os_id" == "ubuntu" ]]; then
     # Ubuntu 22.04+ has Arc support in HWE kernel
-    $STD apt -y install \
+    _hwaccel_apt_optional \
       intel-media-va-driver-non-free \
       intel-opencl-icd \
       libmfx-gen1.2 \
+      libvpl2 mesa-vulkan-drivers vulkan-tools \
       vainfo \
       intel-gpu-tools 2> /dev/null || msg_warn "Some Intel Arc packages failed"
 
@@ -7875,33 +8279,20 @@ _setup_intel_arc() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub for Arc support"
 
-      # Fetch compute-runtime metadata before resolving its selected IGC notes,
-      # then resolve the matching IGC tag from the release notes.
-      # libigdgmm - bundled in compute-runtime releases
-      fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb" || true
-
-      local igc_tag
-      _resolve_igc_tag igc_tag "${_GH_SELECTED_RELEASE_JSON:-}"
-
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
-
-      # Compute Runtime (depends on IGC and gmmlib)
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-level-zero-gpu" "intel/compute-runtime" "binary" "latest" "" "libze-intel-gpu1_*_amd64.deb" || true
+      _setup_intel_compute_cohort || msg_warn "Intel compute cohort unavailable; no unrelated IGC installed"
     fi
 
-    $STD apt -y install \
+    _hwaccel_apt_optional \
       intel-media-va-driver-non-free \
       ocl-icd-libopencl1 \
       libvpl2 \
       libmfx-gen1.2 \
+      mesa-vulkan-drivers vulkan-tools \
       vainfo \
       intel-gpu-tools 2> /dev/null || msg_warn "Some Intel Arc packages failed"
 
     # Bookworm has compatible versions of these packages in repos
-    [[ "$os_codename" == "bookworm" ]] && $STD apt -y install intel-opencl-icd libigdgmm12 2> /dev/null || true
+    [[ "$os_codename" == "bookworm" ]] && _hwaccel_apt_optional intel-opencl-icd libigdgmm12 || true
   fi
 
   msg_ok "Intel Arc GPU configured"
@@ -7916,17 +8307,16 @@ _setup_intel_modern() {
   msg_info "Installing Intel Gen 9+ GPU drivers"
 
   if [[ "$os_id" == "ubuntu" ]]; then
-    $STD apt -y install \
+    _hwaccel_apt_optional \
       va-driver-all \
       intel-media-va-driver \
       ocl-icd-libopencl1 \
+      mesa-vulkan-drivers vulkan-tools libvpl2 \
       vainfo \
       intel-gpu-tools 2> /dev/null || msg_warn "Some Intel packages failed"
 
     # Try non-free driver for better codec support
-    $STD apt -y install intel-media-va-driver-non-free 2> /dev/null || true
-    $STD apt -y install intel-opencl-icd 2> /dev/null || true
-    $STD apt -y install libmfx-gen1.2 2> /dev/null || true
+    _hwaccel_apt_optional intel-media-va-driver-non-free intel-opencl-icd libmfx-gen1.2
 
   elif [[ "$os_id" == "debian" ]]; then
     _add_debian_nonfree "$os_codename"
@@ -7935,31 +8325,19 @@ _setup_intel_modern() {
     if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
       msg_info "Fetching Intel compute-runtime from GitHub"
 
-      # Fetch compute-runtime metadata before resolving its selected IGC notes,
-      # then resolve the matching IGC tag from the release notes.
-      # libigdgmm first (bundled in compute-runtime releases)
-      fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb" || true
-
-      local igc_tag
-      _resolve_igc_tag igc_tag "${_GH_SELECTED_RELEASE_JSON:-}"
-
-      # Intel Graphics Compiler – pinned to the version compute-runtime expects
-      fetch_and_deploy_gh_release "intel-igc-core" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb" || true
-      fetch_and_deploy_gh_release "intel-igc-opencl" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb" || true
-
-      # Compute Runtime
-      fetch_and_deploy_gh_release "intel-opencl-icd" "intel/compute-runtime" "binary" "latest" "" "intel-opencl-icd_*_amd64.deb" || true
+      _setup_intel_compute_cohort || msg_warn "Intel compute cohort unavailable; no unrelated IGC installed"
     fi
 
-    $STD apt -y install \
+    _hwaccel_apt_optional \
       intel-media-va-driver-non-free \
       ocl-icd-libopencl1 \
       vainfo \
       libmfx-gen1.2 \
+      mesa-vulkan-drivers vulkan-tools libvpl2 \
       intel-gpu-tools 2> /dev/null || msg_warn "Some Intel packages failed"
 
     # Bookworm has intel-opencl-icd in repos (compatible version)
-    [[ "$os_codename" == "bookworm" ]] && $STD apt -y install intel-opencl-icd libigdgmm12 2> /dev/null || true
+    [[ "$os_codename" == "bookworm" ]] && _hwaccel_apt_optional intel-opencl-icd libigdgmm12 || true
   fi
 
   msg_ok "Intel Gen 9+ GPU configured"
@@ -7974,7 +8352,7 @@ _setup_intel_legacy() {
   msg_info "Installing Intel Legacy GPU drivers (Gen 6-8)"
 
   # Legacy GPUs use i965 driver - stable repo packages only
-  $STD apt -y install \
+  _hwaccel_apt_optional \
     va-driver-all \
     i965-va-driver \
     mesa-va-drivers \
@@ -7986,7 +8364,7 @@ _setup_intel_legacy() {
   # Note: beignet-opencl-icd was removed in Debian 12+ and Ubuntu 22.04+
   # Check if package is available before attempting installation
   if apt-cache show beignet-opencl-icd &> /dev/null; then
-    $STD apt -y install beignet-opencl-icd 2> /dev/null || msg_warn "beignet-opencl-icd installation failed (optional)"
+    _hwaccel_apt_optional beignet-opencl-icd
   else
     msg_warn "beignet-opencl-icd not available - OpenCL support for legacy Intel GPU limited"
     msg_warn "Note: Hardware video encoding/decoding (VA-API) still works without OpenCL"
@@ -8004,24 +8382,25 @@ _setup_amd_gpu() {
   msg_info "Installing AMD GPU drivers"
 
   # Core Mesa drivers
-  $STD apt -y install \
+  _hwaccel_apt_optional \
     mesa-va-drivers \
     mesa-vdpau-drivers \
     mesa-opencl-icd \
     ocl-icd-libopencl1 \
     libdrm-amdgpu1 \
+    mesa-vulkan-drivers vulkan-tools \
     vainfo \
     clinfo 2> /dev/null || msg_warn "Some AMD packages failed"
 
   # Firmware for AMD GPUs
   if [[ "$os_id" == "debian" ]]; then
     _add_debian_nonfree_firmware "$os_codename"
-    $STD apt -y install firmware-amd-graphics 2> /dev/null || msg_warn "AMD firmware not available"
+    _hwaccel_apt_optional firmware-amd-graphics
   fi
   # Ubuntu includes AMD firmware in linux-firmware by default
 
   # ROCm compute stack (OpenCL + HIP)
-  _setup_rocm "$os_id" "$os_codename"
+  if [[ -c /dev/kfd ]]; then _setup_rocm "$os_id" "$os_codename"; fi
 
   msg_ok "AMD GPU configured"
 }
@@ -8034,16 +8413,17 @@ _setup_amd_apu() {
 
   msg_info "Installing AMD APU drivers"
 
-  $STD apt -y install \
+  _hwaccel_apt_optional \
     mesa-va-drivers \
     mesa-vdpau-drivers \
     mesa-opencl-icd \
     ocl-icd-libopencl1 \
+    mesa-vulkan-drivers vulkan-tools \
     vainfo 2> /dev/null || msg_warn "Some AMD APU packages failed"
 
   if [[ "$os_id" == "debian" ]]; then
     _add_debian_nonfree_firmware "$os_codename"
-    $STD apt -y install firmware-amd-graphics 2> /dev/null || true
+    _hwaccel_apt_optional firmware-amd-graphics
   fi
 
   msg_ok "AMD APU configured"
@@ -8125,10 +8505,7 @@ EOF
   fi
 
   # Install only runtime packages — full 'rocm' meta-package includes 15GB+ dev tools
-  $STD apt install -y rocm-opencl-runtime rocm-hip-runtime rocm-smi-lib 2> /dev/null || {
-    msg_warn "ROCm runtime install failed — trying minimal set"
-    $STD apt install -y rocm-opencl-runtime rocm-smi-lib 2> /dev/null || msg_warn "ROCm minimal install also failed"
-  }
+  _hwaccel_apt_optional rocm-opencl-runtime rocm-hip-runtime rocm-smi-lib
 
   # Group membership for GPU access
   usermod -aG render,video root 2> /dev/null || true
@@ -8155,226 +8532,160 @@ ENVEOF
 # ══════════════════════════════════════════════════════════════════════════════
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
-_setup_nvidia_gpu() {
-  local os_id="$1" os_codename="$2" os_version="$3"
+_hwaccel_nvidia_version() {
+  local host=$1 package=${2:-libcuda1} rows name candidate origin normalized fallback=''
+  rows=$(apt-cache madison "$package") || return 250
+  while IFS='|' read -r name candidate origin; do
+    [[ -n "$name$candidate$origin" ]] || continue
+    candidate=${candidate//[[:space:]]/}
+    normalized=${candidate#*:}
+    [[ "$normalized" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-[^[:space:]]+)?$ ]] || return 250
+    if [[ "${normalized%%-*}" == "$host" ]]; then printf '%s\n' "$candidate"; return 0; fi
+    if [[ "${normalized%%.*}" == "${host%%.*}" && -z "$fallback" ]]; then fallback=$candidate; fi
+  done <<< "$rows"
+  [[ -n "$fallback" ]] || return 1
+  printf '%s\n' "$fallback"
+}
 
-  msg_info "Installing NVIDIA GPU drivers"
+# Package names and displayed versions do not establish dependency provenance:
+# Ubuntu's transitional "550" packages can pull an entirely different driver.
+# Inspect the complete, checked native APT plan before any installation effects.
+_hwaccel_nvidia_plan() {
+  local nv_plan_version=$1 plan line package version normalized
+  shift
+  local plan_pattern='^(Inst|Conf) ([^ ]+)( \[[^]]+\])? \(([^ ]+)'
+  nv_plan_version=${nv_plan_version#*:}
+  nv_plan_version=${nv_plan_version%%-*}
+  plan=$(LC_ALL=C apt --simulate -y -o Dpkg::Options::=--force-confold install --no-install-recommends "$@") || return 250
+  [[ -n "$plan" ]] || return 250
+  while IFS= read -r line; do
+    case "$line" in
+      'Remv '* | 'Purg '*) return 250 ;;
+      'Inst '* | 'Conf '*)
+        [[ "$line" =~ $plan_pattern ]] || return 250
+        package=${BASH_REMATCH[2]%%:*}
+        version=${BASH_REMATCH[4]}
+        case "$package" in
+          cuda-drivers* | nvidia-driver* | nvidia-dkms* | nvidia-kernel* | nvidia-headless* | linux-*nvidia*) return 250 ;;
+          libcuda* | libnvcuvid* | libnvidia-* | nvidia-*)
+            normalized=${version#*:}
+            [[ "${normalized%%-*}" == "$nv_plan_version" ]] || return 250
+            ;;
+        esac
+        ;;
+    esac
+  done <<< "$plan"
+}
 
-  # Prevent interactive dialogs (e.g., "Mismatching nvidia kernel module" whiptail)
-  export DEBIAN_FRONTEND=noninteractive
-  export NEEDRESTART_MODE=a
-
-  # Detect host driver version (passed through via /proc)
-  # Format varies by driver type:
-  #   Proprietary: "NVRM version: NVIDIA UNIX x86_64 Kernel Module  550.54.14  Thu..."
-  #   Open:        "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release..."
-  # Use regex to extract version number (###.##.## or ###.## pattern)
-  local nvidia_host_version=""
-  if [[ -f /proc/driver/nvidia/version ]]; then
-    nvidia_host_version=$(grep -oP '\d{3,}\.\d+(\.\d+)?' /proc/driver/nvidia/version 2> /dev/null | head -1 || true)
+_hwaccel_cuda_repo() {
+  local repo=$1 architecture=$2 source key text work key_status package_arch source_text
+  [[ "$repo" =~ ^(debian[0-9]+|ubuntu[0-9]+)$ && "$architecture" =~ ^(x86_64|sbsa)$ ]] || return 65
+  source="/etc/apt/sources.list.d/nvidia-lxc-$repo.sources"
+  key="/etc/apt/keyrings/nvidia-lxc-$repo.gpg"
+  package_arch=$(dpkg --print-architecture) || return 252
+  [[ "$package_arch" == amd64 || "$package_arch" == arm64 ]] || return 65
+  text=$(printf '# scripts-underground NVIDIA userspace\nTypes: deb\nURIs: https://developer.download.nvidia.com/compute/cuda/repos/%s/%s/\nSuites: /\nArchitectures: %s\nSigned-By: %s\n' "$repo" "$architecture" "$package_arch" "$key") || return 252
+  if [[ -e "$source" || -L "$source" ]]; then
+    [[ -f "$source" && ! -L "$source" ]] || return 252
+    source_text=$(cat -- "$source") || return 252
+    [[ "$source_text" == "$text" ]] || {
+      msg_warn "Existing NVIDIA source left unchanged: $source"
+      return 1
+    }
   fi
+  mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d || return $?
+  work=$(mktemp -d) || return 252
+  if curl -fsSL --max-time 60 "https://developer.download.nvidia.com/compute/cuda/repos/$repo/$architecture/3bf863cc.pub" -o "$work/key.asc" &&
+    gpg --batch --dearmor --output "$work/key.gpg" "$work/key.asc"; then :
+  else
+    key_status=$?
+    msg_warn "NVIDIA repository key preparation failed; retained at $work"
+    return "$key_status"
+  fi
+  if [[ -e "$key" || -L "$key" ]]; then
+    [[ -f "$key" && ! -L "$key" ]] && cmp -s -- "$key" "$work/key.gpg" || return 252
+  else
+    install -m 644 -- "$work/key.gpg" "$key" || return $?
+  fi
+  if [[ ! -e "$source" ]]; then
+    (set -o noclobber; printf '%s\n' "$text" > "$source") || return $?
+  fi
+  rm -rf -- "$work" || return $?
+  _hwaccel_optional_command apt -y update
+}
 
-  if [[ -z "$nvidia_host_version" ]]; then
-    msg_warn "NVIDIA host driver version not found in /proc/driver/nvidia/version"
-    msg_warn "Ensure NVIDIA drivers are installed on host and GPU passthrough is enabled"
-    $STD apt-get -y install va-driver-all vainfo 2> /dev/null || true
+_setup_nvidia_gpu() {
+  local os_id=$1 os_codename=$2 os_version=$3 version_text host available='' fallback='' repo status normalized arch primary
+  local -a repos=() package_names=() packages=()
+  if [[ ! -f /proc/driver/nvidia/version ]]; then
+    msg_warn "Host NVIDIA driver version unavailable; userspace left unchanged"
     return 0
   fi
-
-  msg_info "Host NVIDIA driver version: ${nvidia_host_version}"
-
-  if [[ "$os_id" == "debian" ]]; then
-    # Enable non-free components
-    if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
-      if ! grep -q "non-free" /etc/apt/sources.list.d/debian.sources 2> /dev/null; then
-        sed -i -E 's/Components: (.*)$/Components: \1 contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources 2> /dev/null || true
-      fi
-    fi
-    $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-    # For Debian 13 Trixie/Sid: Use Debian's own nvidia packages first (better compatibility)
-    # NVIDIA's CUDA repo targets Debian 12 and may not have amd64 packages for Trixie
-    if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
-      msg_info "Debian ${os_codename}: Using Debian's NVIDIA packages"
-
-      # Extract major version for flexible matching (580.126.09 -> 580)
-      local nvidia_major_version="${nvidia_host_version%%.*}"
-
-      # Check what versions are actually available
-      local available_version=""
-      available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
-      if [[ -n "$available_version" ]]; then
-        msg_info "Found available NVIDIA version: ${available_version}"
-        local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-          msg_ok "Installed NVIDIA libraries (${available_version})"
-        else
-          msg_warn "Failed to install NVIDIA ${available_version} - trying unversioned"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null || true
-        fi
-      else
-        # No matching major version - try latest available or unversioned
-        msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x found in repos"
-        available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | head -1 || true)
-        if [[ -n "$available_version" ]]; then
-          msg_info "Trying latest available: ${available_version} (may cause version mismatch)"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-            libcuda1="${available_version}" libnvcuvid1="${available_version}" \
-            libnvidia-encode1="${available_version}" libnvidia-ml1="${available_version}" 2> /dev/null ||
-            $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-              libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-            msg_warn "NVIDIA library installation failed - GPU compute may not work"
-        else
-          msg_warn "No NVIDIA packages available in Debian repos - GPU support disabled"
-        fi
-      fi
-      $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends nvidia-smi 2> /dev/null || true
-
-    else
-      # Debian 11/12: Use NVIDIA CUDA repository for version matching
-      local cuda_repo="debian12"
-      case "$os_codename" in
-        bullseye) cuda_repo="debian11" ;;
-        bookworm) cuda_repo="debian12" ;;
-      esac
-
-      # Add NVIDIA CUDA repository
-      if [[ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]]; then
-        msg_info "Adding NVIDIA CUDA repository (${cuda_repo})"
-        local cuda_keyring
-        cuda_keyring="$(mktemp)"
-        if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb" 2> /dev/null; then
-          $STD dpkg -i "$cuda_keyring" 2> /dev/null || true
-        else
-          msg_warn "Failed to download NVIDIA CUDA keyring"
-        fi
-        rm -f "$cuda_keyring"
-      fi
-
-      # Pin NVIDIA repo for version matching
-      cat << 'NVIDIA_PIN' > /etc/apt/preferences.d/nvidia-cuda-pin
-Package: *
-Pin: origin developer.download.nvidia.com
-Pin-Priority: 1001
-NVIDIA_PIN
-
-      $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-      # Extract major version for flexible matching (580.126.09 -> 580)
-      local nvidia_major_version="${nvidia_host_version%%.*}"
-
-      # Check what versions are actually available in CUDA repo
-      local available_version=""
-      available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
-      if [[ -n "$available_version" ]]; then
-        msg_info "Installing NVIDIA libraries (version ${available_version})"
-        local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-          msg_ok "Installed version-matched NVIDIA libraries"
-        else
-          msg_warn "Version-pinned install failed - trying unpinned"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-            msg_warn "NVIDIA library installation failed"
-        fi
-      else
-        msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x in CUDA repo (host: ${nvidia_host_version})"
-        # Try latest available version
-        available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | head -1 || true)
-        if [[ -n "$available_version" ]]; then
-          msg_info "Trying latest available: ${available_version} (version mismatch warning)"
-          if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-            libcuda1="${available_version}" libnvcuvid1="${available_version}" \
-            libnvidia-encode1="${available_version}" libnvidia-ml1="${available_version}" 2> /dev/null; then
-            msg_ok "Installed NVIDIA libraries (${available_version}) - version differs from host"
-          else
-            $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-              msg_warn "NVIDIA library installation failed"
-          fi
-        else
-          msg_warn "No NVIDIA packages available in CUDA repo - GPU support disabled"
-        fi
-      fi
-
-      $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends nvidia-smi 2> /dev/null || true
-    fi
-
-  elif [[ "$os_id" == "ubuntu" ]]; then
-    # Ubuntu versioning
-    local ubuntu_cuda_repo=""
-    case "$os_version" in
-      22.04) ubuntu_cuda_repo="ubuntu2204" ;;
-      24.04) ubuntu_cuda_repo="ubuntu2404" ;;
-      *) ubuntu_cuda_repo="ubuntu2204" ;; # Fallback
-    esac
-
-    # Add NVIDIA CUDA repository for Ubuntu
-    if [[ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]]; then
-      msg_info "Adding NVIDIA CUDA repository (${ubuntu_cuda_repo})"
-      local cuda_keyring
-      cuda_keyring="$(mktemp)"
-      if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${ubuntu_cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb" 2> /dev/null; then
-        $STD dpkg -i "$cuda_keyring" 2> /dev/null || true
-      else
-        msg_warn "Failed to download NVIDIA CUDA keyring"
-      fi
-      rm -f "$cuda_keyring"
-    fi
-
-    $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-    # Extract major version for flexible matching
-    local nvidia_major_version="${nvidia_host_version%%.*}"
-
-    # Check what versions are available
-    local available_version=""
-    available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
-    if [[ -n "$available_version" ]]; then
-      msg_info "Installing NVIDIA libraries (version ${available_version})"
-      local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-        msg_ok "Installed version-matched NVIDIA libraries"
-      else
-        # Fallback to Ubuntu repo packages with versioned nvidia-utils
-        msg_warn "CUDA repo install failed - trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-          libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2> /dev/null; then
-          msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
-        else
-          msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
-        fi
-      fi
-    else
-      msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x in CUDA repo"
-      # Fallback to Ubuntu repo packages with versioned nvidia-utils
-      msg_info "Trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-        libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2> /dev/null; then
-        msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
-      else
-        msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
-      fi
-    fi
+  version_text=$(cat -- /proc/driver/nvidia/version) || return $?
+  [[ "$version_text" =~ [0-9]{3,}\.[0-9]+(\.[0-9]+)? ]] || return 1
+  host=${BASH_REMATCH[0]}
+  if [[ "$os_id" == ubuntu ]]; then
+    primary="libnvidia-compute-${host%%.*}"
+    package_names=("$primary" "libnvidia-decode-${host%%.*}" "libnvidia-encode-${host%%.*}" "nvidia-utils-${host%%.*}")
+  else
+    primary=libcuda1
+    package_names=(libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 nvidia-smi)
   fi
-
-  # VA-API for hybrid setups (Intel + NVIDIA)
-  $STD apt-get -y install va-driver-all vainfo 2> /dev/null || true
-
-  # Fix GLX alternatives: nvidia-alternative diverts mesa libs but in LXC
-  # containers the nvidia GLX libs are typically missing, leaving libGL.so.1
-  # pointing nowhere. Fall back to mesa if nvidia GLX dir is empty/missing.
-  if command -v update-glx &> /dev/null; then
-    local nvidia_glx_dir="/usr/lib/nvidia"
-    if [[ ! -f "${nvidia_glx_dir}/libGL.so.1" ]] && [[ -d /usr/lib/mesa-diverted ]]; then
-      msg_info "NVIDIA GLX libs missing in container - falling back to mesa"
-      $STD update-glx --set glx /usr/lib/mesa-diverted 2> /dev/null || true
-      ldconfig 2> /dev/null || true
+  case "$os_id-$os_codename" in
+    debian-bullseye) repos=(debian11 debian12) ;;
+    debian-bookworm) repos=(debian12) ;;
+    debian-trixie | debian-sid) repos=(debian13 debian12) ;;
+    ubuntu-jammy) repos=(ubuntu2204) ;;
+    ubuntu-noble) repos=(ubuntu2404) ;;
+    *) msg_warn "No qualified NVIDIA userspace repository for $os_id $os_version"; return 0 ;;
+  esac
+  arch=$(dpkg --print-architecture) || return $?
+  case "$arch" in amd64) arch=x86_64 ;; arm64) arch=sbsa ;; *) return 0 ;; esac
+  # Search existing repositories before creating any task-owned source.
+  for repo in distribution "${repos[@]}"; do
+    if [[ "$repo" != distribution ]]; then
+      if _hwaccel_cuda_repo "$repo" "$arch"; then :; else
+        msg_warn "NVIDIA repository candidate unavailable: $repo"
+        continue
+      fi
     fi
+    if available=$(_hwaccel_nvidia_version "$host" "$primary"); then
+      packages=("${package_names[@]/%/=$available}")
+      if _hwaccel_nvidia_plan "$available" "${packages[@]}"; then :; else
+        msg_warn "NVIDIA userspace candidate rejected: incomplete, foreign-series or kernel-changing APT plan"
+        available=''
+        continue
+      fi
+      normalized=${available#*:}
+      if [[ "${normalized%%-*}" == "$host" ]]; then break; fi
+      [[ -n "$fallback" ]] || fallback=$available
+      available=''
+    else
+      status=$?
+      if [[ "$status" != 1 ]]; then
+        msg_warn "NVIDIA version query failed; incomplete metadata rejected"
+        return 0
+      fi
+    fi
+  done
+  [[ -n "$available" ]] || available=$fallback
+  if [[ -z "$available" ]]; then
+    msg_warn "No NVIDIA ${host%%.*}.x userspace found; other driver series left untouched"
+    return 0
   fi
-
-  msg_ok "NVIDIA GPU configured"
+  normalized=${available#*:}
+  if [[ "${normalized%%-*}" != "$host" ]]; then msg_warn "NVIDIA userspace $available differs from host $host (same series)"; fi
+  packages=("${package_names[@]/%/=$available}")
+  _hwaccel_nvidia_plan "$available" "${packages[@]}" || {
+    msg_warn "NVIDIA userspace plan changed or could not be verified; installation skipped"
+    return 0
+  }
+  if _hwaccel_optional_command apt -y -o Dpkg::Options::=--force-confold install --no-install-recommends "${packages[@]}"; then
+    msg_ok "Installed NVIDIA userspace $available (host $host)"
+  else
+    msg_warn "Pinned NVIDIA userspace installation failed; no arbitrary unversioned fallback"
+  fi
+  _hwaccel_apt_optional va-driver-all vainfo
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

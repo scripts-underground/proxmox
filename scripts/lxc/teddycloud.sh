@@ -55,6 +55,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -65,20 +66,21 @@ function update_script() {
 
   if check_for_gh_release "teddycloud" "toniebox-reverse-engineering/teddycloud"; then
     msg_info "Stopping Service"
-    systemctl stop teddycloud
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" teddycloud || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/teddycloud/certs /opt/teddycloud/config /opt/teddycloud/data
+    create_backup /opt/teddycloud/certs /opt/teddycloud/config /opt/teddycloud/data || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "teddycloud" "toniebox-reverse-engineering/teddycloud" "prebuild" "latest" "/opt/teddycloud" "teddycloud.amd64.release*.zip"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start teddycloud
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

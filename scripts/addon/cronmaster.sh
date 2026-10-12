@@ -103,22 +103,24 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups "$var_addon_backup_dir" || return $?
   if check_for_gh_release "cronmaster" "$var_addon_repo"; then
     msg_info "Stopping service"
-    systemctl stop "$var_addon_service" &> /dev/null || true
+    _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" "$var_addon_service" || return $?
     msg_ok "Stopped service"
 
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
+    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path" || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
 
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
+    BACKUP_DIR="$var_addon_backup_dir" restore_backup || return $?
 
     msg_info "Starting service"
     systemctl start "$var_addon_service"
     msg_ok "Started service"
     msg_ok "Updated successfully"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

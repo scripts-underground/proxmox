@@ -179,6 +179,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -192,7 +193,7 @@ function update_script() {
 
   if check_for_gh_tag "guacd" "apache/guacamole-server"; then
     msg_info "Stopping guacd"
-    systemctl stop guacd 2> /dev/null || true
+    _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" guacd || return $?
     msg_ok "Stopped guacd"
 
     ensure_dependencies \
@@ -266,7 +267,7 @@ EOF
 
   if check_for_gh_release "termix" "Termix-SSH/Termix"; then
     msg_info "Stopping Termix"
-    systemctl stop termix
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" termix || return $?
     msg_ok "Stopped Termix"
 
     msg_info "Migrating Configuration"
@@ -301,11 +302,11 @@ EOF
     fi
     msg_ok "Migrated Configuration"
 
-    create_backup /opt/termix/data /opt/termix/uploads
+    create_backup /opt/termix/data /opt/termix/uploads || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "termix" "Termix-SSH/Termix" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Recreating Directories"
     mkdir -p /opt/termix/html \
@@ -388,6 +389,7 @@ EOF
     msg_ok "Started Termix"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

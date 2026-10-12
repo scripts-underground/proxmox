@@ -135,6 +135,7 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
+  _recover_update_backups || return $?
   _release_recover_archive /opt/wanderer/data/plugins || return $?
 
   if [[ ! -f /opt/wanderer/start.sh ]]; then
@@ -145,7 +146,7 @@ function update_script() {
   local restart_services=false plugins_failed=false plugin plugin_status plugin_release plugin_repair plugin_manifest_status
   if check_for_gh_release "wanderer" "open-wanderer/wanderer"; then
     msg_info "Stopping service"
-    systemctl stop wanderer-web || return $?
+    _update_services_stop wanderer wanderer-web || return $?
     restart_services=true
     msg_ok "Stopped service"
 
@@ -206,7 +207,7 @@ function update_script() {
     [[ "$plugin_status" == 0 || "$plugin_repair" == 1 ]] || continue
 
     if [[ "$restart_services" == false ]]; then
-      systemctl stop wanderer-web || return $?
+      _update_services_stop wanderer wanderer-web || return $?
       restart_services=true
     fi
     if FORCE_DEPLOY="$plugin_repair" CLEAN_INSTALL=0 fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "$plugin_release" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz"; then
@@ -246,6 +247,7 @@ function update_script() {
     local meili_status=$?
     [[ "$meili_status" == 1 ]] || return "$meili_status"
   fi
+  _update_services_finish wanderer || return $?
   exit
 }
 

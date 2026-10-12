@@ -126,6 +126,8 @@ function update_script() {
   check_container_storage
   check_container_resources
 
+  _recover_update_backups || return $?
+
   _release_recover_archive /opt/endurain "$HOME/.endurain" || return $?
   if [[ ! -d /opt/endurain ]]; then
     msg_error "No ${APP} installation found!"
@@ -133,10 +135,10 @@ function update_script() {
   fi
   if check_for_codeberg_release "endurain" "endurain-project/endurain"; then
     msg_info "Stopping Service"
-    systemctl stop endurain
+    _update_services_stop endurain endurain || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js
+    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain" || return $?
 
     msg_info "Preparing Update"
@@ -146,27 +148,28 @@ function update_script() {
 
     msg_info "Updating Frontend"
     cd /opt/endurain/frontend || exit
-    $STD npm ci
-    $STD npm run build
+    $STD npm ci || return $?
+    $STD npm run build || return $?
     msg_ok "Updated Frontend"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Backend"
     cd /opt/endurain/backend || exit
     UV_VERSION=$(grep -Po 'required-version\s*=\s*"\K[^"]+' pyproject.toml 2> /dev/null || echo "0.11.18")
-    UV_VERSION="$UV_VERSION" setup_uv
-    $STD uv sync --frozen --no-dev
+    UV_VERSION="$UV_VERSION" setup_uv || return $?
+    $STD uv sync --frozen --no-dev || return $?
     msg_ok "Backend Updated"
 
     msg_info "Starting Service"
-    systemctl start endurain
+    systemctl start endurain || return $?
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   else
     local release_status=$?
     [[ "$release_status" == 1 ]] || return "$release_status"
   fi
+  _update_services_finish endurain || return $?
   exit
 }
 

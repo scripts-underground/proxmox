@@ -53,6 +53,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -64,21 +65,22 @@ function update_script() {
   JAVA_VERSION="21" setup_java
   if check_for_gh_release "hivemq" "hivemq/hivemq-community-edition"; then
     msg_info "Stopping Service"
-    systemctl stop hivemq
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" hivemq || return $?
     msg_ok "Stopped Service"
 
     ensure_dependencies rsync
-    create_backup /opt/hivemq/conf
+    create_backup /opt/hivemq/conf || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "hivemq" "hivemq/hivemq-community-edition" "prebuild" "latest" "/opt/hivemq" "hivemq-ce-*.zip"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start hivemq
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

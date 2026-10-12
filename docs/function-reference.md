@@ -250,10 +250,11 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 
 ### Backup & restore (for `update_script()` authors)
 
-- **`create_backup <path> [...]`** — Copies each path into a manifest-tracked store (default `/opt/<NSAPP>.backup`, override with `BACKUP_DIR`), mirroring absolute paths under `<store>/files`. Idempotent per path; missing paths and mount points are skipped with a warning; aborts the update on copy failure.
-- **`restore_backup()`** — Restores every manifest-recorded path back to its origin (replacing whatever the update left), then deletes the store. No-op with a warning when no store exists.
+- **`create_backup <path> [...]`** — Copies each path into a private manifest-tracked store (default `/opt/<NSAPP>.backup`, override with `BACKUP_DIR`), mirroring absolute paths under `<store>/files`. A fresh staging object prevents nested partial-copy retries. Required failures return their checked status; callers must propagate it. Missing paths and mount points are skipped with a warning.
+- **`restore_backup()`** — Checks the complete manifest and saved cohort, prepares replacements before touching live paths, and retires the active store to a unique retained `.restored.*` sibling after complete restoration. Failed copies retain the original store and current live object. Previous live objects remain in `.backup-restore.*` siblings. No-op when no store exists.
+- **`_recover_update_backups [store ...]`** — Enters archive recovery through its existing owner, then restores the caller's default/custom backup stores before comparing release freshness. A current marker never skips pending protected-data recovery.
 
-Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgrade; call `restore_backup` on the failure path. The store name falls back to `$APP_SLUG` when `$NSAPP` is unset (addon bundles).
+Typical update flow: `_recover_update_backups || return $?` before comparison; `create_backup /opt/app/.env /opt/app/data || return $?` before deployment; `restore_backup || return $?` after deployment/build. Pass custom stores explicitly to recovery. The store name falls back to `$APP_SLUG` when `$NSAPP` is unset (addon bundles). Retained copies consume storage and are operator cleanup decisions.
 
 ### GitHub / Codeberg / GitLab API
 
@@ -529,7 +530,11 @@ have their existing distinct guarantees.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
-- **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`.
+- **`setup_hwaccel [service-user]`** — Provisions only selected, actually mapped character-device stacks using sysfs vendor attribution. Honors baked `ENABLE_GPU`, `GPU_TYPE`, `INSTALL_NVIDIA_DRIVERS`; supports NVIDIA1-only/manual userspace. Exports prerequisite-only `HWACCEL_VENDOR`/`HWACCEL_VENDORS`, not inference/VRAM/ABI proof. Optional quiet package failures cannot exit the parent. NVIDIA uses checked OS-specific package/dependency plans; Intel installs one selected compute-runtime/IGC cohort and never unrelated latest IGC. Mapping owns device permissions; this helper only adds service-user membership.
+
+Model-server private adapters `_ollama_deploy`, `_llama_cpp_deploy` and `_strata_deploy` prepare complete coherent payloads and enter the existing archive owner once. Checked selected metadata prevents release substitution; safe internal ABI aliases become ordinary file bytes. Persistent models, configuration and versioned Python/build workspaces stay outside binary publication. `_gh_deploy_selected_source` retains the non-engine source-copy contract while enforcing exact selected identity.
+
+Update service intents use `_update_services_stop`/`_update_services_stop_optional` before stopping units, and `_update_services_finish` after required work even on current-version retries. Required units are checked active; optional units retain best-effort behavior. Systemd and OpenRC share this contract. `_release_service_deploy` combines archive recovery with native model-server service completion.
 
 GPU device mapping is owned by `build.func`: each character DRM node is attributed
 to its sysfs vendor, mixed stacks default to all when unattended, and NVIDIA card

@@ -53,6 +53,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -64,21 +65,22 @@ function update_script() {
   JAVA_VERSION="25" setup_java
   if check_for_gh_release "commafeed" "Athou/commafeed"; then
     msg_info "Stopping Service"
-    systemctl stop commafeed
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" commafeed || return $?
     msg_ok "Stopped Service"
 
     ensure_dependencies rsync
-    create_backup /opt/commafeed/data
+    create_backup /opt/commafeed/data || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "commafeed" "Athou/commafeed" "prebuild" "latest" "/opt/commafeed" "commafeed-*-h2-jvm.zip"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start commafeed
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

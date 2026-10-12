@@ -83,6 +83,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -94,12 +95,12 @@ function update_script() {
 
   if check_for_gh_release "localagi" "mudler/LocalAGI"; then
     msg_info "Stopping Service"
-    systemctl stop localagi
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" localagi || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/localagi/.env
+    create_backup /opt/localagi/.env || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "localagi" "mudler/LocalAGI" "tarball" "latest" "/opt/localagi"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Building LocalAGI"
     cd /opt/localagi/webui/react-ui || exit
@@ -115,6 +116,7 @@ function update_script() {
     msg_ok "Updated successfully!"
     exit
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

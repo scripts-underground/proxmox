@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "endurain",
   "type": "lxc",
-  "total_lines": 171,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: johanngrobe\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://codeberg.org/endurain-project/endurain\n\n# shellcheck disable=SC2034\nAPP=\"Endurain\"\nvar_tags=\"${var_tags:-sport;social-media}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y build-essential\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db\n  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n  msg_info \"Setting up Endurain\"\n  cd /opt/endurain || exit\n  rm -rf \\\n    /opt/endurain/{docs,example.env,screenshot_01.png} \\\n    /opt/endurain/docker* \\\n    /opt/endurain/*.yml\n  mkdir -p /opt/endurain_data/{data,logs}\n  SECRET_KEY=$(openssl rand -hex 32)\n  FERNET_KEY=$(openssl rand -base64 32)\n  ENDURAIN_HOST=http://${LOCAL_IP}:8080\n  cat \u003c\u003c EOF \u003e /opt/endurain/.env\nDB_PASSWORD=${PG_DB_PASS}\n\nSECRET_KEY=${SECRET_KEY}\nFERNET_KEY=${FERNET_KEY}\n\nTZ=Europe/Berlin\nENDURAIN_HOST=${ENDURAIN_HOST}\nBEHIND_PROXY=false\n\nPOSTGRES_DB=${PG_DB_NAME}\nPOSTGRES_USER=${PG_DB_USER}\nPGDATA=/var/lib/postgresql/${PG_DB_NAME}\n\nDB_DATABASE=${PG_DB_NAME}\nDB_USER=${PG_DB_USER}\nDB_PORT=5432\nDB_HOST=localhost\n\nDATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\n\nBACKEND_DIR=\"/opt/endurain/backend/app\"\nFRONTEND_DIR=\"/opt/endurain/frontend/dist\"\nDATA_DIR=\"/opt/endurain_data/data\"\nLOGS_DIR=\"/opt/endurain_data/logs\"\n\n#SMTP_HOST=smtp.protonmail.ch\n#SMTP_PORT=587\n#SMTP_USERNAME=your-email@example.com\n#SMTP_PASSWORD=your-app-password\n#SMTP_SECURE=true\n#SMTP_SECURE_TYPE=starttls\nEOF\n  msg_ok \"Setup Endurain\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/endurain/frontend || exit\n  $STD npm ci --prefer-offline\n  $STD npm run build\n  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js\nwindow.env = {\n  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"\n}\nEOF\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Setting up Backend\"\n  cd /opt/endurain/backend || exit\n  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n  UV_VERSION=\"$UV_VERSION\" setup_uv\n  $STD uv sync --frozen --no-dev\n  msg_ok \"Setup Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service\n[Unit]\nDescription=Endurain FastAPI Backend\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/endurain/backend/app\nEnvironmentFile=/opt/endurain/.env\nExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080\nRestart=always\nRestartSec=5\nUser=root\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now endurain\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/endurain ]]; then\n    msg_error \"No ${APP} installation found!\"\n    exit\n  fi\n  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop endurain\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js\n    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n    msg_info \"Preparing Update\"\n    cd /opt/endurain || exit\n    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml\n    msg_ok \"Prepared Update\"\n\n    msg_info \"Updating Frontend\"\n    cd /opt/endurain/frontend || exit\n    $STD npm ci\n    $STD npm run build\n    msg_ok \"Updated Frontend\"\n\n    restore_backup\n\n    msg_info \"Updating Backend\"\n    cd /opt/endurain/backend || exit\n    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n    UV_VERSION=\"$UV_VERSION\" setup_uv\n    $STD uv sync --frozen --no-dev\n    msg_ok \"Backend Updated\"\n\n    msg_info \"Starting Service\"\n    systemctl start endurain\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 178,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: johanngrobe\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://codeberg.org/endurain-project/endurain\n\n# shellcheck disable=SC2034\nAPP=\"Endurain\"\nvar_tags=\"${var_tags:-sport;social-media}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y build-essential\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db\n  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n  msg_info \"Setting up Endurain\"\n  cd /opt/endurain || exit\n  rm -rf \\\n    /opt/endurain/{docs,example.env,screenshot_01.png} \\\n    /opt/endurain/docker* \\\n    /opt/endurain/*.yml\n  mkdir -p /opt/endurain_data/{data,logs}\n  SECRET_KEY=$(openssl rand -hex 32)\n  FERNET_KEY=$(openssl rand -base64 32)\n  ENDURAIN_HOST=http://${LOCAL_IP}:8080\n  cat \u003c\u003c EOF \u003e /opt/endurain/.env\nDB_PASSWORD=${PG_DB_PASS}\n\nSECRET_KEY=${SECRET_KEY}\nFERNET_KEY=${FERNET_KEY}\n\nTZ=Europe/Berlin\nENDURAIN_HOST=${ENDURAIN_HOST}\nBEHIND_PROXY=false\n\nPOSTGRES_DB=${PG_DB_NAME}\nPOSTGRES_USER=${PG_DB_USER}\nPGDATA=/var/lib/postgresql/${PG_DB_NAME}\n\nDB_DATABASE=${PG_DB_NAME}\nDB_USER=${PG_DB_USER}\nDB_PORT=5432\nDB_HOST=localhost\n\nDATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\n\nBACKEND_DIR=\"/opt/endurain/backend/app\"\nFRONTEND_DIR=\"/opt/endurain/frontend/dist\"\nDATA_DIR=\"/opt/endurain_data/data\"\nLOGS_DIR=\"/opt/endurain_data/logs\"\n\n#SMTP_HOST=smtp.protonmail.ch\n#SMTP_PORT=587\n#SMTP_USERNAME=your-email@example.com\n#SMTP_PASSWORD=your-app-password\n#SMTP_SECURE=true\n#SMTP_SECURE_TYPE=starttls\nEOF\n  msg_ok \"Setup Endurain\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/endurain/frontend || exit\n  $STD npm ci --prefer-offline\n  $STD npm run build\n  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js\nwindow.env = {\n  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"\n}\nEOF\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Setting up Backend\"\n  cd /opt/endurain/backend || exit\n  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n  UV_VERSION=\"$UV_VERSION\" setup_uv\n  $STD uv sync --frozen --no-dev\n  msg_ok \"Setup Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service\n[Unit]\nDescription=Endurain FastAPI Backend\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/endurain/backend/app\nEnvironmentFile=/opt/endurain/.env\nExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080\nRestart=always\nRestartSec=5\nUser=root\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now endurain\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  _recover_update_backups || return $?\n\n  _release_recover_archive /opt/endurain \"$HOME/.endurain\" || return $?\n  if [[ ! -d /opt/endurain ]]; then\n    msg_error \"No ${APP} installation found!\"\n    exit\n  fi\n  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then\n    msg_info \"Stopping Service\"\n    _update_services_stop endurain endurain || return $?\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js || return $?\n    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\" || return $?\n\n    msg_info \"Preparing Update\"\n    cd /opt/endurain || exit\n    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml\n    msg_ok \"Prepared Update\"\n\n    msg_info \"Updating Frontend\"\n    cd /opt/endurain/frontend || exit\n    $STD npm ci || return $?\n    $STD npm run build || return $?\n    msg_ok \"Updated Frontend\"\n\n    restore_backup || return $?\n\n    msg_info \"Updating Backend\"\n    cd /opt/endurain/backend || exit\n    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n    UV_VERSION=\"$UV_VERSION\" setup_uv || return $?\n    $STD uv sync --frozen --no-dev || return $?\n    msg_ok \"Backend Updated\"\n\n    msg_info \"Starting Service\"\n    systemctl start endurain || return $?\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  else\n    local release_status=$?\n    [[ \"$release_status\" == 1 ]] || return \"$release_status\"\n  fi\n  _update_services_finish endurain || return $?\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -133,17 +133,20 @@
     "  check_container_storage",
     "  check_container_resources",
     "",
+    "  _recover_update_backups || return $?",
+    "",
+    "  _release_recover_archive /opt/endurain \"$HOME/.endurain\" || return $?",
     "  if [[ ! -d /opt/endurain ]]; then",
     "    msg_error \"No ${APP} installation found!\"",
     "    exit",
     "  fi",
     "  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then",
     "    msg_info \"Stopping Service\"",
-    "    systemctl stop endurain",
+    "    _update_services_stop endurain endurain || return $?",
     "    msg_ok \"Stopped Service\"",
     "",
-    "    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js",
-    "    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
+    "    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js || return $?",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\" || return $?",
     "",
     "    msg_info \"Preparing Update\"",
     "    cd /opt/endurain || exit",
@@ -152,24 +155,28 @@
     "",
     "    msg_info \"Updating Frontend\"",
     "    cd /opt/endurain/frontend || exit",
-    "    $STD npm ci",
-    "    $STD npm run build",
+    "    $STD npm ci || return $?",
+    "    $STD npm run build || return $?",
     "    msg_ok \"Updated Frontend\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Updating Backend\"",
     "    cd /opt/endurain/backend || exit",
     "    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")",
-    "    UV_VERSION=\"$UV_VERSION\" setup_uv",
-    "    $STD uv sync --frozen --no-dev",
+    "    UV_VERSION=\"$UV_VERSION\" setup_uv || return $?",
+    "    $STD uv sync --frozen --no-dev || return $?",
     "    msg_ok \"Backend Updated\"",
     "",
     "    msg_info \"Starting Service\"",
-    "    systemctl start endurain",
+    "    systemctl start endurain || return $?",
     "    msg_ok \"Started Service\"",
     "    msg_ok \"Updated successfully!\"",
+    "  else",
+    "    local release_status=$?",
+    "    [[ \"$release_status\" == 1 ]] || return \"$release_status\"",
     "  fi",
+    "  _update_services_finish endurain || return $?",
     "  exit",
     "}",
     "",
@@ -205,7 +212,7 @@
     {
       "name": "update_script",
       "start_line": 124,
-      "end_line": 167,
+      "end_line": 174,
       "name_span": {
         "start_line": 124,
         "start_col": 10,
@@ -1839,407 +1846,582 @@
       "end_col": 28
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "command",
       "start_line": 129,
       "start_col": 3,
       "end_line": 129,
-      "end_col": 5
+      "end_col": 26
     },
     {
       "kind": "operator",
-      "op": "[[",
+      "op": "||",
       "start_line": 129,
-      "start_col": 6,
+      "start_col": 27,
       "end_line": 129,
-      "end_col": 8
+      "end_col": 29
     },
     {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 129,
-      "start_col": 9,
-      "end_line": 129,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-d",
-      "start_line": 129,
-      "start_col": 11,
-      "end_line": 129,
-      "end_col": 13
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 129,
-      "start_col": 28,
-      "end_line": 129,
-      "end_col": 30
-    },
-    {
-      "kind": "operator",
-      "op": ";",
+      "kind": "command",
       "start_line": 129,
       "start_col": 30,
-      "end_line": 129,
-      "end_col": 31
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 129,
-      "start_col": 32,
       "end_line": 129,
       "end_col": 36
     },
     {
-      "kind": "command",
-      "start_line": 130,
-      "start_col": 5,
-      "end_line": 130,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 130,
-      "start_col": 15,
-      "end_line": 130,
-      "end_col": 46
-    },
-    {
       "kind": "param-exp",
-      "start_line": 130,
-      "start_col": 19,
-      "end_line": 130,
-      "end_col": 25
+      "start_line": 129,
+      "start_col": 37,
+      "end_line": 129,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 131,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 131,
-      "end_col": 9
+      "end_col": 27
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 42,
+      "end_line": 131,
+      "end_col": 59
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 43,
+      "end_line": 131,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 131,
+      "start_col": 60,
+      "end_line": 131,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 63,
+      "end_line": 131,
+      "end_col": 69
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 70,
+      "end_line": 131,
+      "end_col": 72
     },
     {
       "kind": "keyword",
-      "op": "fi",
+      "op": "if",
       "start_line": 132,
       "start_col": 3,
       "end_line": 132,
       "end_col": 5
     },
     {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 132,
+      "start_col": 6,
+      "end_line": 132,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 132,
+      "start_col": 9,
+      "end_line": 132,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 132,
+      "start_col": 11,
+      "end_line": 132,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 132,
+      "start_col": 28,
+      "end_line": 132,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 132,
+      "start_col": 30,
+      "end_line": 132,
+      "end_col": 31
+    },
+    {
       "kind": "keyword",
-      "op": "if",
-      "start_line": 133,
-      "start_col": 3,
-      "end_line": 133,
-      "end_col": 5
+      "op": "then",
+      "start_line": 132,
+      "start_col": 32,
+      "end_line": 132,
+      "end_col": 36
     },
     {
       "kind": "command",
       "start_line": 133,
-      "start_col": 6,
+      "start_col": 5,
       "end_line": 133,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 15,
+      "end_line": 133,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 133,
+      "start_col": 19,
+      "end_line": 133,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 135,
+      "start_col": 3,
+      "end_line": 135,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 136,
+      "start_col": 3,
+      "end_line": 136,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 136,
+      "start_col": 6,
+      "end_line": 136,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 133,
+      "start_line": 136,
       "start_col": 33,
-      "end_line": 133,
+      "end_line": 136,
       "end_col": 43
     },
     {
       "kind": "string-dq",
-      "start_line": 133,
+      "start_line": 136,
       "start_col": 44,
-      "end_line": 133,
+      "end_line": 136,
       "end_col": 71
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 133,
+      "start_line": 136,
       "start_col": 71,
-      "end_line": 133,
+      "end_line": 136,
       "end_col": 72
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 133,
+      "start_line": 136,
       "start_col": 73,
-      "end_line": 133,
+      "end_line": 136,
       "end_col": 77
     },
     {
       "kind": "command",
-      "start_line": 134,
+      "start_line": 137,
       "start_col": 5,
-      "end_line": 134,
+      "end_line": 137,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 134,
+      "start_line": 137,
       "start_col": 14,
-      "end_line": 134,
+      "end_line": 137,
       "end_col": 32
-    },
-    {
-      "kind": "command",
-      "start_line": 135,
-      "start_col": 5,
-      "end_line": 135,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 136,
-      "start_col": 5,
-      "end_line": 136,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 136,
-      "start_col": 12,
-      "end_line": 136,
-      "end_col": 29
     },
     {
       "kind": "command",
       "start_line": 138,
       "start_col": 5,
       "end_line": 138,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 138,
+      "start_col": 45,
+      "end_line": 138,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 138,
+      "start_col": 48,
+      "end_line": 138,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 138,
+      "start_col": 55,
+      "end_line": 138,
+      "end_col": 57
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 12,
+      "end_line": 139,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 5,
+      "end_line": 141,
       "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 141,
+      "start_col": 73,
+      "end_line": 141,
+      "end_col": 75
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 76,
+      "end_line": 141,
+      "end_col": 82
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 141,
+      "start_col": 83,
+      "end_line": 141,
+      "end_col": 85
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 21,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 54
     },
     {
       "kind": "string-dq",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 55,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 65
     },
     {
       "kind": "string-dq",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 66,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 93
     },
     {
       "kind": "string-dq",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 94,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 103
     },
     {
       "kind": "string-dq",
-      "start_line": 139,
+      "start_line": 142,
       "start_col": 104,
-      "end_line": 139,
+      "end_line": 142,
       "end_col": 112
     },
     {
       "kind": "string-dq",
-      "start_line": 139,
-      "start_col": 113,
-      "end_line": 139,
-      "end_col": 128
-    },
-    {
-      "kind": "command",
-      "start_line": 141,
-      "start_col": 5,
-      "end_line": 141,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 141,
-      "start_col": 14,
-      "end_line": 141,
-      "end_col": 32
-    },
-    {
-      "kind": "command",
       "start_line": 142,
-      "start_col": 5,
+      "start_col": 113,
       "end_line": 142,
-      "end_col": 7
+      "end_col": 128
     },
     {
       "kind": "operator",
       "op": "||",
       "start_line": 142,
-      "start_col": 22,
+      "start_col": 129,
       "end_line": 142,
+      "end_col": 131
+    },
+    {
+      "kind": "command",
+      "start_line": 142,
+      "start_col": 132,
+      "end_line": 142,
+      "end_col": 138
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 142,
+      "start_col": 139,
+      "end_line": 142,
+      "end_col": 141
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 144,
+      "start_col": 14,
+      "end_line": 144,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 145,
+      "start_col": 5,
+      "end_line": 145,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 145,
+      "start_col": 22,
+      "end_line": 145,
       "end_col": 24
     },
     {
       "kind": "command",
-      "start_line": 142,
+      "start_line": 145,
       "start_col": 25,
-      "end_line": 142,
+      "end_line": 145,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 143,
+      "start_line": 146,
       "start_col": 5,
-      "end_line": 143,
+      "end_line": 146,
       "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 144,
-      "start_col": 5,
-      "end_line": 144,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 144,
-      "start_col": 12,
-      "end_line": 144,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 146,
-      "start_col": 5,
-      "end_line": 146,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 146,
-      "start_col": 14,
-      "end_line": 146,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 147,
       "start_col": 5,
       "end_line": 147,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 147,
+      "start_col": 12,
+      "end_line": 147,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 149,
+      "start_col": 5,
+      "end_line": 149,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 149,
+      "start_col": 14,
+      "end_line": 149,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 150,
+      "start_col": 5,
+      "end_line": 150,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 147,
+      "start_line": 150,
       "start_col": 31,
-      "end_line": 147,
+      "end_line": 150,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 147,
+      "start_line": 150,
       "start_col": 34,
-      "end_line": 147,
+      "end_line": 150,
       "end_col": 38
     },
     {
       "kind": "param-exp",
-      "start_line": 148,
+      "start_line": 151,
       "start_col": 5,
-      "end_line": 148,
+      "end_line": 151,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 148,
+      "start_line": 151,
       "start_col": 10,
-      "end_line": 148,
+      "end_line": 151,
       "end_col": 13
     },
     {
-      "kind": "param-exp",
-      "start_line": 149,
-      "start_col": 5,
-      "end_line": 149,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 149,
-      "start_col": 10,
-      "end_line": 149,
-      "end_col": 13
-    },
-    {
-      "kind": "command",
-      "start_line": 150,
-      "start_col": 5,
-      "end_line": 150,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 150,
-      "start_col": 12,
-      "end_line": 150,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 152,
-      "start_col": 5,
-      "end_line": 152,
+      "kind": "operator",
+      "op": "||",
+      "start_line": 151,
+      "start_col": 17,
+      "end_line": 151,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 154,
+      "start_line": 151,
+      "start_col": 20,
+      "end_line": 151,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 151,
+      "start_col": 27,
+      "end_line": 151,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 152,
       "start_col": 5,
-      "end_line": 154,
+      "end_line": 152,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 10,
+      "end_line": 152,
       "end_col": 13
     },
     {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 152,
+      "start_col": 24,
+      "end_line": 152,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 152,
+      "start_col": 27,
+      "end_line": 152,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 152,
+      "start_col": 34,
+      "end_line": 152,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 153,
+      "start_col": 5,
+      "end_line": 153,
+      "end_col": 11
+    },
+    {
       "kind": "string-dq",
-      "start_line": 154,
-      "start_col": 14,
-      "end_line": 154,
-      "end_col": 32
+      "start_line": 153,
+      "start_col": 12,
+      "end_line": 153,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 155,
       "start_col": 5,
       "end_line": 155,
-      "end_col": 7
+      "end_col": 19
     },
     {
       "kind": "operator",
       "op": "||",
+      "start_line": 155,
+      "start_col": 20,
+      "end_line": 155,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 155,
+      "start_col": 23,
+      "end_line": 155,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
       "start_line": 155,
       "start_col": 30,
       "end_line": 155,
@@ -2247,174 +2429,212 @@
     },
     {
       "kind": "command",
-      "start_line": 155,
+      "start_line": 157,
+      "start_col": 5,
+      "end_line": 157,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 157,
+      "start_col": 14,
+      "end_line": 157,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
+      "start_col": 5,
+      "end_line": 158,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 158,
+      "start_col": 30,
+      "end_line": 158,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
       "start_col": 33,
-      "end_line": 155,
+      "end_line": 158,
       "end_col": 37
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 107
     },
     {
       "kind": "var-name",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 15
     },
     {
       "kind": "cmd-subst",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 16,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 107
     },
     {
       "kind": "command",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 18,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 22
     },
     {
       "kind": "string-sq",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 27,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 77,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 78
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 89,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 91
     },
     {
       "kind": "command",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 92,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 96
     },
     {
       "kind": "string-dq",
-      "start_line": 156,
+      "start_line": 159,
       "start_col": 97,
-      "end_line": 156,
+      "end_line": 159,
       "end_col": 106
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 157,
+      "start_line": 160,
       "start_col": 5,
-      "end_line": 157,
+      "end_line": 160,
       "end_col": 29
     },
     {
       "kind": "var-name",
-      "start_line": 157,
+      "start_line": 160,
       "start_col": 5,
-      "end_line": 157,
+      "end_line": 160,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 157,
+      "start_line": 160,
       "start_col": 16,
-      "end_line": 157,
+      "end_line": 160,
       "end_col": 29
     },
     {
       "kind": "param-exp",
-      "start_line": 157,
+      "start_line": 160,
       "start_col": 17,
-      "end_line": 157,
+      "end_line": 160,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 157,
+      "start_line": 160,
       "start_col": 30,
-      "end_line": 157,
+      "end_line": 160,
       "end_col": 38
     },
     {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 160,
+      "start_col": 39,
+      "end_line": 160,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 160,
+      "start_col": 42,
+      "end_line": 160,
+      "end_col": 48
+    },
+    {
       "kind": "param-exp",
-      "start_line": 158,
+      "start_line": 160,
+      "start_col": 49,
+      "end_line": 160,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 161,
       "start_col": 5,
-      "end_line": 158,
+      "end_line": 161,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 158,
+      "start_line": 161,
       "start_col": 10,
-      "end_line": 158,
+      "end_line": 161,
       "end_col": 12
     },
     {
-      "kind": "command",
-      "start_line": 159,
-      "start_col": 5,
-      "end_line": 159,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 159,
-      "start_col": 12,
-      "end_line": 159,
-      "end_col": 29
+      "kind": "operator",
+      "op": "||",
+      "start_line": 161,
+      "start_col": 36,
+      "end_line": 161,
+      "end_col": 38
     },
     {
       "kind": "command",
       "start_line": 161,
-      "start_col": 5,
+      "start_col": 39,
       "end_line": 161,
-      "end_col": 13
+      "end_col": 45
     },
     {
-      "kind": "string-dq",
+      "kind": "param-exp",
       "start_line": 161,
-      "start_col": 14,
+      "start_col": 46,
       "end_line": 161,
-      "end_col": 32
+      "end_col": 48
     },
     {
       "kind": "command",
       "start_line": 162,
       "start_col": 5,
       "end_line": 162,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 163,
-      "start_col": 5,
-      "end_line": 163,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 163,
+      "start_line": 162,
       "start_col": 12,
-      "end_line": 163,
+      "end_line": 162,
       "end_col": 29
     },
     {
@@ -2422,82 +2642,273 @@
       "start_line": 164,
       "start_col": 5,
       "end_line": 164,
-      "end_col": 11
+      "end_col": 13
     },
     {
       "kind": "string-dq",
       "start_line": 164,
-      "start_col": 12,
+      "start_col": 14,
       "end_line": 164,
-      "end_col": 35
+      "end_col": 32
     },
     {
-      "kind": "keyword",
-      "op": "fi",
+      "kind": "command",
       "start_line": 165,
-      "start_col": 3,
+      "start_col": 5,
       "end_line": 165,
-      "end_col": 5
+      "end_col": 14
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 165,
+      "start_col": 30,
+      "end_line": 165,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 165,
+      "start_col": 33,
+      "end_line": 165,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 165,
+      "start_col": 40,
+      "end_line": 165,
+      "end_col": 42
     },
     {
       "kind": "command",
       "start_line": 166,
-      "start_col": 3,
+      "start_col": 5,
       "end_line": 166,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 166,
+      "start_col": 12,
+      "end_line": 166,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 167,
+      "start_col": 5,
+      "end_line": 167,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 12,
+      "end_line": 167,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 168,
+      "start_col": 3,
+      "end_line": 168,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 169,
+      "start_col": 5,
+      "end_line": 169,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 169,
+      "start_col": 11,
+      "end_line": 169,
+      "end_col": 28
+    },
+    {
+      "kind": "var-name",
+      "start_line": 169,
+      "start_col": 11,
+      "end_line": 169,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 169,
+      "start_col": 26,
+      "end_line": 169,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 170,
+      "start_col": 5,
+      "end_line": 170,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 8,
+      "end_line": 170,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 9,
+      "end_line": 170,
+      "end_col": 24
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 170,
+      "start_col": 26,
+      "end_line": 170,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 170,
+      "start_col": 31,
+      "end_line": 170,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 170,
+      "start_col": 34,
+      "end_line": 170,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 37,
+      "end_line": 170,
+      "end_col": 43
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 44,
+      "end_line": 170,
+      "end_col": 61
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 45,
+      "end_line": 170,
+      "end_col": 60
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 171,
+      "start_col": 3,
+      "end_line": 171,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 3,
+      "end_line": 172,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 172,
+      "start_col": 36,
+      "end_line": 172,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 39,
+      "end_line": 172,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 46,
+      "end_line": 172,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 173,
+      "start_col": 3,
+      "end_line": 173,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 167,
+      "start_line": 174,
       "start_col": 1,
-      "end_line": 167,
+      "end_line": 174,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 169,
+      "start_line": 176,
       "start_col": 1,
-      "end_line": 169,
+      "end_line": 176,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 170,
+      "start_line": 177,
       "start_col": 1,
-      "end_line": 170,
+      "end_line": 177,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 170,
+      "start_line": 177,
       "start_col": 8,
-      "end_line": 170,
+      "end_line": 177,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 170,
+      "start_line": 177,
       "start_col": 10,
-      "end_line": 170,
+      "end_line": 177,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 170,
+      "start_line": 177,
       "start_col": 21,
-      "end_line": 170,
+      "end_line": 177,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 170,
+      "start_line": 177,
       "start_col": 22,
-      "end_line": 170,
+      "end_line": 177,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 170,
+  "bootstrap_line": 177,
   "hooks": {
     "header_info": false,
     "install_script": true,

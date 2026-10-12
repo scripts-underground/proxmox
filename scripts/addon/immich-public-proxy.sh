@@ -117,12 +117,13 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups "$var_addon_backup_dir" || return $?
   if check_for_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy"; then
     msg_info "Stopping service"
-    systemctl stop immich-proxy.service &> /dev/null || true
+    _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" immich-proxy.service || return $?
     msg_ok "Stopped service"
 
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path/.env" "$var_addon_config_path/config.json"
+    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || return $?
 
     if command -v node &> /dev/null; then
       msg_ok "Node.js already installed ($(node -v))"
@@ -132,7 +133,7 @@ function update_script() {
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy" "tarball" "latest" "$var_addon_install_path"
 
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
+    BACKUP_DIR="$var_addon_backup_dir" restore_backup || return $?
 
     msg_info "Installing dependencies"
     cd "$var_addon_config_path" || exit
@@ -169,6 +170,7 @@ EOF
     msg_ok "Started service"
     msg_ok "Updated successfully"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

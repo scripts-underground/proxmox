@@ -56,7 +56,7 @@ EOF
     RewriteRule /.well-known/caldav  /dav.php [R=308,L]
     RewriteCond %{REQUEST_URI} ^/dav.php$ [NC]
     RewriteRule ^(.*)$ /dav.php/ [R=301,L]
-        
+
     <Directory /opt/baikal/html>
         Options FollowSymLinks
         AllowOverride All
@@ -86,6 +86,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -96,16 +97,16 @@ function update_script() {
   fi
   if check_for_gh_release "baikal" "sabre-io/Baikal"; then
     msg_info "Stopping Service"
-    systemctl stop apache2
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" apache2 || return $?
     msg_ok "Stopped Service"
 
     create_backup /opt/baikal/config/baikal.yaml \
-      /opt/baikal/Specific/
+      /opt/baikal/Specific/ || return $?
 
     PHP_APACHE="YES" PHP_VERSION="8.3" setup_php
     setup_composer
     fetch_and_deploy_gh_release "baikal" "sabre-io/Baikal" "tarball"
-    restore_backup
+    restore_backup || return $?
     chown -R www-data:www-data /opt/baikal/
     chmod -R 755 /opt/baikal/
 
@@ -119,6 +120,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -419,12 +419,14 @@ function update_script() {
   check_container_storage
   check_container_resources
 
+  _recover_update_backups "${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}" /opt/romm-players.backup || return $?
+
   if [[ ! -d /opt/romm ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
 
-  NODE_VERSION="24" setup_nodejs
+  NODE_VERSION="24" setup_nodejs || return $?
 
   local services=(romm-backend romm-worker romm-scheduler romm-watcher)
   local restart_services=false
@@ -434,40 +436,40 @@ function update_script() {
 
   if check_for_gh_release "romm" "rommapp/romm"; then
     msg_info "Stopping Services"
-    systemctl stop "${services[@]}"
+    _update_services_stop romm "${services[@]}" || return $?
     msg_ok "Stopped Services"
 
-    create_backup /opt/romm/.env
+    create_backup /opt/romm/.env || return $?
     BACKUP_DIR=/opt/romm-players.backup create_backup \
       /opt/romm/frontend/dist/assets/emulatorjs \
-      /opt/romm/frontend/dist/assets/ruffle
+      /opt/romm/frontend/dist/assets/ruffle || return $?
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball" "latest" "/opt/romm"
-    PYTHON_VERSION="3.13" UV_PROJECT_DIR="/opt/romm" setup_uv
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball" "latest" "/opt/romm" || return $?
+    PYTHON_VERSION="3.13" UV_PROJECT_DIR="/opt/romm" setup_uv || return $?
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating ROMM"
     cd /opt/romm || exit
-    $STD uv sync --all-extras
+    $STD uv sync --all-extras || return $?
     cd /opt/romm/backend || exit
-    $STD uv run alembic upgrade head
+    $STD uv run alembic upgrade head || return $?
     if [[ -f /opt/romm/backend/utils/rom_patcher/package.json ]]; then
       cd /opt/romm/backend/utils/rom_patcher || exit
-      $STD npm install --ignore-scripts --no-audit --no-fund
+      $STD npm install --ignore-scripts --no-audit --no-fund || return $?
       if [[ -d node_modules/rom-patcher/rom-patcher-js ]]; then
-        rm -rf rom-patcher-js
-        cp -r node_modules/rom-patcher/rom-patcher-js ./rom-patcher-js
+        rm -rf rom-patcher-js || return $?
+        cp -r node_modules/rom-patcher/rom-patcher-js ./rom-patcher-js || return $?
       fi
-      rm -rf node_modules
+      rm -rf node_modules || return $?
     fi
     cd /opt/romm/frontend || exit
-    $STD npm install
-    $STD npm run build
-    cp -rf /opt/romm/frontend/assets/* /opt/romm/frontend/dist/assets/
+    $STD npm install || return $?
+    $STD npm run build || return $?
+    cp -rf /opt/romm/frontend/assets/* /opt/romm/frontend/dist/assets/ || return $?
     # Restore the player payloads after Vite has finished clearing/building dist.
-    BACKUP_DIR=/opt/romm-players.backup restore_backup
-    mkdir -p /opt/romm/frontend/dist/assets/romm
+    BACKUP_DIR=/opt/romm-players.backup restore_backup || return $?
+    mkdir -p /opt/romm/frontend/dist/assets/romm || return $?
     ROMM_BASE=$(grep '^ROMM_BASE_PATH=' /opt/romm/.env | cut -d'=' -f2)
     ROMM_BASE=${ROMM_BASE:-/var/lib/romm}
     ln -sfn "$ROMM_BASE"/resources /opt/romm/frontend/dist/assets/romm/resources
@@ -481,6 +483,9 @@ function update_script() {
     fi
     msg_ok "Updated ROMM"
     restart_services=true
+  else
+    local romm_release_status=$?
+    [[ "$romm_release_status" == 1 ]] || return "$romm_release_status"
   fi
 
   # Repair already-current 5.3 installations as well as actual release upgrades.
@@ -489,7 +494,7 @@ function update_script() {
       [[ ! -f /etc/systemd/system/romm-scan-worker.service ]]
   }; then
     msg_info "Migrating RQ Services"
-    systemctl stop romm-worker romm-scheduler
+    _update_services_stop romm romm-worker romm-scheduler || return $?
     sed -i -e '/Environment="RQ_REDIS_HOST=/d' \
       -e '/Environment="RQ_REDIS_PORT=/d' \
       -e 's|^ExecStart=.*|ExecStart=/opt/romm/.venv/bin/rq cron --path /opt/romm/backend --url redis://127.0.0.1:6379/0 tasks.cron_config|' \
@@ -510,12 +515,14 @@ function update_script() {
 
   # A version marker alone does not prove the built frontend still has its files.
   if [[ ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip" || return $?
     restart_services=true
   fi
-  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores ]] ||
-    check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+  local emulatorjs_status
+  if check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then emulatorjs_status=0; else emulatorjs_status=$?; fi
+  [[ "$emulatorjs_status" == 0 || "$emulatorjs_status" == 1 ]] || return "$emulatorjs_status"
+  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores || "$emulatorjs_status" == 0 ]]; then
+    FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z" || return $?
     restart_services=true
     msg_ok "Updated EmulatorJS successfully"
   fi
@@ -526,10 +533,11 @@ function update_script() {
   fi
   if [[ "$restart_services" == true ]]; then
     msg_info "Starting Services"
-    systemctl restart "${services[@]}"
+    systemctl restart "${services[@]}" || return $?
     msg_ok "Started Services"
     msg_ok "Updated successfully"
   fi
+  _update_services_finish romm || return $?
   exit
 }
 

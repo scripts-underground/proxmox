@@ -67,6 +67,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -78,7 +79,7 @@ function update_script() {
   if check_for_gh_release "Zigbee2MQTT" "Koenkk/zigbee2mqtt"; then
     NODE_VERSION="24" NODE_MODULE="pnpm@$(curl -fsSL https://raw.githubusercontent.com/Koenkk/zigbee2mqtt/master/package.json | jq -r '.packageManager | split("@")[1]')" setup_nodejs
     msg_info "Stopping Service"
-    systemctl stop zigbee2mqtt
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" zigbee2mqtt || return $?
     msg_ok "Stopped Service"
 
     msg_info "Creating Backup"
@@ -90,11 +91,11 @@ function update_script() {
     ls -t /opt/backups/${APP}_backup_*.tar.zst 2> /dev/null | tail -n +6 | xargs -r rm -f
     msg_ok "Backup Created (${BACKUP_VERSION})"
 
-    create_backup /opt/zigbee2mqtt/data
+    create_backup /opt/zigbee2mqtt/data || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Zigbee2MQTT" "Koenkk/zigbee2mqtt" "tarball" "latest" "/opt/zigbee2mqtt"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating Zigbee2MQTT"
     cd /opt/zigbee2mqtt || exit
@@ -108,6 +109,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

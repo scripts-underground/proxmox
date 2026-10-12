@@ -86,6 +86,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -96,13 +97,13 @@ function update_script() {
   if check_for_gh_release "Heimdall" "linuxserver/Heimdall"; then
     msg_info "Stopping Services"
     PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
-    systemctl stop nginx "php${PHP_VER}-fpm"
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" nginx "php${PHP_VER}-fpm" || return $?
     msg_ok "Stopped Services"
 
     msg_info "Backing up Data"
     create_backup /opt/Heimdall/database \
       /opt/Heimdall/public \
-      /opt/Heimdall/.env
+      /opt/Heimdall/.env || return $?
     msg_ok "Backed up Data"
 
     setup_composer
@@ -110,7 +111,7 @@ function update_script() {
 
     msg_info "Updating Heimdall-Dashboard"
     cd /opt/Heimdall || exit
-    restore_backup
+    restore_backup || return $?
     export COMPOSER_ALLOW_SUPERUSER=1
     $STD composer install --no-dev --no-interaction
     $STD php artisan key:generate
@@ -126,6 +127,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Update Successful"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

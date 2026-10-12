@@ -159,6 +159,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -168,12 +169,12 @@ function update_script() {
   fi
   if check_for_gh_release "librenms" "librenms/librenms"; then
     msg_info "Stopping Services"
-    systemctl stop php8.4-fpm librenms-scheduler.timer
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" php8.4-fpm librenms-scheduler.timer || return $?
     msg_ok "Stopped Services"
 
-    create_backup /opt/librenms/.env /opt/librenms/config.php /opt/librenms/rrd
+    create_backup /opt/librenms/.env /opt/librenms/config.php /opt/librenms/rrd || return $?
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "librenms" "librenms/librenms" "tarball"
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Updating LibreNMS"
     mkdir -p /opt/librenms/{rrd,logs,bootstrap/cache,storage}
@@ -191,6 +192,7 @@ function update_script() {
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

@@ -75,6 +75,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -84,18 +85,19 @@ function update_script() {
   fi
   if check_for_gh_release "blocky" "0xERR0R/blocky"; then
     msg_info "Stopping Service"
-    systemctl stop blocky
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" blocky || return $?
     msg_ok "Stopped Service"
-    create_backup /opt/blocky/config.yml
+    create_backup /opt/blocky/config.yml || return $?
     ARCH=$(uname -m)
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "blocky" "0xERR0R/blocky" "prebuild" "latest" "/opt/blocky" "blocky_*_Linux_${ARCH}.tar.gz"
-    restore_backup
+    restore_backup || return $?
     msg_info "Starting Service"
     systemctl start blocky
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

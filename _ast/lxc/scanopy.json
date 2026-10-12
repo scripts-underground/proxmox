@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "scanopy",
   "type": "lxc",
-  "total_lines": 188,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: vhsdream\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/scanopy/scanopy\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Scanopy\"\nvar_tags=\"${var_tags:-analytics}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libssl-dev \\\n    pkg-config\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=17 setup_postgresql\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_DB_NAME=\"scanopy_db\" PG_DB_USER=\"scanopy\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  fetch_and_deploy_gh_release \"Scanopy\" \"scanopy/scanopy\" \"tarball\" \"latest\" \"/opt/scanopy\"\n\n  TOOLCHAIN=\"$(grep \"channel\" /opt/scanopy/backend/rust-toolchain.toml | awk -F\\\" '{print $2}')\"\n  RUST_TOOLCHAIN=$TOOLCHAIN setup_rust\n\n  msg_info \"Building Scanopy Server (patience)\"\n  cd /opt/scanopy/backend || exit\n  $STD cargo build --release --bin server --bin generate-fixtures\n  $STD ./target/release/generate-fixtures --output-dir /opt/scanopy/ui/src/lib/data\n  mv ./target/release/server /usr/bin/scanopy-server\n  msg_ok \"Built Scanopy Server\"\n\n  msg_info \"Creating frontend UI\"\n  export PUBLIC_SERVER_HOSTNAME=default\n  export PUBLIC_SERVER_PORT=\"\"\n  cd /opt/scanopy/ui || exit\n  $STD npm ci --no-fund --no-audit\n  $STD npm run build\n  msg_ok \"Created frontend UI\"\n\n  msg_info \"Configuring server for first-run\"\n  cat \u003c\u003c EOF \u003e /opt/scanopy/.env\n### - SERVER\nSCANOPY_DATABASE_URL=postgresql://$PG_DB_USER:$PG_DB_PASS@localhost:5432/$PG_DB_NAME\nSCANOPY_WEB_EXTERNAL_PATH=\"/opt/scanopy/ui/build\"\nSCANOPY_PUBLIC_URL=http://${LOCAL_IP}:60072\nSCANOPY_SERVER_PORT=60072\nSCANOPY_LOG_LEVEL=info\nSCANOPY_INTEGRATED_DAEMON_URL=http://127.0.0.1:60073\n## - uncomment to disable signups\n# SCANOPY_DISABLE_REGISTRATION=true\n## - uncomment when using TLS\n# SCANOPY_USE_SECURE_SESSION_COOKIES=true\n## - see https://github.com/imbolc/axum-client-ip?tab=readme-ov-file#configurable-vs-specific-extractors\n## - before uncommenting the below\n# SCANOPY_CLIENT_IP_SOURCE=\n\n### - SMTP (password reset and notifications - optional)\n# SCANOPY_SMTP_RELAY=smtp.gmail.com:587\n# SCANOPY_SMTP_USERNAME=your-email@gmail.com\n# SCANOPY_SMTP_PASSWORD=your-app-password\n# SCANOPY_SMTP_EMAIL=scanopy@yourdomain.tld\n\n### - INTEGRATED DAEMON\nSCANOPY_SERVER_URL=http://127.0.0.1:60072\nSCANOPY_BIND_ADDRESS=0.0.0.0\nSCANOPY_NAME=\"scanopy-daemon\"\nSCANOPY_HEARTBEAT_INTERVAL=30\n\n### - see https://github.com/scanopy/scanopy/blob/main/docs/CONFIGURATION.md for more options\nEOF\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/scanopy-server.service\n[Unit]\nDescription=Scanopy Network Discovery Server\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/scanopy/backend\nEnvironmentFile=/opt/scanopy/.env\nExecStart=/usr/bin/scanopy-server\nRestart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  systemctl enable -q --now scanopy-server\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:60072${CL}\"\n  echo -e \"${INFO}${YW} Then create your account, and create a daemon in the UI.${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/scanopy ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"Scanopy\" \"scanopy/scanopy\"; then\n    msg_info \"Stopping services\"\n    systemctl stop scanopy-server\n    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 systemctl stop scanopy-daemon\n    msg_ok \"Stopped services\"\n\n    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Scanopy\" \"scanopy/scanopy\" \"tarball\" \"latest\" \"/opt/scanopy\"\n\n    restore_backup\n\n    ensure_dependencies pkg-config libssl-dev\n    TOOLCHAIN=\"$(grep \"channel\" /opt/scanopy/backend/rust-toolchain.toml | awk -F\\\" '{print $2}')\"\n    RUST_TOOLCHAIN=$TOOLCHAIN setup_rust\n\n    if ! grep -q \"PUBLIC_URL\" /opt/scanopy/.env; then\n      sed -i \"\\|_PATH=|a\\\\scanopy_PUBLIC_URL=http://${LOCAL_IP}:60072\" /opt/scanopy/.env\n    fi\n    sed -i 's|_TARGET=.*$|_URL=http://127.0.0.1:60072|' /opt/scanopy/.env\n\n    msg_info \"Building Scanopy Server (patience)\"\n    cd /opt/scanopy/backend || exit\n    $STD cargo build --release --bin server --bin generate-fixtures\n    $STD ./target/release/generate-fixtures --output-dir /opt/scanopy/ui/src/lib/data\n    mv ./target/release/server /usr/bin/scanopy-server\n    msg_ok \"Built Scanopy Server\"\n\n    msg_info \"Creating frontend UI\"\n    PUBLIC_SERVER_HOSTNAME=default\n    PUBLIC_SERVER_PORT=\"\"\n    export PUBLIC_SERVER_HOSTNAME PUBLIC_SERVER_PORT\n    cd /opt/scanopy/ui || exit\n    $STD npm ci --no-fund --no-audit\n    $STD npm run build\n    msg_ok \"Created frontend UI\"\n\n    if [[ -f /etc/systemd/system/scanopy-daemon.service ]]; then\n      fetch_and_deploy_gh_release \"Scanopy Daemon\" \"scanopy/scanopy\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"scanopy-daemon-linux-$(get_system_arch)\"\n      mv \"/usr/local/bin/Scanopy Daemon\" /usr/local/bin/scanopy-daemon\n      rm -f /usr/bin/scanopy-daemon ~/configure_daemon.sh\n      sed -i -e 's|usr/bin|usr/local/bin|' \\\n        -e 's/push/daemon_poll/' \\\n        -e 's/pull/server_poll/' /etc/systemd/system/scanopy-daemon.service\n      systemctl daemon-reload\n      msg_ok \"Updated Scanopy Daemon\"\n    fi\n\n    msg_info \"Starting services\"\n    systemctl start scanopy-server\n    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 systemctl start scanopy-daemon\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 190,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: vhsdream\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/scanopy/scanopy\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Scanopy\"\nvar_tags=\"${var_tags:-analytics}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libssl-dev \\\n    pkg-config\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=17 setup_postgresql\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_DB_NAME=\"scanopy_db\" PG_DB_USER=\"scanopy\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  fetch_and_deploy_gh_release \"Scanopy\" \"scanopy/scanopy\" \"tarball\" \"latest\" \"/opt/scanopy\"\n\n  TOOLCHAIN=\"$(grep \"channel\" /opt/scanopy/backend/rust-toolchain.toml | awk -F\\\" '{print $2}')\"\n  RUST_TOOLCHAIN=$TOOLCHAIN setup_rust\n\n  msg_info \"Building Scanopy Server (patience)\"\n  cd /opt/scanopy/backend || exit\n  $STD cargo build --release --bin server --bin generate-fixtures\n  $STD ./target/release/generate-fixtures --output-dir /opt/scanopy/ui/src/lib/data\n  mv ./target/release/server /usr/bin/scanopy-server\n  msg_ok \"Built Scanopy Server\"\n\n  msg_info \"Creating frontend UI\"\n  export PUBLIC_SERVER_HOSTNAME=default\n  export PUBLIC_SERVER_PORT=\"\"\n  cd /opt/scanopy/ui || exit\n  $STD npm ci --no-fund --no-audit\n  $STD npm run build\n  msg_ok \"Created frontend UI\"\n\n  msg_info \"Configuring server for first-run\"\n  cat \u003c\u003c EOF \u003e /opt/scanopy/.env\n### - SERVER\nSCANOPY_DATABASE_URL=postgresql://$PG_DB_USER:$PG_DB_PASS@localhost:5432/$PG_DB_NAME\nSCANOPY_WEB_EXTERNAL_PATH=\"/opt/scanopy/ui/build\"\nSCANOPY_PUBLIC_URL=http://${LOCAL_IP}:60072\nSCANOPY_SERVER_PORT=60072\nSCANOPY_LOG_LEVEL=info\nSCANOPY_INTEGRATED_DAEMON_URL=http://127.0.0.1:60073\n## - uncomment to disable signups\n# SCANOPY_DISABLE_REGISTRATION=true\n## - uncomment when using TLS\n# SCANOPY_USE_SECURE_SESSION_COOKIES=true\n## - see https://github.com/imbolc/axum-client-ip?tab=readme-ov-file#configurable-vs-specific-extractors\n## - before uncommenting the below\n# SCANOPY_CLIENT_IP_SOURCE=\n\n### - SMTP (password reset and notifications - optional)\n# SCANOPY_SMTP_RELAY=smtp.gmail.com:587\n# SCANOPY_SMTP_USERNAME=your-email@gmail.com\n# SCANOPY_SMTP_PASSWORD=your-app-password\n# SCANOPY_SMTP_EMAIL=scanopy@yourdomain.tld\n\n### - INTEGRATED DAEMON\nSCANOPY_SERVER_URL=http://127.0.0.1:60072\nSCANOPY_BIND_ADDRESS=0.0.0.0\nSCANOPY_NAME=\"scanopy-daemon\"\nSCANOPY_HEARTBEAT_INTERVAL=30\n\n### - see https://github.com/scanopy/scanopy/blob/main/docs/CONFIGURATION.md for more options\nEOF\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/scanopy-server.service\n[Unit]\nDescription=Scanopy Network Discovery Server\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/scanopy/backend\nEnvironmentFile=/opt/scanopy/.env\nExecStart=/usr/bin/scanopy-server\nRestart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  systemctl enable -q --now scanopy-server\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:60072${CL}\"\n  echo -e \"${INFO}${YW} Then create your account, and create a daemon in the UI.${CL}\"\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/scanopy ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"Scanopy\" \"scanopy/scanopy\"; then\n    msg_info \"Stopping services\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" scanopy-server || return $?\n    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 { _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" scanopy-daemon || return $?; }\n    msg_ok \"Stopped services\"\n\n    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml || return $?\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Scanopy\" \"scanopy/scanopy\" \"tarball\" \"latest\" \"/opt/scanopy\"\n\n    restore_backup || return $?\n\n    ensure_dependencies pkg-config libssl-dev\n    TOOLCHAIN=\"$(grep \"channel\" /opt/scanopy/backend/rust-toolchain.toml | awk -F\\\" '{print $2}')\"\n    RUST_TOOLCHAIN=$TOOLCHAIN setup_rust\n\n    if ! grep -q \"PUBLIC_URL\" /opt/scanopy/.env; then\n      sed -i \"\\|_PATH=|a\\\\scanopy_PUBLIC_URL=http://${LOCAL_IP}:60072\" /opt/scanopy/.env\n    fi\n    sed -i 's|_TARGET=.*$|_URL=http://127.0.0.1:60072|' /opt/scanopy/.env\n\n    msg_info \"Building Scanopy Server (patience)\"\n    cd /opt/scanopy/backend || exit\n    $STD cargo build --release --bin server --bin generate-fixtures\n    $STD ./target/release/generate-fixtures --output-dir /opt/scanopy/ui/src/lib/data\n    mv ./target/release/server /usr/bin/scanopy-server\n    msg_ok \"Built Scanopy Server\"\n\n    msg_info \"Creating frontend UI\"\n    PUBLIC_SERVER_HOSTNAME=default\n    PUBLIC_SERVER_PORT=\"\"\n    export PUBLIC_SERVER_HOSTNAME PUBLIC_SERVER_PORT\n    cd /opt/scanopy/ui || exit\n    $STD npm ci --no-fund --no-audit\n    $STD npm run build\n    msg_ok \"Created frontend UI\"\n\n    if [[ -f /etc/systemd/system/scanopy-daemon.service ]]; then\n      fetch_and_deploy_gh_release \"Scanopy Daemon\" \"scanopy/scanopy\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"scanopy-daemon-linux-$(get_system_arch)\"\n      mv \"/usr/local/bin/Scanopy Daemon\" /usr/local/bin/scanopy-daemon\n      rm -f /usr/bin/scanopy-daemon ~/configure_daemon.sh\n      sed -i -e 's|usr/bin|usr/local/bin|' \\\n        -e 's/push/daemon_poll/' \\\n        -e 's/pull/server_poll/' /etc/systemd/system/scanopy-daemon.service\n      systemctl daemon-reload\n      msg_ok \"Updated Scanopy Daemon\"\n    fi\n\n    msg_info \"Starting services\"\n    systemctl start scanopy-server\n    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 systemctl start scanopy-daemon\n    msg_ok \"Updated successfully!\"\n  fi\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -123,6 +123,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -134,15 +135,15 @@
     "",
     "  if check_for_gh_release \"Scanopy\" \"scanopy/scanopy\"; then",
     "    msg_info \"Stopping services\"",
-    "    systemctl stop scanopy-server",
-    "    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 systemctl stop scanopy-daemon",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" scanopy-server || return $?",
+    "    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 { _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" scanopy-daemon || return $?; }",
     "    msg_ok \"Stopped services\"",
     "",
-    "    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml",
+    "    create_backup /opt/scanopy/.env /opt/scanopy/oidc.toml || return $?",
     "",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Scanopy\" \"scanopy/scanopy\" \"tarball\" \"latest\" \"/opt/scanopy\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    ensure_dependencies pkg-config libssl-dev",
     "    TOOLCHAIN=\"$(grep \"channel\" /opt/scanopy/backend/rust-toolchain.toml | awk -F\\\" '{print $2}')\"",
@@ -185,6 +186,7 @@
     "    [[ -f /etc/systemd/system/scanopy-daemon.service ]] \u0026\u0026 systemctl start scanopy-daemon",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -222,7 +224,7 @@
     {
       "name": "update_script",
       "start_line": 118,
-      "end_line": 182,
+      "end_line": 184,
       "name_span": {
         "start_line": 118,
         "start_col": 10,
@@ -1668,856 +1670,1025 @@
       "start_line": 119,
       "start_col": 3,
       "end_line": 119,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 119,
+      "start_col": 27,
+      "end_line": 119,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 119,
+      "start_col": 30,
+      "end_line": 119,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 119,
+      "start_col": 37,
+      "end_line": 119,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 120,
       "start_col": 3,
       "end_line": 120,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 121,
       "start_col": 3,
       "end_line": 121,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 122,
+      "start_col": 3,
+      "end_line": 122,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 3,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 6,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 9,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 11,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 27,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 29
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 29,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 30
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 123,
+      "start_line": 124,
       "start_col": 31,
-      "end_line": 123,
+      "end_line": 124,
       "end_col": 35
-    },
-    {
-      "kind": "command",
-      "start_line": 124,
-      "start_col": 5,
-      "end_line": 124,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 124,
-      "start_col": 15,
-      "end_line": 124,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 124,
-      "start_col": 19,
-      "end_line": 124,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 125,
       "start_col": 5,
       "end_line": 125,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 125,
+      "start_col": 15,
+      "end_line": 125,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 125,
+      "start_col": 19,
+      "end_line": 125,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 5,
+      "end_line": 126,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 126,
+      "start_line": 127,
       "start_col": 3,
-      "end_line": 126,
+      "end_line": 127,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 3,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 6,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 27,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 36
     },
     {
       "kind": "string-dq",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 37,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 54
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 54,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 55
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 128,
+      "start_line": 129,
       "start_col": 56,
-      "end_line": 128,
+      "end_line": 129,
       "end_col": 60
-    },
-    {
-      "kind": "command",
-      "start_line": 129,
-      "start_col": 5,
-      "end_line": 129,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 129,
-      "start_col": 14,
-      "end_line": 129,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 130,
       "start_col": 5,
       "end_line": 130,
-      "end_col": 14
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 130,
+      "start_col": 14,
+      "end_line": 130,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 5,
+      "end_line": 131,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 131,
+      "start_col": 27,
+      "end_line": 131,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 28,
+      "end_line": 131,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 37,
+      "end_line": 131,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 131,
+      "start_col": 71,
+      "end_line": 131,
+      "end_col": 73
+    },
+    {
+      "kind": "command",
+      "start_line": 131,
+      "start_col": 74,
+      "end_line": 131,
+      "end_col": 80
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 131,
+      "start_col": 81,
+      "end_line": 131,
+      "end_col": 83
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 5,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 7
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 8,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 10
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 54,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 56
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 57,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 59
     },
     {
-      "kind": "command",
-      "start_line": 131,
+      "kind": "operator",
+      "op": "{",
+      "start_line": 132,
       "start_col": 60,
-      "end_line": 131,
-      "end_col": 69
+      "end_line": 132,
+      "end_col": 61
     },
     {
       "kind": "command",
       "start_line": 132,
-      "start_col": 5,
+      "start_col": 62,
       "end_line": 132,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 132,
+      "start_col": 84,
+      "end_line": 132,
+      "end_col": 112
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 85,
+      "end_line": 132,
+      "end_col": 111
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 94,
+      "end_line": 132,
+      "end_col": 110
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 132,
+      "start_col": 128,
+      "end_line": 132,
+      "end_col": 130
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 131,
+      "end_line": 132,
+      "end_col": 137
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 138,
+      "end_line": 132,
+      "end_col": 140
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 132,
+      "start_col": 140,
+      "end_line": 132,
+      "end_col": 141
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 132,
+      "start_col": 142,
+      "end_line": 132,
+      "end_col": 143
+    },
+    {
+      "kind": "command",
+      "start_line": 133,
+      "start_col": 5,
+      "end_line": 133,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 132,
+      "start_line": 133,
       "start_col": 12,
-      "end_line": 132,
+      "end_line": 133,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 134,
+      "start_line": 135,
       "start_col": 5,
-      "end_line": 134,
+      "end_line": 135,
       "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 135,
+      "start_col": 60,
+      "end_line": 135,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 63,
+      "end_line": 135,
+      "end_col": 69
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 135,
+      "start_col": 70,
+      "end_line": 135,
+      "end_col": 72
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 5,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 5,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 21,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 48
     },
     {
       "kind": "string-dq",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 49,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 58
     },
     {
       "kind": "string-dq",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 59,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 76
     },
     {
       "kind": "string-dq",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 77,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 86
     },
     {
       "kind": "string-dq",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 87,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 95
     },
     {
       "kind": "string-dq",
-      "start_line": 136,
+      "start_line": 137,
       "start_col": 96,
-      "end_line": 136,
+      "end_line": 137,
       "end_col": 110
     },
     {
       "kind": "command",
-      "start_line": 138,
+      "start_line": 139,
       "start_col": 5,
-      "end_line": 138,
+      "end_line": 139,
       "end_col": 19
     },
     {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 139,
+      "start_col": 20,
+      "end_line": 139,
+      "end_col": 22
+    },
+    {
       "kind": "command",
-      "start_line": 140,
+      "start_line": 139,
+      "start_col": 23,
+      "end_line": 139,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 30,
+      "end_line": 139,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
       "start_col": 5,
-      "end_line": 140,
+      "end_line": 141,
       "end_col": 24
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 99
     },
     {
       "kind": "var-name",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 15,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 99
     },
     {
       "kind": "cmd-subst",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 16,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 98
     },
     {
       "kind": "command",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 18,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 22
     },
     {
       "kind": "string-dq",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 23,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": "|",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 74,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 75
     },
     {
       "kind": "command",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 76,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 79
     },
     {
       "kind": "string-sq",
-      "start_line": 141,
+      "start_line": 142,
       "start_col": 85,
-      "end_line": 141,
+      "end_line": 142,
       "end_col": 97
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 5,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 30
     },
     {
       "kind": "var-name",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 5,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 20,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 142,
+      "start_line": 143,
       "start_col": 31,
-      "end_line": 142,
+      "end_line": 143,
       "end_col": 41
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 5,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 8,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 10,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 18,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 30
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 48,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 49
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 50,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 54
     },
     {
       "kind": "command",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 7,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 10
     },
     {
       "kind": "string-dq",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 14,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 71
     },
     {
       "kind": "param-exp",
-      "start_line": 145,
+      "start_line": 146,
       "start_col": 53,
-      "end_line": 145,
+      "end_line": 146,
       "end_col": 64
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 5,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 147,
+      "start_line": 148,
       "start_col": 5,
-      "end_line": 147,
+      "end_line": 148,
       "end_col": 8
     },
     {
       "kind": "string-sq",
-      "start_line": 147,
+      "start_line": 148,
       "start_col": 12,
-      "end_line": 147,
+      "end_line": 148,
       "end_col": 56
-    },
-    {
-      "kind": "command",
-      "start_line": 149,
-      "start_col": 5,
-      "end_line": 149,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 149,
-      "start_col": 14,
-      "end_line": 149,
-      "end_col": 50
     },
     {
       "kind": "command",
       "start_line": 150,
       "start_col": 5,
       "end_line": 150,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 150,
+      "start_col": 14,
+      "end_line": 150,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 151,
+      "start_col": 5,
+      "end_line": 151,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 29,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 32,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 36
     },
     {
       "kind": "param-exp",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 5,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 10,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 15
     },
     {
       "kind": "param-exp",
-      "start_line": 152,
+      "start_line": 153,
       "start_col": 5,
-      "end_line": 152,
+      "end_line": 153,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 152,
+      "start_line": 153,
       "start_col": 10,
-      "end_line": 152,
+      "end_line": 153,
       "end_col": 44
     },
     {
       "kind": "command",
-      "start_line": 153,
+      "start_line": 154,
       "start_col": 5,
-      "end_line": 153,
+      "end_line": 154,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 154,
+      "start_line": 155,
       "start_col": 5,
-      "end_line": 154,
+      "end_line": 155,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 154,
+      "start_line": 155,
       "start_col": 12,
-      "end_line": 154,
+      "end_line": 155,
       "end_col": 34
     },
     {
       "kind": "command",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 5,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 156,
+      "start_line": 157,
       "start_col": 14,
-      "end_line": 156,
+      "end_line": 157,
       "end_col": 36
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 157,
+      "start_line": 158,
       "start_col": 5,
-      "end_line": 157,
+      "end_line": 158,
       "end_col": 35
     },
     {
       "kind": "var-name",
-      "start_line": 157,
+      "start_line": 158,
       "start_col": 5,
-      "end_line": 157,
+      "end_line": 158,
       "end_col": 27
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 158,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 158,
+      "end_line": 159,
       "end_col": 26
     },
     {
       "kind": "var-name",
-      "start_line": 158,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 158,
+      "end_line": 159,
       "end_col": 23
     },
     {
       "kind": "string-dq",
-      "start_line": 158,
+      "start_line": 159,
       "start_col": 24,
-      "end_line": 158,
+      "end_line": 159,
       "end_col": 26
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 159,
+      "start_line": 160,
       "start_col": 5,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 11
     },
     {
+      "kind": "var-name",
+      "start_line": 160,
+      "start_col": 12,
+      "end_line": 160,
+      "end_col": 34
+    },
+    {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 159,
+      "start_line": 160,
       "start_col": 12,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 34
     },
     {
-      "kind": "var-name",
-      "start_line": 159,
-      "start_col": 12,
-      "end_line": 159,
-      "end_col": 34
-    },
-    {
-      "kind": "var-name",
-      "start_line": 159,
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 160,
       "start_col": 35,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 53
     },
     {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 159,
+      "kind": "var-name",
+      "start_line": 160,
       "start_col": 35,
-      "end_line": 159,
+      "end_line": 160,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 160,
+      "start_line": 161,
       "start_col": 5,
-      "end_line": 160,
+      "end_line": 161,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 160,
+      "start_line": 161,
       "start_col": 24,
-      "end_line": 160,
+      "end_line": 161,
       "end_col": 26
     },
     {
       "kind": "command",
-      "start_line": 160,
+      "start_line": 161,
       "start_col": 27,
-      "end_line": 160,
+      "end_line": 161,
       "end_col": 31
     },
     {
       "kind": "param-exp",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 5,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 10,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 162,
+      "start_line": 163,
       "start_col": 5,
-      "end_line": 162,
+      "end_line": 163,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 162,
+      "start_line": 163,
       "start_col": 10,
-      "end_line": 162,
+      "end_line": 163,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 163,
+      "start_line": 164,
       "start_col": 5,
-      "end_line": 163,
+      "end_line": 164,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 163,
+      "start_line": 164,
       "start_col": 12,
-      "end_line": 163,
+      "end_line": 164,
       "end_col": 33
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 5,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 8,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 11,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 57,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 59
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 59,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 60
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 165,
+      "start_line": 166,
       "start_col": 61,
-      "end_line": 165,
+      "end_line": 166,
       "end_col": 65
     },
     {
       "kind": "command",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 7,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 34
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 35,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 51
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 52,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 69
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 70,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 82
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 83,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 91
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 92,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 108
     },
     {
       "kind": "string-dq",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 109,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 150
     },
     {
       "kind": "cmd-subst",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 131,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 149
     },
     {
       "kind": "command",
-      "start_line": 166,
+      "start_line": 167,
       "start_col": 133,
-      "end_line": 166,
+      "end_line": 167,
       "end_col": 148
-    },
-    {
-      "kind": "command",
-      "start_line": 167,
-      "start_col": 7,
-      "end_line": 167,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 167,
-      "start_col": 10,
-      "end_line": 167,
-      "end_col": 41
     },
     {
       "kind": "command",
@@ -2527,25 +2698,32 @@
       "end_col": 9
     },
     {
+      "kind": "string-dq",
+      "start_line": 168,
+      "start_col": 10,
+      "end_line": 168,
+      "end_col": 41
+    },
+    {
       "kind": "command",
       "start_line": 169,
       "start_col": 7,
       "end_line": 169,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 7,
+      "end_line": 170,
       "end_col": 10
     },
     {
       "kind": "string-sq",
-      "start_line": 169,
-      "start_col": 17,
-      "end_line": 169,
-      "end_col": 43
-    },
-    {
-      "kind": "string-sq",
       "start_line": 170,
-      "start_col": 12,
+      "start_col": 17,
       "end_line": 170,
-      "end_col": 33
+      "end_col": 43
     },
     {
       "kind": "string-sq",
@@ -2555,189 +2733,246 @@
       "end_col": 33
     },
     {
-      "kind": "command",
+      "kind": "string-sq",
       "start_line": 172,
-      "start_col": 7,
+      "start_col": 12,
       "end_line": 172,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 173,
+      "start_col": 7,
+      "end_line": 173,
       "end_col": 16
     },
     {
       "kind": "command",
-      "start_line": 173,
+      "start_line": 174,
       "start_col": 7,
-      "end_line": 173,
+      "end_line": 174,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 173,
+      "start_line": 174,
       "start_col": 14,
-      "end_line": 173,
+      "end_line": 174,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 5,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 176,
-      "start_col": 5,
-      "end_line": 176,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 176,
-      "start_col": 14,
-      "end_line": 176,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 177,
       "start_col": 5,
       "end_line": 177,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 177,
+      "start_col": 14,
+      "end_line": 177,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 178,
+      "start_col": 5,
+      "end_line": 178,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 5,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 7
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 8,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 10
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 54,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 56
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 57,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 59
     },
     {
       "kind": "command",
-      "start_line": 178,
+      "start_line": 179,
       "start_col": 60,
-      "end_line": 178,
+      "end_line": 179,
       "end_col": 69
     },
     {
       "kind": "command",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 5,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 179,
+      "start_line": 180,
       "start_col": 12,
-      "end_line": 179,
+      "end_line": 180,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 3,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 181,
+      "start_line": 182,
       "start_col": 3,
-      "end_line": 181,
+      "end_line": 182,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 182,
+      "start_col": 27,
+      "end_line": 182,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 28,
+      "end_line": 182,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 37,
+      "end_line": 182,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 182,
+      "start_col": 56,
+      "end_line": 182,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 182,
+      "start_col": 59,
+      "end_line": 182,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 66,
+      "end_line": 182,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 183,
+      "start_col": 3,
+      "end_line": 183,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 182,
-      "start_col": 1,
-      "end_line": 182,
-      "end_col": 2
-    },
-    {
-      "kind": "comment",
       "start_line": 184,
       "start_col": 1,
       "end_line": 184,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 185,
-      "start_col": 1,
-      "end_line": 185,
-      "end_col": 28
+      "end_col": 2
     },
     {
       "kind": "comment",
       "start_line": 186,
       "start_col": 1,
       "end_line": 186,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 187,
+      "start_col": 1,
+      "end_line": 187,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 188,
+      "start_col": 1,
+      "end_line": 188,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 187,
+      "start_line": 189,
       "start_col": 1,
-      "end_line": 187,
+      "end_line": 189,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 187,
+      "start_line": 189,
       "start_col": 8,
-      "end_line": 187,
+      "end_line": 189,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 187,
+      "start_line": 189,
       "start_col": 10,
-      "end_line": 187,
+      "end_line": 189,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 187,
+      "start_line": 189,
       "start_col": 21,
-      "end_line": 187,
+      "end_line": 189,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 187,
+      "start_line": 189,
       "start_col": 22,
-      "end_line": 187,
+      "end_line": 189,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 187,
+  "bootstrap_line": 189,
   "hooks": {
     "header_info": false,
     "install_script": true,

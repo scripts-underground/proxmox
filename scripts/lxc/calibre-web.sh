@@ -80,6 +80,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -91,11 +92,11 @@ function update_script() {
 
   if check_for_gh_release "Calibre-Web" "janeczku/calibre-web"; then
     msg_info "Stopping Service"
-    systemctl stop calibre-web
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" calibre-web || return $?
     msg_ok "Stopped Service"
 
     create_backup /opt/calibre-web/app.db \
-      /opt/calibre-web/data
+      /opt/calibre-web/data || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Calibre-Web" "janeczku/calibre-web" "prebuild" "latest" "/opt/calibre-web" "calibre-web*.tar.gz"
     setup_uv
@@ -107,13 +108,14 @@ function update_script() {
     $STD uv pip install --python /opt/calibre-web/.venv/bin/python --no-cache-dir -r requirements.txt
     msg_ok "Installed Dependencies"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Starting Service"
     systemctl start calibre-web
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

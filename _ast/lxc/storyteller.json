@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "storyteller",
   "type": "lxc",
-  "total_lines": 178,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://gitlab.com/storyteller-platform/storyteller\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Storyteller\"\nvar_tags=\"${var_tags:-media;ebook;audiobook}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-10240}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    git \\\n    pkg-config \\\n    libsqlite3-dev \\\n    sqlite3 \\\n    python3-setuptools \\\n    ffmpeg\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack,yarn\" setup_nodejs\n\n  READIUM_ARCH=$(uname -m)\n  [[ \"$READIUM_ARCH\" == \"aarch64\" ]] \u0026\u0026 READIUM_ARCH=\"arm64\"\n  fetch_and_deploy_gh_release \"readium\" \"readium/cli\" \"prebuild\" \"latest\" \"/opt/readium\" \"readium_linux_${READIUM_ARCH}.tar.gz\"\n  ln -sf /opt/readium/readium /usr/local/bin/readium\n\n  fetch_and_deploy_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"tarball\" \"latest\" \"/opt/storyteller\" \"\" \"web-v2\"\n\n  msg_info \"Setting up Storyteller\"\n  cd /opt/storyteller || exit\n\n  $STD corepack yarn install --network-timeout 600000\n  $STD gcc -g -fPIC -rdynamic -shared web/sqlite/uuid.c -o web/sqlite/uuid.c.so\n  STORYTELLER_SECRET_KEY=$(openssl rand -base64 32)\n  cat \u003c\u003c EOF \u003e /opt/storyteller/.env\nSTORYTELLER_SECRET_KEY=${STORYTELLER_SECRET_KEY}\nSTORYTELLER_DATA_DIR=/opt/storyteller/data\nPORT=8001\nHOSTNAME=0.0.0.0\nREADIUM_PORT=9000\nNODE_ENV=production\nNEXT_TELEMETRY_DISABLED=1\nEOF\n  mkdir -p /opt/storyteller/data\n  cat \u003c\u003c EOF \u003e ~/storyteller.creds\nStoryteller Credentials\n=======================\nSecret Key: ${STORYTELLER_SECRET_KEY}\nEOF\n  msg_ok \"Set up Storyteller\"\n\n  msg_info \"Building Storyteller\"\n  cd /opt/storyteller || exit\n  export CI=1\n  export NODE_ENV=production\n  export NEXT_TELEMETRY_DISABLED=1\n  export SQLITE_NATIVE_BINDING=/opt/storyteller/node_modules/better-sqlite3/build/Release/better_sqlite3.node\n  $STD corepack yarn workspaces foreach -Rpt --from @storyteller-platform/web --exclude @storyteller-platform/eslint run build\n  mkdir -p /opt/storyteller/web/.next/standalone/web/.next/static\n  cp -rT /opt/storyteller/web/.next/static /opt/storyteller/web/.next/standalone/web/.next/static\n  if [[ -d /opt/storyteller/web/public ]]; then\n    mkdir -p /opt/storyteller/web/.next/standalone/web/public\n    cp -rT /opt/storyteller/web/public /opt/storyteller/web/.next/standalone/web/public\n  fi\n  mkdir -p /opt/storyteller/web/.next/standalone/web/migrations\n  cp -rT /opt/storyteller/web/migrations /opt/storyteller/web/.next/standalone/web/migrations\n  mkdir -p /opt/storyteller/web/.next/standalone/web/sqlite\n  cp -rT /opt/storyteller/web/sqlite /opt/storyteller/web/.next/standalone/web/sqlite\n  ln -sf /opt/storyteller/.env /opt/storyteller/web/.next/standalone/web/.env\n  msg_ok \"Built Storyteller\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/storyteller.service\n[Unit]\nDescription=Storyteller\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/storyteller/web/.next/standalone/web\nEnvironmentFile=/opt/storyteller/.env\nExecStart=/usr/bin/node --enable-source-maps server.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now storyteller\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8001${CL}\"\n  if [[ -f ~/storyteller.creds ]]; then\n    echo -e \"${INFO}${YW}Default Credentials:${CL}\"\n    cat ~/storyteller.creds\n  fi\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/storyteller ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack,yarn\" setup_nodejs\n\n  if check_for_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"\" \"\" \"web-v2\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop storyteller\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/storyteller/.env\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"tarball\" \"latest\" \"/opt/storyteller\" \"\" \"web-v2\"\n\n    restore_backup\n\n    msg_info \"Rebuilding Storyteller\"\n    cd /opt/storyteller || exit\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n\n    $STD corepack yarn install --network-timeout 600000\n    $STD gcc -g -fPIC -rdynamic -shared web/sqlite/uuid.c -o web/sqlite/uuid.c.so\n    export CI=1\n    export NODE_ENV=production\n    export NEXT_TELEMETRY_DISABLED=1\n    export SQLITE_NATIVE_BINDING=/opt/storyteller/node_modules/better-sqlite3/build/Release/better_sqlite3.node\n    $STD corepack yarn workspaces foreach -Rpt --from @storyteller-platform/web --exclude @storyteller-platform/eslint run build\n    mkdir -p /opt/storyteller/web/.next/standalone/web/.next/static\n    cp -rT /opt/storyteller/web/.next/static /opt/storyteller/web/.next/standalone/web/.next/static\n    if [[ -d /opt/storyteller/web/public ]]; then\n      mkdir -p /opt/storyteller/web/.next/standalone/web/public\n      cp -rT /opt/storyteller/web/public /opt/storyteller/web/.next/standalone/web/public\n    fi\n    mkdir -p /opt/storyteller/web/.next/standalone/web/migrations\n    cp -rT /opt/storyteller/web/migrations /opt/storyteller/web/.next/standalone/web/migrations\n    mkdir -p /opt/storyteller/web/.next/standalone/web/sqlite\n    cp -rT /opt/storyteller/web/sqlite /opt/storyteller/web/.next/standalone/web/sqlite\n    ln -sf /opt/storyteller/.env /opt/storyteller/web/.next/standalone/web/.env\n    msg_ok \"Rebuilt Storyteller\"\n\n    msg_info \"Starting Service\"\n    systemctl start storyteller\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 180,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Sourced by lxc.bootstrap — never executed directly\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://gitlab.com/storyteller-platform/storyteller\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Storyteller\"\nvar_tags=\"${var_tags:-media;ebook;audiobook}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-10240}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    git \\\n    pkg-config \\\n    libsqlite3-dev \\\n    sqlite3 \\\n    python3-setuptools \\\n    ffmpeg\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack,yarn\" setup_nodejs\n\n  READIUM_ARCH=$(uname -m)\n  [[ \"$READIUM_ARCH\" == \"aarch64\" ]] \u0026\u0026 READIUM_ARCH=\"arm64\"\n  fetch_and_deploy_gh_release \"readium\" \"readium/cli\" \"prebuild\" \"latest\" \"/opt/readium\" \"readium_linux_${READIUM_ARCH}.tar.gz\"\n  ln -sf /opt/readium/readium /usr/local/bin/readium\n\n  fetch_and_deploy_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"tarball\" \"latest\" \"/opt/storyteller\" \"\" \"web-v2\"\n\n  msg_info \"Setting up Storyteller\"\n  cd /opt/storyteller || exit\n\n  $STD corepack yarn install --network-timeout 600000\n  $STD gcc -g -fPIC -rdynamic -shared web/sqlite/uuid.c -o web/sqlite/uuid.c.so\n  STORYTELLER_SECRET_KEY=$(openssl rand -base64 32)\n  cat \u003c\u003c EOF \u003e /opt/storyteller/.env\nSTORYTELLER_SECRET_KEY=${STORYTELLER_SECRET_KEY}\nSTORYTELLER_DATA_DIR=/opt/storyteller/data\nPORT=8001\nHOSTNAME=0.0.0.0\nREADIUM_PORT=9000\nNODE_ENV=production\nNEXT_TELEMETRY_DISABLED=1\nEOF\n  mkdir -p /opt/storyteller/data\n  cat \u003c\u003c EOF \u003e ~/storyteller.creds\nStoryteller Credentials\n=======================\nSecret Key: ${STORYTELLER_SECRET_KEY}\nEOF\n  msg_ok \"Set up Storyteller\"\n\n  msg_info \"Building Storyteller\"\n  cd /opt/storyteller || exit\n  export CI=1\n  export NODE_ENV=production\n  export NEXT_TELEMETRY_DISABLED=1\n  export SQLITE_NATIVE_BINDING=/opt/storyteller/node_modules/better-sqlite3/build/Release/better_sqlite3.node\n  $STD corepack yarn workspaces foreach -Rpt --from @storyteller-platform/web --exclude @storyteller-platform/eslint run build\n  mkdir -p /opt/storyteller/web/.next/standalone/web/.next/static\n  cp -rT /opt/storyteller/web/.next/static /opt/storyteller/web/.next/standalone/web/.next/static\n  if [[ -d /opt/storyteller/web/public ]]; then\n    mkdir -p /opt/storyteller/web/.next/standalone/web/public\n    cp -rT /opt/storyteller/web/public /opt/storyteller/web/.next/standalone/web/public\n  fi\n  mkdir -p /opt/storyteller/web/.next/standalone/web/migrations\n  cp -rT /opt/storyteller/web/migrations /opt/storyteller/web/.next/standalone/web/migrations\n  mkdir -p /opt/storyteller/web/.next/standalone/web/sqlite\n  cp -rT /opt/storyteller/web/sqlite /opt/storyteller/web/.next/standalone/web/sqlite\n  ln -sf /opt/storyteller/.env /opt/storyteller/web/.next/standalone/web/.env\n  msg_ok \"Built Storyteller\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/storyteller.service\n[Unit]\nDescription=Storyteller\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/storyteller/web/.next/standalone/web\nEnvironmentFile=/opt/storyteller/.env\nExecStart=/usr/bin/node --enable-source-maps server.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now storyteller\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8001${CL}\"\n  if [[ -f ~/storyteller.creds ]]; then\n    echo -e \"${INFO}${YW}Default Credentials:${CL}\"\n    cat ~/storyteller.creds\n  fi\n}\n\nfunction update_script() {\n  _recover_update_backups || return $?\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/storyteller ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack,yarn\" setup_nodejs\n\n  if check_for_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"\" \"\" \"web-v2\"; then\n    msg_info \"Stopping Service\"\n    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" storyteller || return $?\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/storyteller/.env || return $?\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"tarball\" \"latest\" \"/opt/storyteller\" \"\" \"web-v2\"\n\n    restore_backup || return $?\n\n    msg_info \"Rebuilding Storyteller\"\n    cd /opt/storyteller || exit\n    export NODE_OPTIONS=\"--max-old-space-size=4096\"\n\n    $STD corepack yarn install --network-timeout 600000\n    $STD gcc -g -fPIC -rdynamic -shared web/sqlite/uuid.c -o web/sqlite/uuid.c.so\n    export CI=1\n    export NODE_ENV=production\n    export NEXT_TELEMETRY_DISABLED=1\n    export SQLITE_NATIVE_BINDING=/opt/storyteller/node_modules/better-sqlite3/build/Release/better_sqlite3.node\n    $STD corepack yarn workspaces foreach -Rpt --from @storyteller-platform/web --exclude @storyteller-platform/eslint run build\n    mkdir -p /opt/storyteller/web/.next/standalone/web/.next/static\n    cp -rT /opt/storyteller/web/.next/static /opt/storyteller/web/.next/standalone/web/.next/static\n    if [[ -d /opt/storyteller/web/public ]]; then\n      mkdir -p /opt/storyteller/web/.next/standalone/web/public\n      cp -rT /opt/storyteller/web/public /opt/storyteller/web/.next/standalone/web/public\n    fi\n    mkdir -p /opt/storyteller/web/.next/standalone/web/migrations\n    cp -rT /opt/storyteller/web/migrations /opt/storyteller/web/.next/standalone/web/migrations\n    mkdir -p /opt/storyteller/web/.next/standalone/web/sqlite\n    cp -rT /opt/storyteller/web/sqlite /opt/storyteller/web/.next/standalone/web/sqlite\n    ln -sf /opt/storyteller/.env /opt/storyteller/web/.next/standalone/web/.env\n    msg_ok \"Rebuilt Storyteller\"\n\n    msg_info \"Starting Service\"\n    systemctl start storyteller\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -124,6 +124,7 @@
     "}",
     "",
     "function update_script() {",
+    "  _recover_update_backups || return $?",
     "  header_info",
     "  check_container_storage",
     "  check_container_resources",
@@ -137,14 +138,14 @@
     "",
     "  if check_for_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"\" \"\" \"web-v2\"; then",
     "    msg_info \"Stopping Service\"",
-    "    systemctl stop storyteller",
+    "    _update_services_stop \"${NSAPP:-${APP_SLUG:-app}}\" storyteller || return $?",
     "    msg_ok \"Stopped Service\"",
     "",
-    "    create_backup /opt/storyteller/.env",
+    "    create_backup /opt/storyteller/.env || return $?",
     "",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gl_release \"storyteller\" \"storyteller-platform/storyteller\" \"tarball\" \"latest\" \"/opt/storyteller\" \"\" \"web-v2\"",
     "",
-    "    restore_backup",
+    "    restore_backup || return $?",
     "",
     "    msg_info \"Rebuilding Storyteller\"",
     "    cd /opt/storyteller || exit",
@@ -175,6 +176,7 @@
     "    msg_ok \"Started Service\"",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
+    "  _update_services_finish \"${NSAPP:-${APP_SLUG:-app}}\" || return $?",
     "  exit",
     "}",
     "",
@@ -212,7 +214,7 @@
     {
       "name": "update_script",
       "start_line": 119,
-      "end_line": 172,
+      "end_line": 174,
       "name_span": {
         "start_line": 119,
         "start_col": 10,
@@ -1937,662 +1939,771 @@
       "start_line": 120,
       "start_col": 3,
       "end_line": 120,
-      "end_col": 14
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 120,
+      "start_col": 27,
+      "end_line": 120,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 30,
+      "end_line": 120,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 120,
+      "start_col": 37,
+      "end_line": 120,
+      "end_col": 39
     },
     {
       "kind": "command",
       "start_line": 121,
       "start_col": 3,
       "end_line": 121,
-      "end_col": 26
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 122,
       "start_col": 3,
       "end_line": 122,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 123,
+      "start_col": 3,
+      "end_line": 123,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 3,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 6,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 9,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 11,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 31,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 33
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 33,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 34
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 124,
+      "start_line": 125,
       "start_col": 35,
-      "end_line": 124,
+      "end_line": 125,
       "end_col": 39
-    },
-    {
-      "kind": "command",
-      "start_line": 125,
-      "start_col": 5,
-      "end_line": 125,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 125,
-      "start_col": 15,
-      "end_line": 125,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 125,
-      "start_col": 19,
-      "end_line": 125,
-      "end_col": 25
     },
     {
       "kind": "command",
       "start_line": 126,
       "start_col": 5,
       "end_line": 126,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 126,
+      "start_col": 15,
+      "end_line": 126,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 126,
+      "start_col": 19,
+      "end_line": 126,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 5,
+      "end_line": 127,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 127,
+      "start_line": 128,
       "start_col": 3,
-      "end_line": 127,
+      "end_line": 128,
       "end_col": 5
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 3,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 3,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 16,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 20
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 21,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 48
     },
     {
       "kind": "var-name",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 21,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 33,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 48
     },
     {
       "kind": "command",
-      "start_line": 129,
+      "start_line": 130,
       "start_col": 49,
-      "end_line": 129,
+      "end_line": 130,
       "end_col": 61
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 3,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 6,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 27,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 40
     },
     {
       "kind": "string-dq",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 41,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 75
     },
     {
       "kind": "string-dq",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 76,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 78
     },
     {
       "kind": "string-dq",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 79,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 81
     },
     {
       "kind": "string-dq",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 82,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 90
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 90,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 91
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 131,
+      "start_line": 132,
       "start_col": 92,
-      "end_line": 131,
+      "end_line": 132,
       "end_col": 96
-    },
-    {
-      "kind": "command",
-      "start_line": 132,
-      "start_col": 5,
-      "end_line": 132,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 132,
-      "start_col": 14,
-      "end_line": 132,
-      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 133,
       "start_col": 5,
       "end_line": 133,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 134,
-      "start_col": 5,
-      "end_line": 134,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 134,
-      "start_col": 12,
-      "end_line": 134,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 136,
-      "start_col": 5,
-      "end_line": 136,
-      "end_col": 18
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 138,
-      "start_col": 5,
-      "end_line": 138,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
-      "start_line": 138,
-      "start_col": 5,
-      "end_line": 138,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
-      "start_line": 138,
-      "start_col": 21,
-      "end_line": 138,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 49,
-      "end_line": 138,
-      "end_col": 62
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 63,
-      "end_line": 138,
-      "end_col": 97
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 98,
-      "end_line": 138,
-      "end_col": 107
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 108,
-      "end_line": 138,
-      "end_col": 116
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 117,
-      "end_line": 138,
-      "end_col": 135
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 136,
-      "end_line": 138,
-      "end_col": 138
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 138,
-      "start_col": 139,
-      "end_line": 138,
-      "end_col": 147
-    },
-    {
-      "kind": "command",
-      "start_line": 140,
-      "start_col": 5,
-      "end_line": 140,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 142,
-      "start_col": 5,
-      "end_line": 142,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 142,
+      "start_line": 133,
       "start_col": 14,
-      "end_line": 142,
-      "end_col": 38
+      "end_line": 133,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 134,
+      "start_col": 27,
+      "end_line": 134,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 134,
+      "start_col": 28,
+      "end_line": 134,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 134,
+      "start_col": 37,
+      "end_line": 134,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 134,
+      "start_col": 68,
+      "end_line": 134,
+      "end_col": 70
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 71,
+      "end_line": 134,
+      "end_col": 77
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 134,
+      "start_col": 78,
+      "end_line": 134,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 135,
+      "start_col": 5,
+      "end_line": 135,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 12,
+      "end_line": 135,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 5,
+      "end_line": 137,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 137,
+      "start_col": 41,
+      "end_line": 137,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 137,
+      "start_col": 44,
+      "end_line": 137,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 137,
+      "start_col": 51,
+      "end_line": 137,
+      "end_col": 53
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 139,
+      "start_col": 5,
+      "end_line": 139,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 139,
+      "start_col": 21,
+      "end_line": 139,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 49,
+      "end_line": 139,
+      "end_col": 62
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 63,
+      "end_line": 139,
+      "end_col": 97
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 98,
+      "end_line": 139,
+      "end_col": 107
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 108,
+      "end_line": 139,
+      "end_col": 116
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 117,
+      "end_line": 139,
+      "end_col": 135
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 136,
+      "end_line": 139,
+      "end_col": 138
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 139,
+      "end_line": 139,
+      "end_col": 147
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 5,
+      "end_line": 141,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 141,
+      "start_col": 20,
+      "end_line": 141,
+      "end_col": 22
+    },
+    {
+      "kind": "command",
+      "start_line": 141,
+      "start_col": 23,
+      "end_line": 141,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 141,
+      "start_col": 30,
+      "end_line": 141,
+      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 143,
       "start_col": 5,
       "end_line": 143,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 143,
+      "start_col": 14,
+      "end_line": 143,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 144,
+      "start_col": 5,
+      "end_line": 144,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 143,
+      "start_line": 144,
       "start_col": 25,
-      "end_line": 143,
+      "end_line": 144,
       "end_col": 27
     },
     {
       "kind": "command",
-      "start_line": 143,
+      "start_line": 144,
       "start_col": 28,
-      "end_line": 143,
+      "end_line": 144,
       "end_col": 32
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 5,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 12,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 12,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 144,
+      "start_line": 145,
       "start_col": 25,
-      "end_line": 144,
+      "end_line": 145,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 5,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 146,
+      "start_line": 147,
       "start_col": 10,
-      "end_line": 146,
+      "end_line": 147,
       "end_col": 18
     },
     {
       "kind": "param-exp",
-      "start_line": 147,
+      "start_line": 148,
       "start_col": 5,
-      "end_line": 147,
+      "end_line": 148,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 147,
+      "start_line": 148,
       "start_col": 10,
-      "end_line": 147,
+      "end_line": 148,
       "end_col": 13
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 148,
+      "start_line": 149,
       "start_col": 5,
-      "end_line": 148,
+      "end_line": 149,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 148,
+      "start_line": 149,
       "start_col": 12,
-      "end_line": 148,
+      "end_line": 149,
       "end_col": 16
     },
     {
       "kind": "var-name",
-      "start_line": 148,
+      "start_line": 149,
       "start_col": 12,
-      "end_line": 148,
+      "end_line": 149,
       "end_col": 14
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 149,
+      "start_line": 150,
       "start_col": 5,
-      "end_line": 149,
+      "end_line": 150,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 149,
+      "start_line": 150,
       "start_col": 12,
-      "end_line": 149,
+      "end_line": 150,
       "end_col": 31
     },
     {
       "kind": "var-name",
-      "start_line": 149,
+      "start_line": 150,
       "start_col": 12,
-      "end_line": 149,
+      "end_line": 150,
       "end_col": 20
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 5,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 12,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 37
     },
     {
       "kind": "var-name",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 12,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 5,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 12,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 112
     },
     {
       "kind": "var-name",
-      "start_line": 151,
+      "start_line": 152,
       "start_col": 12,
-      "end_line": 151,
+      "end_line": 152,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 152,
+      "start_line": 153,
       "start_col": 5,
-      "end_line": 152,
+      "end_line": 153,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 152,
-      "start_col": 10,
-      "end_line": 152,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
       "start_line": 153,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 153,
-      "end_col": 10
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 154,
       "start_col": 5,
       "end_line": 154,
-      "end_col": 7
+      "end_col": 10
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "command",
       "start_line": 155,
       "start_col": 5,
       "end_line": 155,
       "end_col": 7
     },
     {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 156,
+      "start_col": 5,
+      "end_line": 156,
+      "end_col": 7
+    },
+    {
       "kind": "operator",
       "op": "[[",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 8,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-d",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 11,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 42,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 44
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 155,
+      "start_line": 156,
       "start_col": 44,
-      "end_line": 155,
+      "end_line": 156,
       "end_col": 45
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 155,
-      "start_col": 46,
-      "end_line": 155,
-      "end_col": 50
-    },
-    {
-      "kind": "command",
       "start_line": 156,
-      "start_col": 7,
+      "start_col": 46,
       "end_line": 156,
-      "end_col": 12
+      "end_col": 50
     },
     {
       "kind": "command",
       "start_line": 157,
       "start_col": 7,
       "end_line": 157,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
+      "start_col": 7,
+      "end_line": 158,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 158,
-      "start_col": 5,
-      "end_line": 158,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
       "start_line": 159,
       "start_col": 5,
       "end_line": 159,
-      "end_col": 10
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 160,
       "start_col": 5,
       "end_line": 160,
-      "end_col": 7
+      "end_col": 10
     },
     {
       "kind": "command",
       "start_line": 161,
       "start_col": 5,
       "end_line": 161,
-      "end_col": 10
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 162,
       "start_col": 5,
       "end_line": 162,
-      "end_col": 7
+      "end_col": 10
     },
     {
       "kind": "command",
@@ -2606,145 +2717,202 @@
       "start_line": 164,
       "start_col": 5,
       "end_line": 164,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 165,
+      "start_col": 5,
+      "end_line": 165,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 164,
+      "start_line": 165,
       "start_col": 12,
-      "end_line": 164,
+      "end_line": 165,
       "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 166,
-      "start_col": 5,
-      "end_line": 166,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 166,
-      "start_col": 14,
-      "end_line": 166,
-      "end_col": 32
     },
     {
       "kind": "command",
       "start_line": 167,
       "start_col": 5,
       "end_line": 167,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 14,
+      "end_line": 167,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 168,
+      "start_col": 5,
+      "end_line": 168,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 168,
+      "start_line": 169,
       "start_col": 5,
-      "end_line": 168,
+      "end_line": 169,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 168,
+      "start_line": 169,
       "start_col": 12,
-      "end_line": 168,
+      "end_line": 169,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 5,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 12,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 170,
+      "start_line": 171,
       "start_col": 3,
-      "end_line": 170,
+      "end_line": 171,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 171,
+      "start_line": 172,
       "start_col": 3,
-      "end_line": 171,
+      "end_line": 172,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 172,
+      "start_col": 27,
+      "end_line": 172,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 28,
+      "end_line": 172,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 37,
+      "end_line": 172,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 172,
+      "start_col": 56,
+      "end_line": 172,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 172,
+      "start_col": 59,
+      "end_line": 172,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 66,
+      "end_line": 172,
+      "end_col": 68
+    },
+    {
+      "kind": "command",
+      "start_line": 173,
+      "start_col": 3,
+      "end_line": 173,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 172,
-      "start_col": 1,
-      "end_line": 172,
-      "end_col": 2
-    },
-    {
-      "kind": "comment",
       "start_line": 174,
       "start_col": 1,
       "end_line": 174,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 175,
-      "start_col": 1,
-      "end_line": 175,
-      "end_col": 28
+      "end_col": 2
     },
     {
       "kind": "comment",
       "start_line": 176,
       "start_col": 1,
       "end_line": 176,
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 177,
+      "start_col": 1,
+      "end_line": 177,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 178,
+      "start_col": 1,
+      "end_line": 178,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 177,
+      "start_line": 179,
       "start_col": 1,
-      "end_line": 177,
+      "end_line": 179,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 177,
+      "start_line": 179,
       "start_col": 8,
-      "end_line": 177,
+      "end_line": 179,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 177,
+      "start_line": 179,
       "start_col": 10,
-      "end_line": 177,
+      "end_line": 179,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 177,
+      "start_line": 179,
       "start_col": 21,
-      "end_line": 177,
+      "end_line": 179,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 177,
+      "start_line": 179,
       "start_col": 22,
-      "end_line": 177,
+      "end_line": 179,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 177,
+  "bootstrap_line": 179,
   "hooks": {
     "header_info": false,
     "install_script": true,

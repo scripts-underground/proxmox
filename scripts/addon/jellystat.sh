@@ -198,16 +198,17 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups "$var_addon_backup_dir" || return $?
   if check_for_gh_release "jellystat" "CyferShepard/Jellystat"; then
     msg_info "Stopping service"
-    systemctl stop jellystat.service &> /dev/null || true
+    _update_services_stop_optional "${NSAPP:-${APP_SLUG:-app}}" jellystat.service || return $?
     msg_ok "Stopped service"
 
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
+    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path" || return $?
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$var_addon_install_path"
 
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
+    BACKUP_DIR="$var_addon_backup_dir" restore_backup || return $?
 
     msg_info "Installing dependencies"
     cd "$var_addon_install_path" || exit
@@ -223,6 +224,7 @@ function update_script() {
     msg_ok "Started service"
     msg_ok "Updated successfully"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 

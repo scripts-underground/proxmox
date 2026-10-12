@@ -113,6 +113,7 @@ function post_install_script() {
 }
 
 function update_script() {
+  _recover_update_backups || return $?
   header_info
   check_container_storage
   check_container_resources
@@ -124,16 +125,16 @@ function update_script() {
 
   if check_for_gh_release "zerobyte" "nicotsx/zerobyte"; then
     msg_info "Stopping Service"
-    systemctl stop zerobyte
+    _update_services_stop "${NSAPP:-${APP_SLUG:-app}}" zerobyte || return $?
     msg_ok "Stopped Service"
 
-    create_backup /opt/zerobyte/.env
+    create_backup /opt/zerobyte/.env || return $?
 
     ensure_dependencies git
     NODE_VERSION="24" setup_nodejs
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "zerobyte" "nicotsx/zerobyte" "tarball"
 
-    restore_backup
+    restore_backup || return $?
 
     msg_info "Building Zerobyte"
     export NODE_OPTIONS="--max-old-space-size=3072"
@@ -147,6 +148,7 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   fi
+  _update_services_finish "${NSAPP:-${APP_SLUG:-app}}" || return $?
   exit
 }
 
