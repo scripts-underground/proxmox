@@ -2,7 +2,7 @@
 slug: llama-cpp
 title: llama.cpp
 tags: [ai]
-logo: https://raw.githubusercontent.com/ggml-org/llama.brand/master/icon/icon-light.svg
+logo: /assets/logos/llama-cpp.webp
 by: CanbiZ
 repo: https://github.com/ggml-org/llama.cpp
 site: https://github.com/ggml-org/llama.cpp
