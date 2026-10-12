@@ -67,6 +67,10 @@ function update_script() {
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
   else
+    local rc=$?
+    if [[ $rc -ne 1 ]]; then
+      return "$rc"
+    fi
     msg_ok "No update required. ${APP} is already at the latest version."
   fi
   exit
