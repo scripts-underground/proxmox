@@ -31,6 +31,7 @@ cleanup_containers "100 101"
 phase "4/8" "Install script"
 START=$(date +%s)
 
+# shellcheck disable=SC2069 # stderr intentionally stays on the terminal; only stdout goes to the log
 pve_exec "
   cd /opt/scripts-underground && git pull --ff-only 2>/dev/null
   TERM=xterm bash -c '

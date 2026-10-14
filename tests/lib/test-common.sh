@@ -4,8 +4,6 @@
 
 set -euo pipefail
 
-TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 FAILURES=0
 PVE_HOST="${PVE_HOST:-192.168.122.50}"
 
