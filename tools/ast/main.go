@@ -1514,7 +1514,7 @@ func main() {
 			os.MkdirAll(outDir, 0755)
 			outPath := filepath.Join(outDir, slug+".json")
 			data, _ := json.MarshalIndent(result, "", "  ")
-			os.WriteFile(outPath, data, 0644)
+			os.WriteFile(outPath, append(data, '\n'), 0644)
 		}
 	}
 

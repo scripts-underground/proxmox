@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/lib/test-common.sh"
 # ------------------------------------------------------------------
 
 SCRIPT_NAME="calibre-web-automated"
-SERVICES=(calibre-web-automated cwa-ingest                             cwa-auto-zipper cwa-metadata-detector)
+SERVICES=(calibre-web-automated cwa-ingest cwa-auto-zipper cwa-metadata-detector)
 REQUIRED_USERS=(abc)
 REQUIRED_PATHS=(/app/calibre-web-automated /config /calibre-library /cwa-book-ingest)
 WEB_PORT=80
@@ -36,6 +36,7 @@ cleanup_containers "100 101"
 phase "4/10" "Install script"
 START=$(date +%s)
 
+# shellcheck disable=SC2069 # stderr intentionally stays on the terminal; only stdout goes to the log
 pve_exec "
   cd /opt/scripts-underground && git pull --ff-only 2>/dev/null
   TERM=xterm bash -c '
@@ -46,7 +47,7 @@ pve_exec "
     export var_container_storage=local-lvm var_template_storage=local
     bash scripts/lxc/$SCRIPT_NAME.sh </dev/null 2>&1
   '
-" 2>&1 >"$INSTALL_LOG"
+" 2>&1 > "$INSTALL_LOG"
 ELAPSED=$(($(date +%s) - START))
 
 CTID=$(pve_exec "pct list 2>/dev/null" | awk 'NR>1{print $1; exit}')
@@ -92,7 +93,7 @@ fi
 
 # Curl through PVE — containers on the NAT bridge aren't routable from
 # the developer machine directly.
-HTTP_CODE=$(pve_exec "curl -sL --connect-timeout 10 -o /dev/null -w '%{http_code}' http://$CTIP:$WEB_PORT/" 2>/dev/null)
+HTTP_CODE=$(pve_exec "curl -sL --connect-timeout 10 -o /dev/null -w '%{http_code}' http://$CTIP:$WEB_PORT/" 2> /dev/null)
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
   pass "Web UI responds on $CTIP:$WEB_PORT (HTTP $HTTP_CODE)"
 else
@@ -128,7 +129,7 @@ pve_exec "
   rm -f \"\$CF\"
   echo \"RESULT:\$U:\$B:\$A\"
   rm -f \"\$COOKIE\"
-" >/tmp/cwa-upload-tmp
+" > /tmp/cwa-upload-tmp
 
 RESULT=$(cat /tmp/cwa-upload-tmp | grep -oP 'RESULT:\K.*')
 UPLOAD_CODE=$(echo "$RESULT" | cut -d: -f1)

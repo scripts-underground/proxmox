@@ -54,7 +54,6 @@ function install_script() {
   $STD apt install -y angie angie-module-zip
   sed -i '1i load_module modules/ngx_http_zip_module.so;' /etc/angie/angie.conf
   msg_ok "Installed Angie with mod_zip module"
-  PYTHON_VERSION="3.13" setup_uv
   NODE_VERSION="24" setup_nodejs
   setup_mariadb
   MARIADB_DB_NAME="romm" MARIADB_DB_USER="romm" setup_mariadb_db
@@ -138,8 +137,7 @@ EOF
   fi
 
   fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball"
-  fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
-  fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+  PYTHON_VERSION="3.13" UV_PROJECT_DIR="/opt/romm" setup_uv
 
   msg_info "Creating environment file"
   sed -i 's/^supervised no/supervised systemd/' /etc/redis/redis.conf
@@ -216,6 +214,14 @@ EOF
   ln -sfn "$ROMM_BASE"/assets /opt/romm/frontend/dist/assets/romm/assets
   msg_ok "Set up RomM Frontend"
 
+  # Vite clears dist during builds; deploy player payloads only afterwards.
+  fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+  fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
+    msg_error "Player payloads are missing from the built frontend"
+    exit 1
+  fi
+
   msg_info "Configuring Angie"
   cat << 'EOF' > /etc/angie/http.d/romm.conf
 upstream romm_backend {
@@ -247,10 +253,13 @@ server {
     }
 
     # EmulatorJS player - requires COOP/COEP headers for SharedArrayBuffer
+    # (serve the SPA shell directly: an internal redirect via try_files would
+    # drop this location's add_headers, breaking threaded wasm cores)
     location ~ ^/rom/.*/ejs$ {
-        add_header Cross-Origin-Embedder-Policy "require-corp";
-        add_header Cross-Origin-Opener-Policy "same-origin";
-        try_files $uri /index.html;
+        add_header Cross-Origin-Embedder-Policy "require-corp" always;
+        add_header Cross-Origin-Opener-Policy "same-origin" always;
+        default_type text/html;
+        alias /opt/romm/frontend/dist/index.html;
     }
 
     # Backend API
@@ -324,7 +333,26 @@ Type=simple
 WorkingDirectory=/opt/romm/backend
 EnvironmentFile=/opt/romm/.env
 Environment="PYTHONPATH=/opt/romm/backend"
-ExecStart=/opt/romm/.venv/bin/rq worker --path /opt/romm/backend --url redis://127.0.0.1:6379/0 high default low
+ExecStart=/opt/romm/.venv/bin/rq worker --with-scheduler --path /opt/romm/backend --url redis://127.0.0.1:6379/0 high default low
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat << EOF > /etc/systemd/system/romm-scan-worker.service
+[Unit]
+Description=RomM RQ Scan Worker
+After=network.target mariadb.service redis-server.service romm-backend.service
+Requires=mariadb.service redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/romm/backend
+EnvironmentFile=/opt/romm/.env
+Environment="PYTHONPATH=/opt/romm/backend"
+ExecStart=/opt/romm/.venv/bin/rq worker --with-scheduler --path /opt/romm/backend --url redis://127.0.0.1:6379/0 scans
 Restart=on-failure
 RestartSec=5
 
@@ -343,9 +371,7 @@ Type=simple
 WorkingDirectory=/opt/romm/backend
 EnvironmentFile=/opt/romm/.env
 Environment="PYTHONPATH=/opt/romm/backend"
-Environment="RQ_REDIS_HOST=127.0.0.1"
-Environment="RQ_REDIS_PORT=6379"
-ExecStart=/opt/romm/.venv/bin/rqscheduler --path /opt/romm/backend
+ExecStart=/opt/romm/.venv/bin/rq cron --path /opt/romm/backend --url redis://127.0.0.1:6379/0 tasks.cron_config
 Restart=on-failure
 RestartSec=5
 
@@ -372,7 +398,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  systemctl enable -q --now romm-backend romm-worker romm-scheduler romm-watcher
+  systemctl enable -q --now romm-backend romm-worker romm-scan-worker romm-scheduler romm-watcher
   msg_ok "Created Services"
 }
 
@@ -395,9 +421,15 @@ function update_script() {
 
   NODE_VERSION="24" setup_nodejs
 
+  local services=(romm-backend romm-worker romm-scheduler romm-watcher)
+  local restart_services=false
+  if [[ -f /etc/systemd/system/romm-scan-worker.service ]]; then
+    services+=(romm-scan-worker)
+  fi
+
   if check_for_gh_release "romm" "rommapp/romm"; then
     msg_info "Stopping Services"
-    systemctl stop romm-backend romm-worker romm-scheduler romm-watcher
+    systemctl stop "${services[@]}"
     msg_ok "Stopped Services"
 
     create_backup /opt/romm/.env
@@ -406,6 +438,7 @@ function update_script() {
       /opt/romm/frontend/dist/assets/ruffle
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball" "latest" "/opt/romm"
+    PYTHON_VERSION="3.13" UV_PROJECT_DIR="/opt/romm" setup_uv
 
     restore_backup
 
@@ -427,6 +460,8 @@ function update_script() {
     $STD npm install
     $STD npm run build
     cp -rf /opt/romm/frontend/assets/* /opt/romm/frontend/dist/assets/
+    # Restore the player payloads after Vite has finished clearing/building dist.
+    BACKUP_DIR=/opt/romm-players.backup restore_backup
     mkdir -p /opt/romm/frontend/dist/assets/romm
     ROMM_BASE=$(grep '^ROMM_BASE_PATH=' /opt/romm/.env | cut -d'=' -f2)
     ROMM_BASE=${ROMM_BASE:-/var/lib/romm}
@@ -440,17 +475,55 @@ function update_script() {
       systemctl reload nginx
     fi
     msg_ok "Updated ROMM"
-
-    msg_info "Starting Services"
-    systemctl start romm-backend romm-worker romm-scheduler romm-watcher
-    msg_ok "Started Services"
-    msg_ok "Updated successfully"
+    restart_services=true
   fi
 
-  if check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
-    systemctl restart romm-backend romm-worker romm-scheduler romm-watcher
+  # Repair already-current 5.3 installations as well as actual release upgrades.
+  if [[ -f /opt/romm/backend/tasks/cron_config.py ]] && {
+    grep -q 'bin/rqscheduler' /etc/systemd/system/romm-scheduler.service ||
+      [[ ! -f /etc/systemd/system/romm-scan-worker.service ]]
+  }; then
+    msg_info "Migrating RQ Services"
+    systemctl stop romm-worker romm-scheduler
+    sed -i -e '/Environment="RQ_REDIS_HOST=/d' \
+      -e '/Environment="RQ_REDIS_PORT=/d' \
+      -e 's|^ExecStart=.*|ExecStart=/opt/romm/.venv/bin/rq cron --path /opt/romm/backend --url redis://127.0.0.1:6379/0 tasks.cron_config|' \
+      /etc/systemd/system/romm-scheduler.service
+    sed -i 's|bin/rq worker --path|bin/rq worker --with-scheduler --path|' \
+      /etc/systemd/system/romm-worker.service
+    if [[ ! -f /etc/systemd/system/romm-scan-worker.service ]]; then
+      sed -e 's|^Description=.*|Description=RomM RQ Scan Worker|' \
+        -e 's|^ExecStart=.*|ExecStart=/opt/romm/.venv/bin/rq worker --with-scheduler --path /opt/romm/backend --url redis://127.0.0.1:6379/0 scans|' \
+        /etc/systemd/system/romm-worker.service > /etc/systemd/system/romm-scan-worker.service
+      services+=(romm-scan-worker)
+    fi
+    systemctl daemon-reload
+    systemctl enable -q romm-scan-worker
+    restart_services=true
+    msg_ok "Migrated RQ Services"
+  fi
+
+  # A version marker alone does not prove the built frontend still has its files.
+  if [[ ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
+    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+    restart_services=true
+  fi
+  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores ]] ||
+    check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
+    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+    restart_services=true
     msg_ok "Updated EmulatorJS successfully"
+  fi
+
+  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
+    msg_error "Player payloads are missing from the built frontend"
+    exit 1
+  fi
+  if [[ "$restart_services" == true ]]; then
+    msg_info "Starting Services"
+    systemctl restart "${services[@]}"
+    msg_ok "Started Services"
+    msg_ok "Updated successfully"
   fi
   exit
 }

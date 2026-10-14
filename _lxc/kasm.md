@@ -4,7 +4,7 @@ title: Kasm
 tags: [workspace, remote-desktop]
 logo: /assets/logos/kasm.webp
 by: CrazyWolf13
-repo: 
+repo:
 site: https://www.kasmweb.com
 port: 443
 cpu: 2

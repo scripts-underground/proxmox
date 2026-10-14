@@ -329,11 +329,8 @@ function update_script() {
     exit
   fi
 
-  setup_uv
-
-  # shellcheck disable=SC2034
-  RELEASE=$(get_latest_codeberg_release "gelbphoenix/autocaliweb")
   if check_for_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb"; then
+    setup_uv
     msg_info "Stopping Services"
     systemctl stop autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper
     msg_ok "Stopped Services"
@@ -365,7 +362,7 @@ function update_script() {
     sed 's/^/v/' ~/.autocaliweb > "$INSTALL_DIR"/ACW_RELEASE
     chown -R acw:acw "$INSTALL_DIR"
     rm ~/autocaliweb_bkp.tar
-    sqlite3 "$CONFIG_DIR/app.db" "UPDATE settings SET config_port='80'"
+    sqlite3 /etc/autocaliweb/app.db "UPDATE settings SET config_port='80'"
     if ! grep -q "AmbientCapabilities" /etc/systemd/system/autocaliweb.service 2> /dev/null; then
       sed -i '/^ExecStart=/i AmbientCapabilities=CAP_NET_BIND_SERVICE' /etc/systemd/system/autocaliweb.service
       systemctl daemon-reload

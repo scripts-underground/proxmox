@@ -23,6 +23,8 @@
 #
 # ==============================================================================
 
+# shellcheck disable=SC2155  # declare-and-assign is intentional: splitting it would make failures abort under set -e where they are tolerated today
+
 # ==============================================================================
 # SECTION 1: INITIALIZATION & CORE VARIABLES
 # ==============================================================================
@@ -40,8 +42,8 @@
 # ------------------------------------------------------------------------------
 variables() {
   NSAPP=$(echo "${APP,,}" | tr -d ' ') # This function sets the NSAPP variable by converting the value of the APP variable to lowercase and removing any spaces.
-  var_install="${NSAPP}-install"       # sets the var_install variable by appending "-install" to the value of NSAPP.
-  INTEGER='^[0-9]+([.][0-9]+)?$'       # it defines the INTEGER regular expression pattern.
+  # shellcheck disable=SC2034  # documented framework global (docs/function-reference.md)
+  var_install="${NSAPP}-install" # sets the var_install variable by appending "-install" to the value of NSAPP.
   PVEHOST_NAME=$(hostname)
   RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)" # generates a random UUID and sets it to the RANDOM_UUID variable.
 
@@ -86,14 +88,20 @@ variables() {
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 if command -v curl > /dev/null 2>&1; then
+  # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/core.func")
+  # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/error_handler.func")
+  # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/bundle.func")
   load_functions
   catch_errors
 elif command -v wget > /dev/null 2>&1; then
+  # shellcheck source=/dev/null
   source <(wget -qO- "$REPO_BASE/misc/core.func")
+  # shellcheck source=/dev/null
   source <(wget -qO- "$REPO_BASE/misc/error_handler.func")
+  # shellcheck source=/dev/null
   source <(wget -qO- "$REPO_BASE/misc/bundle.func")
   load_functions
   catch_errors
@@ -1120,6 +1128,7 @@ find_host_ssh_keys() {
 
   shopt -s nullglob
   if [[ -n "$g" ]]; then
+    # shellcheck disable=SC2206  # intentional: var_ssh_import_glob is word-split and glob-expanded (nullglob set above)
     for pat in $g; do cand+=($pat); done
   else
     cand+=(/root/.ssh/authorized_keys /root/.ssh/authorized_keys2)
@@ -1157,6 +1166,7 @@ find_host_ssh_keys() {
     fi
   fi
 
+  # shellcheck disable=SC2034  # documented framework global (docs/function-reference.md)
   FOUND_HOST_KEY_COUNT="$total"
   (
     IFS=:
@@ -1415,7 +1425,6 @@ base_settings() {
   fi
 
   IPV6_METHOD=${var_ipv6_method:-"none"}
-  IPV6_STATIC=${var_ipv6_static:-""}
   GATE=${var_gateway:-""}
   APT_CACHER=${var_apt_cacher:-""}
   APT_CACHER_IP=${var_apt_cacher_ip:-""}
@@ -3329,6 +3338,7 @@ echo_default() {
 # - Builds interactive menu (Default, Verbose, Advanced, My Defaults, App Defaults, Storage, Exit)
 # - Applies chosen settings and triggers container build
 # ------------------------------------------------------------------------------
+# shellcheck disable=SC2120  # $1 is an optional preset for direct callers (see CHOICE below); setup_script is called without arguments in this repo
 setup_script() {
   pve_check
   shell_check
@@ -3554,6 +3564,7 @@ ssh_build_choices_from_files() {
   local -a files=("$@")
   CHOICES=()
   COUNT=0
+  # shellcheck disable=SC2178  # MAPFILE is a plain temp-file path; bash fills the MAPFILE array only for a nameless mapfile, which this repo never calls
   MAPFILE="$(mktemp)"
   local id key typ fp cmt base ln=0
 
@@ -3586,6 +3597,7 @@ ssh_build_choices_from_files() {
       ln=$((ln + 1))
       COUNT=$((COUNT + 1))
       id="K${COUNT}"
+      # shellcheck disable=SC2128  # MAPFILE is a plain temp-file path (see above)
       echo "${id}|${key}" >> "$MAPFILE"
       CHOICES+=("$id" "[$typ] ${fp:+$fp }${cmt:+$cmt }— ${base}" "OFF")
     done < <(ssh_extract_keys_from_file "$f")
@@ -3644,6 +3656,7 @@ configure_ssh_settings() {
         tag="${tag%\"}"
         tag="${tag#\"}"
         local line
+        # shellcheck disable=SC2128  # MAPFILE is a plain temp-file path (see above)
         line=$(grep -E "^${tag}\|" "$MAPFILE" | head -n1 | cut -d'|' -f2-)
         [[ -n "$line" ]] && printf '%s\n' "$line" >> "$SSH_KEYS_FILE"
       done
@@ -3671,6 +3684,7 @@ configure_ssh_settings() {
               tag="${tag%\"}"
               tag="${tag#\"}"
               local line
+              # shellcheck disable=SC2128  # MAPFILE is a plain temp-file path (see above)
               line=$(grep -E "^${tag}\|" "$MAPFILE" | head -n1 | cut -d'|' -f2-)
               [[ -n "$line" ]] && printf '%s\n' "$line" >> "$SSH_KEYS_FILE"
             done
@@ -3772,7 +3786,9 @@ msg_menu() {
 # - Otherwise: shows update/setting menu and runs update_script with cleanup
 # ------------------------------------------------------------------------------
 lxc_setup() {
+  # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/tools.func")
+  # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/github.func")
   if command -v pveversion > /dev/null 2>&1; then
     setup_script || return 0
@@ -3781,8 +3797,7 @@ lxc_setup() {
     VERBOSE="no"
     set_std_mode
     ensure_profile_loaded
-    execute_optional_hook update_script
-    cleanup_lxc
+    run_update_script "$@"
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "${APP} LXC Update/Setting" --menu \
       "Support/Update functions for ${APP} LXC. Choose an option:" \
@@ -3807,8 +3822,7 @@ lxc_setup() {
         ;;
     esac
     ensure_profile_loaded
-    execute_optional_hook update_script
-    cleanup_lxc
+    run_update_script "$@"
   fi
 }
 
@@ -4188,7 +4202,6 @@ EOF
     fi
 
     # Apply passthrough configuration based on selection
-    local dev_idx=0
 
     case "$selected_gpu" in
       INTEL | AMD)
@@ -4300,6 +4313,7 @@ EOF
 
     # Verify basic connectivity (ping test)
     local ping_success=false
+    # shellcheck disable=SC2034  # loop counter only: the number of iterations is what matters, not the value
     for retry in {1..3}; do
       if pct exec "$CTID" -- ping -c 1 -W 2 1.1.1.1 &> /dev/null ||
         pct exec "$CTID" -- ping -c 1 -W 2 8.8.8.8 &> /dev/null ||
@@ -4639,7 +4653,7 @@ PROFILE
     setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
 
   if declare -F update_script > /dev/null 2>&1; then
-    build_bundle update update_script /usr/local/sbin/update 0700 update_script
+    build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"'
     # bare `update` must work in minimal-PATH shells (pct enter/exec) too
     pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update
   fi
@@ -4689,9 +4703,6 @@ PROFILE
     # Report failure
 
     # Copy both logs from container before potential deletion
-    local build_log_copied=false
-    local install_log_copied=false
-
     if [[ -n "$CTID" && -n "${SESSION_ID:-}" ]]; then
       # Create combined log with header
       {
@@ -4713,7 +4724,6 @@ PROFILE
           cat "${BUILD_LOG}"
           echo ""
         } >> "$combined_log"
-        build_log_copied=true
       fi
 
       # Copy and append INSTALL_LOG from container
@@ -4727,7 +4737,6 @@ PROFILE
           echo ""
         } >> "$combined_log"
         rm -f "$temp_install_log"
-        install_log_copied=true
       fi
 
       # Show combined log
@@ -4987,7 +4996,7 @@ PROFILE
               setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
 
             if declare -F update_script > /dev/null 2>&1; then
-              build_bundle update update_script /usr/local/sbin/update 0700 update_script
+              build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"'
               pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update
             fi
             if declare -F uninstall_script > /dev/null 2>&1; then
@@ -5167,9 +5176,8 @@ resolve_storage_preselect() {
     total="$(awk '{print $4}' <<< "$line")"
     used="$(awk '{print $5}' <<< "$line")"
     free="$(awk '{print $6}' <<< "$line")"
-    local total_h used_h free_h
+    local used_h free_h
     if command -v numfmt > /dev/null 2>&1; then
-      total_h="$(numfmt --to=iec --from-unit=1024 --suffix=B --format %.1f "$total" 2> /dev/null || echo "$total")"
       used_h="$(numfmt --to=iec --from-unit=1024 --suffix=B --format %.1f "$used" 2> /dev/null || echo "$used")"
       free_h="$(numfmt --to=iec --from-unit=1024 --suffix=B --format %.1f "$free" 2> /dev/null || echo "$free")"
       STORAGE_INFO="Free: ${free_h}  Used: ${used_h}"
@@ -5284,7 +5292,7 @@ select_storage() {
   local -a MENU=()
   local COL_WIDTH=0
 
-  while read -r TAG TYPE _ TOTAL USED FREE _; do
+  while read -r TAG TYPE _ _ USED FREE _; do
     [[ -n "$TAG" && -n "$TYPE" ]] || continue
     local DISPLAY="${TAG} (${TYPE})"
     local USED_FMT=$(numfmt --to=iec --from-unit=1024 --format %.1f <<< "$USED")
@@ -5570,6 +5578,7 @@ create_lxc_container() {
   msg_ok "Storage '$CONTAINER_STORAGE' ($STORAGE_TYPE) validated"
 
   msg_info "Validating template storage '$TEMPLATE_STORAGE'"
+  # shellcheck disable=SC2034  # value not read; a no-match exit status aborts under set -e (pipefail), so the line stays
   TEMPLATE_TYPE=$(grep -E "^[^:]+: $TEMPLATE_STORAGE$" /etc/pve/storage.cfg | cut -d: -f1)
 
   if ! pvesm status -content vztmpl 2> /dev/null | awk 'NR>1{print $1}' | grep -qx "$TEMPLATE_STORAGE"; then

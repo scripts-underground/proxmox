@@ -4,7 +4,7 @@ title: Endurain
 tags: [sport, social-media]
 logo: /assets/logos/endurain.webp
 by: johanngrobe
-repo: https://codeberg.org/endurain-project/endurain
+repo: https://github.com/endurain-project/endurain
 site: https://docs.endurain.com
 port: 8080
 cpu: 2
@@ -18,4 +18,4 @@ Endurain is a self-hosted fitness tracking service. Similar to Strava but focuse
 ## Links
 
 - [Website](https://docs.endurain.com/)
-- [Codeberg](https://codeberg.org/endurain-project/endurain)
+- [GitHub](https://github.com/endurain-project/endurain)

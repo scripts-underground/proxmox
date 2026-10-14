@@ -4,7 +4,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: johanngrobe
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
-# Source: https://codeberg.org/endurain-project/endurain
+# Source: https://github.com/endurain-project/endurain
 
 # shellcheck disable=SC2034
 APP="Endurain"
@@ -26,7 +26,7 @@ function install_script() {
   NODE_VERSION="24" setup_nodejs
   PG_VERSION="17" PG_MODULES="postgis" setup_postgresql
   PG_DB_NAME="enduraindb" PG_DB_USER="endurain" setup_postgresql_db
-  fetch_and_deploy_codeberg_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain"
+  fetch_and_deploy_gh_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain"
 
   msg_info "Setting up Endurain"
   cd /opt/endurain || exit
@@ -130,13 +130,13 @@ function update_script() {
     msg_error "No ${APP} installation found!"
     exit
   fi
-  if check_for_codeberg_release "endurain" "endurain-project/endurain"; then
+  if check_for_gh_release "endurain" "endurain-project/endurain"; then
     msg_info "Stopping Service"
     systemctl stop endurain
     msg_ok "Stopped Service"
 
     create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js
-    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain"
 
     msg_info "Preparing Update"
     cd /opt/endurain || exit

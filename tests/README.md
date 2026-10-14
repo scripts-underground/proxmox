@@ -43,6 +43,87 @@ CWA test adds a book upload phase (Phase 9) that authenticates with
 CSRF, uploads a test EPUB, waits for ingest, and verifies the book
 count increases.
 
+## Codeberg release helpers
+
+Run these inside a disposable Linux guest with `bash`, `jq`, `curl`, `zip`,
+and `unzip` installed:
+
+```bash
+bash tests/codeberg-release.test.sh
+bash tests/codeberg-release.test.sh --live
+```
+
+The deterministic suite covers release selection, pins, bounded API requests,
+malformed responses, interrupted downloads, staging cleanup, and preserving an
+existing installation when copying or publishing a replacement fails. It does
+not invoke the PVE harness or destroy containers.
+
+The live mode fetches and redeploys all four Codeberg consumers' actual releases
+in temporary directories using the framework's verbose and quiet modes. It checks
+version markers, configuration preservation, source files, and executable
+versions. These are release-helper checks, not full application/service installs.
+
+To verify the actual persistent-bundle path, serve the candidate checkout over
+HTTP and run this on the disposable PVE guest, supplying a test container ID:
+
+```bash
+bash tests/codeberg-release.test.sh --bundle 103 http://192.168.122.50:8001
+```
+
+It uses `build_bundle()` to inline the candidate framework and a probe hook,
+then deploys and runs Readeck from the resulting update bundle inside that CT.
+
+## RomM player-serving probe
+
+In a fresh disposable guest, install the prerequisites and run:
+
+```bash
+bash tests/romm-player-serving.test.sh --setup
+bash tests/romm-player-serving.test.sh
+```
+
+This deploys actual EmulatorJS `.7z`, Ruffle ZIP and uv TAR releases using the
+GitHub helper. It runs the Angie configuration extracted from `romm.sh` on port
+8080, with fixture SPA HTML, and checks isolation headers, ordinary SPA routes,
+and byte-for-byte HTTP delivery of the emulator loader and DOS core. It does
+not install the RomM backend or prove in-browser gameplay. The guest must not
+already have `/opt/romm/frontend/dist/index.html`.
+
+## uv project-version helper
+
+Run as root inside a disposable VM/container with `curl` and `jq` available:
+
+```bash
+bash tests/uv-project-version.test.sh
+```
+
+It uses real uv releases to check exact pins in `pyproject.toml`/`uv.toml`,
+explicit override precedence, selecting an older release, and latest fallback.
+It also verifies that an already-installed uv still installs a newly requested
+Python interpreter, that `uv sync` selects a project-compatible Python despite
+a different setup request, and that helper calls preserve the caller's exit trap.
+
+## Same-version GitHub asset repair
+
+```bash
+bash tests/github-force-deploy.test.sh
+```
+
+Run inside a disposable guest. It deploys a real release, damages only its
+temporary test payload, verifies normal same-version idempotence, and verifies
+that `FORCE_DEPLOY=1` repairs the payload while retaining the correct marker.
+
+## Installed RomM verification
+
+```bash
+bash tests/romm-live-verification.test.sh
+```
+
+Run inside a disposable installed RomM container. It checks the actual built
+player assets over HTTP, isolation headers, and active/enabled services. It also
+checks the cron process's configured schedules in Redis and sends isolated
+probe jobs to both ordinary and scan queues, verifying the returned results.
+
 ## Configuration
 
 Each test script has a config block at the top:

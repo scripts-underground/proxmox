@@ -47,7 +47,7 @@ function install_script() {
 
   msg_info "Installing wanderer plugins"
   for plugin in hammerhead komoot strava; do
-    fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "latest" "/opt/wanderer/data/plugins" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
+    fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "latest" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
   done
   msg_ok "Installed wanderer plugins"
 
@@ -149,11 +149,6 @@ function update_script() {
     $STD npm run build
     mkdir -p /opt/wanderer/data/plugins /opt/wanderer/source/db/data
     [[ -e /opt/wanderer/source/db/data/plugins ]] || ln -sfn /opt/wanderer/data/plugins /opt/wanderer/source/db/data/plugins
-    msg_info "Installing wanderer plugins"
-    for plugin in hammerhead komoot strava; do
-      fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/data/plugins" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
-    done
-    msg_ok "Installed wanderer plugins"
     msg_ok "Updated wanderer"
 
     msg_info "Starting service"
@@ -161,6 +156,15 @@ function update_script() {
     msg_ok "Started service"
     msg_ok "Update Successful"
   fi
+
+  msg_info "Installing wanderer plugins"
+  for plugin in hammerhead komoot strava; do
+    local force="${FORCE_DEPLOY:-0}"
+    [[ -f "/opt/wanderer/data/plugins/${plugin}/plugin.wasm" ]] || force=1
+    FORCE_DEPLOY="$force" fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
+  done
+  msg_ok "Installed wanderer plugins"
+
   if check_for_gh_release "meilisearch" "meilisearch/meilisearch"; then
     msg_info "Stopping service"
     systemctl stop wanderer-web

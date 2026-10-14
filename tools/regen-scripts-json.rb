@@ -300,7 +300,7 @@ output = JSON.pretty_generate({
   commands: mirrors.keys,
   scripts:  scripts
 })
-File.write(File.join(root, 'scripts.json'), output)
+File.write(File.join(root, 'scripts.json'), output + "\n")
 
 total_elapsed = Time.now - started
 puts ""

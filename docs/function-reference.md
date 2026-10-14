@@ -62,6 +62,10 @@ Each is called by `build.func` during `setup_script`:
 - **`is_unattended()`** — Returns 0 if no interactive prompts needed. Reads `MODE`, `PHS_SILENT`, `var_unattended`, TTY state.
 - **`prompt_confirm()`, `prompt_input()`, `prompt_input_required()`, `prompt_select()`, `prompt_password()`** — Interactive whiptail-like prompts with unattended and timeout fallbacks. All use `is_unattended()`. Called by `build.func`, optionally available to user `install_script()`.
 
+### Update runner
+
+- **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Writes the per-app pending flag `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; `on_exit` removes it only when the run exits 0. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`. Other options exit 65. Called by `lxc_setup` and the LXC/addon update bundles.
+
 ### Cleanup
 
 - **`cleanup_lxc()`** — (core.func version) Package-cache cleanup (apt/apk, pip/uv/npm/yarn/pnpm/go/cargo/gem/composer). Errors tolerated. Called by `install.func` wrapper postamble. NOTE: `install.func` defines a competing `cleanup_lxc` that shadows this one (supports all OS families).
@@ -266,7 +270,7 @@ Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgr
 
 ### Version comparators (for update_script authors)
 
-Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
+Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. With `UPDATE_FORCE=1` (set by `run_update_script`) a matching version is reported as due:
 - **`check_for_gh_tag()`** — Compare latest GitHub tag. `$1`=app, `$2`=repo, `$3`=tag prefix.
 - **`check_for_gh_release()`** — Compare latest GitHub release. Supports pinned versions. 28+ callers in `scripts/lxc/`.
 - **`check_for_codeberg_release()`**, **`check_for_gl_release()`** — Same contract for Codeberg/GitLab.
@@ -274,7 +278,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 ### Release fetch & deploy
 
 - **`fetch_and_deploy_gh_tag()`** — Download tag archive via `refs/tags/<tag>.tar.gz`, extract to target. Modes: tag-only repos.
-- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback.
+- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback. `FORCE_DEPLOY=1` explicitly redeploys the selected release without changing its version marker; normal same-version calls remain idempotent.
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and extraction.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
@@ -301,7 +305,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 - **`setup_postgresql_db()`** — Provision role + database. Reads `PG_DB_NAME`/`USER`/`PASS`. Exports DB vars.
 - **`setup_ruby()`** — Install rbenv + ruby-build. Reads `RUBY_VERSION`, `RUBY_INSTALL_RAILS`.
 - **`setup_rust()`** — Install rustup + toolchain + crates. Reads `RUST_TOOLCHAIN`, `RUST_CRATES`.
-- **`setup_uv()`** — Install `uv` (astral-sh) binary. Reads `USE_UVX`, `PYTHON_VERSION`.
+- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then an exact `required-version` pin in `UV_PROJECT_DIR` (`uv.toml` first, then `[tool.uv]` in `pyproject.toml`), then latest. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
@@ -320,7 +324,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 
 - **`catch_errors()`** — Enables `set -Ee -o pipefail`, installs ERR/EXIT/INT/TERM/HUP traps. Called by `bootstrap/lxc`, `build.func`, wrapper preamble.
 - **`error_handler()`** — ERR-trap handler. Prints error info, writes container failure flag, may offer to destroy broken LXC. Reads exit code from `$1`/`$?`, command from `$2`/`$BASH_COMMAND`.
-- **`on_exit()`** — EXIT-trap handler. Stops orphaned container, cleans lockfile.
+- **`on_exit()`** — EXIT-trap handler. Stops orphaned container, cleans lockfile, removes the `run_update_script` pending flag when the exit status is 0.
 - **`on_interrupt()`** — SIGINT handler. Stops LXC, exits 130.
 - **`on_terminate()`** — SIGTERM handler. Stops LXC. Exits 143.
 - **`on_hangup()`** — SIGHUP handler. Stops LXC. Exits 129.
@@ -329,7 +333,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`:
 
 ---
 
- 
+
 
 ---
 

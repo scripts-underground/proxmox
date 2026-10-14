@@ -68,7 +68,7 @@ function install_script() {
         AllowOverride All
         Require all granted
     </Directory>
-  
+
   RedirectMatch 301 ^/dataimporter$ /dataimporter/
 
   Alias /dataimporter/ /opt/firefly/dataimporter/public/

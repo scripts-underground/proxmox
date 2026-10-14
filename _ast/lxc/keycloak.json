@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "keycloak",
   "type": "lxc",
-  "total_lines": 123,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: tteck (tteckster)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/keycloak/keycloak\n\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Keycloak\"\nvar_tags=\"${var_tags:-access-management}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  JAVA_VERSION=\"21\" setup_java\n  PG_VERSION=\"16\" setup_postgresql\n  msg_ok \"Installed Dependencies\"\n\n  msg_info \"Configuring PostgreSQL\"\n  DB_NAME=\"keycloak\"\n  DB_USER=\"keycloak\"\n  DB_PASS=\"$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\"\n  $STD sudo -u postgres psql -c \"CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';\"\n  $STD sudo -u postgres psql -c \"CREATE DATABASE $DB_NAME WITH OWNER $DB_USER ENCODING 'UTF8';\"\n  $STD sudo -u postgres psql -c \"GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;\"\n  msg_ok \"Configured PostgreSQL\"\n\n  fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/keycloak.service\n[Unit]\nDescription=Keycloak Service\nRequires=network.target\nAfter=syslog.target network-online.target\n\n[Service]\nType=idle\nUser=root\nWorkingDirectory=/opt/keycloak\nExecStart=/opt/keycloak/bin/kc.sh start\nExecStop=/opt/keycloak/bin/kc.sh stop\nRestart=always\nRestartSec=3\nEnvironment=\"JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-$(get_system_arch)\"\nEnvironment=\"KC_DB=postgres\"\nEnvironment=\"KC_DB_USERNAME=$DB_USER\"\nEnvironment=\"KC_DB_PASSWORD=$DB_PASS\"\nEnvironment=\"KC_HTTP_ENABLED=true\"\nEnvironment=\"KC_BOOTSTRAP_ADMIN_USERNAME=tmpadm\"\nEnvironment=\"KC_BOOTSTRAP_ADMIN_PASSWORD=admin123\"\n# Comment following line and uncomment the next 2 if working behind a reverse proxy\nEnvironment=\"KC_HOSTNAME_STRICT=false\"\n#Environment=\"KC_HOSTNAME=keycloak.example.com\"\n#Environment=\"KC_PROXY_HEADERS=xforwarded\"\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now keycloak\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080/admin${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/keycloak ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"keycloak_app\" \"keycloak/keycloak\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop keycloak\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Updating packages\"\n    $STD apt-get update\n    $STD apt-get -y upgrade\n    msg_ok \"Updated packages\"\n\n    msg_info \"Backup old Keycloak\"\n    cd /opt || exit\n    mv keycloak keycloak.old\n    msg_ok \"Backup done\"\n\n    fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"\n\n    msg_info \"Updating Keycloak\"\n    cd /opt || exit\n    cp -a keycloak.old/conf/. keycloak/conf/\n    cp -a keycloak.old/providers/. keycloak/providers/ 2\u003e /dev/null || true\n    cp -a keycloak.old/themes/. keycloak/themes/ 2\u003e /dev/null || true\n    rm -rf keycloak.old\n    msg_ok \"Updated Keycloak\"\n\n    msg_info \"Restarting Service\"\n    systemctl restart keycloak\n    msg_ok \"Restarted Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 129,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: tteck (tteckster)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/keycloak/keycloak\n\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Keycloak\"\nvar_tags=\"${var_tags:-access-management}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  JAVA_VERSION=\"21\" setup_java\n  PG_VERSION=\"16\" setup_postgresql\n  msg_ok \"Installed Dependencies\"\n\n  msg_info \"Configuring PostgreSQL\"\n  DB_NAME=\"keycloak\"\n  DB_USER=\"keycloak\"\n  DB_PASS=\"$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\"\n  $STD sudo -u postgres psql -c \"CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';\"\n  $STD sudo -u postgres psql -c \"CREATE DATABASE $DB_NAME WITH OWNER $DB_USER ENCODING 'UTF8';\"\n  $STD sudo -u postgres psql -c \"GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;\"\n  msg_ok \"Configured PostgreSQL\"\n\n  fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/keycloak.service\n[Unit]\nDescription=Keycloak Service\nRequires=network.target\nAfter=syslog.target network-online.target\n\n[Service]\nType=idle\nUser=root\nWorkingDirectory=/opt/keycloak\nExecStart=/opt/keycloak/bin/kc.sh start\nExecStop=/opt/keycloak/bin/kc.sh stop\nRestart=always\nRestartSec=3\nEnvironment=\"JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-$(get_system_arch)\"\nEnvironment=\"KC_DB=postgres\"\nEnvironment=\"KC_DB_USERNAME=$DB_USER\"\nEnvironment=\"KC_DB_PASSWORD=$DB_PASS\"\nEnvironment=\"KC_HTTP_ENABLED=true\"\nEnvironment=\"KC_BOOTSTRAP_ADMIN_USERNAME=tmpadm\"\nEnvironment=\"KC_BOOTSTRAP_ADMIN_PASSWORD=admin123\"\n# Comment following line and uncomment the next 2 if working behind a reverse proxy\nEnvironment=\"KC_HOSTNAME_STRICT=false\"\n#Environment=\"KC_HOSTNAME=keycloak.example.com\"\n#Environment=\"KC_PROXY_HEADERS=xforwarded\"\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now keycloak\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080/admin${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/keycloak ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"keycloak_app\" \"keycloak/keycloak\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop keycloak\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Updating packages\"\n    $STD apt-get update\n    $STD apt-get -y upgrade\n    msg_ok \"Updated packages\"\n\n    msg_info \"Backup old Keycloak\"\n    if [[ ! -d /opt/keycloak.old ]]; then\n      rm -rf /opt/keycloak.old.partial\n      mkdir -p /opt/keycloak.old.partial\n      cp -a /opt/keycloak/conf /opt/keycloak.old.partial/\n      cp -a /opt/keycloak/providers /opt/keycloak.old.partial/ 2\u003e /dev/null || true\n      cp -a /opt/keycloak/themes /opt/keycloak.old.partial/ 2\u003e /dev/null || true\n      mv /opt/keycloak.old.partial /opt/keycloak.old\n    fi\n    msg_ok \"Backup done\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"\n\n    msg_info \"Updating Keycloak\"\n    cd /opt || exit\n    cp -a keycloak.old/conf/. keycloak/conf/\n    cp -a keycloak.old/providers/. keycloak/providers/ 2\u003e /dev/null || true\n    cp -a keycloak.old/themes/. keycloak/themes/ 2\u003e /dev/null || true\n    rm -rf keycloak.old\n    msg_ok \"Updated Keycloak\"\n\n    msg_info \"Restarting Service\"\n    systemctl restart keycloak\n    msg_ok \"Restarted Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2046",
@@ -101,11 +101,17 @@
     "    msg_ok \"Updated packages\"",
     "",
     "    msg_info \"Backup old Keycloak\"",
-    "    cd /opt || exit",
-    "    mv keycloak keycloak.old",
+    "    if [[ ! -d /opt/keycloak.old ]]; then",
+    "      rm -rf /opt/keycloak.old.partial",
+    "      mkdir -p /opt/keycloak.old.partial",
+    "      cp -a /opt/keycloak/conf /opt/keycloak.old.partial/",
+    "      cp -a /opt/keycloak/providers /opt/keycloak.old.partial/ 2\u003e /dev/null || true",
+    "      cp -a /opt/keycloak/themes /opt/keycloak.old.partial/ 2\u003e /dev/null || true",
+    "      mv /opt/keycloak.old.partial /opt/keycloak.old",
+    "    fi",
     "    msg_ok \"Backup done\"",
     "",
-    "    fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"keycloak_app\" \"keycloak/keycloak\" \"prebuild\" \"latest\" \"/opt/keycloak\" \"keycloak-*.tar.gz\"",
     "",
     "    msg_info \"Updating Keycloak\"",
     "    cd /opt || exit",
@@ -157,7 +163,7 @@
     {
       "name": "update_script",
       "start_line": 78,
-      "end_line": 117,
+      "end_line": 123,
       "name_span": {
         "start_line": 78,
         "start_col": 10,
@@ -1602,7 +1608,8 @@
       "end_col": 35
     },
     {
-      "kind": "command",
+      "kind": "keyword",
+      "op": "if",
       "start_line": 97,
       "start_col": 5,
       "end_line": 97,
@@ -1610,343 +1617,480 @@
     },
     {
       "kind": "operator",
-      "op": "||",
+      "op": "[[",
+      "start_line": 97,
+      "start_col": 8,
+      "end_line": 97,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 97,
+      "start_col": 11,
+      "end_line": 97,
+      "end_col": 12
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
       "start_line": 97,
       "start_col": 13,
       "end_line": 97,
       "end_col": 15
     },
     {
-      "kind": "command",
+      "kind": "operator",
+      "op": "]]",
       "start_line": 97,
-      "start_col": 16,
+      "start_col": 34,
       "end_line": 97,
-      "end_col": 20
+      "end_col": 36
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 97,
+      "start_col": 36,
+      "end_line": 97,
+      "end_col": 37
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 97,
+      "start_col": 38,
+      "end_line": 97,
+      "end_col": 42
     },
     {
       "kind": "command",
       "start_line": 98,
-      "start_col": 5,
+      "start_col": 7,
       "end_line": 98,
-      "end_col": 7
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 99,
-      "start_col": 5,
+      "start_col": 7,
       "end_line": 99,
-      "end_col": 11
+      "end_col": 12
     },
     {
-      "kind": "string-dq",
-      "start_line": 99,
-      "start_col": 12,
-      "end_line": 99,
-      "end_col": 25
+      "kind": "command",
+      "start_line": 100,
+      "start_col": 7,
+      "end_line": 100,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 101,
-      "start_col": 5,
+      "start_col": 7,
       "end_line": 101,
-      "end_col": 32
+      "end_col": 9
     },
     {
-      "kind": "string-dq",
+      "kind": "operator",
+      "op": "\u003e",
       "start_line": 101,
-      "start_col": 33,
+      "start_col": 65,
       "end_line": 101,
-      "end_col": 47
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 48,
-      "end_line": 101,
-      "end_col": 67
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 68,
-      "end_line": 101,
-      "end_col": 78
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 79,
-      "end_line": 101,
-      "end_col": 87
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 88,
-      "end_line": 101,
-      "end_col": 103
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 104,
-      "end_line": 101,
-      "end_col": 123
-    },
-    {
-      "kind": "command",
-      "start_line": 103,
-      "start_col": 5,
-      "end_line": 103,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 103,
-      "start_col": 14,
-      "end_line": 103,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 104,
-      "start_col": 5,
-      "end_line": 104,
-      "end_col": 7
+      "end_col": 66
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 104,
-      "start_col": 13,
-      "end_line": 104,
-      "end_col": 15
+      "start_line": 101,
+      "start_col": 77,
+      "end_line": 101,
+      "end_col": 79
     },
     {
       "kind": "command",
+      "start_line": 101,
+      "start_col": 80,
+      "end_line": 101,
+      "end_col": 84
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 7,
+      "end_line": 102,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 102,
+      "start_col": 62,
+      "end_line": 102,
+      "end_col": 63
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 102,
+      "start_col": 74,
+      "end_line": 102,
+      "end_col": 76
+    },
+    {
+      "kind": "command",
+      "start_line": 102,
+      "start_col": 77,
+      "end_line": 102,
+      "end_col": 81
+    },
+    {
+      "kind": "command",
+      "start_line": 103,
+      "start_col": 7,
+      "end_line": 103,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
       "start_line": 104,
-      "start_col": 16,
+      "start_col": 5,
       "end_line": 104,
-      "end_col": 20
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 105,
       "start_col": 5,
       "end_line": 105,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 106,
-      "start_col": 5,
-      "end_line": 106,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 106,
-      "start_col": 57,
-      "end_line": 106,
-      "end_col": 58
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 106,
-      "start_col": 69,
-      "end_line": 106,
-      "end_col": 71
-    },
-    {
-      "kind": "command",
-      "start_line": 106,
-      "start_col": 72,
-      "end_line": 106,
-      "end_col": 76
-    },
-    {
-      "kind": "command",
-      "start_line": 107,
-      "start_col": 5,
-      "end_line": 107,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 107,
-      "start_col": 51,
-      "end_line": 107,
-      "end_col": 52
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 107,
-      "start_col": 63,
-      "end_line": 107,
-      "end_col": 65
-    },
-    {
-      "kind": "command",
-      "start_line": 107,
-      "start_col": 66,
-      "end_line": 107,
-      "end_col": 70
-    },
-    {
-      "kind": "command",
-      "start_line": 108,
-      "start_col": 5,
-      "end_line": 108,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 109,
-      "start_col": 5,
-      "end_line": 109,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 109,
+      "start_line": 105,
       "start_col": 12,
+      "end_line": 105,
+      "end_col": 25
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 107,
+      "start_col": 5,
+      "end_line": 107,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 107,
+      "start_col": 5,
+      "end_line": 107,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 21,
+      "end_line": 107,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 49,
+      "end_line": 107,
+      "end_col": 63
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 64,
+      "end_line": 107,
+      "end_col": 83
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 84,
+      "end_line": 107,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 95,
+      "end_line": 107,
+      "end_col": 103
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 104,
+      "end_line": 107,
+      "end_col": 119
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 107,
+      "start_col": 120,
+      "end_line": 107,
+      "end_col": 139
+    },
+    {
+      "kind": "command",
+      "start_line": 109,
+      "start_col": 5,
       "end_line": 109,
-      "end_col": 30
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 109,
+      "start_col": 14,
+      "end_line": 109,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 5,
+      "end_line": 110,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 110,
+      "start_col": 13,
+      "end_line": 110,
+      "end_col": 15
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 16,
+      "end_line": 110,
+      "end_col": 20
     },
     {
       "kind": "command",
       "start_line": 111,
       "start_col": 5,
       "end_line": 111,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 111,
-      "start_col": 14,
-      "end_line": 111,
-      "end_col": 34
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 112,
       "start_col": 5,
       "end_line": 112,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 112,
+      "start_col": 57,
+      "end_line": 112,
+      "end_col": 58
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 112,
+      "start_col": 69,
+      "end_line": 112,
+      "end_col": 71
+    },
+    {
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 72,
+      "end_line": 112,
+      "end_col": 76
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 5,
+      "end_line": 113,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 113,
+      "start_col": 51,
+      "end_line": 113,
+      "end_col": 52
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 113,
+      "start_col": 63,
+      "end_line": 113,
+      "end_col": 65
+    },
+    {
+      "kind": "command",
+      "start_line": 113,
+      "start_col": 66,
+      "end_line": 113,
+      "end_col": 70
+    },
+    {
+      "kind": "command",
+      "start_line": 114,
+      "start_col": 5,
+      "end_line": 114,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 115,
+      "start_col": 5,
+      "end_line": 115,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 115,
+      "start_col": 12,
+      "end_line": 115,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 117,
+      "start_col": 5,
+      "end_line": 117,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 117,
+      "start_col": 14,
+      "end_line": 117,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 118,
+      "start_col": 5,
+      "end_line": 118,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 113,
+      "start_line": 119,
       "start_col": 5,
-      "end_line": 113,
+      "end_line": 119,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 113,
+      "start_line": 119,
       "start_col": 12,
-      "end_line": 113,
+      "end_line": 119,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 114,
+      "start_line": 120,
       "start_col": 5,
-      "end_line": 114,
+      "end_line": 120,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 114,
+      "start_line": 120,
       "start_col": 12,
-      "end_line": 114,
+      "end_line": 120,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 115,
+      "start_line": 121,
       "start_col": 3,
-      "end_line": 115,
+      "end_line": 121,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 116,
+      "start_line": 122,
       "start_col": 3,
-      "end_line": 116,
+      "end_line": 122,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 117,
+      "start_line": 123,
       "start_col": 1,
-      "end_line": 117,
+      "end_line": 123,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 119,
+      "start_line": 125,
       "start_col": 1,
-      "end_line": 119,
+      "end_line": 125,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 120,
+      "start_line": 126,
       "start_col": 1,
-      "end_line": 120,
+      "end_line": 126,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 121,
+      "start_line": 127,
       "start_col": 1,
-      "end_line": 121,
+      "end_line": 127,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 122,
+      "start_line": 128,
       "start_col": 1,
-      "end_line": 122,
+      "end_line": 128,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 122,
+      "start_line": 128,
       "start_col": 8,
-      "end_line": 122,
+      "end_line": 128,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 122,
+      "start_line": 128,
       "start_col": 10,
-      "end_line": 122,
+      "end_line": 128,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 122,
+      "start_line": 128,
       "start_col": 21,
-      "end_line": 122,
+      "end_line": 128,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 122,
+      "start_line": 128,
       "start_col": 22,
-      "end_line": 122,
+      "end_line": 128,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 122,
+  "bootstrap_line": 128,
   "hooks": {
     "header_info": false,
     "install_script": true,

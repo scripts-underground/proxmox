@@ -46,7 +46,11 @@ function install_script() {
     $STD apk add --no-cache tar curl
   fi
   fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
-  install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
+  install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path" || {
+    rm -f "$HOME/.filebrowser"
+    msg_error "Failed to install ${APP} binary"
+    exit 1
+  }
   rm -rf "$var_addon_dist_path"
   msg_ok "Installed ${APP}"
 
@@ -130,7 +134,11 @@ function update_script() {
   if check_for_gh_release "filebrowser" "filebrowser/filebrowser"; then
     msg_info "Updating ${APP}"
     fetch_and_deploy_gh_release "filebrowser" "filebrowser/filebrowser" "prebuild" "latest" "$var_addon_dist_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz"
-    install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path"
+    install -m 755 "$var_addon_dist_path/filebrowser" "$var_addon_bin_path" || {
+      rm -f "$HOME/.filebrowser"
+      msg_error "Failed to install ${APP} binary"
+      exit 1
+    }
     rm -rf "$var_addon_dist_path"
     msg_ok "Updated ${APP}"
   fi

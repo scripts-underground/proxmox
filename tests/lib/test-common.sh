@@ -4,8 +4,6 @@
 
 set -euo pipefail
 
-TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 FAILURES=0
 PVE_HOST="${PVE_HOST:-192.168.122.50}"
 
@@ -23,7 +21,8 @@ fail() {
 warn() { echo -e "  [\e[33mWARN\e[0m] $*"; }
 
 phase() {
-  local num="$1"; shift
+  local num="$1"
+  shift
   echo -e "\n\e[1m[$num]\e[0m $*"
 }
 
@@ -34,7 +33,8 @@ phase() {
 pve_exec() { ssh -o ConnectTimeout=10 root@"$PVE_HOST" "$@" 2>&1; }
 
 pve_pct() {
-  local ctid="$1"; shift
+  local ctid="$1"
+  shift
   pve_exec "pct exec $ctid -- $*"
 }
 
@@ -81,7 +81,7 @@ cleanup_containers() {
 
 check_service() {
   local ctid="$1" svc="$2"
-  if pve_pct "$ctid" systemctl is-active "$svc" 2>/dev/null | grep -q active; then
+  if pve_pct "$ctid" systemctl is-active "$svc" 2> /dev/null | grep -q active; then
     pass "$svc active"
   else
     fail "$svc inactive"
@@ -90,7 +90,7 @@ check_service() {
 
 check_user() {
   local ctid="$1" user="$2"
-  if pve_pct "$ctid" id "$user" >/dev/null 2>&1; then
+  if pve_pct "$ctid" id "$user" > /dev/null 2>&1; then
     pass "user $user exists"
   else
     fail "user $user missing"
@@ -111,10 +111,11 @@ check_path() {
 # ------------------------------------------------------------------
 
 check_no_log_errors() {
-  local ctid="$1" service="$2"; shift 2
+  local ctid="$1" service="$2"
+  shift 2
   local patterns=("$@")
   for pat in "${patterns[@]}"; do
-    if pve_pct "$ctid" "journalctl -u $service --no-pager -n 100" 2>/dev/null | grep -qE "$pat"; then
+    if pve_pct "$ctid" "journalctl -u $service --no-pager -n 100" 2> /dev/null | grep -qE "$pat"; then
       fail "$service: forbidden pattern found: $pat"
     else
       pass "$service: clean ($pat)"
