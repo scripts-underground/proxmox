@@ -56,7 +56,7 @@ EOF
     RewriteRule /.well-known/caldav  /dav.php [R=308,L]
     RewriteCond %{REQUEST_URI} ^/dav.php$ [NC]
     RewriteRule ^(.*)$ /dav.php/ [R=301,L]
-        
+
     <Directory /opt/baikal/html>
         Options FollowSymLinks
         AllowOverride All

@@ -92,7 +92,7 @@ DB_WAL_MODE=true
 
 # You can change the models used by uncommenting the following lines, and changing them according to your needs:
 # INFERENCE_TEXT_MODEL="gpt-4o-mini"
-# INFERENCE_IMAGE_MODEL="gpt-4o-mini" 
+# INFERENCE_IMAGE_MODEL="gpt-4o-mini"
 
 # Additional inference defaults
 # INFERENCE_CONTEXT_LENGTH="2048"

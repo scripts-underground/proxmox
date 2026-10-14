@@ -4,7 +4,7 @@ title: deCONZ
 tags: [zigbee]
 logo: /assets/logos/deconz.webp
 by: tteck (tteckster)
-repo: 
+repo:
 site: https://www.phoscon.de/en/conbee2/software#deconz
 port: 80
 cpu: 2

@@ -462,7 +462,7 @@ taken from the upstream JSON's `description` field or the script's
 - [ ] `go run ./tools/ast/.` exits 0 (no REPO_BASE violations)
 - [ ] `grep "bootstrap/lxc" scripts/lxc/<slug>.sh` matches exactly once,
       at the file's last line
-- [ ] `grep "start\|build_container\|description" scripts/lxc/<slug>.sh | grep -v "^#"` 
+- [ ] `grep "start\|build_container\|description" scripts/lxc/<slug>.sh | grep -v "^#"`
       returns nothing (no orchestration calls left in the script)
 - [ ] `grep "header_info\|variables\|color" scripts/lxc/<slug>.sh | grep -v "^#"`
       returns nothing (no init calls left in the script)

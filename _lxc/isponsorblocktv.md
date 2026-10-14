@@ -7,7 +7,7 @@ by: sternma
 co_author: [MickLesk]
 repo: https://github.com/dmunozv04/iSponsorBlockTV
 site: https://github.com/dmunozv04/iSponsorBlockTV
-port: 
+port:
 cpu: 1
 ram: 1024
 disk: 4
