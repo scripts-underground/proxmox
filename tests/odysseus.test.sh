@@ -41,7 +41,7 @@ pve_exec "
     export var_container_storage=local-lvm var_template_storage=local
     bash scripts/lxc/$SCRIPT_NAME.sh </dev/null 2>&1
   '
-" 2>&1 >"$INSTALL_LOG"
+" 2>&1 > "$INSTALL_LOG"
 ELAPSED=$(($(date +%s) - START))
 
 CTID=$(pve_exec "pct list 2>/dev/null" | awk 'NR>1{print $1; exit}')
@@ -85,7 +85,7 @@ if [ -z "$CTIP" ]; then
   summary
 fi
 
-HTTP_CODE=$(pve_exec "curl -sL --connect-timeout 10 -o /dev/null -w '%{http_code}' http://$CTIP:$WEB_PORT/" 2>/dev/null)
+HTTP_CODE=$(pve_exec "curl -sL --connect-timeout 10 -o /dev/null -w '%{http_code}' http://$CTIP:$WEB_PORT/" 2> /dev/null)
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
   pass "Web UI responds on $CTIP:$WEB_PORT (HTTP $HTTP_CODE)"
 else
