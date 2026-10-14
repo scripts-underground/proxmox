@@ -3,7 +3,7 @@
   "slug": "endurain",
   "type": "lxc",
   "total_lines": 171,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: johanngrobe\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://codeberg.org/endurain-project/endurain\n\n# shellcheck disable=SC2034\nAPP=\"Endurain\"\nvar_tags=\"${var_tags:-sport;social-media}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y build-essential\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db\n  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n  msg_info \"Setting up Endurain\"\n  cd /opt/endurain || exit\n  rm -rf \\\n    /opt/endurain/{docs,example.env,screenshot_01.png} \\\n    /opt/endurain/docker* \\\n    /opt/endurain/*.yml\n  mkdir -p /opt/endurain_data/{data,logs}\n  SECRET_KEY=$(openssl rand -hex 32)\n  FERNET_KEY=$(openssl rand -base64 32)\n  ENDURAIN_HOST=http://${LOCAL_IP}:8080\n  cat \u003c\u003c EOF \u003e /opt/endurain/.env\nDB_PASSWORD=${PG_DB_PASS}\n\nSECRET_KEY=${SECRET_KEY}\nFERNET_KEY=${FERNET_KEY}\n\nTZ=Europe/Berlin\nENDURAIN_HOST=${ENDURAIN_HOST}\nBEHIND_PROXY=false\n\nPOSTGRES_DB=${PG_DB_NAME}\nPOSTGRES_USER=${PG_DB_USER}\nPGDATA=/var/lib/postgresql/${PG_DB_NAME}\n\nDB_DATABASE=${PG_DB_NAME}\nDB_USER=${PG_DB_USER}\nDB_PORT=5432\nDB_HOST=localhost\n\nDATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\n\nBACKEND_DIR=\"/opt/endurain/backend/app\"\nFRONTEND_DIR=\"/opt/endurain/frontend/dist\"\nDATA_DIR=\"/opt/endurain_data/data\"\nLOGS_DIR=\"/opt/endurain_data/logs\"\n\n#SMTP_HOST=smtp.protonmail.ch\n#SMTP_PORT=587\n#SMTP_USERNAME=your-email@example.com\n#SMTP_PASSWORD=your-app-password\n#SMTP_SECURE=true\n#SMTP_SECURE_TYPE=starttls\nEOF\n  msg_ok \"Setup Endurain\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/endurain/frontend || exit\n  $STD npm ci --prefer-offline\n  $STD npm run build\n  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js\nwindow.env = {\n  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"\n}\nEOF\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Setting up Backend\"\n  cd /opt/endurain/backend || exit\n  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n  UV_VERSION=\"$UV_VERSION\" setup_uv\n  $STD uv sync --frozen --no-dev\n  msg_ok \"Setup Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service\n[Unit]\nDescription=Endurain FastAPI Backend\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/endurain/backend/app\nEnvironmentFile=/opt/endurain/.env\nExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080\nRestart=always\nRestartSec=5\nUser=root\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now endurain\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/endurain ]]; then\n    msg_error \"No ${APP} installation found!\"\n    exit\n  fi\n  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop endurain\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js\n    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n    msg_info \"Preparing Update\"\n    cd /opt/endurain || exit\n    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml\n    msg_ok \"Prepared Update\"\n\n    msg_info \"Updating Frontend\"\n    cd /opt/endurain/frontend || exit\n    $STD npm ci\n    $STD npm run build\n    msg_ok \"Updated Frontend\"\n\n    restore_backup\n\n    msg_info \"Updating Backend\"\n    cd /opt/endurain/backend || exit\n    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n    UV_VERSION=\"$UV_VERSION\" setup_uv\n    $STD uv sync --frozen --no-dev\n    msg_ok \"Backend Updated\"\n\n    msg_info \"Starting Service\"\n    systemctl start endurain\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: johanngrobe\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/endurain-project/endurain\n\n# shellcheck disable=SC2034\nAPP=\"Endurain\"\nvar_tags=\"${var_tags:-sport;social-media}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-5}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y build-essential\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  NODE_VERSION=\"24\" setup_nodejs\n  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql\n  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db\n  fetch_and_deploy_gh_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n  msg_info \"Setting up Endurain\"\n  cd /opt/endurain || exit\n  rm -rf \\\n    /opt/endurain/{docs,example.env,screenshot_01.png} \\\n    /opt/endurain/docker* \\\n    /opt/endurain/*.yml\n  mkdir -p /opt/endurain_data/{data,logs}\n  SECRET_KEY=$(openssl rand -hex 32)\n  FERNET_KEY=$(openssl rand -base64 32)\n  ENDURAIN_HOST=http://${LOCAL_IP}:8080\n  cat \u003c\u003c EOF \u003e /opt/endurain/.env\nDB_PASSWORD=${PG_DB_PASS}\n\nSECRET_KEY=${SECRET_KEY}\nFERNET_KEY=${FERNET_KEY}\n\nTZ=Europe/Berlin\nENDURAIN_HOST=${ENDURAIN_HOST}\nBEHIND_PROXY=false\n\nPOSTGRES_DB=${PG_DB_NAME}\nPOSTGRES_USER=${PG_DB_USER}\nPGDATA=/var/lib/postgresql/${PG_DB_NAME}\n\nDB_DATABASE=${PG_DB_NAME}\nDB_USER=${PG_DB_USER}\nDB_PORT=5432\nDB_HOST=localhost\n\nDATABASE_URL=postgresql+psycopg://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\n\nBACKEND_DIR=\"/opt/endurain/backend/app\"\nFRONTEND_DIR=\"/opt/endurain/frontend/dist\"\nDATA_DIR=\"/opt/endurain_data/data\"\nLOGS_DIR=\"/opt/endurain_data/logs\"\n\n#SMTP_HOST=smtp.protonmail.ch\n#SMTP_PORT=587\n#SMTP_USERNAME=your-email@example.com\n#SMTP_PASSWORD=your-app-password\n#SMTP_SECURE=true\n#SMTP_SECURE_TYPE=starttls\nEOF\n  msg_ok \"Setup Endurain\"\n\n  msg_info \"Building Frontend\"\n  cd /opt/endurain/frontend || exit\n  $STD npm ci --prefer-offline\n  $STD npm run build\n  cat \u003c\u003c EOF \u003e /opt/endurain/frontend/dist/env.js\nwindow.env = {\n  ENDURAIN_HOST: \"${ENDURAIN_HOST}\"\n}\nEOF\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Setting up Backend\"\n  cd /opt/endurain/backend || exit\n  UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n  UV_VERSION=\"$UV_VERSION\" setup_uv\n  $STD uv sync --frozen --no-dev\n  msg_ok \"Setup Backend\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/endurain.service\n[Unit]\nDescription=Endurain FastAPI Backend\nAfter=network.target postgresql.service\n\n[Service]\nWorkingDirectory=/opt/endurain/backend/app\nEnvironmentFile=/opt/endurain/.env\nExecStart=/opt/endurain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080\nRestart=always\nRestartSec=5\nUser=root\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now endurain\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/endurain ]]; then\n    msg_error \"No ${APP} installation found!\"\n    exit\n  fi\n  if check_for_gh_release \"endurain\" \"endurain-project/endurain\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop endurain\n    msg_ok \"Stopped Service\"\n\n    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"\n\n    msg_info \"Preparing Update\"\n    cd /opt/endurain || exit\n    rm -rf /opt/endurain/{docs,example.env,screenshot_01.png} /opt/endurain/docker* /opt/endurain/*.yml\n    msg_ok \"Prepared Update\"\n\n    msg_info \"Updating Frontend\"\n    cd /opt/endurain/frontend || exit\n    $STD npm ci\n    $STD npm run build\n    msg_ok \"Updated Frontend\"\n\n    restore_backup\n\n    msg_info \"Updating Backend\"\n    cd /opt/endurain/backend || exit\n    UV_VERSION=$(grep -Po 'required-version\\s*=\\s*\"\\K[^\"]+' pyproject.toml 2\u003e /dev/null || echo \"0.11.18\")\n    UV_VERSION=\"$UV_VERSION\" setup_uv\n    $STD uv sync --frozen --no-dev\n    msg_ok \"Backend Updated\"\n\n    msg_info \"Starting Service\"\n    systemctl start endurain\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -11,7 +11,7 @@
     "# Copyright (c) 2021-2026 community-scripts ORG",
     "# Author: johanngrobe",
     "# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE",
-    "# Source: https://codeberg.org/endurain-project/endurain",
+    "# Source: https://github.com/endurain-project/endurain",
     "",
     "# shellcheck disable=SC2034",
     "APP=\"Endurain\"",
@@ -33,7 +33,7 @@
     "  NODE_VERSION=\"24\" setup_nodejs",
     "  PG_VERSION=\"17\" PG_MODULES=\"postgis\" setup_postgresql",
     "  PG_DB_NAME=\"enduraindb\" PG_DB_USER=\"endurain\" setup_postgresql_db",
-    "  fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
+    "  fetch_and_deploy_gh_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
     "",
     "  msg_info \"Setting up Endurain\"",
     "  cd /opt/endurain || exit",
@@ -137,13 +137,13 @@
     "    msg_error \"No ${APP} installation found!\"",
     "    exit",
     "  fi",
-    "  if check_for_codeberg_release \"endurain\" \"endurain-project/endurain\"; then",
+    "  if check_for_gh_release \"endurain\" \"endurain-project/endurain\"; then",
     "    msg_info \"Stopping Service\"",
     "    systemctl stop endurain",
     "    msg_ok \"Stopped Service\"",
     "",
     "    create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js",
-    "    CLEAN_INSTALL=1 fetch_and_deploy_codeberg_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"endurain\" \"endurain-project/endurain\" \"tarball\" \"latest\" \"/opt/endurain\"",
     "",
     "    msg_info \"Preparing Update\"",
     "    cd /opt/endurain || exit",
@@ -461,7 +461,7 @@
       "start_line": 7,
       "start_col": 1,
       "end_line": 7,
-      "end_col": 57
+      "end_col": 55
     },
     {
       "kind": "comment",
@@ -954,42 +954,42 @@
       "start_line": 29,
       "start_col": 3,
       "end_line": 29,
-      "end_col": 36
+      "end_col": 30
     },
     {
       "kind": "string-dq",
       "start_line": 29,
-      "start_col": 37,
+      "start_col": 31,
       "end_line": 29,
-      "end_col": 47
+      "end_col": 41
     },
     {
       "kind": "string-dq",
       "start_line": 29,
-      "start_col": 48,
+      "start_col": 42,
       "end_line": 29,
-      "end_col": 75
+      "end_col": 69
     },
     {
       "kind": "string-dq",
       "start_line": 29,
-      "start_col": 76,
+      "start_col": 70,
       "end_line": 29,
-      "end_col": 85
+      "end_col": 79
     },
     {
       "kind": "string-dq",
       "start_line": 29,
-      "start_col": 86,
+      "start_col": 80,
       "end_line": 29,
-      "end_col": 94
+      "end_col": 88
     },
     {
       "kind": "string-dq",
       "start_line": 29,
-      "start_col": 95,
+      "start_col": 89,
       "end_line": 29,
-      "end_col": 110
+      "end_col": 104
     },
     {
       "kind": "command",
@@ -1943,37 +1943,37 @@
       "start_line": 133,
       "start_col": 6,
       "end_line": 133,
-      "end_col": 32
+      "end_col": 26
     },
     {
       "kind": "string-dq",
       "start_line": 133,
-      "start_col": 33,
+      "start_col": 27,
       "end_line": 133,
-      "end_col": 43
+      "end_col": 37
     },
     {
       "kind": "string-dq",
       "start_line": 133,
-      "start_col": 44,
+      "start_col": 38,
       "end_line": 133,
-      "end_col": 71
+      "end_col": 65
     },
     {
       "kind": "operator",
       "op": ";",
       "start_line": 133,
-      "start_col": 71,
+      "start_col": 65,
       "end_line": 133,
-      "end_col": 72
+      "end_col": 66
     },
     {
       "kind": "keyword",
       "op": "then",
       "start_line": 133,
-      "start_col": 73,
+      "start_col": 67,
       "end_line": 133,
-      "end_col": 77
+      "end_col": 71
     },
     {
       "kind": "command",
@@ -2037,42 +2037,42 @@
       "start_line": 139,
       "start_col": 21,
       "end_line": 139,
-      "end_col": 54
+      "end_col": 48
     },
     {
       "kind": "string-dq",
       "start_line": 139,
-      "start_col": 55,
+      "start_col": 49,
       "end_line": 139,
-      "end_col": 65
+      "end_col": 59
     },
     {
       "kind": "string-dq",
       "start_line": 139,
-      "start_col": 66,
+      "start_col": 60,
       "end_line": 139,
-      "end_col": 93
+      "end_col": 87
     },
     {
       "kind": "string-dq",
       "start_line": 139,
-      "start_col": 94,
+      "start_col": 88,
       "end_line": 139,
-      "end_col": 103
+      "end_col": 97
     },
     {
       "kind": "string-dq",
       "start_line": 139,
-      "start_col": 104,
+      "start_col": 98,
       "end_line": 139,
-      "end_col": 112
+      "end_col": 106
     },
     {
       "kind": "string-dq",
       "start_line": 139,
-      "start_col": 113,
+      "start_col": 107,
       "end_line": 139,
-      "end_col": 128
+      "end_col": 122
     },
     {
       "kind": "command",
