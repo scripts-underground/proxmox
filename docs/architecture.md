@@ -121,6 +121,16 @@ host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
 
+GPU context is also baked into every LXC bundle: `ENABLE_GPU`, `GPU_TYPE`
+(a space-separated list of selected vendors), `INSTALL_NVIDIA_DRIVERS`, and
+`CTTYPE`. Host passthrough classifies each DRM node by its sysfs vendor, includes
+AMD's `/dev/kfd` when present, and offers multi-vendor and per-NVIDIA-card selection
+(default/unattended: all). New mappings are deduplicated against existing entries,
+and `devN` numbering continues after the highest existing index. `fix_gpu_gids` owns node
+attributes through `pct set`, using container video/render GIDs with 44/104
+fallbacks; failures warn. Guest permission setup only adds group membership and
+does not chmod/chgrp mapped host devices.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the

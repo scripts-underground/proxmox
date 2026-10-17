@@ -309,7 +309,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
-- **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`.
+- **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`. Guest permission setup adds the service user (root by default) to render/video groups only; device attributes belong to host-side `fix_gpu_gids` via `pct set`.
 
 ### Utilities
 
