@@ -5562,6 +5562,20 @@ ENVEOF
 # ══════════════════════════════════════════════════════════════════════════════
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
+# Prefer the host's exact release, then another release in the same series.
+# Shared by CUDA repositories and Ubuntu's native, series-named packages.
+_nvidia_pick_version() {
+  local package="$1" host_version="$2" madison exact
+  madison=$(apt-cache madison "$package" 2> /dev/null | awk '{print $3}') || return 0
+  # Dots must be literal; a package revision may follow the full host version.
+  exact=$(printf '%s\n' "$madison" | grep -E "^${host_version//./\\.}(-|$)" | head -1 || true)
+  if [[ -n "$exact" ]]; then
+    printf '%s\n' "$exact"
+    return 0
+  fi
+  printf '%s\n' "$madison" | grep -E "^${host_version%%.*}\." | head -1 || true
+}
+
 _setup_nvidia_gpu() {
   local os_id="$1" os_codename="$2" os_version="$3"
 
@@ -5584,128 +5598,33 @@ _setup_nvidia_gpu() {
   if [[ -z "$nvidia_host_version" ]]; then
     msg_warn "NVIDIA host driver version not found in /proc/driver/nvidia/version"
     msg_warn "Ensure NVIDIA drivers are installed on host and GPU passthrough is enabled"
-    $STD apt-get -y install va-driver-all vainfo 2> /dev/null || true
+    _hwaccel_apt_optional va-driver-all vainfo
     return 0
   fi
 
   msg_info "Host NVIDIA driver version: ${nvidia_host_version}"
 
+  local nvidia_major_version="${nvidia_host_version%%.*}"
+  local -a cuda_repos=()
   if [[ "$os_id" == "debian" ]]; then
     # Enable non-free components
     if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
-      if ! grep -q "non-free" /etc/apt/sources.list.d/debian.sources 2> /dev/null; then
+      if ! grep -Eq '^Components:.*[[:space:]]non-free([[:space:]]|$)' /etc/apt/sources.list.d/debian.sources 2> /dev/null; then
         sed -i -E 's/Components: (.*)$/Components: \1 contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources 2> /dev/null || true
       fi
-    fi
-    $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-    # For Debian 13 Trixie/Sid: Use Debian's own nvidia packages first (better compatibility)
-    # NVIDIA's CUDA repo targets Debian 12 and may not have amd64 packages for Trixie
-    if [[ "$os_codename" == "trixie" || "$os_codename" == "sid" ]]; then
-      msg_info "Debian ${os_codename}: Using Debian's NVIDIA packages"
-
-      # Extract major version for flexible matching (580.126.09 -> 580)
-      local nvidia_major_version="${nvidia_host_version%%.*}"
-
-      # Check what versions are actually available
-      local available_version=""
-      available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
-      if [[ -n "$available_version" ]]; then
-        msg_info "Found available NVIDIA version: ${available_version}"
-        local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-          msg_ok "Installed NVIDIA libraries (${available_version})"
-        else
-          msg_warn "Failed to install NVIDIA ${available_version} - trying unversioned"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null || true
-        fi
-      else
-        # No matching major version - try latest available or unversioned
-        msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x found in repos"
-        available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | head -1 || true)
-        if [[ -n "$available_version" ]]; then
-          msg_info "Trying latest available: ${available_version} (may cause version mismatch)"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-            libcuda1="${available_version}" libnvcuvid1="${available_version}" \
-            libnvidia-encode1="${available_version}" libnvidia-ml1="${available_version}" 2> /dev/null ||
-            $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-              libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-            msg_warn "NVIDIA library installation failed - GPU compute may not work"
-        else
-          msg_warn "No NVIDIA packages available in Debian repos - GPU support disabled"
-        fi
-      fi
-      $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends nvidia-smi 2> /dev/null || true
-
     else
-      # Debian 11/12: Use NVIDIA CUDA repository for version matching
-      local cuda_repo="debian12"
-      case "$os_codename" in
-        bullseye) cuda_repo="debian11" ;;
-        bookworm) cuda_repo="debian12" ;;
-      esac
-
-      # Add NVIDIA CUDA repository
-      if [[ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]]; then
-        msg_info "Adding NVIDIA CUDA repository (${cuda_repo})"
-        local cuda_keyring
-        cuda_keyring="$(mktemp)"
-        if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb" 2> /dev/null; then
-          $STD dpkg -i "$cuda_keyring" 2> /dev/null || true
-        else
-          msg_warn "Failed to download NVIDIA CUDA keyring"
-        fi
-        rm -f "$cuda_keyring"
-      fi
-
-      # Pin NVIDIA repo for version matching
-      cat << 'NVIDIA_PIN' > /etc/apt/preferences.d/nvidia-cuda-pin
-Package: *
-Pin: origin developer.download.nvidia.com
-Pin-Priority: 1001
-NVIDIA_PIN
-
-      $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-      # Extract major version for flexible matching (580.126.09 -> 580)
-      local nvidia_major_version="${nvidia_host_version%%.*}"
-
-      # Check what versions are actually available in CUDA repo
-      local available_version=""
-      available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
-      if [[ -n "$available_version" ]]; then
-        msg_info "Installing NVIDIA libraries (version ${available_version})"
-        local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-          msg_ok "Installed version-matched NVIDIA libraries"
-        else
-          msg_warn "Version-pinned install failed - trying unpinned"
-          $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-            msg_warn "NVIDIA library installation failed"
-        fi
-      else
-        msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x in CUDA repo (host: ${nvidia_host_version})"
-        # Try latest available version
-        available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | head -1 || true)
-        if [[ -n "$available_version" ]]; then
-          msg_info "Trying latest available: ${available_version} (version mismatch warning)"
-          if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-            libcuda1="${available_version}" libnvcuvid1="${available_version}" \
-            libnvidia-encode1="${available_version}" libnvidia-ml1="${available_version}" 2> /dev/null; then
-            msg_ok "Installed NVIDIA libraries (${available_version}) - version differs from host"
-          else
-            $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends libcuda1 libnvcuvid1 libnvidia-encode1 libnvidia-ml1 2> /dev/null ||
-              msg_warn "NVIDIA library installation failed"
-          fi
-        else
-          msg_warn "No NVIDIA packages available in CUDA repo - GPU support disabled"
-        fi
-      fi
-
-      $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends nvidia-smi 2> /dev/null || true
+      _hwaccel_optional_command _add_debian_nonfree "$os_codename" || msg_warn "Could not enable NVIDIA non-free packages"
     fi
+    _hwaccel_optional_command apt -y update || msg_warn "apt update failed - continuing anyway"
+
+    # Codename sets candidate order, not the driver version: debian13 starts
+    # at 590, while debian12 also carries older host driver series.
+    case "$os_codename" in
+      bullseye) cuda_repos=(debian11 debian12) ;;
+      bookworm) cuda_repos=(debian12) ;;
+      trixie | sid) cuda_repos=(debian13 debian12) ;;
+      *) cuda_repos=(debian12) ;;
+    esac
 
   elif [[ "$os_id" == "ubuntu" ]]; then
     # Ubuntu versioning
@@ -5716,58 +5635,100 @@ NVIDIA_PIN
       *) ubuntu_cuda_repo="ubuntu2204" ;; # Fallback
     esac
 
-    # Add NVIDIA CUDA repository for Ubuntu
-    if [[ ! -f /usr/share/keyrings/cuda-archive-keyring.gpg ]]; then
-      msg_info "Adding NVIDIA CUDA repository (${ubuntu_cuda_repo})"
-      local cuda_keyring
-      cuda_keyring="$(mktemp)"
-      if curl -fsSL -o "$cuda_keyring" "https://developer.download.nvidia.com/compute/cuda/repos/${ubuntu_cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb" 2> /dev/null; then
-        $STD dpkg -i "$cuda_keyring" 2> /dev/null || true
-      else
-        msg_warn "Failed to download NVIDIA CUDA keyring"
-      fi
-      rm -f "$cuda_keyring"
+    cuda_repos=("$ubuntu_cuda_repo")
+  fi
+
+  # Pin NVIDIA repo for version matching, without giving it priority over
+  # unrelated distribution packages (1001 also permits downgrades).
+  cat << 'NVIDIA_PIN' > /etc/apt/preferences.d/nvidia-cuda-pin
+Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
+Pin: origin developer.download.nvidia.com
+Pin-Priority: 1001
+NVIDIA_PIN
+
+  local cuda_source="/etc/apt/sources.list.d/cuda-community-scripts.sources"
+  local chosen_repo="" available_version="" cuda_repo="" installed=0
+  for cuda_repo in "${cuda_repos[@]}"; do
+    # The keyring package used to drop its own list. Remove it so a rejected
+    # candidate cannot remain active beside the one being tried.
+    rm -f /etc/apt/sources.list.d/cuda-debian*.list /etc/apt/sources.list.d/cuda-ubuntu*.list \
+      /etc/apt/sources.list.d/cuda-community-scripts.list "$cuda_source"
+    local cuda_url="https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64"
+    # Import the published key directly: no keyring package can enable an
+    # additional repository behind setup_deb822_repo's back.
+    if ! _hwaccel_optional_command setup_deb822_repo "cuda-community-scripts" \
+      "${cuda_url}/3bf863cc.pub" "${cuda_url}/" "/" "" "amd64"; then
+      msg_warn "Could not enable CUDA repository ${cuda_repo}"
+      rm -f "$cuda_source"
+      continue
     fi
-
-    $STD apt-get -y update 2> /dev/null || msg_warn "apt update failed - continuing anyway"
-
-    # Extract major version for flexible matching
-    local nvidia_major_version="${nvidia_host_version%%.*}"
-
-    # Check what versions are available
-    local available_version=""
-    available_version=$(apt-cache madison libcuda1 2> /dev/null | awk '{print $3}' | grep -E "^${nvidia_major_version}\." | head -1 || true)
-
+    available_version=$(_nvidia_pick_version libcuda1 "$nvidia_host_version")
     if [[ -n "$available_version" ]]; then
-      msg_info "Installing NVIDIA libraries (version ${available_version})"
-      local nvidia_pkgs="libcuda1=${available_version} libnvcuvid1=${available_version} libnvidia-encode1=${available_version} libnvidia-ml1=${available_version}"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends $nvidia_pkgs 2> /dev/null; then
-        msg_ok "Installed version-matched NVIDIA libraries"
-      else
-        # Fallback to Ubuntu repo packages with versioned nvidia-utils
-        msg_warn "CUDA repo install failed - trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-        if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-          libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2> /dev/null; then
-          msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
-        else
-          msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
-        fi
+      chosen_repo="$cuda_repo"
+      break
+    fi
+    msg_warn "CUDA repository ${cuda_repo} carries no ${nvidia_major_version}.x driver"
+    rm -f "$cuda_source"
+  done
+
+  if [[ -z "$chosen_repo" && "$os_id" == debian ]]; then
+    # Last resort: the distribution's own non-free packages.
+    _hwaccel_optional_command apt -y update || msg_warn "apt update failed - continuing anyway"
+    available_version=$(_nvidia_pick_version libcuda1 "$nvidia_host_version")
+    [[ -n "$available_version" ]] && chosen_repo="Debian non-free"
+  fi
+
+  if [[ -n "$chosen_repo" ]]; then
+    msg_info "Installing NVIDIA userspace ${available_version} from ${chosen_repo}"
+    if _hwaccel_optional_command apt -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
+      "libcuda1=${available_version}" "libnvcuvid1=${available_version}" \
+      "libnvidia-encode1=${available_version}" "libnvidia-ml1=${available_version}"; then
+      installed=1
+      if [[ "$os_id" == debian ]]; then
+        # nvidia-smi may be an empty transitional package in CUDA repos.
+        # It must not pull a different driver series when no match exists.
+        _hwaccel_apt_optional "nvidia-smi=${available_version}"
       fi
     else
-      msg_warn "No NVIDIA packages for version ${nvidia_major_version}.x in CUDA repo"
-      # Fallback to Ubuntu repo packages with versioned nvidia-utils
+      msg_warn "Version-pinned NVIDIA userspace install failed"
+      # Never retry unpinned: apt could choose a different driver series.
+    fi
+  fi
+
+  if [[ "$installed" == 0 && "$os_id" == ubuntu ]]; then
+    # Fallback to Ubuntu repo packages with versioned nvidia-utils.
+    # Drop the CUDA source first so only the native repository decides.
+    rm -f "$cuda_source"
+    _hwaccel_optional_command apt -y update || msg_warn "apt update failed - continuing anyway"
+    available_version=$(_nvidia_pick_version "libnvidia-compute-${nvidia_major_version}" "$nvidia_host_version")
+    if [[ -n "$available_version" ]]; then
       msg_info "Trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-      if $STD apt-get -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-        libnvidia-decode-${nvidia_major_version} libnvidia-encode-${nvidia_major_version} nvidia-utils-${nvidia_major_version} 2> /dev/null; then
-        msg_ok "Installed Ubuntu NVIDIA packages (${nvidia_major_version})"
+      if _hwaccel_optional_command apt -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
+        "libnvidia-compute-${nvidia_major_version}=${available_version}" \
+        "libnvidia-decode-${nvidia_major_version}=${available_version}" \
+        "libnvidia-encode-${nvidia_major_version}=${available_version}" \
+        "nvidia-utils-${nvidia_major_version}=${available_version}"; then
+        installed=1
       else
-        msg_warn "NVIDIA driver installation failed - please install manually: apt install nvidia-utils-${nvidia_major_version}"
+        msg_warn "NVIDIA driver installation failed - please install matching Ubuntu packages manually"
       fi
     fi
   fi
 
+  if [[ "$installed" == 1 ]]; then
+    if [[ "$available_version" == "$nvidia_host_version" || "$available_version" == "$nvidia_host_version-"* ]]; then
+      msg_ok "NVIDIA userspace ${available_version} matches the host driver"
+    else
+      msg_warn "NVIDIA userspace ${available_version} differs from the host driver ${nvidia_host_version}"
+      msg_warn "Same driver series, different release. CUDA workloads may still fail on this."
+    fi
+  else
+    msg_warn "No NVIDIA ${nvidia_major_version}.x userspace installed for ${os_id} ${os_codename} (host ${nvidia_host_version})"
+    msg_warn "Searched: ${cuda_repos[*]} and the distribution's own repositories"
+  fi
+
   # VA-API for hybrid setups (Intel + NVIDIA)
-  $STD apt-get -y install va-driver-all vainfo 2> /dev/null || true
+  _hwaccel_apt_optional va-driver-all vainfo
 
   # Fix GLX alternatives: nvidia-alternative diverts mesa libs but in LXC
   # containers the nvidia GLX libs are typically missing, leaving libGL.so.1
@@ -5776,12 +5737,25 @@ NVIDIA_PIN
     local nvidia_glx_dir="/usr/lib/nvidia"
     if [[ ! -f "${nvidia_glx_dir}/libGL.so.1" ]] && [[ -d /usr/lib/mesa-diverted ]]; then
       msg_info "NVIDIA GLX libs missing in container - falling back to mesa"
-      $STD update-glx --set glx /usr/lib/mesa-diverted 2> /dev/null || true
-      ldconfig 2> /dev/null || true
+      _hwaccel_optional_command update-glx --set glx /usr/lib/mesa-diverted || msg_warn "Could not restore Mesa GLX alternatives"
+      _hwaccel_optional_command ldconfig || msg_warn "Could not refresh GPU library cache"
     fi
   fi
 
-  msg_ok "NVIDIA GPU configured"
+  # Report library/device availability, not just that setup reached its end.
+  local nvidia_node=0 device libraries
+  for device in /dev/nvidia*; do
+    [[ -c "$device" ]] && nvidia_node=1
+  done
+  libraries=$(ldconfig -p 2> /dev/null) || libraries=''
+  if [[ "$nvidia_node" == 1 && "$libraries" == *libcuda.so.1* ]]; then
+    msg_ok "NVIDIA GPU configured (host driver ${nvidia_host_version})"
+  else
+    msg_warn "NVIDIA GPU not usable: requires libcuda.so.1 and mapped /dev/nvidia* device nodes"
+  fi
+  if ! command -v nvidia-smi > /dev/null 2>&1; then
+    msg_warn "nvidia-smi is unavailable; CUDA repository packages may be empty transitional stubs"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
