@@ -1473,6 +1473,34 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 // --- Main --------------------------------------------------------------------
 
+func removeOrphanASTs(root string) error {
+	for _, coll := range collections {
+		outDir := filepath.Join(root, "_ast", string(coll))
+		entries, err := os.ReadDir(outDir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			slug := strings.TrimSuffix(e.Name(), ".json")
+			scriptPath := filepath.Join(root, "scripts", string(coll), slug+".sh")
+			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+				if err := os.Remove(filepath.Join(outDir, e.Name())); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
 	root, _ := os.Getwd()
 	for {
@@ -1516,6 +1544,11 @@ func main() {
 			data, _ := json.MarshalIndent(result, "", "  ")
 			os.WriteFile(outPath, append(data, '\n'), 0644)
 		}
+	}
+
+	if err := removeOrphanASTs(root); err != nil {
+		fmt.Fprintf(os.Stderr, "Error removing orphan AST files: %v\n", err)
+		os.Exit(1)
 	}
 
 	fmt.Fprintf(os.Stderr, "Generated AST files for %d scripts\n", total)
