@@ -38,7 +38,7 @@ function install_script() {
   msg_ok "Set up Jellyfin Repository"
 
   msg_info "Installing Jellyfin"
-  $STD apt install -y jellyfin jellyfin-ffmpeg7
+  $STD apt install -y jellyfin
   ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/bin/ffmpeg
   ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe
   msg_ok "Installed Jellyfin"
@@ -109,7 +109,7 @@ function update_script() {
     ln -sf /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /usr/lib/libjemalloc.so
   fi
   $STD apt -y upgrade
-  $STD apt -y --with-new-pkgs upgrade jellyfin jellyfin-server jellyfin-ffmpeg7
+  $STD apt install -y jellyfin
   ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/bin/ffmpeg
   ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe
   msg_ok "Updated Jellyfin"
