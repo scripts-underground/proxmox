@@ -121,6 +121,28 @@ host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
 
+GPU context is also baked into every LXC bundle: `ENABLE_GPU`, `GPU_TYPE`
+(a space-separated list of selected vendors), `INSTALL_NVIDIA_DRIVERS`, and
+`CTTYPE`. Host passthrough classifies each DRM node by its sysfs vendor, includes
+AMD's `/dev/kfd` when present, and offers multi-vendor and per-NVIDIA-card selection
+(default/unattended: all). New mappings are deduplicated against existing entries,
+and `devN` numbering continues after the highest existing index. `fix_gpu_gids` owns node
+attributes through `pct set`, using container video/render GIDs with 44/104
+fallbacks; failures warn. Guest permission setup only adds group membership and
+does not chmod/chgrp mapped host devices.
+
+Inside the container, `setup_hwaccel` uses mapped character nodes and DRM sysfs
+vendors, filtered by the baked `GPU_TYPE`; PCI lookup only identifies the mapped
+Intel GPU's subtype. It exports available userspace stacks in `HWACCEL_VENDORS`
+and the preferred stack in `HWACCEL_VENDOR` (NVIDIA, AMD, Intel, otherwise none).
+NVIDIA usability requires libcuda and any mapped NVIDIA node. A non-empty
+`INSTALL_NVIDIA_DRIVERS` supplies the install choice; otherwise the existing
+60-second prompt defaults to yes on empty input, timeout or EOF. Libraries are
+installed when the resolved choice is `yes`. Optional GPU package/release
+steps log directly to the active log and warn on failure; they do not use the
+fatal `silent()` wrapper. Intel OpenCL uses the IGC tag in compute-runtime's release
+notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
