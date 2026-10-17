@@ -57,7 +57,10 @@ printf 'PASS mismatched GitHub release is refused before download\n'
 api_body='{"tag_name":"1.0.0","assets":[]}'
 : > "$errs"
 fetch_and_deploy_gh_release pin-probe owner/app binary v1.0.0 "$work/target" || true
-! grep -q Requested "$errs"
+if grep -q Requested "$errs"; then
+  printf 'FAIL matching v-prefixed release was rejected\n' >&2
+  exit 1
+fi
 printf 'PASS v-prefixed request matches the same release\n'
 
 # GitHub metadata failure: the git fallback accepts only the requested tag.
