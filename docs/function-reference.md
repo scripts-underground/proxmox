@@ -203,7 +203,7 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 ### Download primitives
 
 - **`curl_with_retry()`** — Retry-safe HTTP download. `$1`=url, `$2`=output (default stdout). DNS pre-check, exponential backoff. Env: `CURL_RETRIES`, `CURL_TIMEOUT`.
-- **`curl_api_with_retry()`** — HTTP GET with status code capture. Returns code to stdout, body to file.
+- **`curl_api_with_retry()`** — HTTP GET with status code capture. `$1`=url, `$2`=optional body file, `$3`=extra curl options split on whitespace (no quoting). Prints the code to stdout, preceded by the body when no file is given. Returns 0 on 2xx, 7 after `CURL_RETRIES` attempts. Env: `CURL_RETRIES`, `CURL_TIMEOUT`, `CURL_CONNECT_TO`.
 - **`download_gpg_key()`** — Downloads and installs a GPG key to keyring path. Auto-detects armored/binary.
 - **`download_with_progress()`** — `pv`-metered download.
 - **`curl_download()`** — Speed-sensitive download for large files (no `--max-time`, uses `--speed-limit`).

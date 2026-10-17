@@ -135,10 +135,11 @@ curl_with_retry() {
 #
 # Parameters:
 #   $1 - URL to call
-#   $2 - (optional) Output file for body (default: stdout)
-#   $3 - (optional) Additional curl options as string
+#   $2 - (optional) Output file for body (default: stdout, followed by the HTTP code)
+#   $3 - (optional) Additional curl options, split on whitespace (no quoting)
 #
-# Returns: HTTP status code, body in file or stdout
+# Output: HTTP code on stdout (after the body when $2 is omitted)
+# Returns: 0 on 2xx, 7 after CURL_RETRIES attempts
 # ------------------------------------------------------------------------------
 curl_api_with_retry() {
   local url="$1"
@@ -154,18 +155,20 @@ curl_api_with_retry() {
   while [[ $attempt -le $retries ]]; do
     debug_log "curl API attempt $attempt/$retries: $url"
 
-    # shellcheck disable=SC2089  # quotes in -w reach curl literally (pre-existing; changing it alters behaviour)
-    local curl_cmd="curl -fsSL --connect-timeout $connect_timeout --max-time $timeout -w '%{http_code}'"
-    [[ -n "$extra_opts" ]] && curl_cmd="$curl_cmd $extra_opts"
+    # Build curl command as array to avoid command injection via extra_opts
+    local -a curl_args=(curl -fsSL --connect-timeout "$connect_timeout" --max-time "$timeout" -w '%{http_code}')
+    local -a _extra=()
+    if [[ -n "$extra_opts" ]]; then
+      IFS=$' \t\n' read -r -d '' -a _extra <<< "$extra_opts" || true
+      curl_args+=("${_extra[@]}")
+    fi
 
     if [[ -n "$body_file" ]]; then
-      # shellcheck disable=SC2090  # see curl_cmd above (pre-existing; same behaviour)
-      http_code=$($curl_cmd -o "$body_file" "$url" 2> /dev/null) || true
+      http_code=$("${curl_args[@]}" -o "$body_file" "$url" 2> /dev/null) || true
     else
       # Capture body and http_code separately
       local tmp_body="/tmp/curl_api_body_$$"
-      # shellcheck disable=SC2090  # see curl_cmd above (pre-existing; same behaviour)
-      http_code=$($curl_cmd -o "$tmp_body" "$url" 2> /dev/null) || true
+      http_code=$("${curl_args[@]}" -o "$tmp_body" "$url" 2> /dev/null) || true
       if [[ -f "$tmp_body" ]]; then
         cat "$tmp_body"
         rm -f "$tmp_body"
@@ -2388,9 +2391,11 @@ start_timer() {
 
 end_timer() {
   local start_time="$1"
-  local end_time=$(date +%s)
-  # shellcheck disable=SC2034  # not read; the arithmetic stays so a malformed start_time still fails as before
+  local label="${2:-Operation}"
+  local end_time
+  end_time=$(date +%s)
   local duration=$((end_time - start_time))
+  echo "${label} took ${duration}s"
 }
 
 # ------------------------------------------------------------------------------
