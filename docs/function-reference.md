@@ -309,7 +309,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
-- **`setup_hwaccel()`** — GPU passthrough for the container. Detects GPU, dispatches to Intel/AMD/NVIDIA setup. Reads `ENABLE_GPU`, `INSTALL_NVIDIA_DRIVERS`. Guest permission setup adds the service user (root by default) to render/video groups only; device attributes belong to host-side `fix_gpu_gids` via `pct set`.
+- **`setup_hwaccel()`** — Installs userspace for mapped Intel/AMD/NVIDIA devices, filtered by host `GPU_TYPE` and gated by `ENABLE_GPU`. Exports `HWACCEL_VENDORS` (space-separated available stacks) and `HWACCEL_VENDOR` (`nvidia`, `amd`, `intel`, or `none`, in preference order). NVIDIA requires libcuda and any mapped NVIDIA character node; a non-empty `INSTALL_NVIDIA_DRIVERS` supplies the install choice, otherwise the existing 60-second prompt defaults to yes on empty input, timeout or EOF. Its libraries are installed when the resolved choice is `yes`. Optional packages log directly to the active log, fall back to individual installs, and warn without aborting. Intel includes Vulkan/oneVPL and uses the compute-runtime release's pinned IGC tag, skipping OpenCL if unresolved. AMD ROCm requires `/dev/kfd`. Guest permission setup adds the service user (root by default) to render/video groups only; device attributes belong to host-side `fix_gpu_gids` via `pct set`.
 
 ### Utilities
 

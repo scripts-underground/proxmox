@@ -131,6 +131,18 @@ attributes through `pct set`, using container video/render GIDs with 44/104
 fallbacks; failures warn. Guest permission setup only adds group membership and
 does not chmod/chgrp mapped host devices.
 
+Inside the container, `setup_hwaccel` uses mapped character nodes and DRM sysfs
+vendors, filtered by the baked `GPU_TYPE`; PCI lookup only identifies the mapped
+Intel GPU's subtype. It exports available userspace stacks in `HWACCEL_VENDORS`
+and the preferred stack in `HWACCEL_VENDOR` (NVIDIA, AMD, Intel, otherwise none).
+NVIDIA usability requires libcuda and any mapped NVIDIA node. A non-empty
+`INSTALL_NVIDIA_DRIVERS` supplies the install choice; otherwise the existing
+60-second prompt defaults to yes on empty input, timeout or EOF. Libraries are
+installed when the resolved choice is `yes`. Optional GPU package/release
+steps log directly to the active log and warn on failure; they do not use the
+fatal `silent()` wrapper. Intel OpenCL uses the IGC tag in compute-runtime's release
+notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
