@@ -50,14 +50,14 @@ type FunctionInfo struct {
 }
 
 type Assign struct {
-	Name               string `json:"name"`
-	Line               int    `json:"line"`
-	StartCol           int    `json:"start_col"`
-	EndCol             int    `json:"end_col"`
-	ValueHasCmdSubst   bool   `json:"value_has_cmdsubst"`
-	IsRepoBase         bool   `json:"is_repo_base"`
-	InBootstrapZone    bool   `json:"in_bootstrap_zone"`
-	ValueIsParamDefault bool  `json:"value_is_param_default"`
+	Name                string `json:"name"`
+	Line                int    `json:"line"`
+	StartCol            int    `json:"start_col"`
+	EndCol              int    `json:"end_col"`
+	ValueHasCmdSubst    bool   `json:"value_has_cmdsubst"`
+	IsRepoBase          bool   `json:"is_repo_base"`
+	InBootstrapZone     bool   `json:"in_bootstrap_zone"`
+	ValueIsParamDefault bool   `json:"value_is_param_default"`
 }
 
 type OpInfo struct {
@@ -143,39 +143,39 @@ type Token struct {
 // are new in v2.  Comments and Heredoc.CodeSpans / Heredoc.Delim /
 // Heredoc.Closing have been removed (tokens cover that data).
 type ASTOutput struct {
-	SchemaVersion int    `json:"schema_version"`
-	Slug          string `json:"slug"`
-	Type          string `json:"type"`
-	TotalLines    int    `json:"total_lines"`
+	SchemaVersion int      `json:"schema_version"`
+	Slug          string   `json:"slug"`
+	Type          string   `json:"type"`
+	TotalLines    int      `json:"total_lines"`
 	Source        string   `json:"source"`
 	SourceLines   []string `json:"source_lines"`
 
-	Functions        []FunctionInfo `json:"functions"`
-	Assigns          []Assign       `json:"assigns"`
-	GlobalRanges     []LineRange    `json:"global_ranges"`
-	Heredocs         []Heredoc      `json:"heredocs"`
-	DownloadSpans    []Span         `json:"download_spans"`
-	PipedDownloadSpans []Span       `json:"piped_download_spans"`
-	ExternalSpans    []Span         `json:"external_spans"`
+	Functions          []FunctionInfo `json:"functions"`
+	Assigns            []Assign       `json:"assigns"`
+	GlobalRanges       []LineRange    `json:"global_ranges"`
+	Heredocs           []Heredoc      `json:"heredocs"`
+	DownloadSpans      []Span         `json:"download_spans"`
+	PipedDownloadSpans []Span         `json:"piped_download_spans"`
+	ExternalSpans      []Span         `json:"external_spans"`
 
 	Tokens []Token `json:"tokens"`
 
-	BootstrapLine int             `json:"bootstrap_line"`
-	Hooks         map[string]bool `json:"hooks"`
-	HookOrder     []string        `json:"hook_order"`
-	Flags         Flags           `json:"flags"`
-	HasDownload      bool `json:"has_download"`
-	HasPipedDownload bool `json:"has_piped_download"`
-	HasExternal      bool `json:"has_external"`
-	HasEval          bool `json:"has_eval"`
-	HasGlobal        bool `json:"has_global"`
-	HasBootstrap     bool `json:"has_bootstrap"`
+	BootstrapLine    int             `json:"bootstrap_line"`
+	Hooks            map[string]bool `json:"hooks"`
+	HookOrder        []string        `json:"hook_order"`
+	Flags            Flags           `json:"flags"`
+	HasDownload      bool            `json:"has_download"`
+	HasPipedDownload bool            `json:"has_piped_download"`
+	HasExternal      bool            `json:"has_external"`
+	HasEval          bool            `json:"has_eval"`
+	HasGlobal        bool            `json:"has_global"`
+	HasBootstrap     bool            `json:"has_bootstrap"`
 
-	SystemdServices     []SystemdService     `json:"systemd_services"`
-	OpenRCServices      []OpenRCService      `json:"openrc_services"`
-	ServiceManagers     []string             `json:"service_managers"`
-	Users               []ScriptUser         `json:"users"`
-	InteractivePrompts  []InteractivePrompt  `json:"interactive_prompts"`
+	SystemdServices    []SystemdService    `json:"systemd_services"`
+	OpenRCServices     []OpenRCService     `json:"openrc_services"`
+	ServiceManagers    []string            `json:"service_managers"`
+	Users              []ScriptUser        `json:"users"`
+	InteractivePrompts []InteractivePrompt `json:"interactive_prompts"`
 }
 
 var downloadCommands = map[string]bool{
@@ -221,23 +221,23 @@ type funcScope struct {
 }
 
 type walker struct {
-	src       string
-	funcs     []FunctionInfo
-	assigns   []Assign
-	globalRanges []LineRange
-	heredocs  []Heredoc
-	extSpans  []Span
-	flags     Flags
-	bootLine  int
-	tokens              []Token
-	scriptLines         []string
-	frames              []frameType
-	shellEvalDepth      int
-	evalStack           []Span
-	pushedEval          bool
-	hasDownload         bool
-	downloadSpans       []Span
-	pipedDownloadSpans  []Span
+	src                string
+	funcs              []FunctionInfo
+	assigns            []Assign
+	globalRanges       []LineRange
+	heredocs           []Heredoc
+	extSpans           []Span
+	flags              Flags
+	bootLine           int
+	tokens             []Token
+	scriptLines        []string
+	frames             []frameType
+	shellEvalDepth     int
+	evalStack          []Span
+	pushedEval         bool
+	hasDownload        bool
+	downloadSpans      []Span
+	pipedDownloadSpans []Span
 
 	// Function-call detection state
 	mainList     map[string]bool
@@ -432,7 +432,7 @@ func (w *walker) visitNode(n syntax.Node) {
 		w.emitToken(Token{Kind: "operator", Op: "))", StartLine: w.posLine(x.Rparen), StartCol: w.posCol(x.Rparen), EndLine: w.posLine(x.Rparen), EndCol: w.posCol(x.Rparen) + 2})
 
 	case *syntax.WhileClause:
-	op := "while"
+		op := "while"
 		if x.Until {
 			op = "until"
 		}
@@ -828,35 +828,35 @@ func getCallExpr(stmt *syntax.Stmt) *syntax.CallExpr {
 // --- Service / user extraction ------------------------------------------------
 
 var knownImplicitUsers = map[string]bool{
-	"root":     true,
-	"nobody":   true,
-	"nogroup":  true,
-	"daemon":   true,
-	"bin":      true,
-	"sys":      true,
-	"sync":     true,
-	"games":    true,
-	"man":      true,
-	"lp":       true,
-	"mail":     true,
-	"news":     true,
-	"uucp":     true,
-	"proxy":    true,
-	"www-data": true,
-	"postgres": true,
-	"mysql":    true,
-	"redis":    true,
-	"nginx":    true,
-	"mosquitto": true,
+	"root":       true,
+	"nobody":     true,
+	"nogroup":    true,
+	"daemon":     true,
+	"bin":        true,
+	"sys":        true,
+	"sync":       true,
+	"games":      true,
+	"man":        true,
+	"lp":         true,
+	"mail":       true,
+	"news":       true,
+	"uucp":       true,
+	"proxy":      true,
+	"www-data":   true,
+	"postgres":   true,
+	"mysql":      true,
+	"redis":      true,
+	"nginx":      true,
+	"mosquitto":  true,
 	"prometheus": true,
-	"grafana":  true,
-	"caddy":    true,
-	"mongodb":  true,
-	"influxdb": true,
-	"tomcat":   true,
-	"jenkins":  true,
-	"sonarqube": true,
-	"mariadb":  true,
+	"grafana":    true,
+	"caddy":      true,
+	"mongodb":    true,
+	"influxdb":   true,
+	"tomcat":     true,
+	"jenkins":    true,
+	"sonarqube":  true,
+	"mariadb":    true,
 }
 
 func pathFromSourceLine(line string) string {
@@ -1168,22 +1168,22 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	}
 
 	w := &walker{
-		src:          src,
-		funcs:        []FunctionInfo{},
-		assigns:      []Assign{},
-		globalRanges:   []LineRange{},
-		heredocs:     []Heredoc{},
-		extSpans:     []Span{},
-		tokens:       []Token{},
-		scriptLines:  lines,
-		frames:              []frameType{},
-		evalStack:           []Span{},
-		downloadSpans:       []Span{},
-		pipedDownloadSpans:  []Span{},
-		mainList:            map[string]bool{},
-		scopeStack:   []funcScope{},
-		dependentsOf:      map[string]map[string]bool{},
-		heredocOutputs:    map[int]string{},
+		src:                src,
+		funcs:              []FunctionInfo{},
+		assigns:            []Assign{},
+		globalRanges:       []LineRange{},
+		heredocs:           []Heredoc{},
+		extSpans:           []Span{},
+		tokens:             []Token{},
+		scriptLines:        lines,
+		frames:             []frameType{},
+		evalStack:          []Span{},
+		downloadSpans:      []Span{},
+		pipedDownloadSpans: []Span{},
+		mainList:           map[string]bool{},
+		scopeStack:         []funcScope{},
+		dependentsOf:       map[string]map[string]bool{},
+		heredocOutputs:     map[int]string{},
 	}
 
 	// Bootstrap detection via source text scan
@@ -1291,13 +1291,13 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 					}
 				}
 				a := Assign{
-					Name:              name,
-					Line:              w.posLine(as.Pos()),
-					StartCol:          w.posCol(as.Pos()),
-					EndCol:            w.posCol(as.End()),
-					ValueHasCmdSubst:  hasCmd,
-					InBootstrapZone:   false,
-					IsRepoBase:        name == "REPO_BASE",
+					Name:                name,
+					Line:                w.posLine(as.Pos()),
+					StartCol:            w.posCol(as.Pos()),
+					EndCol:              w.posCol(as.End()),
+					ValueHasCmdSubst:    hasCmd,
+					InBootstrapZone:     false,
+					IsRepoBase:          name == "REPO_BASE",
 					ValueIsParamDefault: isParamDefault,
 				}
 				if name == "REPO_BASE" && !repoBaseFound {
@@ -1407,19 +1407,19 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	}
 
 	return ASTOutput{
-		SchemaVersion: 2,
-		Slug:         slug,
-		Type:         string(scriptType),
-		TotalLines:   totalLines,
-		Source:       src,
-		SourceLines:  lines,
-		Functions:    w.funcs,
-		Assigns:      w.assigns,
-		GlobalRanges:   w.globalRanges,
-		Heredocs:     w.heredocs,
-		DownloadSpans:       w.downloadSpans,
-		PipedDownloadSpans:  w.pipedDownloadSpans,
-		ExternalSpans:       w.extSpans,
+		SchemaVersion:      2,
+		Slug:               slug,
+		Type:               string(scriptType),
+		TotalLines:         totalLines,
+		Source:             src,
+		SourceLines:        lines,
+		Functions:          w.funcs,
+		Assigns:            w.assigns,
+		GlobalRanges:       w.globalRanges,
+		Heredocs:           w.heredocs,
+		DownloadSpans:      w.downloadSpans,
+		PipedDownloadSpans: w.pipedDownloadSpans,
+		ExternalSpans:      w.extSpans,
 		Tokens:             w.tokens,
 		BootstrapLine:      w.bootLine,
 		Hooks:              hooks,
@@ -1439,19 +1439,19 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	}
 
 	return ASTOutput{
-		SchemaVersion: 2,
-		Slug:         slug,
-		Type:         string(scriptType),
-		TotalLines:   totalLines,
-		Source:       src,
-		SourceLines:  lines,
-		Functions:    w.funcs,
-		Assigns:      w.assigns,
-		GlobalRanges:   w.globalRanges,
-		Heredocs:     w.heredocs,
-		DownloadSpans:       w.downloadSpans,
-		PipedDownloadSpans:  w.pipedDownloadSpans,
-		ExternalSpans:       w.extSpans,
+		SchemaVersion:      2,
+		Slug:               slug,
+		Type:               string(scriptType),
+		TotalLines:         totalLines,
+		Source:             src,
+		SourceLines:        lines,
+		Functions:          w.funcs,
+		Assigns:            w.assigns,
+		GlobalRanges:       w.globalRanges,
+		Heredocs:           w.heredocs,
+		DownloadSpans:      w.downloadSpans,
+		PipedDownloadSpans: w.pipedDownloadSpans,
+		ExternalSpans:      w.extSpans,
 		Tokens:             w.tokens,
 		BootstrapLine:      w.bootLine,
 		Hooks:              hooks,
