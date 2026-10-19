@@ -382,9 +382,18 @@ _stop_container_if_installing() {
 # - Stops orphaned container processes on failure
 # - Cleans up lock files
 # - Clears the run_update_script pending flag when the update exited 0
+# - Owns noncritical successful-update cleanup, including hooks calling exit
 # ------------------------------------------------------------------------------
 on_exit() {
   local exit_code=$?
+  trap - EXIT
+
+  if [[ $exit_code -eq 0 && "${_UPDATE_CLEANUP:-0}" == 1 ]] && declare -F cleanup_lxc > /dev/null 2>&1; then
+    _UPDATE_CLEANUP=0
+    # Cleanup is noncritical, even if an old/custom helper explicitly exits.
+    # Its filesystem effects persist; its shell status/traps cannot replace ours.
+    (cleanup_lxc) || true
+  fi
 
   # Best-effort log collection on failure (non-critical)
   if [[ $exit_code -ne 0 ]] && declare -f ensure_log_on_host > /dev/null 2>&1; then
@@ -393,13 +402,15 @@ on_exit() {
 
   # Stop orphaned container if we're in the install phase and exiting with error
   if [[ $exit_code -ne 0 ]]; then
-    _stop_container_if_installing
+    _stop_container_if_installing || true
   fi
 
-  [[ -n "${lockfile:-}" && -e "$lockfile" ]] && rm -f "$lockfile"
+  if [[ -n "${lockfile:-}" && -e "$lockfile" ]]; then
+    rm -f "$lockfile" || true
+  fi
   # run_update_script: only a successful run clears its unfinished-update flag
   if [[ $exit_code -eq 0 && -n "${_UPDATE_PENDING_FLAG:-}" ]]; then
-    rm -f -- "$_UPDATE_PENDING_FLAG"
+    rm -f -- "$_UPDATE_PENDING_FLAG" || true
   fi
   exit "$exit_code"
 }

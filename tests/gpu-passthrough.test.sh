@@ -3,6 +3,9 @@
 # Extracted functions consume globals and intentionally replace later test stubs.
 # shellcheck disable=SC2034,SC2218
 set -euo pipefail
+: "${TMPDIR:?disk-backed TMPDIR required}"
+case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 work=${work:-$(mktemp -d)}
 export ROOT work
@@ -47,6 +50,7 @@ msg_custom() { :; }
 msg_info() { :; }
 msg_ok() { printf '%s\n' "$*" >> "$work/ok.log"; }
 msg_warn() { printf '%s\n' "$*" >> "$work/warn.log"; }
+msg_error() { printf '%s\n' "$*" >&2; }
 ENABLE_GPU=no var_gpu=yes
 if is_gpu_app; then exit 1; fi
 ENABLE_GPU=yes var_gpu=no
@@ -185,16 +189,37 @@ printf 'PASS guest permission setup is quiet group-membership-only for both CT t
 
 # Observe the consumer of a real generated bundle, including quoted multi-type context.
 source "$ROOT/misc/bundle.func"
-SESSION_ID="gpu-test-$$" cache="/tmp/framework-gpu-test-$$"
-trap 'rm -rf "$work" "$cache"; rm -f /tmp/update-bundle-"$SESSION_ID".sh' EXIT
-mkdir -p "$cache"
+SESSION_ID="gpu-test-$$" cache="$TMPDIR/framework-gpu-test-$$"
+test ! -e "$cache"
+mkdir -m 700 "$cache"
+trap 'rm -rf "$work" "$cache"' EXIT
+var_lxc_tmpdir="$work/receiving-tmp"
 printf 'load_functions() { :; }; color() { :; }\n' > "$cache/core.func"
 printf 'catch_errors() { :; }\n' > "$cache/error_handler.func"
 printf 'setup_lxc() { :; }\n' > "$cache/install.func"
 printf 'setup_uv() { :; }\n' > "$cache/tools.func"
 printf 'clone_and_deploy_gh_commit() { :; }\n' > "$cache/github.func"
 _framework_cache_ensure() { :; }
-pct() { if [[ $1 == push ]]; then cp "$3" "$4"; fi; }
+pct() {
+  [[ "$2" == 9876 ]] || return 99
+  case "$1" in
+    push)
+      [[ "$3" == "$TMPDIR/update-bundle-$SESSION_ID".* && "$4" == "$work/bundle.sh".* ]] || return 99
+      cp -- "$3" "$4"
+      ;;
+    exec)
+      [[ "$3" == -- ]] || return 99
+      shift 3
+      case "$1" in mktemp | chmod | mv | rm) ;; *) return 99 ;; esac
+      local argument
+      for argument in "${@:2}"; do
+        case "$argument" in "$work/"* | 0700 | -f | --) ;; *) return 99 ;; esac
+      done
+      "$@"
+      ;;
+    *) return 99 ;;
+  esac
+}
 APP=Probe NSAPP=probe REPO_BASE=offline CTID=9876
 ENABLE_GPU=yes GPU_TYPE='AMD NVIDIA' INSTALL_NVIDIA_DRIVERS=no CT_TYPE=0
 update_script() { printf '%s|%s|%s|%s\n' "$ENABLE_GPU" "$GPU_TYPE" "$INSTALL_NVIDIA_DRIVERS" "$CTTYPE"; }

@@ -104,17 +104,20 @@ function update_script() {
     exit
   fi
   if check_for_gh_release "privatebin" "PrivateBin/PrivateBin"; then
-    msg_info "Creating backup"
-    cp -f /opt/privatebin/cfg/conf.php /tmp/privatebin_conf.bak
-    msg_ok "Backup created"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "privatebin" "PrivateBin/PrivateBin" "tarball"
+    [[ -f /opt/privatebin/cfg/conf.php ]] || {
+      msg_error "Missing PrivateBin cfg/conf.php; refusing to replace existing settings"
+      exit 1
+    }
+    local data_present=no
+    [[ ! -e /opt/privatebin/data && ! -L /opt/privatebin/data ]] || data_present=yes
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="cfg data ${CLEAN_INSTALL_KEEP:-}" fetch_and_deploy_gh_release "privatebin" "PrivateBin/PrivateBin" "tarball"
 
     msg_info "Configuring ${APP}"
-    mkdir -p /opt/privatebin/data
-    mv /tmp/privatebin_conf.bak /opt/privatebin/cfg/conf.php
-    chown -R www-data:www-data /opt/privatebin
-    chmod -R 0755 /opt/privatebin/data
+    if [[ "$data_present" == no ]]; then
+      mkdir -p /opt/privatebin/data
+      chown -R www-data:www-data /opt/privatebin/data
+      chmod 0755 /opt/privatebin/data
+    fi
     systemctl reload nginx php8.2-fpm
     msg_ok "Configured ${APP}"
     msg_ok "Updated successfully!"

@@ -133,7 +133,8 @@ if [[ "$EUID" == 0 ]]; then chown 12345:12346 "$CASE/target"; fi
 before=$(stat -c '%a:%u:%g' "$CASE/target")
 cp() {
   if [[ "${!#}" == "$CASE/target/" ]]; then
-    command cp "$work/private/bin/server" "$CASE/target/partial"
+    # Model a partial entry in this payload, not an arbitrary writer's sibling.
+    command cp "$work/private/bin/server" "$CASE/target/file with spaces"
     return 1
   fi
   command cp "$@"
@@ -142,6 +143,6 @@ rc=0
 _deploy_replace_contents "$work/private" "$CASE/target" 1 || rc=$?
 unset -f cp
 [[ "$rc" == 252 && "$(stat -c '%a:%u:%g' "$CASE/target")" == "$before" ]]
-[[ "$(< "$CASE/target/content")" == 'old payload' && ! -e "$CASE/target/partial" ]]
+[[ "$(< "$CASE/target/content")" == 'old payload' && ! -e "$CASE/target/file with spaces" ]]
 [[ -z "$(find "$CASE/target" -name '.deploy-aside*')" ]]
 printf 'PASS partial-copy failure restores entries without changing target mode/owner\n'

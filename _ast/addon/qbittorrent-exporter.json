@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "qbittorrent-exporter",
   "type": "addon",
-  "total_lines": 194,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: CrazyWolf13\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/martabal/qbittorrent-exporter\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"qbittorrent-exporter\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_install_path=\"${var_addon_install_path:-/opt/qbittorrent-exporter}\"\nvar_addon_config_path=\"${var_addon_config_path:-/opt/qbittorrent-exporter.env}\"\nvar_addon_service=\"${var_addon_service:-qbittorrent-exporter}\"\nvar_addon_repo=\"${var_addon_repo:-martabal/qbittorrent-exporter}\"\nvar_addon_default_port=\"${var_addon_default_port:-8090}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  echo \"\"\n  read -erp \"${TAB3}Enter URL of qBittorrent, example: (http://127.0.0.1:8080): \" QBITTORRENT_BASE_URL || true\n  echo -e \"${TAB3}${INFO} Create an API key in qBittorrent under Tools \u003e Options \u003e Web UI \u003e API key\"\n  read -erp \"${TAB3}Enter qBittorrent API key: \" QBITTORRENT_API_KEY || true\n\n  fetch_and_deploy_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n  setup_go\n\n  msg_info \"Building qBittorrent-Exporter\"\n  cd \"$var_addon_install_path\" || exit\n  $STD /usr/local/bin/go build -o ./qbittorrent-exporter\n  msg_ok \"Built qBittorrent-Exporter\"\n\n  msg_info \"Creating configuration\"\n  cat \u003c\u003c EOF \u003e \"$var_addon_config_path\"\n# https://github.com/martabal/qbittorrent-exporter?tab=readme-ov-file#parameters\nQBITTORRENT_BASE_URL=\"${QBITTORRENT_BASE_URL:-http://127.0.0.1:8080}\"\nQBITTORRENT_API_KEY=\"${QBITTORRENT_API_KEY:-}\"\nEOF\n  chmod 600 \"$var_addon_config_path\"\n  msg_ok \"Created configuration\"\n\n  msg_info \"Creating service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e \"/etc/init.d/${var_addon_service}\"\n#!/sbin/openrc-run\n\nname=\"qbittorrent-exporter\"\ndescription=\"qBittorrent Exporter for Prometheus\"\ncommand=\"${var_addon_install_path}/qbittorrent-exporter\"\ncommand_background=true\ndirectory=\"${var_addon_install_path}\"\npidfile=\"/run/\\${RC_SVCNAME}.pid\"\noutput_log=\"/var/log/qbittorrent-exporter.log\"\nerror_log=\"/var/log/qbittorrent-exporter.log\"\n\ndepend() {\n    need net\n    after firewall\n}\n\nstart_pre() {\n    if [ -f \"${var_addon_config_path}\" ]; then\n        export \\$(grep -v '^#' ${var_addon_config_path} | xargs)\n    fi\n}\nEOF\n    chmod +x \"/etc/init.d/${var_addon_service}\"\n    $STD rc-update add \"$var_addon_service\" default\n    $STD rc-service \"$var_addon_service\" start\n  else\n    cat \u003c\u003c EOF \u003e \"/etc/systemd/system/${var_addon_service}.service\"\n[Unit]\nDescription=qbittorrent-exporter\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_install_path}\nEnvironmentFile=${var_addon_config_path}\nExecStart=${var_addon_install_path}/qbittorrent-exporter\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now \"$var_addon_service\"\n  fi\n  msg_ok \"Created and started service\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Metrics:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}/metrics${CL}\"\n  echo -e \"${INFO}${YW}Config:${CL} ${var_addon_config_path}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if [[ ! -f \"${var_addon_install_path}/qbittorrent-exporter\" ]]; then\n    msg_error \"${APP} is not installed. Nothing to update.\"\n    exit 233\n  fi\n  if check_for_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\"; then\n    # v2.0.0 breaking change: username/password login was replaced by an API key\n    if [[ \"$(printf '%s\\n' \"2.0.0\" \"$CHECK_UPDATE_RELEASE\" | sort -V | tail -n1)\" == \"$CHECK_UPDATE_RELEASE\" ]] \u0026\u0026\n      ! grep -q \"QBITTORRENT_API_KEY\" \"$var_addon_config_path\" 2\u003e /dev/null; then\n      echo \"\"\n      msg_warn \"Version 2.0.0 introduces a breaking change: username/password login has been replaced by an API key.\"\n      echo -e \"${TAB3}${INFO} You must create an API key in qBittorrent under Tools \u003e Options \u003e Web UI \u003e API key\"\n      echo \"\"\n      echo -n \"${TAB3}Enter your qBittorrent API key (or press Enter to abort): \"\n      read -r QBITTORRENT_API_KEY || true\n      if [[ -z \"${QBITTORRENT_API_KEY:-}\" ]]; then\n        msg_warn \"No API key provided. Update aborted.\"\n        exit 0\n      fi\n      sed -i '/^QBITTORRENT_USERNAME=/d' \"$var_addon_config_path\"\n      sed -i '/^QBITTORRENT_PASSWORD=/d' \"$var_addon_config_path\"\n      echo \"QBITTORRENT_API_KEY=\\\"${QBITTORRENT_API_KEY}\\\"\" \u003e\u003e \"$var_addon_config_path\"\n      msg_ok \"API key saved to configuration\"\n    fi\n\n    msg_info \"Stopping service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop \"$var_addon_service\" \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped service\"\n\n    fetch_and_deploy_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n    setup_go\n\n    msg_info \"Building qBittorrent-Exporter\"\n    cd \"$var_addon_install_path\" || exit\n    $STD /usr/local/bin/go build -o ./qbittorrent-exporter\n    msg_ok \"Built qBittorrent-Exporter\"\n\n    msg_info \"Starting service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" start\n    else\n      systemctl start \"$var_addon_service\"\n    fi\n    msg_ok \"Started service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    rc-update del \"$var_addon_service\" \u0026\u003e /dev/null || true\n    rm -f \"/etc/init.d/${var_addon_service}\"\n  else\n    systemctl disable -q --now \"$var_addon_service\" \u0026\u003e /dev/null || true\n    rm -f \"/etc/systemd/system/${var_addon_service}.service\"\n  fi\n  rm -rf \"$var_addon_install_path\"\n  rm -f \"$var_addon_config_path\"\n  rm -f \"$HOME/.qbittorrent-exporter\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
+  "total_lines": 192,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: CrazyWolf13\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/martabal/qbittorrent-exporter\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"qbittorrent-exporter\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_install_path=\"${var_addon_install_path:-/opt/qbittorrent-exporter}\"\nvar_addon_config_path=\"${var_addon_config_path:-/opt/qbittorrent-exporter.env}\"\nvar_addon_service=\"${var_addon_service:-qbittorrent-exporter}\"\nvar_addon_repo=\"${var_addon_repo:-martabal/qbittorrent-exporter}\"\nvar_addon_default_port=\"${var_addon_default_port:-8090}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  echo \"\"\n  read -erp \"${TAB3}Enter URL of qBittorrent, example: (http://127.0.0.1:8080): \" QBITTORRENT_BASE_URL || true\n  echo -e \"${TAB3}${INFO} Create an API key in qBittorrent under Tools \u003e Options \u003e Web UI \u003e API key\"\n  read -erp \"${TAB3}Enter qBittorrent API key: \" QBITTORRENT_API_KEY || true\n\n  fetch_and_deploy_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n  setup_go\n\n  msg_info \"Building qBittorrent-Exporter\"\n  cd \"$var_addon_install_path\" || exit\n  $STD /usr/local/bin/go build -o ./qbittorrent-exporter\n  msg_ok \"Built qBittorrent-Exporter\"\n\n  msg_info \"Creating configuration\"\n  cat \u003c\u003c EOF \u003e \"$var_addon_config_path\"\n# https://github.com/martabal/qbittorrent-exporter?tab=readme-ov-file#parameters\nQBITTORRENT_BASE_URL=\"${QBITTORRENT_BASE_URL:-http://127.0.0.1:8080}\"\nQBITTORRENT_API_KEY=\"${QBITTORRENT_API_KEY:-}\"\nEOF\n  chmod 600 \"$var_addon_config_path\"\n  msg_ok \"Created configuration\"\n\n  msg_info \"Creating service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e \"/etc/init.d/${var_addon_service}\"\n#!/sbin/openrc-run\n\nname=\"qbittorrent-exporter\"\ndescription=\"qBittorrent Exporter for Prometheus\"\ncommand=\"${var_addon_install_path}/qbittorrent-exporter\"\ncommand_background=true\ndirectory=\"${var_addon_install_path}\"\npidfile=\"/run/\\${RC_SVCNAME}.pid\"\noutput_log=\"/var/log/qbittorrent-exporter.log\"\nerror_log=\"/var/log/qbittorrent-exporter.log\"\n\ndepend() {\n    need net\n    after firewall\n}\n\nstart_pre() {\n    if [ -f \"${var_addon_config_path}\" ]; then\n        export \\$(grep -v '^#' ${var_addon_config_path} | xargs)\n    fi\n}\nEOF\n    chmod +x \"/etc/init.d/${var_addon_service}\"\n    $STD rc-update add \"$var_addon_service\" default\n    $STD rc-service \"$var_addon_service\" start\n  else\n    cat \u003c\u003c EOF \u003e \"/etc/systemd/system/${var_addon_service}.service\"\n[Unit]\nDescription=qbittorrent-exporter\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_install_path}\nEnvironmentFile=${var_addon_config_path}\nExecStart=${var_addon_install_path}/qbittorrent-exporter\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now \"$var_addon_service\"\n  fi\n  msg_ok \"Created and started service\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Metrics:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}/metrics${CL}\"\n  echo -e \"${INFO}${YW}Config:${CL} ${var_addon_config_path}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if [[ ! -f \"${var_addon_install_path}/qbittorrent-exporter\" ]]; then\n    msg_error \"${APP} is not installed. Nothing to update.\"\n    exit 233\n  fi\n  if check_for_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\"; then\n    # v2.0.0 breaking change: username/password login was replaced by an API key\n    if [[ \"$(printf '%s\\n' \"2.0.0\" \"$CHECK_UPDATE_RELEASE\" | sort -V | tail -n1)\" == \"$CHECK_UPDATE_RELEASE\" ]] \u0026\u0026\n      ! grep -q \"QBITTORRENT_API_KEY\" \"$var_addon_config_path\" 2\u003e /dev/null; then\n      echo \"\"\n      msg_warn \"Version 2.0.0 introduces a breaking change: username/password login has been replaced by an API key.\"\n      echo -e \"${TAB3}${INFO} You must create an API key in qBittorrent under Tools \u003e Options \u003e Web UI \u003e API key\"\n      echo \"\"\n      echo -n \"${TAB3}Enter your qBittorrent API key (or press Enter to abort): \"\n      read -r QBITTORRENT_API_KEY || true\n      if [[ -z \"${QBITTORRENT_API_KEY:-}\" ]]; then\n        msg_warn \"No API key provided. Update aborted.\"\n        exit 0\n      fi\n      sed -i '/^QBITTORRENT_USERNAME=/d' \"$var_addon_config_path\"\n      sed -i '/^QBITTORRENT_PASSWORD=/d' \"$var_addon_config_path\"\n      echo \"QBITTORRENT_API_KEY=\\\"${QBITTORRENT_API_KEY}\\\"\" \u003e\u003e \"$var_addon_config_path\"\n      msg_ok \"API key saved to configuration\"\n    fi\n\n    msg_info \"Stopping service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop \"$var_addon_service\" \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped service\"\n\n    fetch_and_deploy_gh_release \"qbittorrent-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n    setup_go\n\n    msg_info \"Building qBittorrent-Exporter\"\n    cd \"$var_addon_install_path\" || exit\n    $STD /usr/local/bin/go build -o ./qbittorrent-exporter\n    msg_ok \"Built qBittorrent-Exporter\"\n\n    msg_info \"Starting service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" start\n    else\n      systemctl start \"$var_addon_service\"\n    fi\n    msg_ok \"Started service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  svc_prepare_uninstall \"$var_addon_service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rm -f \"/etc/init.d/${var_addon_service}\"\n  else\n    rm -f \"/etc/systemd/system/${var_addon_service}.service\"\n  fi\n  rm -rf \"$var_addon_install_path\"\n  rm -f \"$var_addon_config_path\"\n  rm -f \"$HOME/.qbittorrent-exporter\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -165,12 +165,10 @@
     "",
     "function uninstall_script() {",
     "  msg_info \"Uninstalling ${APP}\"",
+    "  svc_prepare_uninstall \"$var_addon_service\"",
     "  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then",
-    "    rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true",
-    "    rc-update del \"$var_addon_service\" \u0026\u003e /dev/null || true",
     "    rm -f \"/etc/init.d/${var_addon_service}\"",
     "  else",
-    "    systemctl disable -q --now \"$var_addon_service\" \u0026\u003e /dev/null || true",
     "    rm -f \"/etc/systemd/system/${var_addon_service}.service\"",
     "  fi",
     "  rm -rf \"$var_addon_install_path\"",
@@ -240,7 +238,7 @@
     {
       "name": "uninstall_script",
       "start_line": 159,
-      "end_line": 173,
+      "end_line": 171,
       "name_span": {
         "start_line": 159,
         "start_col": 10,
@@ -324,12 +322,12 @@
   ],
   "global_ranges": [
     {
-      "start_line": 178,
-      "end_line": 178
+      "start_line": 176,
+      "end_line": 176
     },
     {
-      "start_line": 185,
-      "end_line": 185
+      "start_line": 183,
+      "end_line": 183
     }
   ],
   "heredocs": [
@@ -3101,714 +3099,603 @@
       "end_col": 32
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "command",
       "start_line": 161,
       "start_col": 3,
       "end_line": 161,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 161,
+      "start_col": 25,
+      "end_line": 161,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 161,
+      "start_col": 26,
+      "end_line": 161,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 162,
+      "start_col": 3,
+      "end_line": 162,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 6,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 9,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 23
     },
     {
       "kind": "param-exp",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 10,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 24,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 27,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 36,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 38
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 38,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 161,
+      "start_line": 162,
       "start_col": 40,
-      "end_line": 161,
+      "end_line": 162,
       "end_col": 44
     },
     {
       "kind": "command",
-      "start_line": 162,
-      "start_col": 5,
-      "end_line": 162,
-      "end_col": 15
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 162,
-      "start_col": 16,
-      "end_line": 162,
-      "end_col": 36
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 162,
-      "start_col": 17,
-      "end_line": 162,
-      "end_col": 35
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 162,
-      "start_col": 42,
-      "end_line": 162,
-      "end_col": 44
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 162,
-      "start_col": 55,
-      "end_line": 162,
-      "end_col": 57
-    },
-    {
-      "kind": "command",
-      "start_line": 162,
-      "start_col": 58,
-      "end_line": 162,
-      "end_col": 62
-    },
-    {
-      "kind": "command",
       "start_line": 163,
       "start_col": 5,
       "end_line": 163,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 163,
-      "start_col": 19,
-      "end_line": 163,
-      "end_col": 39
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 163,
-      "start_col": 20,
-      "end_line": 163,
-      "end_col": 38
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 163,
-      "start_col": 40,
-      "end_line": 163,
-      "end_col": 42
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 163,
-      "start_col": 53,
-      "end_line": 163,
-      "end_col": 55
-    },
-    {
-      "kind": "command",
-      "start_line": 163,
-      "start_col": 56,
-      "end_line": 163,
-      "end_col": 60
-    },
-    {
-      "kind": "command",
-      "start_line": 164,
-      "start_col": 5,
-      "end_line": 164,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 164,
+      "start_line": 163,
       "start_col": 11,
-      "end_line": 164,
+      "end_line": 163,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 164,
+      "start_line": 163,
       "start_col": 24,
-      "end_line": 164,
+      "end_line": 163,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 165,
+      "start_line": 164,
       "start_col": 3,
+      "end_line": 164,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 165,
+      "start_col": 5,
       "end_line": 165,
       "end_col": 7
     },
     {
-      "kind": "command",
-      "start_line": 166,
-      "start_col": 5,
-      "end_line": 166,
-      "end_col": 14
-    },
-    {
       "kind": "string-dq",
-      "start_line": 166,
-      "start_col": 32,
-      "end_line": 166,
-      "end_col": 52
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 166,
-      "start_col": 33,
-      "end_line": 166,
-      "end_col": 51
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 166,
-      "start_col": 53,
-      "end_line": 166,
-      "end_col": 55
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 166,
-      "start_col": 66,
-      "end_line": 166,
-      "end_col": 68
-    },
-    {
-      "kind": "command",
-      "start_line": 166,
-      "start_col": 69,
-      "end_line": 166,
-      "end_col": 73
-    },
-    {
-      "kind": "command",
-      "start_line": 167,
-      "start_col": 5,
-      "end_line": 167,
-      "end_col": 7
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 11,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 61
     },
     {
       "kind": "param-exp",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 32,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 52
     },
     {
       "kind": "keyword",
       "op": "fi",
+      "start_line": 166,
+      "start_col": 3,
+      "end_line": 166,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 167,
+      "start_col": 3,
+      "end_line": 167,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 10,
+      "end_line": 167,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 167,
+      "start_col": 11,
+      "end_line": 167,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
       "start_line": 168,
       "start_col": 3,
       "end_line": 168,
       "end_col": 5
     },
     {
-      "kind": "command",
-      "start_line": 169,
-      "start_col": 3,
-      "end_line": 169,
-      "end_col": 5
-    },
-    {
       "kind": "string-dq",
-      "start_line": 169,
-      "start_col": 10,
-      "end_line": 169,
-      "end_col": 35
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 169,
-      "start_col": 11,
-      "end_line": 169,
-      "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 170,
-      "start_col": 3,
-      "end_line": 170,
-      "end_col": 5
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 170,
+      "start_line": 168,
       "start_col": 9,
-      "end_line": 170,
+      "end_line": 168,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 170,
+      "start_line": 168,
       "start_col": 10,
-      "end_line": 170,
+      "end_line": 168,
       "end_col": 32
     },
     {
       "kind": "command",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 3,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 5
     },
     {
       "kind": "string-dq",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 9,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 38
     },
     {
       "kind": "param-exp",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 10,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 15
     },
     {
       "kind": "command",
-      "start_line": 172,
+      "start_line": 170,
       "start_col": 3,
-      "end_line": 172,
+      "end_line": 170,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 172,
+      "start_line": 170,
       "start_col": 10,
-      "end_line": 172,
+      "end_line": 170,
       "end_col": 39
     },
     {
       "kind": "param-exp",
-      "start_line": 172,
+      "start_line": 170,
       "start_col": 11,
-      "end_line": 172,
+      "end_line": 170,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 171,
+      "start_col": 1,
+      "end_line": 171,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 173,
       "start_col": 1,
       "end_line": 173,
-      "end_col": 2
+      "end_col": 73
+    },
+    {
+      "kind": "comment",
+      "start_line": 174,
+      "start_col": 1,
+      "end_line": 174,
+      "end_col": 75
     },
     {
       "kind": "comment",
       "start_line": 175,
       "start_col": 1,
       "end_line": 175,
-      "end_col": 73
-    },
-    {
-      "kind": "comment",
-      "start_line": 176,
-      "start_col": 1,
-      "end_line": 176,
-      "end_col": 75
-    },
-    {
-      "kind": "comment",
-      "start_line": 177,
-      "start_col": 1,
-      "end_line": 177,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 1,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 3
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 4,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 6,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 22,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 23
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 35,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 37
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 38,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 178,
+      "start_line": 176,
       "start_col": 40,
-      "end_line": 178,
+      "end_line": 176,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 3,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 6,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 9,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 11
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 32,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 34
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 34,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 179,
+      "start_line": 177,
       "start_col": 36,
-      "end_line": 179,
+      "end_line": 177,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 180,
+      "start_line": 178,
       "start_col": 5,
-      "end_line": 180,
+      "end_line": 178,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 180,
+      "start_line": 178,
       "start_col": 16,
-      "end_line": 180,
+      "end_line": 178,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 180,
+      "start_line": 178,
       "start_col": 29,
-      "end_line": 180,
+      "end_line": 178,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 180,
+      "start_line": 178,
       "start_col": 32,
-      "end_line": 180,
+      "end_line": 178,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 180,
+      "start_line": 178,
       "start_col": 56,
-      "end_line": 180,
+      "end_line": 178,
       "end_col": 58
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 181,
+      "start_line": 179,
       "start_col": 3,
-      "end_line": 181,
+      "end_line": 179,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 5,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 12
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 20,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 22
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 33,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 36,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 43
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 60,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 183,
+      "start_line": 181,
       "start_col": 3,
-      "end_line": 183,
+      "end_line": 181,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 184,
+      "start_line": 182,
       "start_col": 1,
-      "end_line": 184,
+      "end_line": 182,
       "end_col": 3
     },
     {
       "kind": "command",
-      "start_line": 185,
+      "start_line": 183,
       "start_col": 1,
-      "end_line": 185,
+      "end_line": 183,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 185,
+      "start_line": 183,
       "start_col": 17,
-      "end_line": 185,
+      "end_line": 183,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 185,
+      "start_line": 183,
       "start_col": 30,
-      "end_line": 185,
+      "end_line": 183,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 185,
+      "start_line": 183,
       "start_col": 34,
-      "end_line": 185,
+      "end_line": 183,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 185,
+      "start_line": 183,
       "start_col": 37,
-      "end_line": 185,
+      "end_line": 183,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 186,
+      "start_line": 184,
       "start_col": 3,
-      "end_line": 186,
+      "end_line": 184,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 186,
+      "start_line": 184,
       "start_col": 8,
-      "end_line": 186,
+      "end_line": 184,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 186,
+      "start_line": 184,
       "start_col": 61,
-      "end_line": 186,
+      "end_line": 184,
       "end_col": 63
     },
     {
       "kind": "command",
-      "start_line": 187,
+      "start_line": 185,
       "start_col": 3,
-      "end_line": 187,
+      "end_line": 185,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 186,
+      "start_col": 1,
+      "end_line": 186,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 188,
       "start_col": 1,
       "end_line": 188,
-      "end_col": 2
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 189,
+      "start_col": 1,
+      "end_line": 189,
+      "end_col": 28
     },
     {
       "kind": "comment",
       "start_line": 190,
       "start_col": 1,
       "end_line": 190,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 191,
-      "start_col": 1,
-      "end_line": 191,
-      "end_col": 28
-    },
-    {
-      "kind": "comment",
-      "start_line": 192,
-      "start_col": 1,
-      "end_line": 192,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 193,
+      "start_line": 191,
       "start_col": 1,
-      "end_line": 193,
+      "end_line": 191,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 193,
+      "start_line": 191,
       "start_col": 8,
-      "end_line": 193,
+      "end_line": 191,
       "end_col": 59
     },
     {
       "kind": "command",
-      "start_line": 193,
+      "start_line": 191,
       "start_col": 10,
-      "end_line": 193,
+      "end_line": 191,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 193,
+      "start_line": 191,
       "start_col": 21,
-      "end_line": 193,
+      "end_line": 191,
       "end_col": 58
     },
     {
       "kind": "param-exp",
-      "start_line": 193,
+      "start_line": 191,
       "start_col": 22,
-      "end_line": 193,
+      "end_line": 191,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 193,
+  "bootstrap_line": 191,
   "hooks": {
     "header_info": false,
     "install_script": true,

@@ -12,8 +12,8 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 APP="ByteStash"
 var_tags="${var_tags:-code}"
 var_disk="${var_disk:-4}"
-var_cpu="${var_cpu:-1}"
-var_ram="${var_ram:-1024}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-2048}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
@@ -94,10 +94,9 @@ function update_script() {
     systemctl stop bytestash-backend bytestash-frontend
     msg_ok "Services Stopped"
 
-    [[ -d /opt/bytestash/data ]] && create_backup /opt/bytestash/data
-    [[ -d /opt/data ]] && create_backup /opt/data
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bytestash" "jordan-dalby/ByteStash" "tarball"
-    restore_backup
+    # Current data stays in place. Legacy /opt/data is outside this deployment;
+    # copying/restoring it would needlessly replace live files or a mounted path.
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="data ${CLEAN_INSTALL_KEEP:-}" fetch_and_deploy_gh_release "bytestash" "jordan-dalby/ByteStash" "tarball"
 
     msg_info "Configuring ByteStash"
     cd /opt/bytestash/server || exit

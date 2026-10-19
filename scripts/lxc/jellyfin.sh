@@ -84,10 +84,19 @@ function update_script() {
     msg_info "Updating Intel Dependencies"
     rm -f ~/.intel-* || true
 
-    fetch_and_deploy_gh_release "intel-libgdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb"
-
-    local igc_tag
-    _resolve_igc_tag igc_tag
+    local igc_tag compute_metadata fetch_status
+    compute_metadata=$(mktemp "${TMPDIR:-/tmp}/jellyfin-compute.XXXXXX") || exit 252
+    fetch_and_deploy_gh_release "intel-libgdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb" '' "$compute_metadata" || {
+      fetch_status=$?
+      rm -f -- "$compute_metadata" || true
+      exit "$fetch_status"
+    }
+    _resolve_igc_tag igc_tag "$compute_metadata"
+    rm -f -- "$compute_metadata" || true
+    if [[ -z "$igc_tag" ]]; then
+      msg_error "Selected compute-runtime release does not declare its IGC version"
+      exit 250
+    fi
 
     fetch_and_deploy_gh_release "intel-igc-core-2" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-core-2_*_amd64.deb"
     fetch_and_deploy_gh_release "intel-igc-opencl-2" "intel/intel-graphics-compiler" "binary" "$igc_tag" "" "intel-igc-opencl-2_*_amd64.deb"

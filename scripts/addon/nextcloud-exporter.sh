@@ -116,7 +116,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable -q --now "$var_addon_service" &> /dev/null || true
+  svc_prepare_uninstall "$var_addon_service"
   rm -f "/etc/systemd/system/${var_addon_service}.service"
 
   if dpkg -l | grep -q nextcloud-exporter; then

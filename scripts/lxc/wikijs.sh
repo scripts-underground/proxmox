@@ -4,7 +4,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Copyright (c) 2021-2026 tteck
 # Author: tteck (tteckster)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
-# Source: https://js.wiki/
+# Source: https://js.wiki/ | Github: https://github.com/requarks/wiki-v2
 
 # shellcheck disable=SC2034
 APP="Wikijs"
@@ -25,7 +25,7 @@ function install_script() {
   NODE_VERSION="24" NODE_MODULE="yarn,node-gyp" setup_nodejs
   PG_VERSION="17" setup_postgresql
   PG_DB_NAME="wiki" PG_DB_USER="wikijs_user" PG_DB_EXTENSIONS="pg_trgm" setup_postgresql_db
-  fetch_and_deploy_gh_release "wikijs" "requarks/wiki" "prebuild" "latest" "/opt/wikijs" "wiki-js.tar.gz"
+  fetch_and_deploy_gh_release "wikijs" "requarks/wiki-v2" "prebuild" "latest" "/opt/wikijs" "wiki-js.tar.gz"
 
   msg_info "Configuring Wiki.js"
   mv /opt/wikijs/config.sample.yml /opt/wikijs/config.yml
@@ -72,10 +72,10 @@ function update_script() {
 
   NODE_VERSION="24" NODE_MODULE="yarn,node-gyp" setup_nodejs
 
-  if check_for_gh_release "wikijs" "requarks/wiki"; then
+  if check_for_gh_release "wikijs" "requarks/wiki-v2" "${var_appversion:-}"; then
     msg_info "Verifying whether ${APP}' new release is v3.x+ and current install uses SQLite."
     SQLITE_INSTALL=$([ -f /opt/wikijs/db.sqlite ] && echo "true" || echo "false")
-    if [[ "${SQLITE_INSTALL}" == "true" && "${CHECK_UPDATE_RELEASE}" =~ ^3.* ]]; then
+    if [[ "${SQLITE_INSTALL}" == "true" && "${CHECK_UPDATE_RELEASE#v}" =~ ^3\. ]]; then
       echo "SQLite is not supported in v3.x+, currently there is no update path availble."
       exit
     fi
@@ -85,18 +85,17 @@ function update_script() {
     systemctl stop wikijs
     msg_ok "Stopped Service"
 
-    msg_info "Backing up Data"
-    mkdir /opt/wikijs-backup
-    $SQLITE_INSTALL && cp /opt/wikijs/db.sqlite /opt/wikijs-backup
-    cp -R /opt/wikijs/{config.yml,/data} /opt/wikijs-backup
-    msg_ok "Backed up Data"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "wikijs" "requarks/wiki" "prebuild" "latest" "/opt/wikijs" "wiki-js.tar.gz"
+    [[ -f /opt/wikijs/config.yml ]] || {
+      msg_error "Missing existing Wiki.js config.yml"
+      exit 65
+    }
+    local keep_paths="config.yml data ${CLEAN_INSTALL_KEEP:-}"
+    [[ "$SQLITE_INSTALL" != true ]] || keep_paths+=' db.sqlite db.sqlite-wal db.sqlite-shm db.sqlite-journal'
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="$keep_paths" fetch_and_deploy_gh_release "wikijs" "requarks/wiki-v2" "prebuild" "latest" "/opt/wikijs" "wiki-js.tar.gz"
 
     msg_info "Restoring Data"
-    cp -R /opt/wikijs-backup/* /opt/wikijs
+    cd /opt/wikijs || exit
     $SQLITE_INSTALL && $STD npm rebuild sqlite3
-    rm -rf /opt/wikijs-backup
     msg_ok "Restored Data"
 
     msg_info "Starting Service"

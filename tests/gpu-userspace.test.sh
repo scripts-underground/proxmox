@@ -8,7 +8,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/dev/dri" "$work/sys/class/drm" "$work/releases"
 sed -n '/^_hwaccel_optional_command() /,/^# Helper: Add Debian non-free repositories/p' "$ROOT/misc/tools.func" |
-  sed "s|/dev/dri|$work/dev/dri|g; s|/dev/nvidia|$work/dev/nvidia|g; s|/dev/kfd|$work/dev/kfd|g; s|/sys/class/drm|$work/sys/class/drm|g; s|/tmp/gh_rel.json|$work/releases/gh_rel.json|g" > "$work/gpu.sh"
+  sed "s|/dev/dri|$work/dev/dri|g; s|/dev/nvidia|$work/dev/nvidia|g; s|/dev/kfd|$work/dev/kfd|g; s|/sys/class/drm|$work/sys/class/drm|g" > "$work/gpu.sh"
 # Source current main too, for the red control before the optional helper exists.
 if [[ ! -s $work/gpu.sh ]]; then
   sed -n '/^setup_hwaccel() {/,/^# Helper: Add Debian non-free repositories/p' "$ROOT/misc/tools.func" > "$work/gpu.sh"
@@ -48,7 +48,7 @@ _add_debian_nonfree_firmware() { :; }
 fetch_and_deploy_gh_release() {
   printf '%s|%s|%s\n' "$1" "$4" "${6:-}" >> "$work/releases.calls"
   if [[ $1 == libigdgmm12 ]]; then
-    cp "$work/metadata" "$work/releases/gh_rel.json"
+    cp "$work/metadata" "$8"
   fi
   if [[ ${fetch_fail:-no} == yes ]]; then exit 92; fi
 }

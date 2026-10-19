@@ -97,7 +97,7 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
-  systemctl disable --now portainer &> /dev/null || true
+  svc_prepare_uninstall portainer
   rm -f /etc/systemd/system/portainer.service
   systemctl daemon-reload
 
