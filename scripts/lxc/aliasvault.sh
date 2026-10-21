@@ -35,7 +35,7 @@ function install_script() {
   setup_rust
   fetch_and_deploy_gh_release "wasm-pack" "rustwasm/wasm-pack" "prebuild" "latest" "/usr/local/bin" "wasm-pack-v*-x86_64-unknown-linux-musl.tar.gz"
 
-  NODE_VERSION="20" setup_nodejs
+  NODE_VERSION="24" setup_nodejs
 
   msg_info "Installing .NET SDK 10.0"
   setup_deb822_repo "microsoft-prod" \
@@ -56,47 +56,41 @@ function install_script() {
   source "$HOME/.cargo/env"
   $STD rustup target add wasm32-unknown-unknown
   cd /opt/aliasvault/core || exit
-  $STD bash build-and-distribute.sh --browser
+  $STD bash build-and-distribute.sh --web
   msg_ok "Built Core Libraries"
 
-  msg_info "Copying Core Artifacts"
-  mkdir -p /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm
-  cp /opt/aliasvault/core/rust/dist/wasm/aliasvault_core_bg.wasm \
-    /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm/
-  cp /opt/aliasvault/core/rust/dist/wasm/aliasvault_core.js \
-    /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm/
-  mkdir -p /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/{identity-generator,password-generator,vault}
-  cp -r /opt/aliasvault/core/typescript/identity-generator/dist/. \
-    /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/identity-generator/
-  cp -r /opt/aliasvault/core/typescript/password-generator/dist/. \
-    /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/password-generator/
-  cp -r /opt/aliasvault/core/vault/dist/. \
-    /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/vault/
-  msg_ok "Copied Core Artifacts"
+  msg_info "Building React Client"
+  cd /opt/aliasvault/apps/web || exit
+  $STD npm ci --no-audit --no-fund
+  $STD npm run build
+  local client_settings=no
+  [[ ! -f /opt/aliasvault/client/wwwroot/appsettings.json ]] || client_settings=yes
+  if [[ "$client_settings" == no ]]; then
+    python3 -c 'import json,pathlib; p=pathlib.Path("dist/appsettings.json"); c=json.loads(p.read_text()); c.pop("ApiUrl",None); p.write_text(json.dumps(c,indent=2))'
+  fi
+  rm -f dist/appsettings.json.gz dist/appsettings.json.br
+  (
+    local path
+    local -a client_keep=(appsettings.json) legacy_keep=()
+    read -r -a legacy_keep <<< "${CLEAN_INSTALL_KEEP:-}"
+    for path in "${CLEAN_INSTALL_KEEP_PATHS[@]}" "${legacy_keep[@]}"; do
+      [[ "$path" != client/wwwroot/* ]] || client_keep+=("${path#client/wwwroot/}")
+    done
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${client_keep[@]}")
+    CLEAN_INSTALL_KEEP='' _deploy_replace_contents /opt/aliasvault/apps/web/dist /opt/aliasvault/client/wwwroot 1
+  )
+  msg_ok "Built React Client"
 
   msg_info "Building AliasVault Applications (Patience)"
   cd /opt/aliasvault/apps/server || exit
-  $STD dotnet workload install wasm-tools
   $STD dotnet restore aliasvault.sln
   $STD dotnet publish AliasVault.Api/AliasVault.Api.csproj \
     -c Release -o /opt/aliasvault/api --no-restore
-  $STD dotnet build AliasVault.Client/AliasVault.Client.csproj \
-    -c Release --no-restore
-  $STD dotnet publish AliasVault.Client/AliasVault.Client.csproj \
-    -c Release -o /opt/aliasvault/client --no-restore
-  python3 -c "
-import json, pathlib
-p = pathlib.Path('/opt/aliasvault/client/wwwroot/appsettings.json')
-c = json.loads(p.read_text()); c['ApiUrl'] = ''; p.write_text(json.dumps(c, indent=2))
-for ext in ['.gz', '.br']:
-    q = pathlib.Path(str(p) + ext)
-    if q.exists(): q.unlink()
-"
   $STD dotnet publish AliasVault.Admin/AliasVault.Admin.csproj \
     -c Release -o /opt/aliasvault/admin --no-restore
-  $STD dotnet publish Services/AliasVault.SmtpService/AliasVault.SmtpService.csproj \
+  $STD dotnet publish AliasVault.SmtpService/AliasVault.SmtpService.csproj \
     -c Release -o /opt/aliasvault/smtp --no-restore
-  $STD dotnet publish Services/AliasVault.TaskRunner/AliasVault.TaskRunner.csproj \
+  $STD dotnet publish AliasVault.TaskRunner/AliasVault.TaskRunner.csproj \
     -c Release -o /opt/aliasvault/taskrunner --no-restore
   $STD dotnet publish Utilities/AliasVault.InstallCli/AliasVault.InstallCli.csproj \
     -c Release -o /opt/aliasvault/installcli --no-restore
@@ -345,67 +339,53 @@ function update_script() {
 
   if check_for_gh_release "aliasvault" "aliasvault/aliasvault"; then
     RELEASE=$(get_latest_github_release "aliasvault/aliasvault")
+    NODE_VERSION="24" setup_nodejs
 
     msg_info "Stopping Services"
     systemctl stop aliasvault-api aliasvault-admin aliasvault-smtp aliasvault-taskrunner
     msg_ok "Stopped Services"
 
-    msg_info "Backing up Configuration"
-    cp /opt/aliasvault/.env /opt/aliasvault_env.bak
-    cp -r /opt/aliasvault/certificates /opt/aliasvault_certs.bak
-    msg_ok "Backed up Configuration"
-
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env certificates data client/wwwroot/appsettings.json)
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "aliasvault" "aliasvault/aliasvault" "tarball"
 
     msg_info "Building Core Libraries (Patience)"
     source "$HOME/.cargo/env"
     $STD rustup target add wasm32-unknown-unknown
     cd /opt/aliasvault/core || exit
-    $STD bash build-and-distribute.sh --browser
+    $STD bash build-and-distribute.sh --web
     msg_ok "Built Core Libraries"
 
-    msg_info "Copying Core Artifacts"
-    mkdir -p /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm
-    cp /opt/aliasvault/core/rust/dist/wasm/aliasvault_core_bg.wasm \
-      /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm/
-    cp /opt/aliasvault/core/rust/dist/wasm/aliasvault_core.js \
-      /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/wasm/
-    mkdir -p /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/{identity-generator,password-generator,vault}
-    cp -r /opt/aliasvault/core/typescript/identity-generator/dist/. \
-      /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/identity-generator/
-    cp -r /opt/aliasvault/core/typescript/password-generator/dist/. \
-      /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/password-generator/
-    cp -r /opt/aliasvault/core/vault/dist/. \
-      /opt/aliasvault/apps/server/AliasVault.Client/wwwroot/js/dist/core/vault/
-    msg_ok "Copied Core Artifacts"
+    msg_info "Building React Client"
+    cd /opt/aliasvault/apps/web || exit
+    $STD npm ci --no-audit --no-fund
+    $STD npm run build
+    local client_settings=no
+    [[ ! -f /opt/aliasvault/client/wwwroot/appsettings.json ]] || client_settings=yes
+    if [[ "$client_settings" == no ]]; then
+      python3 -c 'import json,pathlib; p=pathlib.Path("dist/appsettings.json"); c=json.loads(p.read_text()); c.pop("ApiUrl",None); p.write_text(json.dumps(c,indent=2))'
+    fi
+    rm -f dist/appsettings.json.gz dist/appsettings.json.br
+    (
+      local path
+      local -a client_keep=(appsettings.json) legacy_keep=()
+      read -r -a legacy_keep <<< "${CLEAN_INSTALL_KEEP:-}"
+      for path in "${CLEAN_INSTALL_KEEP_PATHS[@]}" "${legacy_keep[@]}"; do
+        [[ "$path" != client/wwwroot/* ]] || client_keep+=("${path#client/wwwroot/}")
+      done
+      local -a CLEAN_INSTALL_KEEP_PATHS=("${client_keep[@]}")
+      CLEAN_INSTALL_KEEP='' _deploy_replace_contents /opt/aliasvault/apps/web/dist /opt/aliasvault/client/wwwroot 1
+    )
+    msg_ok "Built React Client"
 
     msg_info "Building AliasVault Applications (Patience)"
     cd /opt/aliasvault/apps/server || exit
-    $STD dotnet workload install wasm-tools
     $STD dotnet restore aliasvault.sln
     $STD dotnet publish AliasVault.Api/AliasVault.Api.csproj -c Release -o /opt/aliasvault/api --no-restore
-    $STD dotnet build AliasVault.Client/AliasVault.Client.csproj -c Release --no-restore
-    $STD dotnet publish AliasVault.Client/AliasVault.Client.csproj -c Release -o /opt/aliasvault/client --no-restore
-    python3 -c "
-import json, pathlib
-p = pathlib.Path('/opt/aliasvault/client/wwwroot/appsettings.json')
-c = json.loads(p.read_text()); c['ApiUrl'] = ''; p.write_text(json.dumps(c, indent=2))
-for ext in ['.gz', '.br']:
-    q = pathlib.Path(str(p) + ext)
-    if q.exists(): q.unlink()
-"
     mkdir -p /opt/certificates/app
     $STD dotnet publish AliasVault.Admin/AliasVault.Admin.csproj -c Release -o /opt/aliasvault/admin --no-restore
-    $STD dotnet publish Services/AliasVault.SmtpService/AliasVault.SmtpService.csproj -c Release -o /opt/aliasvault/smtp --no-restore
-    $STD dotnet publish Services/AliasVault.TaskRunner/AliasVault.TaskRunner.csproj -c Release -o /opt/aliasvault/taskrunner --no-restore
+    $STD dotnet publish AliasVault.SmtpService/AliasVault.SmtpService.csproj -c Release -o /opt/aliasvault/smtp --no-restore
+    $STD dotnet publish AliasVault.TaskRunner/AliasVault.TaskRunner.csproj -c Release -o /opt/aliasvault/taskrunner --no-restore
     msg_ok "Built AliasVault Applications"
-
-    msg_info "Restoring Configuration"
-    cp /opt/aliasvault_env.bak /opt/aliasvault/.env
-    cp -r /opt/aliasvault_certs.bak/. /opt/aliasvault/certificates/
-    rm -f /opt/aliasvault_env.bak
-    rm -rf /opt/aliasvault_certs.bak
-    msg_ok "Restored Configuration"
 
     msg_info "Starting Services"
     systemctl start aliasvault-api aliasvault-admin aliasvault-smtp aliasvault-taskrunner

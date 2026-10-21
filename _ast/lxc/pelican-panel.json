@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "pelican-panel",
   "type": "lxc",
-  "total_lines": 143,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: bvdberg01\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/pelican-dev/panel\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Pelican-Panel\"\nvar_tags=\"${var_tags:-gaming}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-1024}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y cron\n  msg_ok \"Installed Dependencies\"\n\n  PHP_VERSION=\"8.4\" PHP_APACHE=\"YES\" PHP_FPM=\"YES\" setup_php\n  setup_composer\n  setup_mariadb\n  MARIADB_DB_NAME=\"panel\" MARIADB_DB_USER=\"pelican\" setup_mariadb_db\n  fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"\n\n  msg_info \"Installing Pelican Panel\"\n  cd /opt/pelican-panel || exit\n  $STD composer install --no-dev --optimize-autoloader --no-interaction\n  $STD php artisan p:environment:setup\n  $STD php artisan p:environment:queue-service --no-interaction\n  echo \"* * * * * php /opt/pelican-panel/artisan schedule:run \u003e\u003e /dev/null 2\u003e\u00261\" | crontab -u www-data -\n  chown -R www-data:www-data /opt/pelican-panel\n  chmod -R 755 /opt/pelican-panel/storage /opt/pelican-panel/bootstrap/cache/\n  msg_ok \"Installed Pelican Panel\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/apache2/sites-available/pelican.conf\n\u003cVirtualHost *:80\u003e\n    ServerName pelican\n    DocumentRoot /opt/pelican-panel/public\n    AllowEncodedSlashes On\n    php_value upload_max_filesize 100M\n    php_value post_max_size 100M\n\n    \u003cDirectory /opt/pelican-panel/public\u003e\n        Options Indexes FollowSymLinks\n        AllowOverride All\n        Require all granted\n    \u003c/Directory\u003e\n\n    ErrorLog /var/log/apache2/pelican_error.log\n    CustomLog /var/log/apache2/pelican_access.log combined\n\u003c/VirtualHost\u003e\nEOF\n  $STD a2ensite pelican\n  $STD a2enmod rewrite\n  $STD a2dissite 000-default.conf\n  $STD systemctl reload apache2\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}/installer${CL}\"\n  echo -e \"${INFO}${YW}Database credentials: cat ~/pelican-panel.creds${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/pelican-panel ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  setup_mariadb\n  CURRENT_PHP=$(php -v 2\u003e /dev/null | awk '/^PHP/{print $2}' | cut -d. -f1,2)\n  setup_composer\n\n  if [[ \"$CURRENT_PHP\" != \"8.4\" ]]; then\n    msg_info \"Migrating PHP $CURRENT_PHP to 8.4\"\n    $STD apt remove -y php\"${CURRENT_PHP//./}\"*\n    PHP_VERSION=\"8.4\" PHP_APACHE=\"YES\" PHP_FPM=\"YES\" setup_php\n    msg_ok \"Migrated PHP $CURRENT_PHP to 8.4\"\n  fi\n\n  if check_for_gh_release \"pelican-panel\" \"pelican-dev/panel\"; then\n    msg_info \"Stopping Service\"\n    cd /opt/pelican-panel || exit\n    $STD php artisan down\n    msg_ok \"Stopped Service\"\n\n    mkdir -p /opt/backup\n    cp -a /opt/pelican-panel/.env /opt/backup\n    mkdir -p /opt/backup/storage/app/\n    cp -a /opt/pelican-panel/storage/app/public /opt/backup/storage/app/\n\n    SQLITE_INSTALL=$(ls /opt/pelican-panel/database/*.sqlite 1\u003e /dev/null 2\u003e\u00261 \u0026\u0026 echo \"true\" || echo \"false\")\n    $SQLITE_INSTALL \u0026\u0026 cp -r /opt/pelican-panel/database/*.sqlite /opt/backup\n\n    find /opt/pelican-panel -mindepth 1 -maxdepth 1 ! -name 'backup' ! -name 'plugins' -exec rm -rf {} +\n\n    fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"\n\n    msg_info \"Updating Pelican Panel\"\n    cp -a /opt/backup/.env /opt/pelican-panel/\n    $SQLITE_INSTALL \u0026\u0026 mv /opt/backup/*.sqlite /opt/pelican-panel/database/\n    cp -a /opt/backup/storage/app/public /opt/pelican-panel/storage/app/\n\n    $STD composer install --no-dev --optimize-autoloader --no-interaction\n    $STD php artisan p:environment:setup\n    $STD php artisan view:clear\n    $STD php artisan config:clear\n    $STD php artisan filament:optimize\n    $STD php artisan migrate --seed --force\n    chown -R www-data:www-data /opt/pelican-panel\n    chmod -R 755 /opt/pelican-panel/storage /opt/pelican-panel/bootstrap/cache/\n    msg_ok \"Updated Pelican Panel\"\n\n    msg_info \"Starting Service\"\n    $STD php artisan queue:restart\n    $STD php artisan up\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 155,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: bvdberg01\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/pelican-dev/panel\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Pelican-Panel\"\nvar_tags=\"${var_tags:-gaming}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-1024}\"\nvar_disk=\"${var_disk:-4}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y cron\n  msg_ok \"Installed Dependencies\"\n\n  PHP_VERSION=\"8.4\" PHP_APACHE=\"YES\" PHP_FPM=\"YES\" setup_php\n  setup_composer\n  setup_mariadb\n  MARIADB_DB_NAME=\"panel\" MARIADB_DB_USER=\"pelican\" setup_mariadb_db\n  fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"\n\n  msg_info \"Installing Pelican Panel\"\n  cd /opt/pelican-panel || exit\n  $STD composer install --no-dev --optimize-autoloader --no-interaction\n  $STD php artisan p:environment:setup --url=\"http://${LOCAL_IP}\" --no-interaction\n  $STD php artisan p:environment:queue-service --no-interaction\n  echo \"* * * * * php /opt/pelican-panel/artisan schedule:run \u003e\u003e /dev/null 2\u003e\u00261\" | crontab -u www-data -\n  chown -R www-data:www-data /opt/pelican-panel\n  chmod -R 755 /opt/pelican-panel/storage /opt/pelican-panel/bootstrap/cache/\n  msg_ok \"Installed Pelican Panel\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/apache2/sites-available/pelican.conf\n\u003cVirtualHost *:80\u003e\n    ServerName pelican\n    DocumentRoot /opt/pelican-panel/public\n    AllowEncodedSlashes On\n    php_value upload_max_filesize 100M\n    php_value post_max_size 100M\n\n    \u003cDirectory /opt/pelican-panel/public\u003e\n        Options Indexes FollowSymLinks\n        AllowOverride All\n        Require all granted\n    \u003c/Directory\u003e\n\n    ErrorLog /var/log/apache2/pelican_error.log\n    CustomLog /var/log/apache2/pelican_access.log combined\n\u003c/VirtualHost\u003e\nEOF\n  $STD a2ensite pelican\n  $STD a2enmod rewrite\n  $STD a2dissite 000-default.conf\n  $STD systemctl reload apache2\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}/installer${CL}\"\n  echo -e \"${INFO}${YW}Database credentials: cat ~/pelican-panel.creds${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n  if [[ ! -d /opt/pelican-panel ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  setup_mariadb\n  CURRENT_PHP=$(php -v 2\u003e /dev/null | awk '/^PHP/{print $2}' | cut -d. -f1,2)\n  setup_composer\n\n  if [[ \"$CURRENT_PHP\" != \"8.4\" ]]; then\n    msg_info \"Migrating PHP $CURRENT_PHP to 8.4\"\n    $STD apt remove -y php\"${CURRENT_PHP//./}\"*\n    PHP_VERSION=\"8.4\" PHP_APACHE=\"YES\" PHP_FPM=\"YES\" setup_php\n    msg_ok \"Migrated PHP $CURRENT_PHP to 8.4\"\n  fi\n\n  if check_for_gh_release \"pelican-panel\" \"pelican-dev/panel\"; then\n    [[ -f /opt/pelican-panel/.env ]] || {\n      msg_error \"Missing existing Pelican .env\"\n      exit 65\n    }\n    local database_file\n    local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" .env storage/app/public plugins)\n    # Keep each literal SQLite filename and its journal/WAL siblings losslessly.\n    for database_file in /opt/pelican-panel/database/*.sqlite*; do\n      [[ -e \"$database_file\" || -L \"$database_file\" ]] || continue\n      CLEAN_INSTALL_KEEP_PATHS+=(\"database/${database_file##*/}\")\n    done\n    msg_info \"Stopping Service\"\n    cd /opt/pelican-panel || exit\n    $STD php artisan down\n    msg_ok \"Stopped Service\"\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"\n\n    msg_info \"Updating Pelican Panel\"\n    $STD composer install --no-dev --optimize-autoloader --no-interaction\n    # Reuse the application's Dotenv grammar, including matched outer quotes and\n    # embedded apostrophes. Do not source .env or replace a missing URL by a guess.\n    local panel_url\n    panel_url=$(php -r '\n      require \"vendor/autoload.php\";\n      try {\n        $values = Dotenv\\Dotenv::parse(file_get_contents(\".env\"));\n        $url = $values[\"APP_URL\"] ?? null;\n        if (!is_string($url) || !preg_match(\"~^https?://[^\\\\r\\\\n\\\\t ]+$~D\", $url)) {\n          fwrite(STDERR, \"Missing or invalid existing APP_URL\\n\"); exit(65);\n        }\n        echo $url;\n      } catch (Throwable $error) {\n        fwrite(STDERR, \"Cannot parse existing APP_URL\\n\"); exit(65);\n      }\n    ') || exit $?\n    $STD php artisan p:environment:setup --url=\"$panel_url\" --no-interaction\n    $STD php artisan view:clear\n    $STD php artisan config:clear\n    $STD php artisan filament:optimize\n    $STD php artisan migrate --seed --force\n    chown -R www-data:www-data /opt/pelican-panel\n    chmod -R 755 /opt/pelican-panel/storage /opt/pelican-panel/bootstrap/cache/\n    msg_ok \"Updated Pelican Panel\"\n\n    msg_info \"Starting Service\"\n    $STD php artisan queue:restart\n    $STD php artisan up\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2155",
@@ -40,7 +40,7 @@
     "  msg_info \"Installing Pelican Panel\"",
     "  cd /opt/pelican-panel || exit",
     "  $STD composer install --no-dev --optimize-autoloader --no-interaction",
-    "  $STD php artisan p:environment:setup",
+    "  $STD php artisan p:environment:setup --url=\"http://${LOCAL_IP}\" --no-interaction",
     "  $STD php artisan p:environment:queue-service --no-interaction",
     "  echo \"* * * * * php /opt/pelican-panel/artisan schedule:run \u003e\u003e /dev/null 2\u003e\u00261\" | crontab -u www-data -",
     "  chown -R www-data:www-data /opt/pelican-panel",
@@ -102,30 +102,42 @@
     "  fi",
     "",
     "  if check_for_gh_release \"pelican-panel\" \"pelican-dev/panel\"; then",
+    "    [[ -f /opt/pelican-panel/.env ]] || {",
+    "      msg_error \"Missing existing Pelican .env\"",
+    "      exit 65",
+    "    }",
+    "    local database_file",
+    "    local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" .env storage/app/public plugins)",
+    "    # Keep each literal SQLite filename and its journal/WAL siblings losslessly.",
+    "    for database_file in /opt/pelican-panel/database/*.sqlite*; do",
+    "      [[ -e \"$database_file\" || -L \"$database_file\" ]] || continue",
+    "      CLEAN_INSTALL_KEEP_PATHS+=(\"database/${database_file##*/}\")",
+    "    done",
     "    msg_info \"Stopping Service\"",
     "    cd /opt/pelican-panel || exit",
     "    $STD php artisan down",
     "    msg_ok \"Stopped Service\"",
-    "",
-    "    mkdir -p /opt/backup",
-    "    cp -a /opt/pelican-panel/.env /opt/backup",
-    "    mkdir -p /opt/backup/storage/app/",
-    "    cp -a /opt/pelican-panel/storage/app/public /opt/backup/storage/app/",
-    "",
-    "    SQLITE_INSTALL=$(ls /opt/pelican-panel/database/*.sqlite 1\u003e /dev/null 2\u003e\u00261 \u0026\u0026 echo \"true\" || echo \"false\")",
-    "    $SQLITE_INSTALL \u0026\u0026 cp -r /opt/pelican-panel/database/*.sqlite /opt/backup",
-    "",
-    "    find /opt/pelican-panel -mindepth 1 -maxdepth 1 ! -name 'backup' ! -name 'plugins' -exec rm -rf {} +",
-    "",
-    "    fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"",
+    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"pelican-panel\" \"pelican-dev/panel\" \"prebuild\" \"latest\" \"/opt/pelican-panel\" \"panel.tar.gz\"",
     "",
     "    msg_info \"Updating Pelican Panel\"",
-    "    cp -a /opt/backup/.env /opt/pelican-panel/",
-    "    $SQLITE_INSTALL \u0026\u0026 mv /opt/backup/*.sqlite /opt/pelican-panel/database/",
-    "    cp -a /opt/backup/storage/app/public /opt/pelican-panel/storage/app/",
-    "",
     "    $STD composer install --no-dev --optimize-autoloader --no-interaction",
-    "    $STD php artisan p:environment:setup",
+    "    # Reuse the application's Dotenv grammar, including matched outer quotes and",
+    "    # embedded apostrophes. Do not source .env or replace a missing URL by a guess.",
+    "    local panel_url",
+    "    panel_url=$(php -r '",
+    "      require \"vendor/autoload.php\";",
+    "      try {",
+    "        $values = Dotenv\\Dotenv::parse(file_get_contents(\".env\"));",
+    "        $url = $values[\"APP_URL\"] ?? null;",
+    "        if (!is_string($url) || !preg_match(\"~^https?://[^\\\\r\\\\n\\\\t ]+$~D\", $url)) {",
+    "          fwrite(STDERR, \"Missing or invalid existing APP_URL\\n\"); exit(65);",
+    "        }",
+    "        echo $url;",
+    "      } catch (Throwable $error) {",
+    "        fwrite(STDERR, \"Cannot parse existing APP_URL\\n\"); exit(65);",
+    "      }",
+    "    ') || exit $?",
+    "    $STD php artisan p:environment:setup --url=\"$panel_url\" --no-interaction",
     "    $STD php artisan view:clear",
     "    $STD php artisan config:clear",
     "    $STD php artisan filament:optimize",
@@ -177,7 +189,7 @@
     {
       "name": "update_script",
       "start_line": 77,
-      "end_line": 137,
+      "end_line": 149,
       "name_span": {
         "start_line": 77,
         "start_col": 10,
@@ -975,6 +987,20 @@
       "start_col": 8,
       "end_line": 36,
       "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 46,
+      "end_line": 36,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 36,
+      "start_col": 54,
+      "end_line": 36,
+      "end_col": 65
     },
     {
       "kind": "param-exp",
@@ -1874,240 +1900,375 @@
       "end_col": 68
     },
     {
-      "kind": "command",
+      "kind": "operator",
+      "op": "[[",
       "start_line": 98,
       "start_col": 5,
       "end_line": 98,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 98,
-      "start_col": 14,
-      "end_line": 98,
-      "end_col": 32
-    },
-    {
-      "kind": "command",
-      "start_line": 99,
-      "start_col": 5,
-      "end_line": 99,
       "end_col": 7
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 98,
+      "start_col": 8,
+      "end_line": 98,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 98,
+      "start_col": 35,
+      "end_line": 98,
+      "end_col": 37
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 99,
-      "start_col": 27,
-      "end_line": 99,
-      "end_col": 29
+      "start_line": 98,
+      "start_col": 38,
+      "end_line": 98,
+      "end_col": 40
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 98,
+      "start_col": 41,
+      "end_line": 98,
+      "end_col": 42
     },
     {
       "kind": "command",
       "start_line": 99,
-      "start_col": 30,
+      "start_col": 7,
       "end_line": 99,
-      "end_col": 34
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 100,
-      "start_col": 5,
-      "end_line": 100,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 100,
-      "start_col": 10,
-      "end_line": 100,
-      "end_col": 13
-    },
-    {
-      "kind": "command",
-      "start_line": 101,
-      "start_col": 5,
-      "end_line": 101,
-      "end_col": 11
+      "end_col": 16
     },
     {
       "kind": "string-dq",
-      "start_line": 101,
-      "start_col": 12,
-      "end_line": 101,
-      "end_col": 29
+      "start_line": 99,
+      "start_col": 17,
+      "end_line": 99,
+      "end_col": 48
     },
     {
       "kind": "command",
+      "start_line": 100,
+      "start_col": 7,
+      "end_line": 100,
+      "end_col": 11
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 101,
+      "start_col": 5,
+      "end_line": 101,
+      "end_col": 6
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 102,
+      "start_col": 5,
+      "end_line": 102,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 102,
+      "start_col": 11,
+      "end_line": 102,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 102,
+      "start_col": 11,
+      "end_line": 102,
+      "end_col": 24
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
       "start_line": 103,
       "start_col": 5,
       "end_line": 103,
       "end_col": 10
     },
     {
-      "kind": "command",
-      "start_line": 104,
-      "start_col": 5,
-      "end_line": 104,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 105,
-      "start_col": 5,
-      "end_line": 105,
-      "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 106,
-      "start_col": 5,
-      "end_line": 106,
-      "end_col": 7
-    },
-    {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 108,
-      "start_col": 5,
-      "end_line": 108,
-      "end_col": 111
+      "start_line": 103,
+      "start_col": 14,
+      "end_line": 103,
+      "end_col": 105
     },
     {
       "kind": "var-name",
-      "start_line": 108,
-      "start_col": 5,
-      "end_line": 108,
-      "end_col": 19
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 108,
-      "start_col": 20,
-      "end_line": 108,
-      "end_col": 111
-    },
-    {
-      "kind": "command",
-      "start_line": 108,
-      "start_col": 22,
-      "end_line": 108,
-      "end_col": 24
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 108,
-      "start_col": 63,
-      "end_line": 108,
-      "end_col": 64
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e\u0026",
-      "start_line": 108,
-      "start_col": 76,
-      "end_line": 108,
-      "end_col": 78
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 108,
-      "start_col": 80,
-      "end_line": 108,
-      "end_col": 82
-    },
-    {
-      "kind": "command",
-      "start_line": 108,
-      "start_col": 83,
-      "end_line": 108,
-      "end_col": 87
+      "start_line": 103,
+      "start_col": 14,
+      "end_line": 103,
+      "end_col": 38
     },
     {
       "kind": "string-dq",
-      "start_line": 108,
-      "start_col": 88,
-      "end_line": 108,
-      "end_col": 94
+      "start_line": 103,
+      "start_col": 40,
+      "end_line": 103,
+      "end_col": 72
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 103,
+      "start_col": 41,
+      "end_line": 103,
+      "end_col": 71
+    },
+    {
+      "kind": "comment",
+      "start_line": 104,
+      "start_col": 5,
+      "end_line": 104,
+      "end_col": 81
+    },
+    {
+      "kind": "keyword",
+      "op": "for",
+      "start_line": 105,
+      "start_col": 5,
+      "end_line": 105,
+      "end_col": 8
+    },
+    {
+      "kind": "var-name",
+      "start_line": 105,
+      "start_col": 9,
+      "end_line": 105,
+      "end_col": 22
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 105,
+      "start_col": 23,
+      "end_line": 105,
+      "end_col": 25
+    },
+    {
+      "kind": "keyword",
+      "op": "do",
+      "start_line": 105,
+      "start_col": 65,
+      "end_line": 105,
+      "end_col": 67
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 106,
+      "start_col": 7,
+      "end_line": 106,
+      "end_col": 9
+    },
+    {
+      "kind": "test-operator",
+      "op": "-e",
+      "start_line": 106,
+      "start_col": 10,
+      "end_line": 106,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 106,
+      "start_col": 13,
+      "end_line": 106,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 106,
+      "start_col": 14,
+      "end_line": 106,
+      "end_col": 28
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 106,
+      "start_col": 30,
+      "end_line": 106,
+      "end_col": 32
+    },
+    {
+      "kind": "test-operator",
+      "op": "-L",
+      "start_line": 106,
+      "start_col": 33,
+      "end_line": 106,
+      "end_col": 35
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 106,
+      "start_col": 36,
+      "end_line": 106,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 106,
+      "start_col": 37,
+      "end_line": 106,
+      "end_col": 51
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 106,
+      "start_col": 53,
+      "end_line": 106,
+      "end_col": 55
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 108,
-      "start_col": 95,
-      "end_line": 108,
-      "end_col": 97
+      "start_line": 106,
+      "start_col": 56,
+      "end_line": 106,
+      "end_col": 58
     },
     {
       "kind": "command",
-      "start_line": 108,
-      "start_col": 98,
-      "end_line": 108,
-      "end_col": 102
+      "start_line": 106,
+      "start_col": 59,
+      "end_line": 106,
+      "end_col": 67
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 107,
+      "start_col": 7,
+      "end_line": 107,
+      "end_col": 66
+    },
+    {
+      "kind": "var-name",
+      "start_line": 107,
+      "start_col": 7,
+      "end_line": 107,
+      "end_col": 31
     },
     {
       "kind": "string-dq",
-      "start_line": 108,
-      "start_col": 103,
-      "end_line": 108,
-      "end_col": 110
+      "start_line": 107,
+      "start_col": 34,
+      "end_line": 107,
+      "end_col": 65
     },
     {
       "kind": "param-exp",
+      "start_line": 107,
+      "start_col": 44,
+      "end_line": 107,
+      "end_col": 64
+    },
+    {
+      "kind": "keyword",
+      "op": "done",
+      "start_line": 108,
+      "start_col": 5,
+      "end_line": 108,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
       "start_line": 109,
       "start_col": 5,
       "end_line": 109,
-      "end_col": 20
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 109,
+      "start_col": 14,
+      "end_line": 109,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 110,
+      "start_col": 5,
+      "end_line": 110,
+      "end_col": 7
     },
     {
       "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 109,
-      "start_col": 21,
-      "end_line": 109,
-      "end_col": 23
+      "op": "||",
+      "start_line": 110,
+      "start_col": 27,
+      "end_line": 110,
+      "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 109,
-      "start_col": 24,
-      "end_line": 109,
-      "end_col": 26
+      "start_line": 110,
+      "start_col": 30,
+      "end_line": 110,
+      "end_col": 34
     },
     {
-      "kind": "command",
+      "kind": "param-exp",
       "start_line": 111,
       "start_col": 5,
       "end_line": 111,
       "end_col": 9
     },
     {
-      "kind": "string-sq",
+      "kind": "command",
       "start_line": 111,
-      "start_col": 61,
+      "start_col": 10,
       "end_line": 111,
-      "end_col": 69
+      "end_col": 13
     },
     {
-      "kind": "string-sq",
-      "start_line": 111,
-      "start_col": 78,
-      "end_line": 111,
-      "end_col": 87
+      "kind": "command",
+      "start_line": 112,
+      "start_col": 5,
+      "end_line": 112,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 112,
+      "start_col": 12,
+      "end_line": 112,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 113,
+      "start_col": 5,
+      "end_line": 113,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 113,
+      "start_col": 5,
+      "end_line": 113,
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 113,
-      "start_col": 5,
-      "end_line": 113,
-      "end_col": 32
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 113,
-      "start_col": 33,
+      "start_col": 21,
       "end_line": 113,
       "end_col": 48
     },
@@ -2116,35 +2277,42 @@
       "start_line": 113,
       "start_col": 49,
       "end_line": 113,
-      "end_col": 68
+      "end_col": 64
     },
     {
       "kind": "string-dq",
       "start_line": 113,
-      "start_col": 69,
+      "start_col": 65,
       "end_line": 113,
-      "end_col": 79
+      "end_col": 84
     },
     {
       "kind": "string-dq",
       "start_line": 113,
-      "start_col": 80,
+      "start_col": 85,
       "end_line": 113,
-      "end_col": 88
+      "end_col": 95
     },
     {
       "kind": "string-dq",
       "start_line": 113,
-      "start_col": 89,
+      "start_col": 96,
       "end_line": 113,
-      "end_col": 109
+      "end_col": 104
     },
     {
       "kind": "string-dq",
       "start_line": 113,
-      "start_col": 110,
+      "start_col": 105,
       "end_line": 113,
-      "end_col": 124
+      "end_col": 125
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 113,
+      "start_col": 126,
+      "end_line": 113,
+      "end_col": 140
     },
     {
       "kind": "command",
@@ -2161,304 +2329,377 @@
       "end_col": 38
     },
     {
-      "kind": "command",
+      "kind": "param-exp",
       "start_line": 116,
       "start_col": 5,
       "end_line": 116,
-      "end_col": 7
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 117,
-      "start_col": 5,
-      "end_line": 117,
-      "end_col": 20
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 117,
-      "start_col": 21,
-      "end_line": 117,
-      "end_col": 23
-    },
-    {
-      "kind": "command",
-      "start_line": 117,
-      "start_col": 24,
-      "end_line": 117,
-      "end_col": 26
-    },
-    {
-      "kind": "command",
-      "start_line": 118,
-      "start_col": 5,
-      "end_line": 118,
-      "end_col": 7
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 120,
-      "start_col": 5,
-      "end_line": 120,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 120,
+      "start_line": 116,
       "start_col": 10,
+      "end_line": 116,
+      "end_col": 18
+    },
+    {
+      "kind": "comment",
+      "start_line": 117,
+      "start_col": 5,
+      "end_line": 117,
+      "end_col": 81
+    },
+    {
+      "kind": "comment",
+      "start_line": 118,
+      "start_col": 5,
+      "end_line": 118,
+      "end_col": 84
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 119,
+      "start_col": 5,
+      "end_line": 119,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 119,
+      "start_col": 11,
+      "end_line": 119,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 119,
+      "start_col": 11,
+      "end_line": 119,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 120,
+      "start_col": 5,
+      "end_line": 132,
+      "end_col": 7
+    },
+    {
+      "kind": "var-name",
+      "start_line": 120,
+      "start_col": 5,
       "end_line": 120,
+      "end_col": 14
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 120,
+      "start_col": 15,
+      "end_line": 132,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 120,
+      "start_col": 17,
+      "end_line": 120,
+      "end_col": 20
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 120,
+      "start_col": 24,
+      "end_line": 132,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 132,
+      "start_col": 8,
+      "end_line": 132,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 132,
+      "start_col": 11,
+      "end_line": 132,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 132,
+      "start_col": 16,
+      "end_line": 132,
       "end_col": 18
     },
     {
       "kind": "param-exp",
-      "start_line": 121,
+      "start_line": 133,
       "start_col": 5,
-      "end_line": 121,
+      "end_line": 133,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 121,
+      "start_line": 133,
       "start_col": 10,
-      "end_line": 121,
+      "end_line": 133,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 133,
+      "start_col": 48,
+      "end_line": 133,
+      "end_col": 60
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 133,
+      "start_col": 49,
+      "end_line": 133,
+      "end_col": 59
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 134,
+      "start_col": 5,
+      "end_line": 134,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 134,
+      "start_col": 10,
+      "end_line": 134,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 122,
+      "start_line": 135,
       "start_col": 5,
-      "end_line": 122,
+      "end_line": 135,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 122,
+      "start_line": 135,
       "start_col": 10,
-      "end_line": 122,
+      "end_line": 135,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 123,
+      "start_line": 136,
       "start_col": 5,
-      "end_line": 123,
+      "end_line": 136,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 123,
+      "start_line": 136,
       "start_col": 10,
-      "end_line": 123,
+      "end_line": 136,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 124,
+      "start_line": 137,
       "start_col": 5,
-      "end_line": 124,
+      "end_line": 137,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 124,
+      "start_line": 137,
       "start_col": 10,
-      "end_line": 124,
-      "end_col": 13
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 125,
-      "start_col": 5,
-      "end_line": 125,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 125,
-      "start_col": 10,
-      "end_line": 125,
+      "end_line": 137,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 126,
+      "start_line": 138,
       "start_col": 5,
-      "end_line": 126,
+      "end_line": 138,
       "end_col": 10
     },
     {
       "kind": "command",
-      "start_line": 127,
+      "start_line": 139,
       "start_col": 5,
-      "end_line": 127,
+      "end_line": 139,
       "end_col": 10
     },
     {
       "kind": "command",
-      "start_line": 128,
+      "start_line": 140,
       "start_col": 5,
-      "end_line": 128,
+      "end_line": 140,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 128,
+      "start_line": 140,
       "start_col": 12,
-      "end_line": 128,
+      "end_line": 140,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 130,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 130,
+      "end_line": 142,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 130,
+      "start_line": 142,
       "start_col": 14,
-      "end_line": 130,
+      "end_line": 142,
       "end_col": 32
     },
     {
       "kind": "param-exp",
-      "start_line": 131,
+      "start_line": 143,
       "start_col": 5,
-      "end_line": 131,
+      "end_line": 143,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 131,
+      "start_line": 143,
       "start_col": 10,
-      "end_line": 131,
+      "end_line": 143,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 132,
+      "start_line": 144,
       "start_col": 5,
-      "end_line": 132,
+      "end_line": 144,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 132,
+      "start_line": 144,
       "start_col": 10,
-      "end_line": 132,
+      "end_line": 144,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 133,
+      "start_line": 145,
       "start_col": 5,
-      "end_line": 133,
+      "end_line": 145,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 133,
+      "start_line": 145,
       "start_col": 12,
-      "end_line": 133,
+      "end_line": 145,
       "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 134,
+      "start_line": 146,
       "start_col": 5,
-      "end_line": 134,
+      "end_line": 146,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 134,
+      "start_line": 146,
       "start_col": 12,
-      "end_line": 134,
+      "end_line": 146,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 135,
+      "start_line": 147,
       "start_col": 3,
-      "end_line": 135,
+      "end_line": 147,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 136,
+      "start_line": 148,
       "start_col": 3,
-      "end_line": 136,
+      "end_line": 148,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 137,
+      "start_line": 149,
       "start_col": 1,
-      "end_line": 137,
+      "end_line": 149,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 139,
+      "start_line": 151,
       "start_col": 1,
-      "end_line": 139,
+      "end_line": 151,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 140,
+      "start_line": 152,
       "start_col": 1,
-      "end_line": 140,
+      "end_line": 152,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 141,
+      "start_line": 153,
       "start_col": 1,
-      "end_line": 141,
+      "end_line": 153,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 142,
+      "start_line": 154,
       "start_col": 1,
-      "end_line": 142,
+      "end_line": 154,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 142,
+      "start_line": 154,
       "start_col": 8,
-      "end_line": 142,
+      "end_line": 154,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 142,
+      "start_line": 154,
       "start_col": 10,
-      "end_line": 142,
+      "end_line": 154,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 142,
+      "start_line": 154,
       "start_col": 21,
-      "end_line": 142,
+      "end_line": 154,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 142,
+      "start_line": 154,
       "start_col": 22,
-      "end_line": 142,
+      "end_line": 154,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 142,
+  "bootstrap_line": 154,
   "hooks": {
     "header_info": false,
     "install_script": true,

@@ -1,5 +1,109 @@
 # Tests
 
+## Focused maintenance contracts
+
+These plain Bash tests run inside an isolated Linux VM with an existing writable
+disk-backed `TMPDIR`; the guest's `/tmp`/tmpfs is not a fixture destination.
+Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
+inside the admitted project workspace before launching a test. They do not call
+the legacy CT-destroying harness described below.
+
+| # | Test | Actual outcome and modeled boundary |
+|---|---|---|
+| 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed |
+| 2 | `maintenance-cleanup.test.sh` | Default filesystem-literal model supports safe RED; `--native` uses unmodified helpers with private disk-backed root/cache/state binds. Actual cache bytes/pending/exit outcomes; package/language executables are modeled, not real package removal |
+| 3 | `maintenance-temp-root.test.sh` | Default literal-path instrumentation supports safe RED; `--native` executes unmodified temp/cache/bundle/API helpers. Curl/pct and final addon-destination writing are modeled; fetched/delivered bytes and owned-stage cleanup are actual files |
+| 4 | `maintenance-build-temp.test.sh` | Actual normal/retry preparation fragments and bundle assembler, executed receiver environment/path/mode and failed-preparation boundary; pct/OS hooks are modeled. `--baseline` reads immutable5914963 history and instruments its old paths for the intended negative control |
+| 5 | `maintenance-bundle-bootstrap.test.sh` | Actual install bootstrap and error/cleanup consumer against modeled deployed-baseline network responses; mapped filesystem literals. Verifies already inlined handlers are not refetched/replaced |
+| 6 | `maintenance-consumers.test.sh` | Actual Aria2 update and generated MQTTX uninstall: failed required commands retain status/pending or installed markers and never claim success in either STD mode. Filesystem literals and external executables are modeled |
+| 7 | `maintenance-receiving-context.test.sh` | Actual install/update/uninstall preludes: missing/recreated shared sticky receiving directories before first library write, existing metadata, default, invalid paths, receiver-only symlink validation and mkdir failure. Tiny framework libraries and pct are models |
+| 8 | `maintenance-retry-preservation.test.sh` | Actual recovery menu and repair branch under DEV_MODE_KEEP=false: failed receiver/bundle/alias preparation preserves exact status and never re-enters destructive prompts or executes stale bytes. Recording pct model; no CT mutation |
+| 9 | `maintenance-bundle-writer.test.sh` | Actual writer in conditional and plain callers: allocation/read/missing-cache/context/hook/write failures plus partial-push/mode/rename faults, owned sender/receiver stage removal, previous command bytes/mode preservation and no partial publication; real ENOSPC sink, modeled pct |
+| 10 | `maintenance-uninstall.test.sh` | Actual Dockge hook/addon bundle and LXC uninstall owner, failed commands/returns in both STD modes, preserved data/commands/marker, actual ERR log/status and owned spinner stop through a guest PTY. Docker and prerequisite APIs are modeled; no host UI claim |
+| 11 | `maintenance-receiver-portability.test.sh` | Extracted actual Alpine BusyBox via ALPINE_BUSYBOX, portable path/symlink behavior, real nonroot child tempfile creation in a private disk-backed mount fixture; existing agent workspace stays private |
+| 12 | `maintenance-addon-writer.test.sh` | Actual conditional addon producer/publication, cat/missing/context/ENOSPC/mode/link/rename failure status, unchanged previous valid bytes/mode, owned-stage removal and successful executable output |
+| 13 | `maintenance-nodejs.test.sh` | Actual setup/key/cache helper files and order, deleted cwd, same-major refresh, warning and existing pins in both STD modes. Package/network/crypto commands modeled in private disk mounts |
+| 14 | `maintenance-uv-range.test.sh` | Actual shared reader/setup/cache/install consumer: exact/override/AND/compatible bounds, exclusions, failed/unsupported/no-match outcomes. Downloaded uv artifacts and external responses are modeled; extraction/executable bytes are real |
+| 15 | `maintenance-release-metadata.test.sh` | Actual deploy/older selection/public getter/IGC consumer: checked producer/JSON, two independent repositories, selected older metadata across the optional subshell, stale clearing, requested-asset refusal and token recovery reaching archive download. Responses/artifacts modeled |
+| 16 | `maintenance-prefix-arch.test.sh` | Actual getter/checker/deployer/source bytes, default/pin/force/raw-tag behavior, optional stable prefix and explicit architecture aliases. Responses/artifacts and detection commands modeled |
+| 17 | `maintenance-release-boundaries.test.sh` | Actual checker/source deployer, empty/prerelease-only fallback, missing pins, first older asset within15 releases, refusal of ancient/partial/malformed selection, real owned-spinner/log/status outcomes through a PTY. HTTP/Git producers modeled |
+| 18 | `maintenance-gpg-key.test.sh` | Real GPG invalid/truncated input and native nonroot key reader, old bytes/mode/owner retained across failures, private stage cleanup and apt-readable fresh key. Requires a valid public key in GPG_FIXTURE; curl and write/mode/owner/rename faults modeled |
+| 19 | `maintenance-service-uninstall.test.sh` | Actual init helper, Actual Budget exporter/AdGuard/phpMyAdmin/Netvisor hooks and generated addon/LXC owners in both STD modes. Absent/stopped/disabled reruns, query/control failure statuses, retained real files/commands/markers, all22 caller adoption and unchanged existing helpers/other8 hooks. systemd257/OpenRC0.62 external commands are source-characterized models |
+| 20 | `maintenance-service-systemd.test.sh` | Native installed systemd and actual AdGuard hook: absent/stopped/disabled outcomes, refused stop, denied disable and unavailable-manager query. Requires explicit L2_NATIVE_FIXTURES=owned-maintenance-vm; installs only uniquely named owned unit fixtures and verifies their removal. No full app install and no native OpenRC claim |
+| 21 | `maintenance-keep.test.sh` | Real filesystem/source/archive replacement: nested/hidden/missing keeps, default/ancestor collisions, links, native nested bind mounts including spaces, bad paths before effects, root/source metadata, preparation/move/copy/restore failures and retry; ten real provider paths with modeled network producers. Existing GitLab metadata literal is disk-mapped for its fixture |
+| 22 | `maintenance-app-preservation.test.sh` | Actual CLIProxyAPI/Sure/PrivateBin/ByteStash hooks, release helper and pending-update owner in both STD modes; real config/uploads/current+legacy data, identity/metadata, copy/build failure and forced retry, missing critical config, existing unit settings and fresh ByteStash override/metadata checks. Downloads/builds/runtime/service commands modeled; implicit /opt defaults isolated by private bind fixtures |
+| 23 | `maintenance-service-edges.test.sh` | Actual helper, source-characterized boundary models: retained failed/running tombstones, bad/empty fields versus malformed/failed queries, exact control errors, caller output named state, all OpenRC runlevels and reserved local namespace |
+| 24 | `maintenance-service-edge-native.test.sh` | Native installed systemd removed-file active/failed and broken-setting states, actual stop outcome and caller output in both STD modes; explicitly authorized uniquely owned fixtures removed afterward |
+| 25 | `maintenance-app-compat.test.sh` | Actual OneDev/Apprise/Pelican/Sonarr/Wiki.js/Gluetun hooks, release/Go helpers and update owner. Native file/config and PHP Dotenv parsing, actual first/repeated CSS HTTP consumer, old/new units, architecture/line selection, SQLite conditional behavior and selected-source Go/pin outcomes. Downloaded build artifacts/Go executables, compilers, DB/runtime provisioning and services are labeled models; requires admitted upstream CSS/supervisor references and native PHP/Dotenv prerequisites |
+| 26 | `maintenance-replacement-review.test.sh` | Native GNU/Alpine merge-type and destination-symlink refusal; planned-partial rollback versus unrelated root/nested writers; source hardlink/independent-directory metadata; checked partial-link/full-copy failure and actual loop-backed ext4 cross-device fallback; lossless array and invalid-path controls; populated-tree bytes and bounded operation counts. Requires root/private mount namespace and `ALPINE_BUSYBOX`; large50k proof uses `REPLACEMENT_LARGE_SIZE=50000`, freshly admitted `REPLACEMENT_TASK_WORKSPACE` and explicit `REPLACEMENT_TASK_BUDGET_BYTES` (account for any task data outside that workspace before supplying it), with every fixture under disk-backed TMPDIR and the existing8GiB root reserve retained |
+| 27 | `maintenance-merge-inplace.test.sh` | Native populated old-only directory/file/hardlink identity and actual copy-byte accounting, independent SUCCESS writer in merge/dot-merge, conflicting restore aside retention/no nesting, and newly appearing native bind mounts inside stage/aside before cleanup |
+| 28 | `maintenance-go-minimum.test.sh` | Actual source minimum/toolchain parsing, installed-satisfying/no-downgrade, checked minor-patch/legacy tag selection, explicit pin priority, duplicate/malformed/failed-producer/no-match/download negatives and installed executable consumer; tiny downloaded artifact executables are explicitly models |
+| 29 | `maintenance-runtime-hooks.test.sh` | Cold Radicale/Discourse/ThingsBoard/AliasVault fresh/update/failure/retry hooks, native TOML/INI parsing, both STD modes and actual persistent files/units/pending owner. Compilers, runtime/database provisioning and service controls are explicit models |
+| 30 | `maintenance-build-hooks.test.sh` | Cold Tracearr/Twenty/Kima/Paperclip/Paperless fresh/update/failure/retry paths. Native Node shared/emails/logo and migration-environment consumers; native Dotenv/JSON and actual v2/v3 Paperless filters; exact pnpm diagnosis, preservation, restart overrides and before-effects refusals. Neural artifacts/checksums, compilers, database and services are explicitly modeled |
+| 31 | `maintenance-node24-vite.test.sh` | Native Node24 checks every declared engine range in the supplied AliasVault lockfile using npm's semver implementation, installs the resolved Vite with strict engines and observes generated HTML/JS from a bounded compiler fixture. Requires admitted `RUNTIME_NODE`, `RUNTIME_NPM` and immutable `RUNTIME_EXTRA_REFERENCES`; not the whole app build |
+| 32 | `maintenance-paperless-format-source.test.sh` | Actual immutable v2 function and v3 ConsumerFilter/watchfiles demonstrate wildcard-directory and absolute-root counterexamples. Native Dotenv parses JSON and quoted secrets; these expected capability differences support checked refusal, not an approximate conversion |
+| 33 | `maintenance-webtrees.test.sh` | Actual fresh/update/same-version cold hooks; native Caddy validation before publication/service control and private-network HTTP403 protected files versus200 exact immutable upstream CSS/JS. Custom Caddy bytes, validation failure, data and failed-copy boundaries are observed; PHP/DB/service/network commands are modeled |
+| 34 | `maintenance-zigbee2mqtt.test.sh` | Actual cold update, native tar/zstd decompression and archived settings/database bytes in both STD modes; repeated same-version unique archives, producer/sink failure status and partial cleanup; source/build/copy failure data preservation. Network/build/service commands modeled |
+| 35 | `maintenance-immich.test.sh` | Cold fresh/update/source-pin/library/CPU/same-version/missing-record/failure controls, native selected-source country-name reader and live CLI publication checks; disk-backed cross-device global scratch proves app-disk projection without full-copy fallback; each pnpm/tool/ML/publication failure checks exact current-stage cleanup, prior unknown-stage retention, source inputs and status/retry/pending truth. All mutable roots are validated/mapped before execution with VM-global pre/post boundaries. CLI artifacts, image/app compilers, ML, DB/service and other downloads are explicitly modeled |
+| 36 | `maintenance-retry-callers.test.sh` | Native execution of actual Frigate wheel and all eight Immich Python/ML loop fragments in quiet/verbose modes; all three attempts, reachable third-attempt recovery, exact exhaustion status and no false continuation/success. Dependency commands are models |
+
+The build-hook Paperclip controls include actual fresh install with inherited
+INSTALL_LOG and higher-priority _HOST_LOGFILE in both STD modes. Only an exact
+structured stale-lock failure unlocks; other failures remain fatal. The OneDev
+compatibility controls retain unknown legacy extraction paths and exercise failed
+version selection followed by a clean archive retry with no old-only jar mixing.
+Webtrees native controls cover optional root matcher, trailing slash and quoted
+equivalent static forms, plus checked unrelated/ambiguous-root refusal. Immich's
+private app stage and its call-scoped publication projection must share the live
+install disk. A loop-backed global scratch filesystem stays separate. Exactly the
+current owned app stage is cleaned on checked build/publication failure; original
+failure status wins if cleanup also reports failure, and cleanup failure cannot
+become overall success. The existing venv's in-place ML dependency synchronization
+is not an atomic rollback contract.
+
+Forgejo's native acceptance requires explicitly owned fresh CTs and actual HTTP
+onboarding/port80, SSH clone+push/independent-consumer and real custom-home/key/
+data/port update outcomes for Debian and Alpine independently. These are separate
+native fixtures with explicit admission/ownership; source-only tests cannot mark
+a resource-blocked variant verified. Every nested workload, daemon and Git/SSH
+client uses a disk-backed project TMPDIR writable by its actual operating user.
+
+Example commands **inside the admitted VM**, with TMPDIR already set:
+
+```bash
+timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-silent.test.sh
+timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-cleanup.test.sh --native
+timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-temp-root.test.sh --native
+timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-build-temp.test.sh
+timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-bundle-bootstrap.test.sh
+```
+
+`update-pending.test.sh` binds only the pending directory to its disk fixture,
+leaving a workspace elsewhere under `/var/lib/scripts-underground` visible.
+`container-install-failure.test.sh` preserves both inherited-creator/default and
+explicit receiving `var_lxc_tmpdir` assertions; its unset-creator allocation case
+labels and instruments the legacy default rather than writing into guest RAM.
+These fixtures establish helper/lifecycle outcomes, not full application installs,
+real package maintenance or postponed hardware behavior. Every native command
+status must be captured before reporting a result; an infrastructure/fixture
+failure is not proof of the target regression.
+The cleanup test includes no-new-release success explicitly: no deployment occurs,
+but successful EXIT cleanup still runs once, including the package manager's
+autoremove behavior. This is the approved success contract, not a failed update.
+Unrelated `tmp*`/`tempfile*` files in custom and system-like temporary roots and
+shared temporary contents must survive cleanup; package/language cache assertions
+remain unchanged. New receiving intermediate components use0755 and only the
+selected leaf uses01777; tests observe nonroot temp creation, inability to squat a
+removed leaf and owner recreation. Existing selected paths retain
+metadata and must already support the intended child users. This receiving
+contract does not change private agent workspaces or SSH TMPDIR permissions.
+
+`uv-project-version.test.sh` is a live runtime test: it additionally checks a closed
+uv range and runs the real uv/project Python consumer. `github-force-deploy.test.sh`
+uses live release metadata/assets. Run these only in the assigned VM's disk-backed
+namespace with writable runtime/profile/cache/completion paths isolated. Network
+or rate-limit failure is a recorded live-proof blocker, not a passing mocked test.
+
 End-to-end test scripts for community scripts against the PVE VM. Each
 script installs a community LXC script on the PVE testbed, validates the
 result, and reports pass/fail.

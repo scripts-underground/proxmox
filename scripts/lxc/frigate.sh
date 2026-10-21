@@ -167,8 +167,13 @@ EOF
   msg_info "Building Python Wheels (Patience)"
   mkdir -p /wheels
   $STD bash /opt/frigate/docker/main/build_pysqlite3.sh
+  local wheel_rc=0
   for i in {1..3}; do
-    $STD pip3 wheel --wheel-dir=/wheels -r /opt/frigate/docker/main/requirements-wheels.txt --default-timeout=300 --retries=3 && break
+    if $STD pip3 wheel --wheel-dir=/wheels -r /opt/frigate/docker/main/requirements-wheels.txt --default-timeout=300 --retries=3; then break; else wheel_rc=$?; fi
+    if [[ "$i" == 3 ]]; then
+      msg_error "Python wheel build failed after three attempts"
+      exit "$wheel_rc"
+    fi
     [[ $i -lt 3 ]] && sleep 10
   done
   msg_ok "Built Python Wheels"

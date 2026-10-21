@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+: "${TMPDIR:?provide a disk-backed fixture directory}"
+case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 export ROOT work
@@ -119,29 +122,62 @@ fi
 printf 'PASS early host errors preserve keep mode and the original status\n'
 
 # Generate and run real bundles using tiny offline framework stubs.
-source "$ROOT/misc/bundle.func"
+test_tmp=$TMPDIR
+export FALLBACK_TMP="$work/fallback"
+mkdir -p "$FALLBACK_TMP"
+# Only the unset-creator case instruments its legacy default allocation: it must
+# still prove TMPDIR is unset in the receiver without writing to the VM's /tmp.
+sed 's|/tmp|${FALLBACK_TMP}|g' "$ROOT/misc/bundle.func" > "$work/fallback-bundle.func"
 SESSION_ID="failure-test-$$"
-cache="/tmp/framework-$SESSION_ID"
-trap 'rm -rf "$work" "$cache"; rm -f /tmp/update-bundle-"$SESSION_ID".sh' EXIT
-mkdir -p "$cache"
-printf 'load_functions() { :; }; color() { :; }\n' > "$cache/core.func"
-printf 'catch_errors() { :; }\n' > "$cache/error_handler.func"
-printf 'setup_lxc() { :; }\n' > "$cache/install.func"
-printf 'setup_uv() { :; }\n' > "$cache/tools.func"
-printf 'clone_and_deploy_gh_commit() { :; }\n' > "$cache/github.func"
-_framework_cache_ensure() { :; }
 msg_debug() { :; }
 pct() {
-  if [[ $1 == push ]]; then cp "$3" "$4"; fi
+  case "$1" in
+    push) cp "$3" "$4" ;;
+    exec)
+      shift 3
+      command "$@"
+      ;;
+  esac
 }
 export APP=Probe NSAPP=probe REPO_BASE=offline CTID=9876
 update_script() { printf '%s\n' "${TMPDIR-unset}"; }
 for host_tmp in "$work/host-only" ''; do
-  if [[ -n $host_tmp ]]; then export TMPDIR=$host_tmp; else unset TMPDIR; fi
+  if [[ -n $host_tmp ]]; then
+    mkdir -p "$host_tmp"
+    export TMPDIR=$host_tmp
+    source "$ROOT/misc/bundle.func"
+  else
+    unset TMPDIR
+    source "$work/fallback-bundle.func"
+  fi
+  cache=$(_framework_cache_dir)
+  mkdir -p "$cache"
+  printf 'load_functions() { :; }; color() { :; }\n' > "$cache/core.func"
+  printf 'catch_errors() { :; }\n' > "$cache/error_handler.func"
+  printf 'setup_lxc() { :; }\n' > "$cache/install.func"
+  printf 'setup_uv() { :; }\n' > "$cache/tools.func"
+  printf 'clone_and_deploy_gh_commit() { :; }\n' > "$cache/github.func"
+  _framework_cache_ensure() { :; }
   build_bundle update update_script "$work/bundle.sh" 0700 update_script
   [[ $(bash "$work/bundle.sh") == unset ]]
 done
+export TMPDIR=$test_tmp
 printf 'PASS bundles use the container temp default with and without a host TMPDIR\n'
+
+source "$ROOT/misc/bundle.func"
+export TMPDIR="$work/explicit-creator"
+mkdir -p "$TMPDIR"
+export var_lxc_tmpdir="$work/receiving-context"
+mkdir -p "$var_lxc_tmpdir"
+cache=$(_framework_cache_dir)
+mkdir -p "$cache"
+cp "$FALLBACK_TMP/framework-$SESSION_ID/"*.func "$cache/"
+_framework_cache_ensure() { :; }
+build_bundle update update_script "$work/receiver-bundle.sh" 0700 update_script
+[[ $(bash "$work/receiver-bundle.sh") == "$var_lxc_tmpdir" ]]
+unset var_lxc_tmpdir
+export TMPDIR=$test_tmp
+printf 'PASS explicit receiving temporary root is baked independently of creator TMPDIR\n'
 
 # Lookup failures must not be hidden by local/export declaration builtins.
 sed -n '/^  get_container_gid() {/,/^  }/p' "$ROOT/misc/build.func" > "$work/gid.sh"

@@ -125,7 +125,7 @@ function uninstall_script() {
   fi
 
   if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-    systemctl disable --now dockge &> /dev/null || true
+    svc_prepare_uninstall dockge
     rm -f /etc/systemd/system/dockge.service
   fi
 

@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "filebrowser-quantum",
   "type": "addon",
-  "total_lines": 233,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/gtsteffaniak/filebrowser\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"FileBrowser Quantum\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_bin_path=\"${var_addon_bin_path:-/usr/local/bin/filebrowser}\"\nvar_addon_conf_dir=\"${var_addon_conf_dir:-/usr/local/community-scripts}\"\nvar_addon_conf_path=\"${var_addon_conf_path:-${var_addon_conf_dir}/fq-config.yaml}\"\nvar_addon_default_port=\"${var_addon_default_port:-8080}\"\nvar_addon_src_dir=\"${var_addon_src_dir:-/}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  # Detect legacy FileBrowser installation\n  local legacy_db=\"/usr/local/community-scripts/filebrowser.db\"\n  if [[ -f \"$legacy_db\" || (-f \"$var_addon_bin_path\" \u0026\u0026 ! -f \"$var_addon_conf_path\") ]]; then\n    msg_warn \"Detected legacy FileBrowser installation.\"\n    echo -n \"${TAB}Uninstall legacy FileBrowser and continue with Quantum install? (y/n): \"\n    read -r remove_legacy || true\n    if [[ \"${remove_legacy,,}\" =~ ^(y|yes)$ ]]; then\n      msg_info \"Uninstalling legacy FileBrowser\"\n      if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n        rc-service filebrowser stop \u0026\u003e /dev/null || true\n        rc-update del filebrowser \u0026\u003e /dev/null || true\n        rm -f /etc/init.d/filebrowser\n      else\n        systemctl disable --now filebrowser.service \u0026\u003e /dev/null || true\n        rm -f /etc/systemd/system/filebrowser.service\n      fi\n      rm -f \"$var_addon_bin_path\" \"$legacy_db\"\n      msg_ok \"Legacy FileBrowser removed\"\n    else\n      msg_error \"Installation aborted by user.\"\n      exit 0\n    fi\n  fi\n\n  echo \"\"\n  read -erp \"${TAB}Enter port number [${var_addon_default_port}]: \" PORT || true\n  PORT=${PORT:-$var_addon_default_port}\n\n  msg_info \"Installing Dependencies\"\n  if [[ \"$OS_FAMILY\" == \"debian\" ]]; then\n    $STD apt install -y curl ffmpeg\n  else\n    $STD apk add --no-cache curl ffmpeg\n  fi\n  msg_ok \"Installed Dependencies\"\n\n  msg_info \"Installing ${APP}\"\n  fetch_and_deploy_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"linux-$(get_system_arch uname)-filebrowser\"\n  mv -f /usr/local/bin/filebrowser-quantum \"$var_addon_bin_path\"\n  msg_ok \"Installed ${APP}\"\n\n  msg_info \"Preparing configuration directory\"\n  mkdir -p \"$var_addon_conf_dir\"\n  chown root:root \"$var_addon_conf_dir\"\n  chmod 755 \"$var_addon_conf_dir\"\n  msg_ok \"Directory prepared\"\n\n  echo -n \"${TAB}Use No Authentication? (y/N): \"\n  read -r noauth_prompt || true\n  if [[ \"${noauth_prompt,,}\" =~ ^(y|yes)$ ]]; then\n    cat \u003c\u003c EOF \u003e \"$var_addon_conf_path\"\nserver:\n  port: ${PORT}\n  sources:\n    - path: \"${var_addon_src_dir}\"\n      name: \"RootFS\"\n      config:\n        denyByDefault: false\n        indexingIntervalMinutes: 240\n        conditionals:\n          rules:\n            - neverWatchPath: \"/proc\"\n            - neverWatchPath: \"/sys\"\n            - neverWatchPath: \"/dev\"\n            - neverWatchPath: \"/run\"\n            - neverWatchPath: \"/tmp\"\n            - neverWatchPath: \"/lost+found\"\nauth:\n  methods:\n    noauth: true\nEOF\n    msg_ok \"Configured with no authentication\"\n  else\n    cat \u003c\u003c EOF \u003e \"$var_addon_conf_path\"\nserver:\n  port: ${PORT}\n  sources:\n    - path: \"${var_addon_src_dir}\"\n      name: \"RootFS\"\n      config:\n        denyByDefault: false\n        indexingIntervalMinutes: 240\n        conditionals:\n          rules:\n            - neverWatchPath: \"/proc\"\n            - neverWatchPath: \"/sys\"\n            - neverWatchPath: \"/dev\"\n            - neverWatchPath: \"/run\"\n            - neverWatchPath: \"/tmp\"\n            - neverWatchPath: \"/lost+found\"\nauth:\n  adminUsername: admin\n  adminPassword: community-scripts.org\nEOF\n    msg_ok \"Configured with default admin (admin / community-scripts.org)\"\n  fi\n\n  msg_info \"Creating Service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e /etc/init.d/filebrowser\n#!/sbin/openrc-run\n\ncommand=\"${var_addon_bin_path}\"\ncommand_args=\"-c ${var_addon_conf_path}\"\ncommand_background=true\ndirectory=\"${var_addon_conf_dir}\"\npidfile=\"${var_addon_conf_dir}/pidfile\"\n\ndepend() {\n    need net\n}\nEOF\n    chmod +x /etc/init.d/filebrowser\n    $STD rc-update add filebrowser default\n    $STD rc-service filebrowser start\n  else\n    cat \u003c\u003c EOF \u003e /etc/systemd/system/filebrowser.service\n[Unit]\nDescription=FileBrowser Quantum\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_conf_dir}\nExecStart=${var_addon_bin_path} -c ${var_addon_conf_path}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now filebrowser\n  fi\n  msg_ok \"Service created successfully\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} is reachable at: ${BL}http://${LOCAL_IP}:${PORT}${CL}\"\n  if [[ \"${noauth_prompt,,}\" =~ ^(y|yes)$ ]]; then\n    echo -e \"${INFO}${YW}Authentication:${CL} disabled (noauth)\"\n  else\n    echo -e \"${INFO}${YW}Login:${CL} ${GN}admin${CL} / ${GN}community-scripts.org${CL}\"\n  fi\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if check_for_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\"; then\n    msg_info \"Stopping Service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service filebrowser stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop filebrowser \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Updating ${APP}\"\n    fetch_and_deploy_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"linux-$(get_system_arch uname)-filebrowser\"\n    mv -f /usr/local/bin/filebrowser-quantum \"$var_addon_bin_path\"\n    msg_ok \"Updated ${APP}\"\n\n    msg_info \"Starting Service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service filebrowser start\n    else\n      systemctl start filebrowser\n    fi\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rc-service filebrowser stop \u0026\u003e /dev/null || true\n    rc-update del filebrowser \u0026\u003e /dev/null || true\n    rm -f /etc/init.d/filebrowser\n  else\n    systemctl disable --now filebrowser.service \u0026\u003e /dev/null || true\n    rm -f /etc/systemd/system/filebrowser.service\n  fi\n  rm -f \"$var_addon_bin_path\" \"$var_addon_conf_path\" \"$HOME/.filebrowser-quantum\"\n  msg_ok \"${APP} has been uninstalled.\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
+  "total_lines": 231,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/gtsteffaniak/filebrowser\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"FileBrowser Quantum\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_bin_path=\"${var_addon_bin_path:-/usr/local/bin/filebrowser}\"\nvar_addon_conf_dir=\"${var_addon_conf_dir:-/usr/local/community-scripts}\"\nvar_addon_conf_path=\"${var_addon_conf_path:-${var_addon_conf_dir}/fq-config.yaml}\"\nvar_addon_default_port=\"${var_addon_default_port:-8080}\"\nvar_addon_src_dir=\"${var_addon_src_dir:-/}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  # Detect legacy FileBrowser installation\n  local legacy_db=\"/usr/local/community-scripts/filebrowser.db\"\n  if [[ -f \"$legacy_db\" || (-f \"$var_addon_bin_path\" \u0026\u0026 ! -f \"$var_addon_conf_path\") ]]; then\n    msg_warn \"Detected legacy FileBrowser installation.\"\n    echo -n \"${TAB}Uninstall legacy FileBrowser and continue with Quantum install? (y/n): \"\n    read -r remove_legacy || true\n    if [[ \"${remove_legacy,,}\" =~ ^(y|yes)$ ]]; then\n      msg_info \"Uninstalling legacy FileBrowser\"\n      if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n        rc-service filebrowser stop \u0026\u003e /dev/null || true\n        rc-update del filebrowser \u0026\u003e /dev/null || true\n        rm -f /etc/init.d/filebrowser\n      else\n        systemctl disable --now filebrowser.service \u0026\u003e /dev/null || true\n        rm -f /etc/systemd/system/filebrowser.service\n      fi\n      rm -f \"$var_addon_bin_path\" \"$legacy_db\"\n      msg_ok \"Legacy FileBrowser removed\"\n    else\n      msg_error \"Installation aborted by user.\"\n      exit 0\n    fi\n  fi\n\n  echo \"\"\n  read -erp \"${TAB}Enter port number [${var_addon_default_port}]: \" PORT || true\n  PORT=${PORT:-$var_addon_default_port}\n\n  msg_info \"Installing Dependencies\"\n  if [[ \"$OS_FAMILY\" == \"debian\" ]]; then\n    $STD apt install -y curl ffmpeg\n  else\n    $STD apk add --no-cache curl ffmpeg\n  fi\n  msg_ok \"Installed Dependencies\"\n\n  msg_info \"Installing ${APP}\"\n  fetch_and_deploy_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"linux-$(get_system_arch uname)-filebrowser\"\n  mv -f /usr/local/bin/filebrowser-quantum \"$var_addon_bin_path\"\n  msg_ok \"Installed ${APP}\"\n\n  msg_info \"Preparing configuration directory\"\n  mkdir -p \"$var_addon_conf_dir\"\n  chown root:root \"$var_addon_conf_dir\"\n  chmod 755 \"$var_addon_conf_dir\"\n  msg_ok \"Directory prepared\"\n\n  echo -n \"${TAB}Use No Authentication? (y/N): \"\n  read -r noauth_prompt || true\n  if [[ \"${noauth_prompt,,}\" =~ ^(y|yes)$ ]]; then\n    cat \u003c\u003c EOF \u003e \"$var_addon_conf_path\"\nserver:\n  port: ${PORT}\n  sources:\n    - path: \"${var_addon_src_dir}\"\n      name: \"RootFS\"\n      config:\n        denyByDefault: false\n        indexingIntervalMinutes: 240\n        conditionals:\n          rules:\n            - neverWatchPath: \"/proc\"\n            - neverWatchPath: \"/sys\"\n            - neverWatchPath: \"/dev\"\n            - neverWatchPath: \"/run\"\n            - neverWatchPath: \"/tmp\"\n            - neverWatchPath: \"/lost+found\"\nauth:\n  methods:\n    noauth: true\nEOF\n    msg_ok \"Configured with no authentication\"\n  else\n    cat \u003c\u003c EOF \u003e \"$var_addon_conf_path\"\nserver:\n  port: ${PORT}\n  sources:\n    - path: \"${var_addon_src_dir}\"\n      name: \"RootFS\"\n      config:\n        denyByDefault: false\n        indexingIntervalMinutes: 240\n        conditionals:\n          rules:\n            - neverWatchPath: \"/proc\"\n            - neverWatchPath: \"/sys\"\n            - neverWatchPath: \"/dev\"\n            - neverWatchPath: \"/run\"\n            - neverWatchPath: \"/tmp\"\n            - neverWatchPath: \"/lost+found\"\nauth:\n  adminUsername: admin\n  adminPassword: community-scripts.org\nEOF\n    msg_ok \"Configured with default admin (admin / community-scripts.org)\"\n  fi\n\n  msg_info \"Creating Service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e /etc/init.d/filebrowser\n#!/sbin/openrc-run\n\ncommand=\"${var_addon_bin_path}\"\ncommand_args=\"-c ${var_addon_conf_path}\"\ncommand_background=true\ndirectory=\"${var_addon_conf_dir}\"\npidfile=\"${var_addon_conf_dir}/pidfile\"\n\ndepend() {\n    need net\n}\nEOF\n    chmod +x /etc/init.d/filebrowser\n    $STD rc-update add filebrowser default\n    $STD rc-service filebrowser start\n  else\n    cat \u003c\u003c EOF \u003e /etc/systemd/system/filebrowser.service\n[Unit]\nDescription=FileBrowser Quantum\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_conf_dir}\nExecStart=${var_addon_bin_path} -c ${var_addon_conf_path}\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now filebrowser\n  fi\n  msg_ok \"Service created successfully\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} is reachable at: ${BL}http://${LOCAL_IP}:${PORT}${CL}\"\n  if [[ \"${noauth_prompt,,}\" =~ ^(y|yes)$ ]]; then\n    echo -e \"${INFO}${YW}Authentication:${CL} disabled (noauth)\"\n  else\n    echo -e \"${INFO}${YW}Login:${CL} ${GN}admin${CL} / ${GN}community-scripts.org${CL}\"\n  fi\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if check_for_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\"; then\n    msg_info \"Stopping Service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service filebrowser stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop filebrowser \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Updating ${APP}\"\n    fetch_and_deploy_gh_release \"filebrowser-quantum\" \"gtsteffaniak/filebrowser\" \"singlefile\" \"latest\" \"/usr/local/bin\" \"linux-$(get_system_arch uname)-filebrowser\"\n    mv -f /usr/local/bin/filebrowser-quantum \"$var_addon_bin_path\"\n    msg_ok \"Updated ${APP}\"\n\n    msg_info \"Starting Service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service filebrowser start\n    else\n      systemctl start filebrowser\n    fi\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  svc_prepare_uninstall filebrowser\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rm -f /etc/init.d/filebrowser\n  else\n    rm -f /etc/systemd/system/filebrowser.service\n  fi\n  rm -f \"$var_addon_bin_path\" \"$var_addon_conf_path\" \"$HOME/.filebrowser-quantum\"\n  msg_ok \"${APP} has been uninstalled.\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -206,12 +206,10 @@
     "",
     "function uninstall_script() {",
     "  msg_info \"Uninstalling ${APP}\"",
+    "  svc_prepare_uninstall filebrowser",
     "  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then",
-    "    rc-service filebrowser stop \u0026\u003e /dev/null || true",
-    "    rc-update del filebrowser \u0026\u003e /dev/null || true",
     "    rm -f /etc/init.d/filebrowser",
     "  else",
-    "    systemctl disable --now filebrowser.service \u0026\u003e /dev/null || true",
     "    rm -f /etc/systemd/system/filebrowser.service",
     "  fi",
     "  rm -f \"$var_addon_bin_path\" \"$var_addon_conf_path\" \"$HOME/.filebrowser-quantum\"",
@@ -279,7 +277,7 @@
     {
       "name": "uninstall_script",
       "start_line": 200,
-      "end_line": 212,
+      "end_line": 210,
       "name_span": {
         "start_line": 200,
         "start_col": 10,
@@ -363,12 +361,12 @@
   ],
   "global_ranges": [
     {
-      "start_line": 217,
-      "end_line": 217
+      "start_line": 215,
+      "end_line": 215
     },
     {
-      "start_line": 224,
-      "end_line": 224
+      "start_line": 222,
+      "end_line": 222
     }
   ],
   "heredocs": [
@@ -3417,630 +3415,547 @@
       "end_col": 32
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "command",
       "start_line": 202,
       "start_col": 3,
       "end_line": 202,
+      "end_col": 24
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 203,
+      "start_col": 3,
+      "end_line": 203,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 6,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 9,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 23
     },
     {
       "kind": "param-exp",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 10,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 24,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 27,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 36,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 38
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 38,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 202,
+      "start_line": 203,
       "start_col": 40,
-      "end_line": 202,
+      "end_line": 203,
       "end_col": 44
     },
     {
       "kind": "command",
-      "start_line": 203,
-      "start_col": 5,
-      "end_line": 203,
-      "end_col": 15
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 203,
-      "start_col": 33,
-      "end_line": 203,
-      "end_col": 35
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 203,
-      "start_col": 46,
-      "end_line": 203,
-      "end_col": 48
-    },
-    {
-      "kind": "command",
-      "start_line": 203,
-      "start_col": 49,
-      "end_line": 203,
-      "end_col": 53
-    },
-    {
-      "kind": "command",
       "start_line": 204,
       "start_col": 5,
       "end_line": 204,
-      "end_col": 14
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 204,
-      "start_col": 31,
-      "end_line": 204,
-      "end_col": 33
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 204,
-      "start_col": 44,
-      "end_line": 204,
-      "end_col": 46
-    },
-    {
-      "kind": "command",
-      "start_line": 204,
-      "start_col": 47,
-      "end_line": 204,
-      "end_col": 51
-    },
-    {
-      "kind": "command",
-      "start_line": 205,
-      "start_col": 5,
-      "end_line": 205,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 206,
+      "start_line": 205,
       "start_col": 3,
-      "end_line": 206,
+      "end_line": 205,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 207,
+      "start_line": 206,
       "start_col": 5,
-      "end_line": 207,
-      "end_col": 14
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 207,
-      "start_col": 49,
-      "end_line": 207,
-      "end_col": 51
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 207,
-      "start_col": 62,
-      "end_line": 207,
-      "end_col": 64
-    },
-    {
-      "kind": "command",
-      "start_line": 207,
-      "start_col": 65,
-      "end_line": 207,
-      "end_col": 69
-    },
-    {
-      "kind": "command",
-      "start_line": 208,
-      "start_col": 5,
-      "end_line": 208,
+      "end_line": 206,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 209,
+      "start_line": 207,
       "start_col": 3,
-      "end_line": 209,
+      "end_line": 207,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 3,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 5
     },
     {
       "kind": "string-dq",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 9,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 30
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 10,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 29
     },
     {
       "kind": "string-dq",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 31,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 53
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 32,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 52
     },
     {
       "kind": "string-dq",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 54,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 82
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 208,
       "start_col": 55,
-      "end_line": 210,
+      "end_line": 208,
       "end_col": 60
     },
     {
       "kind": "command",
-      "start_line": 211,
+      "start_line": 209,
       "start_col": 3,
-      "end_line": 211,
+      "end_line": 209,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 211,
+      "start_line": 209,
       "start_col": 10,
-      "end_line": 211,
+      "end_line": 209,
       "end_col": 40
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 209,
       "start_col": 11,
-      "end_line": 211,
+      "end_line": 209,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 210,
+      "start_col": 1,
+      "end_line": 210,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 212,
       "start_col": 1,
       "end_line": 212,
-      "end_col": 2
+      "end_col": 73
+    },
+    {
+      "kind": "comment",
+      "start_line": 213,
+      "start_col": 1,
+      "end_line": 213,
+      "end_col": 75
     },
     {
       "kind": "comment",
       "start_line": 214,
       "start_col": 1,
       "end_line": 214,
-      "end_col": 73
-    },
-    {
-      "kind": "comment",
-      "start_line": 215,
-      "start_col": 1,
-      "end_line": 215,
-      "end_col": 75
-    },
-    {
-      "kind": "comment",
-      "start_line": 216,
-      "start_col": 1,
-      "end_line": 216,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 1,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 3
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 4,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 6,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 22,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 23
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 35,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 37
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 38,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 217,
+      "start_line": 215,
       "start_col": 40,
-      "end_line": 217,
+      "end_line": 215,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 3,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 6,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 9,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 11
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 32,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 34
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 34,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 218,
+      "start_line": 216,
       "start_col": 36,
-      "end_line": 218,
+      "end_line": 216,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 219,
+      "start_line": 217,
       "start_col": 5,
-      "end_line": 219,
+      "end_line": 217,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 219,
+      "start_line": 217,
       "start_col": 16,
-      "end_line": 219,
+      "end_line": 217,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 219,
+      "start_line": 217,
       "start_col": 29,
-      "end_line": 219,
+      "end_line": 217,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 219,
+      "start_line": 217,
       "start_col": 32,
-      "end_line": 219,
+      "end_line": 217,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 219,
+      "start_line": 217,
       "start_col": 56,
-      "end_line": 219,
+      "end_line": 217,
       "end_col": 58
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 220,
+      "start_line": 218,
       "start_col": 3,
-      "end_line": 220,
+      "end_line": 218,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 5,
-      "end_line": 221,
+      "end_line": 219,
       "end_col": 12
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 20,
-      "end_line": 221,
+      "end_line": 219,
       "end_col": 22
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 33,
-      "end_line": 221,
+      "end_line": 219,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 36,
-      "end_line": 221,
+      "end_line": 219,
       "end_col": 43
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 60,
-      "end_line": 221,
+      "end_line": 219,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 222,
+      "start_line": 220,
       "start_col": 3,
-      "end_line": 222,
+      "end_line": 220,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 223,
+      "start_line": 221,
       "start_col": 1,
-      "end_line": 223,
+      "end_line": 221,
       "end_col": 3
     },
     {
       "kind": "command",
-      "start_line": 224,
+      "start_line": 222,
       "start_col": 1,
-      "end_line": 224,
+      "end_line": 222,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 224,
+      "start_line": 222,
       "start_col": 17,
-      "end_line": 224,
+      "end_line": 222,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 224,
+      "start_line": 222,
       "start_col": 30,
-      "end_line": 224,
+      "end_line": 222,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 224,
+      "start_line": 222,
       "start_col": 34,
-      "end_line": 224,
+      "end_line": 222,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 224,
+      "start_line": 222,
       "start_col": 37,
-      "end_line": 224,
+      "end_line": 222,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 225,
+      "start_line": 223,
       "start_col": 3,
-      "end_line": 225,
+      "end_line": 223,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 225,
+      "start_line": 223,
       "start_col": 8,
-      "end_line": 225,
+      "end_line": 223,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 225,
+      "start_line": 223,
       "start_col": 61,
-      "end_line": 225,
+      "end_line": 223,
       "end_col": 63
     },
     {
       "kind": "command",
-      "start_line": 226,
+      "start_line": 224,
       "start_col": 3,
-      "end_line": 226,
+      "end_line": 224,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 225,
+      "start_col": 1,
+      "end_line": 225,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 227,
       "start_col": 1,
       "end_line": 227,
-      "end_col": 2
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 228,
+      "start_col": 1,
+      "end_line": 228,
+      "end_col": 28
     },
     {
       "kind": "comment",
       "start_line": 229,
       "start_col": 1,
       "end_line": 229,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 230,
-      "start_col": 1,
-      "end_line": 230,
-      "end_col": 28
-    },
-    {
-      "kind": "comment",
-      "start_line": 231,
-      "start_col": 1,
-      "end_line": 231,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 232,
+      "start_line": 230,
       "start_col": 1,
-      "end_line": 232,
+      "end_line": 230,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 232,
+      "start_line": 230,
       "start_col": 8,
-      "end_line": 232,
+      "end_line": 230,
       "end_col": 59
     },
     {
       "kind": "command",
-      "start_line": 232,
+      "start_line": 230,
       "start_col": 10,
-      "end_line": 232,
+      "end_line": 230,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 232,
+      "start_line": 230,
       "start_col": 21,
-      "end_line": 232,
+      "end_line": 230,
       "end_col": 58
     },
     {
       "kind": "param-exp",
-      "start_line": 232,
+      "start_line": 230,
       "start_col": 22,
-      "end_line": 232,
+      "end_line": 230,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 232,
+  "bootstrap_line": 230,
   "hooks": {
     "header_info": false,
     "install_script": true,

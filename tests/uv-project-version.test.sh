@@ -100,4 +100,19 @@ UV_PROJECT_DIR="$work/range" setup_uv
 test "$(/usr/local/bin/uv --version | cut -d' ' -f2)" == "$latest"
 test "$(get_cached_version uv)" == "$latest"
 test "$(trap -p EXIT)" == "$exit_trap"
-printf 'PASS no exact pin retains latest-release behavior\n'
+printf 'PASS compatible open range selects the latest stable release\n'
+
+mkdir "$work/closed-range"
+cat > "$work/closed-range/pyproject.toml" << 'EOF'
+[project]
+name = "closed-range-probe"
+version = "0.0.0"
+requires-python = ">=3.14"
+[tool.uv]
+required-version = ">=0.12.13,<0.12.23"
+package = false
+EOF
+UV_PROJECT_DIR="$work/closed-range" setup_uv
+test "$(/usr/local/bin/uv --version | cut -d' ' -f2)" == 0.12.22
+(cd "$work/closed-range" && /usr/local/bin/uv sync)
+"$work/closed-range/.venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 14); print("PASS real project consumer accepts selected closed-range uv and Python")'

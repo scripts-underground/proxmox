@@ -132,10 +132,8 @@ function update_script() {
     systemctl stop twenty-worker twenty-server
     msg_ok "Stopped Services"
 
-    create_backup /opt/twenty/.env \
-      /opt/twenty/packages/twenty-server/.local-storage
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env packages/twenty-server/.local-storage)
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "twenty" "twentyhq/twenty" "tarball"
-    restore_backup
 
     msg_info "Building Application"
     cd /opt/twenty || exit
@@ -152,8 +150,7 @@ function update_script() {
     msg_info "Running Database Migrations"
     cd /opt/twenty/packages/twenty-server || exit
     set -a && source /opt/twenty/.env && set +a
-    $STD npx ts-node ./scripts/setup-db.ts
-    $STD npx -y typeorm migration:run -d dist/database/typeorm/core/core.datasource
+    $STD yarn command:prod upgrade
     msg_ok "Ran Database Migrations"
 
     msg_info "Starting Services"

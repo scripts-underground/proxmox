@@ -104,12 +104,13 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable -q --now "$var_addon_service" 2> /dev/null || true
+  svc_prepare_uninstall "$var_addon_service"
   rm -f "/etc/systemd/system/${var_addon_service}.service"
   rm -f /etc/nginx/sites-enabled/mqttx-web
   rm -f /etc/nginx/sites-available/mqttx-web
   if command -v nginx &> /dev/null; then
-    $STD nginx -t && systemctl reload nginx
+    $STD nginx -t || return $?
+    systemctl reload nginx || return $?
   fi
   rm -rf "$var_addon_app_dir"
   msg_ok "${APP} uninstalled"

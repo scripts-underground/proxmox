@@ -86,11 +86,15 @@ function update_script() {
   fi
 
   if check_for_gh_release "cliproxyapi" "router-for-me/CLIProxyAPI"; then
+    [[ -f /opt/cliproxyapi/config.yaml ]] || {
+      msg_error "Missing CLIProxyAPI config.yaml; refusing to replace existing settings"
+      exit 1
+    }
     msg_info "Stopping CLIProxyAPI"
     systemctl stop cliproxyapi
     msg_ok "Stopped CLIProxyAPI"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cliproxyapi" "router-for-me/CLIProxyAPI" "prebuild" "latest" "/opt/cliproxyapi" "CLIProxyAPI_*_linux_amd64.tar.gz"
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="config.yaml plugins data ${CLEAN_INSTALL_KEEP:-}" fetch_and_deploy_gh_release "cliproxyapi" "router-for-me/CLIProxyAPI" "prebuild" "latest" "/opt/cliproxyapi" "CLIProxyAPI_*_linux_amd64.tar.gz"
 
     msg_info "Starting CLIProxyAPI"
     systemctl start cliproxyapi

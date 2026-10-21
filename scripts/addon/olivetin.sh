@@ -47,7 +47,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable --now "$var_addon_service" &> /dev/null || true
+  svc_prepare_uninstall "$var_addon_service"
   $STD apt remove -y "$var_addon_pkg"
   rm -f "$HOME/.${var_addon_pkg}"
   msg_ok "${APP} has been uninstalled"

@@ -85,16 +85,20 @@ function update_script() {
     ensure_dependencies zstd
     mkdir -p /opt/backups
     BACKUP_VERSION="$(< "$HOME/.zigbee2mqtt")"
-    BACKUP_FILE="/opt/backups/${APP}_backup_${BACKUP_VERSION}.tar.zst"
-    $STD tar -cf - -C /opt zigbee2mqtt | zstd -q -o "$BACKUP_FILE"
+    local backup_label backup_rc
+    backup_label="${BACKUP_VERSION//[^a-zA-Z0-9._+-]/_}"
+    BACKUP_FILE=$(mktemp "/opt/backups/${APP}_backup_${backup_label}_XXXXXX.tar.zst") || exit $?
+    # Archive bytes belong to the compressor, never silent's command-output log.
+    if tar -cf - -C /opt zigbee2mqtt | $STD zstd -q -f -o "$BACKUP_FILE"; then :; else
+      backup_rc=$?
+      rm -f -- "$BACKUP_FILE" || msg_warn "Could not remove partial backup: $BACKUP_FILE"
+      exit "$backup_rc"
+    fi
     ls -t /opt/backups/${APP}_backup_*.tar.zst 2> /dev/null | tail -n +6 | xargs -r rm -f
     msg_ok "Backup Created (${BACKUP_VERSION})"
 
-    create_backup /opt/zigbee2mqtt/data
-
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" data)
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Zigbee2MQTT" "Koenkk/zigbee2mqtt" "tarball" "latest" "/opt/zigbee2mqtt"
-
-    restore_backup
 
     msg_info "Updating Zigbee2MQTT"
     cd /opt/zigbee2mqtt || exit
@@ -107,6 +111,9 @@ function update_script() {
     systemctl start zigbee2mqtt
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local checker_rc=$?
+    [[ "$checker_rc" == 1 ]] || exit "$checker_rc"
   fi
   exit
 }

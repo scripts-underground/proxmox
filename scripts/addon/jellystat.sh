@@ -228,7 +228,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable --now jellystat.service &> /dev/null || true
+  svc_prepare_uninstall jellystat.service
   rm -f "$var_addon_service_path"
   rm -rf "$var_addon_install_path"
   rm -f "$HOME/.jellystat"
