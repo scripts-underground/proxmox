@@ -2,7 +2,7 @@
 slug: tracearr
 title: Tracearr
 tags: [media]
-logo: /assets/logos/tracearr.webp
+logo: https://raw.githubusercontent.com/connorgallopo/Tracearr/898201875dd6c28d13158db84fcda580a042832e/assets/logo.png
 by: durzo
 repo: https://github.com/connorgallopo/Tracearr
 site: https://www.tracearr.com

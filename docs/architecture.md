@@ -116,6 +116,39 @@ removed only when the run exits 0. If the flag already exists, or `--clean` is
 given, the run sets `UPDATE_FORCE=1 FORCE_DEPLOY=1`: release checks report
 "due" and the current version is redeployed through the app's normal path.
 
+`run_update_script` marks successful-update cleanup as due before entering the
+hook. The framework's `on_exit` owns that cleanup for both a normal hook return
+and an explicit successful `exit`. It captures the original exit status, removes
+its own EXIT trap, clears the cleanup-due flag before calling cleanup, and runs
+noncritical cleanup in a subshell so a cleanup failure or explicit exit cannot
+replace the update status or recurse. Failed hooks skip cleanup and retain their
+pending flag; successful hooks clear it even when noncritical cleanup fails.
+Success includes a no-op update that finds no newer release and exits 0. It still
+runs the approved package/cache cleanup (including the package manager's
+autoremove where applicable); absence of deployment does not reclassify success.
+The single `cleanup_lxc` implementation is in `core.func`, using `pkg_clean`
+when supplied by `install.func`, then the existing language-cache cleanup.
+It never sweeps `tmp*`/`tempfile*` names from TMPDIR or shared temporary contents:
+a directory selection does not establish file ownership. Bundle/API owners remove
+their own exact stages at their lifecycle boundaries instead.
+An existing hook that calls this public helper explicitly acknowledges the same
+due cleanup, so its later successful exit does not repeat package/cache work.
+
+`silent` is a returning same-shell command wrapper. Quiet command output goes to
+the active log, and its exact status is available to `if`/`||` retry branches.
+Unhandled failures still reach the framework ERR/errexit boundary. It scopes
+`set` options with Bash `local -`, restores the caller's ERR trap (including an
+absent trap), and does not disable the command's pipefail setting. Ordinary
+variable/cwd/umask effects remain in the caller. This uses normal Bash conditional
+semantics: functions must propagate intermediate failures themselves, and an
+explicit `exit` or signal is not converted into a return. Verbose `$STD` remains
+the existing empty-command passthrough; no telemetry/error-context global is added.
+Consumers must not use an unchecked `$STD required_step && next_step` as fatal
+sequencing: Bash suppresses ERR/errexit for the left side of `&&` in both modes.
+Use ordinary sequential commands for required work, or explicit checked returns
+when a consumer is intentionally conditional. Uninstall owners call hooks normally.
+Intentional conditions, retries and best-effort `||` handling retain Bash semantics.
+
 Each bundle carries its own **runtime context**, baked at build time from the
 host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
@@ -139,8 +172,8 @@ NVIDIA usability requires libcuda and any mapped NVIDIA node. A non-empty
 `INSTALL_NVIDIA_DRIVERS` supplies the install choice; otherwise the existing
 60-second prompt defaults to yes on empty input, timeout or EOF. Libraries are
 installed when the resolved choice is `yes`. Optional GPU package/release
-steps log directly to the active log and warn on failure; they do not use the
-fatal `silent()` wrapper. Intel OpenCL uses the IGC tag in compute-runtime's release
+steps log directly to the active log and warn on failure rather than using
+`silent()`. Intel OpenCL uses the IGC tag in compute-runtime's release
 notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
 
 `header_info` is not a lifecycle hook — it's a display hook invoked by
@@ -235,7 +268,7 @@ build_container                            |
   → compose install wrapper from           |
       declare -f install_script            |
   → compose update + uninstall wrappers    |
-  → pct push wrappers ─────────────────────→ files in /tmp
+   → pct push wrappers ─────────────────────→ receiving temporary root
                                            |
   → lxc-attach run install wrapper ────────→ wrapper runs:
                                            |   source framework files (re-curl)
@@ -329,7 +362,7 @@ Stages, in order:
 5. Install base packages inside the container via `pct exec`
    (bash, curl, sudo, jq, etc. — distro-dependent).
 6. Build self-contained bundles via `build_bundle()`:
-   - **Install bundle** (`/tmp/install-bundle.sh`): inlines all 4
+   - **Install bundle** (default `/tmp/install-bundle.sh`): inlines all 5
      framework `.func` files + `install_script` hook + install
      pipeline. Self-destructs on completion via `trap ... EXIT`.
    - **Update bundle** (`/usr/local/sbin/update`): inlines framework
@@ -340,6 +373,43 @@ Stages, in order:
 8. Execute the install bundle via `lxc-attach`.
 9. Check the failure flag that the bundle writes on error.
 10. Invoke the user's `post_build_script` on the host.
+
+Creator-side staging, pulled/capture logs and framework-cache allocation use
+`${TMPDIR:-/tmp}`. The cache owner computes one root/session path for both its
+fetch and later inlining reads; changing TMPDIR does not reuse another root's
+bytes. Each sender bundle and addon staging directory is privately allocated,
+and cleanup removes only that owned staging artifact.
+
+Creator and receiver temporary roots are different filesystem contexts. LXC
+bundles still discard inherited creator TMPDIR. An explicit `var_lxc_tmpdir`
+uses the existing baked `var_lxc_*` context to select the receiving root before
+framework initialization. `build_container` creates that root when selected and
+uses the same install-bundle path for push and execution, including the in-place
+retry. The explicit value must be an absolute, non-root normalized path: no empty
+components, trailing slash, dot/dot-dot components or newline/carriage-return/tab.
+Spaces are supported. `_validate_lxc_tmpdir` checks this lexical contract without
+inspecting the creator's filesystem. `_prepare_lxc_tmpdir` walks components using
+Bash builtins and rejects existing or dangling symlink components before any
+creation, without requiring GNU `realpath -m` on Alpine. It creates missing
+receiving intermediate directories with mode0755 and only the selected leaf with
+conventional shared sticky mode01777. An app user can create leaf tempfiles but
+cannot replace a removed leaf through a writable new parent. Preparation preserves
+every existing directory's metadata. Existing selected paths must already let
+the intended app users traverse/write them; preparation does not chmod user paths.
+The same helpers run remotely before installer publication and in every generated
+install/update/uninstall prelude, before any library source-time effects or logs.
+This recreates an explicit temporary directory removed between invocations.
+Invalid values exit65 before receiving effects; creation failures retain their
+native status. With no override the receiving default remains `/tmp` and creator
+TMPDIR is discarded without introducing a new inherited-environment policy.
+
+`_prepare_container_bundles` explicitly checks root preparation, every bundle and
+the command aliases for both initial creation and repair. Initial preparation
+retains normal framework error handling. After the user chooses in-place repair,
+a preparation failure reports its exact status and exits preserving that existing
+container, without stale execution or re-entering the host's timed removal prompt.
+Only container execution is placed in the status-capture section. Addons stage
+within their current container's selected TMPDIR.
 
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
@@ -355,14 +425,14 @@ the framework must transport the function bodies explicitly.
 The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
 
 1. **Cache framework libs on the host** (once per session):
-   `core.func`, `error_handler.func`, `install.func`, `tools.func` are
+    `core.func`, `error_handler.func`, `install.func`, `tools.func`, `github.func` are
    fetched from `$REPO_BASE` and verified (size > 100 bytes, sentinel
    functions present).
 
 2. **Inline everything into a single script**:
-   - Shebang, `set -euo pipefail`, `set -x`
-   - `_wrap_log` with a per-bundle tag (`INST`, `UPDA`, `UNIN`)
-   - All 4 framework `.func` files, verbatim, between `# ═══` markers
+    - Shebang, `set -euo pipefail`, minimal PATH and receiving temporary context
+    - Baked app/`var_lxc_*` context using `printf %q`
+    - All 5 framework `.func` files, verbatim, between `# ═══` markers
    - Sanity checks that the expected sentinel functions loaded
    - `load_functions`, `catch_errors`, `color`
    - `declare -f <hook>` — the function body extracted via `declare -f`
@@ -371,13 +441,31 @@ The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
        `setting_up_container`, `network_check`, `update_os`,
        `install_script`, `motd_ssh`, `setup_lxc`, `cleanup_lxc`
      - **Update**: `run_update_script "$@"` (calls `update_script`) — no self-destruct
-     - **Uninstall**: `if uninstall_script; then rm -f "${BASH_SOURCE[0]}"; fi`
+      - **Uninstall**: normal `uninstall_script` call under existing ERR/EXIT
+        handling, then success-only removal of commands/markers
 
 3. **Push into the container** via `pct push` and set the execution mode.
+
+The builder owns its private sender artifact. `_write_bundle` checks every
+producer operation explicitly (including each library read, context write and hook
+definition), even if the public builder is called in an `if`/`||` context.
+Any writer failure returns its original status, removes that owned artifact and
+prevents publication. No compound-block errexit assumption or new trap owner is
+used. Successful publication and push/chmod failures also remove the sender file.
+The LXC receiver also allocates an owned same-filesystem stage: push writes there,
+mode is checked there, and atomic rename publishes the complete command. Failed
+partial transport, mode-setting or rename preserves the previous receiving bundle
+and removes the owned receiver stage. Persistent aliases are checked before their
+corresponding bundle publication. This is per-command publication, not a transaction
+across the install/update/uninstall set.
 
 No network I/O happens inside the container for framework loading — all
 libraries are already part of the bundle file. Each bundle is fully
 self-contained once it leaves the host.
+`install.func`'s bootstrap checks the existing `load_functions`/`catch_errors`
+APIs and fetches only missing libraries. Connected and offline bundles therefore
+retain the same inlined error/cleanup generation instead of replacing it with
+the currently published library while loading.
 
 #### 4.1.6 In-container execution and exit-flag check
 
@@ -404,7 +492,7 @@ update and uninstall bundles:
 
 | Bundle | Destination inside container | Lifecycle |
 |--------|------------------------------|-----------|
-| Install | `/tmp/install-bundle.sh` | Self-destructs on EXIT (success or failure) |
+| Install | `${var_lxc_tmpdir:-/tmp}/install-bundle.sh` | Self-destructs on EXIT (success or failure) |
 | Update | `/usr/local/sbin/update` | Persists — user runs it directly |
 | Uninstall | `/usr/local/sbin/uninstall` | Self-destructs on successful uninstall |
 
@@ -415,9 +503,37 @@ re-downloading the CT script.
 For addons, the naming follows the same convention:
 `/usr/local/sbin/update_<slug>` and `/usr/local/sbin/uninstall_<slug>`,
 with the same lifecycle rules (update persists, uninstall self-destructs).
+Both LXC and addon uninstall bundles preserve a nonzero hook return and retain
+their command/marker on failure; they self-destruct only after a successful hook.
+The hook call is never an `if`/`||` condition: Bash would disable errexit for its
+entire body, allowing a failed ordinary `$STD` command to reach data deletion.
+The existing `error_handler` supplies the fatal status, diagnostics and owned
+spinner stop for failures, including an explicit nonzero hook return. Addon
+installed dispatch uses `exec` into that normal bundle path.
 
-There is no longer a legacy path through `/tmp/_update.sh` or
-`/tmp/_uninstall.sh` — the temporary wrapper files have been removed.
+Service-managing uninstall hooks use `svc_prepare_uninstall` from the existing
+init abstraction. It is uninstall-specific; install/update `svc_stop`,
+`svc_disable` and sibling semantics are unchanged. Checked systemd properties or
+a completed OpenRC service list/state query establish presence before control.
+Only verified absence/stopped/disabled states skip work. Query and stop/disable
+failures keep their exact status, emit diagnostics and reach the plain hook's
+existing error boundary before app/unit/config removal. OpenRC queries all verified
+runlevel registrations and removes each before init-file deletion; query or control
+failure is not absence. A systemd not-found inactive/failed tombstone is safe; a
+not-found active unit still needs a checked stop. Known broken load or empty/bad
+unit-file states do not replace the actual control outcome. Missing properties,
+unknown/malformed states and failed queries fail closed. All helper locals use the
+reserved `_svc_` prefix so caller outputs such as `state` remain caller-owned.
+The `stop` action retains shared service
+enablement, with an optional caller-owned prior-running output for Apache.
+phpMyAdmin restores a previously running shared Apache before app deletion; it
+does not start an absent/stopped shared server. Its dedicated Alpine Lighttpd is
+stopped/disabled before removing the app configuration; shared PHP-FPM stays up.
+Netvisor returns normally so successful command/marker cleanup remains owner-run.
+
+New builds no longer stage legacy `_update.sh`/`_uninstall.sh` wrappers; they
+push the persistent bundles directly. `setup_lxc` retains its compatibility
+reader for such files in the selected receiving temporary root.
 
 #### 4.1.8 Post-install hooks: `complete_install`
 
@@ -553,7 +669,7 @@ split (bake-in vs. re-curl) is eliminated — everything is baked in.
 #### In-container environment
 
 When `install_script()` runs inside the LXC, it executes inside a bash
-process that has already sourced all 4 inlined framework libraries (the
+process that has already sourced all 5 inlined framework libraries (the
 bundle's preamble). All standard helpers are available: `$STD`,
 `msg_info`, `msg_ok`, `msg_error`, `catch_errors`, `color`, and more.
 
@@ -598,10 +714,10 @@ Each bundle carries, after its `set -euo pipefail` + PATH header:
 1. **Context block** — `declare -- APP=…`, `APP_SLUG=…`, `REPO_BASE=…` and
    every `var_addon_*` variable, emitted with `printf %q` (same pattern as
    the LXC `build_bundle`).
-2. **Framework libraries** — all 5 `.func` files inlined verbatim. The
-   embedded install.func `_bootstrap` re-runs at bundle execution; its
-   re-source of core/error_handler uses process substitution, which silently
-   no-ops offline — so bundles remain fully functional without network.
+2. **Framework libraries** — all 6 `.func` files inlined verbatim. The
+   embedded install.func `_bootstrap` re-runs at bundle execution, initializes
+   the already inlined core/error APIs and fetches only missing libraries.
+   It therefore keeps the frozen generation both online and offline.
 3. **Hook body** — `declare -f <hook>`. Only the named function is copied:
    hooks must be self-contained (framework helpers OK, script-local helpers
    are NOT available).
@@ -610,6 +726,15 @@ Uninstall bundles additionally remove: themselves (resolving the
 `/usr/bin/<alias>` symlink via `readlink -f`), the sibling update bundle,
 both `/usr/bin` aliases, the install marker, and the now-empty marker
 directories.
+
+Addon serialization follows the same explicit checked-producer contract as LXC.
+`_addon_bundle_contents` checks every producer even under conditional callers;
+`_addon_bundle_write` owns a private same-filesystem stage, checks mode and alias,
+and atomically renames completed bytes over the command. Generation, write,
+chmod, alias or rename failures preserve the previous valid bundle and exact
+status, removing the owned stage. The fetch-stage owner similarly removes its
+own directory and propagates failures. No live-file truncation, shared temp sweep,
+new trap owner or multi-artifact transaction engine is involved.
 
 
 ### 5.3 PVE
@@ -680,7 +805,274 @@ sync across both.
 
 **TBD**
 
-## 7. References
+## 7. Shared runtime and release maintenance
+
+Runtime and provider changes stay in the existing `tools.func` public helpers.
+`setup_nodejs` establishes its safe `/opt` cwd before legacy cleanup or any npm
+work, and refreshes the NodeSource signing key before same-major apt metadata/
+upgrade work. Key refresh remains a reported noncritical failure; configured
+Node/module versions and existing npm/pnpm pins are not globally changed.
+`download_gpg_key` downloads privately, processes and validates with GPG in an
+owned same-filesystem stage, then atomically publishes. All modes preserve the
+last-known-good key on transfer, processing, validation or publication failure.
+Existing key mode/owner are retained; fresh keyrings use0644 for apt readability.
+
+`_uv_required_spec(dir)` owns the configuration read for both exact and range
+consumers: root `uv.toml` first (even when it masks a pyproject requirement), else
+`[tool.uv]` in `pyproject.toml`. Quotes, sections, comments and the legacy bare
+exact value remain supported. Status1 means no requirement,65 a malformed one.
+`_uv_required_version(dir)` remains the exact-pin compatibility wrapper; a range
+still returns1 through that interface. `setup_uv` selects explicit UV_VERSION,
+then the project requirement, then latest only when no requirement exists.
+
+Ranges support comma-separated AND clauses `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`
+with numeric bounds. Compatible-release upper bounds follow the supplied precision
+(`~=0.12.15` is below0.13; `~=0.12` is below1). The release-list request is completed
+and JSON-checked across all release-list pages, filters draft/prerelease/nonstable
+tags and version-sorts the complete result. Unsupported syntax, a failed page and
+no satisfying stable release fail rather than installing incompatible latest. Exact
+pins and explicit overrides do not require range enumeration.
+
+GitHub version lookup, checking and deployment share a small request/selection
+boundary, not a cross-forge coordinator. Completed curl status and JSON shape are
+checked before selection. HTTP status is a named output so token recovery stays
+in the caller for subsequent asset downloads; diagnostics never enter JSON output.
+An unfiltered latest request honors the designated `/latest` object; an optional
+stable tag-prefix selects from the release list. Prefix means raw `startswith`,
+not numeric/component matching: include the actual leading `v` and the desired
+separator (`v1.2.` excludes `v1.20.0`, whereas `v1.2` matches both). Pins retain priority and raw tags
+are preserved; one numeric-v compatibility helper handles comparisons and markers
+without stripping the leading character from word tags or adopting mangled markers. A requested
+release never falls back to another release's asset; latest asset fallback stays
+within the selected prefix. Existing own-marker, force and checked-copy behavior
+is retained.
+One private list owner handles complete pagination for uv and prefix selection.
+It checks every page, refuses repeated-page/nonprogress responses and
+publishes a list only after completion. A prefix cannot infer published/stable
+release state from Git tags if that release list is unavailable.
+Unfiltered latest lookup retains semver Git-tag fallback when no stable release
+exists, including a successful empty/prerelease-only list. Malformed/incomplete
+producers are errors. Older-asset lookup separately retains one checked request
+bounded to the original15 releases, returning the first compatible match in API
+order; it never paginates into ancient history. Request diagnostics stay on stderr
+and provide safe authentication/rate-limit hints. The public checker ends its
+owned spinner on failure, including failures before an HTTP request.
+
+`check_for_gh_release(app, repo, pin, reason, prefix)` adds only the optional fifth
+argument. `fetch_and_deploy_gh_release(app, repo, mode, version, target, asset,
+prefix, selected_json_file)` adds optional seventh/eighth arguments. Its eighth
+argument is a caller-owned output file: cleared at call start and written with
+the actually selected release object on success, including no-op success and
+older-asset fallback. Internal response files/stages are private and removed by
+their owners. No global temporary metadata file or exported last-response state
+is used.
+
+Intel metadata consumers allocate their own file, pass it through the existing
+optional-command subshell, call `_resolve_igc_tag(outvar, selected_json_file)` and
+remove that file. Jellyfin uses the same explicit transport. This changes metadata
+association, not package ordering, device eligibility, optional-failure or GPU
+hardware policy. A later fetch for another repository cannot replace that call's
+selected metadata.
+Jellyfin's required update path refuses missing/unresolved compiler-pin metadata
+with250 before requesting IGC, rather than letting an empty pin imply latest.
+The optional Arc/modern paths retain their existing missing-pin skip behavior.
+
+`get_system_arch(source, amd64_alias, arm64_alias)` retains its dpkg default and
+existing normalized uname/both modes. Explicit second/third arguments map release
+asset aliases, e.g. `get_system_arch both x64 aarch64`; no global architecture
+rename or application default change is implied.
+
+### Checked replacement and application persistence
+
+`_deploy_replace_contents` is the shared source/archive replacement owner for
+GitHub tags/releases, Codeberg tags/releases, GitLab releases and URL archives.
+The URL route also extracts and checks before any live replacement. Existing
+`CLEAN_INSTALL_KEEP` paths are protected against both cleanup and incoming source
+defaults, in clean and merge modes. Its legacy space-separated string remains
+unchanged. The optional indexed Bash array `CLEAN_INSTALL_KEEP_PATHS` adds literal
+paths losslessly, including whitespace, alongside that string. Both require
+normalized relative paths; absolute/root/dot/dot-dot/empty components, trailing
+slashes and wildcard paths fail65 before effects. Legacy string control separators
+also fail65; array elements are never word-split. Missing paths can receive source
+defaults. Symlink ancestors protect the link itself.
+
+A private source-only projection uses archive hardlinks when supported, independent
+directories and checked full-copy fallback after removing owned partial links.
+Existing merge directories and dot-merge branches stay in place: only incoming
+replaced leaves and genuinely new directories are published in bounded argv
+batches with associative membership. Old-only live contents are never projected,
+copied, moved or traversed. Clean removal descends only persistent/mount ancestor
+spines. Kept paths, links and
+mounts never move, copy out/back or receive archive default bytes/metadata. Linux
+mountinfo identifies nested/same-device bind mounts without walking their data.
+Incompatible merge directory/file/link types fail252 before live replacement;
+ordinary payload data never follows a destination symlink into user data.
+The existing same-filesystem aside contains only replaceable siblings; failed
+publication removes attempted planned leaves and only empty planned directories,
+retains unrelated concurrent entries, and restores prior entries around them.
+Restore batches require absent destination names, never overwrite/nest around a
+conflicting writer, and verify no-clobber moves actually moved each old entry.
+Fresh decoded mountinfo containment guards every owned recursive tree removal;
+a new nested mount retains/reports the stage/aside instead of traversing it.
+There is no new-sibling sweep. An incomplete restore is an error
+with its recovery location retained. Source inputs and target-root mode/owner
+are unchanged. This extends the checked helper, not a transaction/journal engine.
+
+CLIProxyAPI declares config.yaml/plugins/data, Sure storage, PrivateBin cfg/data,
+and ByteStash current data. PrivateBin update leaves existing config/data metadata
+alone and initializes ownership only when the data path was absent. Critical
+CLIProxyAPI/PrivateBin config must exist rather than being silently reset. Legacy
+ByteStash `/opt/data` lies outside the replacement root and is untouched; update
+does not restore unrelated/stale backup data over it. Fresh ByteStash2CPU/2048MiB
+defaults match pinned upstream and catalogue metadata; existing resource/settings
+overrides and installed service units are not rewritten.
+
+### Bounded application source/startup compatibility
+
+OneDev install/update uses the current ~sites/public distribution URL. The extracted
+root release.properties version must match the selected/requested release before
+upgrade, and installed metadata must still agree before own-marker publication.
+The mutable latest archive is never silently relabeled as GitHub's selected tag.
+Both installed legacy onedev and
+current onedev.server units are supported; after an app-owned upgrade, service
+selection reflects the unit that remains. Failed downloads/upgrades do not start
+the service or advance the own marker.
+
+Apprise copies the static directory's contents into the documented /s document
+root on install and update, including when that root already exists. Its bounded
+HTTP fixture proof verifies actual upstream CSS bytes and changed revision bytes
+at the consumer URL; it is not a full Apprise/Nginx/Django installation proof.
+
+Pelican supplies explicit noninteractive environment setup URLs. Update preserves
+the existing .env/uploads/plugins/SQLite paths through checked replacement, then
+uses the application's Dotenv dependency to decode the existing APP_URL. SQLite
+journal/WAL/SHM siblings, including whitespace-named files, are added losslessly to
+the local inherited keep-path array and retained through failure and pending retry.
+Matching
+outer quotes are parsed without deleting embedded apostrophes; missing/invalid
+settings are checked errors, never guessed defaults. Composer/Artisan migrations
+remain application-owned. Wiki.js follows wiki-v2 and preserves config/data, with
+SQLite database/sidecar preservation and rebuild conditional on an existing SQLite installation; the
+fresh PostgreSQL default and existing runtime/database-major choices stay intact.
+
+Sonarr's default checker/deployer select the v4 stable line and use the existing
+architecture alias API for x64/arm64 assets. Explicit provider pins retain their
+priority. Gluetun follows the canonical passteque repository in metadata/check/
+deploy and asks the existing Go helper to read the selected source requirement;
+explicit local Go versions override that optional project input. Project go and
+toolchain directives are minimums: a satisfying installed stable version stays;
+otherwise checked official release metadata selects the latest stable patch of
+the required minor, including historical initial tags without .0. Failed metadata
+or download leaves the previous runtime in place; other callers keep their
+existing latest/explicit-version selection.
+
+### Application-owned runtime/build inputs
+
+App hooks consume metadata from the selected deployed source rather than a
+different branch's text or an unrelated latest release. Their installed database
+major, credentials, data paths and existing service options remain caller-owned.
+Required build/migration errors retain the update-pending flag for a normal retry.
+
+| Application | Selected-source contract |
+|---|---|
+| Radicale | Native TOML optional dependencies determine supported bcrypt/argon2 extras in both installation and deployed unit command. Native INI/unit parsing identifies configured in-tree credential/calendar paths before replacement. |
+| Discourse | The saved environment, production Rails context and rbenv PATH apply to pnpm, database and asset commands. Both application and Sidekiq stop/start together. Nginx changes are validated and reverted on validation failure; updates do not provision a new PostgreSQL major. |
+| ThingsBoard | Its Java25 source requirement applies to fresh/update paths. Package upgrade preserves existing configuration and database provisioning; the downloaded package is an owned temporary artifact. |
+| AliasVault | The supported core `--web` target and React `apps/web` build replace the retired Blazor layout. Node24 consumes the current dependency graph; `apps/web/dist` publishes into the existing served `client/wwwroot`. Existing settings, certificates, secrets and data are protected before source/build work. |
+| Tracearr | The selected packageManager and production server dependency closure include shared, emails and the runtime logo. A private runtime projection publishes through the checked helper; existing data, environment and prestart/database-major context remain in place. |
+| Twenty | The registered application-owned `command:prod upgrade` runs with the existing environment. Upload storage and lossless inherited keep paths survive replacement and failures; the script does not invent an alternate migration sequence. |
+| Kima-Hub | Both analyzers use an isolated Python3.11 environment and the source's compatible NumPy/ONNX/Essentia pins, without system pip or TensorFlow. Public model inputs/exports and the offline tokenizer cache retain upstream checksum gates; native MusiCNN/CLAP parity gates precede service startup. Existing user models and unit options remain intact. |
+| Paperclip | The selected pnpm version first performs a frozen install. Only a completed status1 with exclusively exact structured `ERR_PNPM_OUTDATED_LOCKFILE` errors permits one unlocked retry. Native Node dotenv parsing protects custom home/config paths and supplies the saved migration environment; network/auth/build/malformed/mixed errors remain failures. |
+| Paperless-ngx | Default v2.20.15 remains pinned. A read-only native Dotenv/JSON/source-version preflight runs before hook maintenance or service/source/config changes. Explicit v3 overrides convert only proven exact glob semantics; unrepresentable directory globs, absolute-root collisions and malformed/ambiguous provenance return65 with actionable diagnostics. |
+
+Paperless format provenance is an app-owned comment in the existing config, not
+separate transaction state. A glob-v2 comment records unchanged current values
+before source replacement; regex values and regex-v3 provenance publish atomically
+after the selected source is installed. Concurrent config edits are retained and
+reported. Existing explicit regex intent stays byte-identical. The restart repair
+reads base units and drop-ins, adds only missing defaults and preserves independent
+user `Restart`/`RestartSec` directives, including same-version repair.
+
+The focused cold-hook tests execute actual helpers/files and native parser/module
+consumers with explicitly modeled compilers, model weights, database provisioning
+and service control. A bounded Node24/Vite compiler fixture verifies generated
+HTML/JavaScript and all lock-listed Node engine constraints; it does not stand in
+for a complete AliasVault Rust/.NET/React installation. Wheel import evidence
+likewise does not prove neural inference or full Kima operation.
+
+### Privacy, backups and pinned CPU build callers
+
+Webtrees stages a Caddyfile candidate, preserving existing custom configuration,
+then uses native `caddy validate` and the adapted route graph before publication
+or reload. The private-path403 guard must precede serving/rewrite handlers. A
+failed validation or unproven custom routing retains original bytes; a concurrent
+edit is reported instead of overwritten. Privacy repair runs even when the app
+release is unchanged. Its data directory stays live through checked replacement.
+
+Zigbee2MQTT streams tar stdout directly into zstd; only the compressor is wrapped
+by STD. Each archive has an exclusively allocated filename, including repeated
+same-version operations. The completed pipefail status is captured before removing
+the owned partial archive, and failure never advances to deployment. Existing
+settings/coordinator data stay in place through source replacement and failures.
+
+Immich's default release is app-local `var_lxc_release` (v3.3.1); an explicit
+requested release retains priority. Fresh/update build the same selected source.
+That source's Dockerfile selects the base-images tag and CPU interpreter, and its
+packageManager/mise metadata selects build tools. The six pinned base-image library
+recipes run from a private source stage, with revision records published after
+success. Update's hook contains its own library compiler definition; unrelated
+script-global functions are not assumed to cross the bundle boundary. An Immich
+pin is explicitly masked for independent VectorChord selection.
+
+Updated app artifacts are privately built and published through checked replacement.
+The app build stage is allocated beside the persistent live application under
+`/opt/immich`, independently of a potentially RAM-backed production TMPDIR.
+The app publication call also scopes TMPDIR to that install disk, so the shared
+helper's projection can hardlink the large input instead of falling back to a
+cross-filesystem copy into global scratch. The caller owns exactly its allocated
+app stage: a cold-contained checked build/publication function returns every
+required failure, then the caller leaves the stage and attempts its checked
+cleanup on both success and failure. The original build/publication status wins
+if cleanup also fails; successful work cannot hide a cleanup failure. Unknown
+prior app stages are never swept or reused.
+ML dependency synchronization still operates in the existing installed venv. The
+app-artifact publication proof does not establish ML-environment atomic rollback;
+failed ML operations remain fatal and retryable through the pending-update owner.
+Native environment parsing protects configured data in either the source or app
+root, plus the existing upload link/runtime and inherited literal keeps. Existing
+environment/database-major choices remain intact. Geodata repair targets the actual
+geodata directory and uses an exact symlink destination, including same-version
+repair. Optional source-pattern rewrites distinguish grep's no-match1 from genuine
+producer errors and pass filenames losslessly. Python/ML/plugin-tool retries have
+explicit exact-status exhaustion boundaries; Frigate's wheel caller does likewise.
+No successful build message or later stage follows exhausted retries.
+
+The focused proofs distinguish native Caddy HTTP, tar/zstd streams, filesystem
+preservation and selected-source geodata readers from modeled application/image
+library compilers, database/service operations and ML environments. These outcomes
+do not establish full Immich operation or postponed GPU/model functionality.
+
+Forgejo fresh HTTP defaults use port80 without running the application as root.
+The Debian installer follows the documented login-capable `git` account with a
+fresh `/home/git` home, reuses an existing account/home, keeps executable code
+root-owned and grants only the service's bind capability. Existing service/home/
+SSH/config/data/port settings are not regenerated by the updater.
+The new Debian unit does not impose NoNewPrivileges, which would also restrict
+legitimate setgid helpers. Native onboarding/SSH proof does not establish mail
+delivery behavior. Alpine retains
+the distribution's `forgejo` account, home and OpenRC contract. A new package
+configuration gets port80; an existing configuration is retained. File capabilities
+already configured before package replacement are restored afterward, rather than
+granting new capabilities to an existing high-port/no-cap installation.
+
+Native Forgejo acceptance is a distinct owned-CT gate: actual web onboarding on
+port80, repository SSH clone/push and an independent consuming clone, followed by
+real update preservation with custom account home, SSH keys, repository/data paths
+and port. Source/callback fixtures, version output and service startup are not
+substitutes. Native template/package/rootfs/temporary-peak accounting must admit
+each variant before creation/download; a blocked variant stays explicitly unverified.
+
+## 8. References
 
 - `misc/bootstrap/lxc` — LXC entry-point shim
 - `misc/bootstrap/addon_lxc` — Addon entry-point shim

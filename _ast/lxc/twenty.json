@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "twenty",
   "type": "lxc",
-  "total_lines": 171,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/twentyhq/twenty\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Twenty\"\nvar_tags=\"${var_tags:-crm;business;contacts}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-10240}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"twenty_db\" PG_DB_USER=\"twenty\" PG_DB_SCHEMA_PERMS=\"true\" PG_DB_EXTENSIONS=\"vector\" setup_postgresql_db\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"twenty\" \"twentyhq/twenty\" \"tarball\"\n\n  msg_info \"Building Application\"\n  cd /opt/twenty || exit\n  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n  $STD corepack prepare yarn@4.9.2 --activate\n  yarn install --immutable \u003e /dev/null 2\u003e\u00261 || $STD yarn install\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD npx nx run twenty-server:build\n  $STD npx nx build twenty-front\n  cp -r /opt/twenty/packages/twenty-front/build /opt/twenty/packages/twenty-server/dist/front\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Configuring Application\"\n  APP_SECRET=$(openssl rand -base64 32)\n  mkdir -p /opt/twenty/packages/twenty-server/.local-storage\n  cat \u003c\u003c EOF \u003e /opt/twenty/.env\nNODE_PORT=3000\nPG_DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nREDIS_URL=redis://localhost:6379\nSERVER_URL=http://${LOCAL_IP}:3000\nAPP_SECRET=${APP_SECRET}\nSTORAGE_TYPE=local\nNODE_ENV=production\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/twenty/packages/twenty-server || exit\n  set -a \u0026\u0026 source /opt/twenty/.env \u0026\u0026 set +a\n  $STD yarn database:init:prod\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/twenty-server.service\n[Unit]\nDescription=Twenty CRM Server\nAfter=network.target postgresql.service redis-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/twenty/packages/twenty-server\nEnvironmentFile=/opt/twenty/.env\nExecStart=/usr/bin/node dist/main\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/twenty-worker.service\n[Unit]\nDescription=Twenty CRM Worker\nAfter=network.target postgresql.service redis-server.service twenty-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/twenty/packages/twenty-server\nEnvironmentFile=/opt/twenty/.env\nEnvironment=DISABLE_DB_MIGRATIONS=true\nEnvironment=DISABLE_CRON_JOBS_REGISTRATION=true\nExecStart=/usr/bin/node dist/queue-worker/queue-worker\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now redis-server twenty-server twenty-worker\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/twenty ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  if check_for_gh_release \"twenty\" \"twentyhq/twenty\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop twenty-worker twenty-server\n    msg_ok \"Stopped Services\"\n\n    create_backup /opt/twenty/.env \\\n      /opt/twenty/packages/twenty-server/.local-storage\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"twenty\" \"twentyhq/twenty\" \"tarball\"\n    restore_backup\n\n    msg_info \"Building Application\"\n    cd /opt/twenty || exit\n    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n    $STD corepack prepare yarn@4.9.2 --activate\n    export NODE_OPTIONS=\"--max-old-space-size=3072\"\n    $STD yarn install --immutable || $STD yarn install\n    $STD npx nx run twenty-server:build\n    $STD npx nx build twenty-front\n    cp -r /opt/twenty/packages/twenty-front/build /opt/twenty/packages/twenty-server/dist/front\n    unset NODE_OPTIONS\n    msg_ok \"Built Application\"\n\n    msg_info \"Running Database Migrations\"\n    cd /opt/twenty/packages/twenty-server || exit\n    set -a \u0026\u0026 source /opt/twenty/.env \u0026\u0026 set +a\n    $STD npx ts-node ./scripts/setup-db.ts\n    $STD npx -y typeorm migration:run -d dist/database/typeorm/core/core.datasource\n    msg_ok \"Ran Database Migrations\"\n\n    msg_info \"Starting Services\"\n    systemctl start twenty-server twenty-worker\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "total_lines": 168,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2155,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/twentyhq/twenty\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Twenty\"\nvar_tags=\"${var_tags:-crm;business;contacts}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-10240}\"\nvar_disk=\"${var_disk:-20}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"twenty_db\" PG_DB_USER=\"twenty\" PG_DB_SCHEMA_PERMS=\"true\" PG_DB_EXTENSIONS=\"vector\" setup_postgresql_db\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"twenty\" \"twentyhq/twenty\" \"tarball\"\n\n  msg_info \"Building Application\"\n  cd /opt/twenty || exit\n  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n  $STD corepack prepare yarn@4.9.2 --activate\n  yarn install --immutable \u003e /dev/null 2\u003e\u00261 || $STD yarn install\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD npx nx run twenty-server:build\n  $STD npx nx build twenty-front\n  cp -r /opt/twenty/packages/twenty-front/build /opt/twenty/packages/twenty-server/dist/front\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Configuring Application\"\n  APP_SECRET=$(openssl rand -base64 32)\n  mkdir -p /opt/twenty/packages/twenty-server/.local-storage\n  cat \u003c\u003c EOF \u003e /opt/twenty/.env\nNODE_PORT=3000\nPG_DATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nREDIS_URL=redis://localhost:6379\nSERVER_URL=http://${LOCAL_IP}:3000\nAPP_SECRET=${APP_SECRET}\nSTORAGE_TYPE=local\nNODE_ENV=production\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Running Database Migrations\"\n  cd /opt/twenty/packages/twenty-server || exit\n  set -a \u0026\u0026 source /opt/twenty/.env \u0026\u0026 set +a\n  $STD yarn database:init:prod\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/twenty-server.service\n[Unit]\nDescription=Twenty CRM Server\nAfter=network.target postgresql.service redis-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/twenty/packages/twenty-server\nEnvironmentFile=/opt/twenty/.env\nExecStart=/usr/bin/node dist/main\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/twenty-worker.service\n[Unit]\nDescription=Twenty CRM Worker\nAfter=network.target postgresql.service redis-server.service twenty-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/twenty/packages/twenty-server\nEnvironmentFile=/opt/twenty/.env\nEnvironment=DISABLE_DB_MIGRATIONS=true\nEnvironment=DISABLE_CRON_JOBS_REGISTRATION=true\nExecStart=/usr/bin/node dist/queue-worker/queue-worker\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now redis-server twenty-server twenty-worker\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/twenty ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  NODE_VERSION=\"24\" NODE_MODULE=\"corepack\" setup_nodejs\n\n  if check_for_gh_release \"twenty\" \"twentyhq/twenty\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop twenty-worker twenty-server\n    msg_ok \"Stopped Services\"\n\n    local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" .env packages/twenty-server/.local-storage)\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"twenty\" \"twentyhq/twenty\" \"tarball\"\n\n    msg_info \"Building Application\"\n    cd /opt/twenty || exit\n    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n    $STD corepack prepare yarn@4.9.2 --activate\n    export NODE_OPTIONS=\"--max-old-space-size=3072\"\n    $STD yarn install --immutable || $STD yarn install\n    $STD npx nx run twenty-server:build\n    $STD npx nx build twenty-front\n    cp -r /opt/twenty/packages/twenty-front/build /opt/twenty/packages/twenty-server/dist/front\n    unset NODE_OPTIONS\n    msg_ok \"Built Application\"\n\n    msg_info \"Running Database Migrations\"\n    cd /opt/twenty/packages/twenty-server || exit\n    set -a \u0026\u0026 source /opt/twenty/.env \u0026\u0026 set +a\n    $STD yarn command:prod upgrade\n    msg_ok \"Ran Database Migrations\"\n\n    msg_info \"Starting Services\"\n    systemctl start twenty-server twenty-worker\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2155,SC2046",
@@ -139,10 +139,8 @@
     "    systemctl stop twenty-worker twenty-server",
     "    msg_ok \"Stopped Services\"",
     "",
-    "    create_backup /opt/twenty/.env \\",
-    "      /opt/twenty/packages/twenty-server/.local-storage",
+    "    local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" .env packages/twenty-server/.local-storage)",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"twenty\" \"twentyhq/twenty\" \"tarball\"",
-    "    restore_backup",
     "",
     "    msg_info \"Building Application\"",
     "    cd /opt/twenty || exit",
@@ -159,8 +157,7 @@
     "    msg_info \"Running Database Migrations\"",
     "    cd /opt/twenty/packages/twenty-server || exit",
     "    set -a \u0026\u0026 source /opt/twenty/.env \u0026\u0026 set +a",
-    "    $STD npx ts-node ./scripts/setup-db.ts",
-    "    $STD npx -y typeorm migration:run -d dist/database/typeorm/core/core.datasource",
+    "    $STD yarn command:prod upgrade",
     "    msg_ok \"Ran Database Migrations\"",
     "",
     "    msg_info \"Starting Services\"",
@@ -205,7 +202,7 @@
     {
       "name": "update_script",
       "start_line": 118,
-      "end_line": 165,
+      "end_line": 162,
       "name_span": {
         "start_line": 118,
         "start_col": 10,
@@ -2031,53 +2028,83 @@
       "end_col": 30
     },
     {
-      "kind": "command",
+      "kind": "keyword",
+      "op": "local",
       "start_line": 135,
       "start_col": 5,
       "end_line": 135,
-      "end_col": 18
+      "end_col": 10
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 137,
+      "start_line": 135,
+      "start_col": 14,
+      "end_line": 135,
+      "end_col": 116
+    },
+    {
+      "kind": "var-name",
+      "start_line": 135,
+      "start_col": 14,
+      "end_line": 135,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 135,
+      "start_col": 40,
+      "end_line": 135,
+      "end_col": 72
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 135,
+      "start_col": 41,
+      "end_line": 135,
+      "end_col": 71
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 136,
       "start_col": 5,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 137,
+      "start_line": 136,
       "start_col": 5,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 137,
+      "start_line": 136,
       "start_col": 21,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 48
     },
     {
       "kind": "string-dq",
-      "start_line": 137,
+      "start_line": 136,
       "start_col": 49,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 57
     },
     {
       "kind": "string-dq",
-      "start_line": 137,
+      "start_line": 136,
       "start_col": 58,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 75
     },
     {
       "kind": "string-dq",
-      "start_line": 137,
+      "start_line": 136,
       "start_col": 76,
-      "end_line": 137,
+      "end_line": 136,
       "end_col": 85
     },
     {
@@ -2085,448 +2112,427 @@
       "start_line": 138,
       "start_col": 5,
       "end_line": 138,
-      "end_col": 19
-    },
-    {
-      "kind": "command",
-      "start_line": 140,
-      "start_col": 5,
-      "end_line": 140,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 140,
+      "start_line": 138,
       "start_col": 14,
-      "end_line": 140,
+      "end_line": 138,
       "end_col": 36
     },
     {
       "kind": "command",
-      "start_line": 141,
+      "start_line": 139,
       "start_col": 5,
-      "end_line": 141,
+      "end_line": 139,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 141,
+      "start_line": 139,
       "start_col": 20,
-      "end_line": 141,
+      "end_line": 139,
       "end_col": 22
     },
     {
       "kind": "command",
-      "start_line": 141,
+      "start_line": 139,
       "start_col": 23,
-      "end_line": 141,
+      "end_line": 139,
       "end_col": 27
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 142,
+      "start_line": 140,
       "start_col": 5,
-      "end_line": 142,
+      "end_line": 140,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 142,
+      "start_line": 140,
       "start_col": 12,
-      "end_line": 142,
+      "end_line": 140,
       "end_col": 45
     },
     {
       "kind": "var-name",
-      "start_line": 142,
+      "start_line": 140,
       "start_col": 12,
-      "end_line": 142,
+      "end_line": 140,
       "end_col": 43
     },
     {
       "kind": "param-exp",
-      "start_line": 143,
+      "start_line": 141,
       "start_col": 5,
-      "end_line": 143,
+      "end_line": 141,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 143,
+      "start_line": 141,
       "start_col": 10,
-      "end_line": 143,
+      "end_line": 141,
       "end_col": 18
     },
     {
       "kind": "keyword",
       "op": "export",
-      "start_line": 144,
+      "start_line": 142,
       "start_col": 5,
-      "end_line": 144,
+      "end_line": 142,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 144,
+      "start_line": 142,
       "start_col": 12,
-      "end_line": 144,
+      "end_line": 142,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 144,
+      "start_line": 142,
       "start_col": 12,
-      "end_line": 144,
+      "end_line": 142,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 144,
+      "start_line": 142,
       "start_col": 25,
-      "end_line": 144,
+      "end_line": 142,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 145,
+      "start_line": 143,
       "start_col": 5,
-      "end_line": 145,
+      "end_line": 143,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 145,
+      "start_line": 143,
       "start_col": 10,
-      "end_line": 145,
+      "end_line": 143,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 145,
+      "start_line": 143,
       "start_col": 35,
-      "end_line": 145,
+      "end_line": 143,
       "end_col": 37
     },
     {
       "kind": "param-exp",
-      "start_line": 145,
+      "start_line": 143,
       "start_col": 38,
-      "end_line": 145,
+      "end_line": 143,
       "end_col": 42
     },
     {
       "kind": "command",
-      "start_line": 145,
+      "start_line": 143,
       "start_col": 43,
-      "end_line": 145,
+      "end_line": 143,
       "end_col": 47
     },
     {
       "kind": "param-exp",
-      "start_line": 146,
+      "start_line": 144,
       "start_col": 5,
-      "end_line": 146,
+      "end_line": 144,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 146,
+      "start_line": 144,
       "start_col": 10,
-      "end_line": 146,
+      "end_line": 144,
       "end_col": 13
     },
     {
       "kind": "param-exp",
-      "start_line": 147,
+      "start_line": 145,
       "start_col": 5,
-      "end_line": 147,
+      "end_line": 145,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 147,
+      "start_line": 145,
       "start_col": 10,
-      "end_line": 147,
+      "end_line": 145,
       "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 5,
+      "end_line": 146,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 5,
+      "end_line": 147,
+      "end_col": 10
     },
     {
       "kind": "command",
       "start_line": 148,
       "start_col": 5,
       "end_line": 148,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 149,
-      "start_col": 5,
-      "end_line": 149,
-      "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 150,
-      "start_col": 5,
-      "end_line": 150,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 150,
+      "start_line": 148,
       "start_col": 12,
-      "end_line": 150,
+      "end_line": 148,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 152,
+      "start_line": 150,
       "start_col": 5,
-      "end_line": 152,
+      "end_line": 150,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 152,
+      "start_line": 150,
       "start_col": 14,
-      "end_line": 152,
+      "end_line": 150,
       "end_col": 43
     },
     {
       "kind": "command",
-      "start_line": 153,
+      "start_line": 151,
       "start_col": 5,
-      "end_line": 153,
+      "end_line": 151,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 153,
+      "start_line": 151,
       "start_col": 43,
-      "end_line": 153,
+      "end_line": 151,
       "end_col": 45
     },
     {
       "kind": "command",
-      "start_line": 153,
+      "start_line": 151,
       "start_col": 46,
-      "end_line": 153,
+      "end_line": 151,
       "end_col": 50
     },
     {
       "kind": "command",
-      "start_line": 154,
+      "start_line": 152,
       "start_col": 5,
-      "end_line": 154,
+      "end_line": 152,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 154,
+      "start_line": 152,
       "start_col": 12,
-      "end_line": 154,
+      "end_line": 152,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 154,
+      "start_line": 152,
       "start_col": 15,
-      "end_line": 154,
+      "end_line": 152,
       "end_col": 21
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 154,
+      "start_line": 152,
       "start_col": 39,
-      "end_line": 154,
+      "end_line": 152,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 154,
+      "start_line": 152,
       "start_col": 42,
-      "end_line": 154,
+      "end_line": 152,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 155,
+      "start_line": 153,
       "start_col": 5,
-      "end_line": 155,
+      "end_line": 153,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 155,
+      "start_line": 153,
       "start_col": 10,
-      "end_line": 155,
-      "end_col": 13
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 156,
-      "start_col": 5,
-      "end_line": 156,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 156,
-      "start_col": 10,
-      "end_line": 156,
-      "end_col": 13
-    },
-    {
-      "kind": "command",
-      "start_line": 157,
-      "start_col": 5,
-      "end_line": 157,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 157,
-      "start_col": 12,
-      "end_line": 157,
-      "end_col": 37
-    },
-    {
-      "kind": "command",
-      "start_line": 159,
-      "start_col": 5,
-      "end_line": 159,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 159,
-      "start_col": 14,
-      "end_line": 159,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 160,
-      "start_col": 5,
-      "end_line": 160,
+      "end_line": 153,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 161,
+      "start_line": 154,
       "start_col": 5,
-      "end_line": 161,
+      "end_line": 154,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 161,
+      "start_line": 154,
       "start_col": 12,
-      "end_line": 161,
+      "end_line": 154,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
+      "start_col": 5,
+      "end_line": 156,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 156,
+      "start_col": 14,
+      "end_line": 156,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 157,
+      "start_col": 5,
+      "end_line": 157,
+      "end_col": 14
+    },
+    {
+      "kind": "command",
+      "start_line": 158,
+      "start_col": 5,
+      "end_line": 158,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 158,
+      "start_col": 12,
+      "end_line": 158,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 162,
+      "start_line": 159,
       "start_col": 5,
-      "end_line": 162,
+      "end_line": 159,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 162,
+      "start_line": 159,
       "start_col": 12,
-      "end_line": 162,
+      "end_line": 159,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 163,
+      "start_line": 160,
       "start_col": 3,
-      "end_line": 163,
+      "end_line": 160,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 164,
+      "start_line": 161,
       "start_col": 3,
-      "end_line": 164,
+      "end_line": 161,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 165,
+      "start_line": 162,
       "start_col": 1,
-      "end_line": 165,
+      "end_line": 162,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 167,
+      "start_line": 164,
       "start_col": 1,
-      "end_line": 167,
+      "end_line": 164,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 168,
+      "start_line": 165,
       "start_col": 1,
-      "end_line": 168,
+      "end_line": 165,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 169,
+      "start_line": 166,
       "start_col": 1,
-      "end_line": 169,
+      "end_line": 166,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 170,
+      "start_line": 167,
       "start_col": 1,
-      "end_line": 170,
+      "end_line": 167,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 170,
+      "start_line": 167,
       "start_col": 8,
-      "end_line": 170,
+      "end_line": 167,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 170,
+      "start_line": 167,
       "start_col": 10,
-      "end_line": 170,
+      "end_line": 167,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 170,
+      "start_line": 167,
       "start_col": 21,
-      "end_line": 170,
+      "end_line": 167,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 170,
+      "start_line": 167,
       "start_col": 22,
-      "end_line": 170,
+      "end_line": 167,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 170,
+  "bootstrap_line": 167,
   "hooks": {
     "header_info": false,
     "install_script": true,

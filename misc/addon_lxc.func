@@ -235,22 +235,24 @@ addon_assemble_bundles() {
   declare -F uninstall_script > /dev/null 2>&1 && hooks+=("uninstall:uninstall_script")
   ((${#hooks[@]} > 0)) || return 0
 
-  local stage_dir="/tmp/.addon-bundle-$$"
-  mkdir -p "$stage_dir" || return 1
+  local stage_dir
+  stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/.addon-bundle.XXXXXX") || return $?
   local f
   for f in core error_handler install tools github addon; do
     curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}.func" -o "${stage_dir}/${f}.func" || {
-      echo "[addon] FAILED to fetch ${f}.func from ${REPO_BASE}" >&2
-      rm -rf "$stage_dir"
-      return 1
+      local fetch_exit=$?
+      echo "[addon] FAILED to fetch ${f}.func from ${REPO_BASE}" >&2 || true
+      rm -rf -- "$stage_dir" || true
+      return "$fetch_exit"
     }
   done
 
   local pair
   for pair in "${hooks[@]}"; do
     _addon_bundle_write "${pair%%:*}" "${pair#*:}" "$stage_dir" || {
-      rm -rf "$stage_dir"
-      return 1
+      local write_exit=$?
+      rm -rf -- "$stage_dir" || true
+      return "$write_exit"
     }
   done
   rm -rf "$stage_dir"
@@ -262,13 +264,13 @@ addon_assemble_bundles() {
 # Composes one bundle (update or uninstall) at /usr/local/sbin/<name>_<slug>
 # and refreshes its /usr/bin alias.
 # ------------------------------------------------------------------------------
-_addon_bundle_write() {
+_addon_bundle_contents() {
   local name="$1" hook="$2" stage_dir="$3"
-  local dest="/usr/local/sbin/${name}_${APP_SLUG}"
-  local tag="${name:0:4}" && tag="${tag^^}"
+  local tag="${name:0:4}" _v f
+  tag="${tag^^}"
 
-  {
-    cat << BUNDLE_HEADER
+  # Like the LXC writer, every producer checks itself even under an if/|| caller.
+  cat << BUNDLE_HEADER || return $?
 #!/usr/bin/env bash
 set -euo pipefail
 # pct exec / cron / non-login shells provide a minimal PATH; bundles must be
@@ -277,23 +279,22 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 BUNDLE_HEADER
 
-    echo "# ═══ runtime context (baked at bundle build time) ═══"
-    printf 'declare -- APP=%q\n' "$APP"
-    printf 'declare -- APP_SLUG=%q\n' "$APP_SLUG"
-    printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE"
-    local _v
-    while IFS= read -r _v; do
-      printf 'declare -- %s=%q\n' "$_v" "${!_v}"
-    done < <(compgen -v var_addon_ | sort)
-    echo
+  printf '%s\n' "# ═══ runtime context (baked at bundle build time) ═══" || return $?
+  printf 'declare -- APP=%q\n' "$APP" || return $?
+  printf 'declare -- APP_SLUG=%q\n' "$APP_SLUG" || return $?
+  printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE" || return $?
+  for _v in "${!var_addon_@}"; do
+    printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
+  done
+  printf '\n' || return $?
 
-    for f in core error_handler install tools github addon; do
-      echo "# ═══ framework: ${f}.func ═══"
-      cat "${stage_dir}/${f}.func"
-      echo
-    done
+  for f in core error_handler install tools github addon; do
+    printf '%s\n' "# ═══ framework: ${f}.func ═══" || return $?
+    cat "${stage_dir}/${f}.func" || return $?
+    printf '\n' || return $?
+  done
 
-    cat << BUNDLE_INIT
+  cat << BUNDLE_INIT || return $?
 # ═══ runtime init ═══
 command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
 command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
@@ -308,14 +309,14 @@ color
 
 BUNDLE_INIT
 
-    echo "# ═══ hook: ${hook} ═══"
-    declare -f "$hook"
-    echo
+  printf '%s\n' "# ═══ hook: ${hook} ═══" || return $?
+  declare -f "$hook" || return $?
+  printf '\n' || return $?
 
-    if [[ "$name" == "uninstall" ]]; then
-      cat << BUNDLE_FOOTER
-# ═══ uninstall (conditional self-destruct) ═══
-if ${hook}; then
+  if [[ "$name" == "uninstall" ]]; then
+    cat << BUNDLE_FOOTER || return $?
+# ═══ uninstall (normal hook, success-only self-destruct) ═══
+${hook}
   # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —
   # resolve to the real bundle file so self-destruct removes both
   _addon_self="\$(readlink -f "\${BASH_SOURCE[0]}" 2> /dev/null || echo "\${BASH_SOURCE[0]}")"
@@ -325,16 +326,23 @@ if ${hook}; then
   rm -f "${ADDON_MARKER_DIR}/${APP_SLUG}"
   rmdir --ignore-fail-on-non-empty "${ADDON_MARKER_DIR}" "/var/lib/scripts-underground" 2> /dev/null || true
   echo "[${tag}] uninstall complete, removed self" >&2
-fi
 BUNDLE_FOOTER
-    else
-      echo "# ═══ update pipeline ═══"
-      echo "addon_baseline"
-      echo 'run_update_script "$@"'
-    fi
-  } > "$dest"
+  else
+    printf '%s\n' "# ═══ update pipeline ═══" "addon_baseline" 'run_update_script "$@"' || return $?
+  fi
+}
 
-  chmod 0755 "$dest"
-  ln -sf "$dest" "/usr/bin/${name}-${APP_SLUG}" 2> /dev/null || true
-  echo "[addon] ${name} bundle assembled: ${dest}" >&2
+_addon_bundle_write() {
+  local name="$1" hook="$2" stage_dir="$3"
+  local dest="/usr/local/sbin/${name}_${APP_SLUG}" output status=0
+  # Same-filesystem private stage: a failed generation never truncates the live
+  # command. Validate mode and alias before atomic publication of complete bytes.
+  output=$(mktemp "${dest}.XXXXXX") || return $?
+  _addon_bundle_contents "$name" "$hook" "$stage_dir" > "$output" || status=$?
+  if [[ $status -eq 0 ]]; then chmod 0755 "$output" || status=$?; fi
+  if [[ $status -eq 0 ]]; then ln -sf "$dest" "/usr/bin/${name}-${APP_SLUG}" || status=$?; fi
+  if [[ $status -eq 0 ]]; then mv -f -- "$output" "$dest" || status=$?; fi
+  rm -f -- "$output" || true
+  [[ $status -eq 0 ]] || return "$status"
+  printf '[addon] %s bundle assembled: %s\n' "$name" "$dest" >&2
 }

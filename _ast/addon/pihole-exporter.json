@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "pihole-exporter",
   "type": "addon",
-  "total_lines": 183,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: CrazyWolf13\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/eko/pihole-exporter/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"pihole-exporter\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_install_path=\"${var_addon_install_path:-/opt/pihole-exporter}\"\nvar_addon_config_path=\"${var_addon_config_path:-/opt/pihole-exporter.env}\"\nvar_addon_service=\"${var_addon_service:-pihole-exporter}\"\nvar_addon_repo=\"${var_addon_repo:-eko/pihole-exporter}\"\nvar_addon_default_port=\"${var_addon_default_port:-9617}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  echo \"\"\n  read -erp \"Enter the protocol to use (http/https), default https: \" pihole_PROTOCOL || true\n  read -erp \"Enter the hostname of Pihole, example: (127.0.0.1): \" pihole_HOSTNAME || true\n  read -erp \"Enter the port of Pihole, default 443: \" pihole_PORT || true\n  read -rsp \"Enter Pihole password: \" pihole_PASSWORD || true\n  printf \"\\n\"\n  read -erp \"Do you want to skip TLS-Verification (if using a self-signed Certificate on Pi-Hole) [y/N]: \" SKIP_TLS || true\n  if [[ \"${SKIP_TLS,,}\" =~ ^(y|yes)$ ]]; then\n    pihole_SKIP_TLS=\"true\"\n  fi\n\n  fetch_and_deploy_gh_release \"pihole-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n  setup_go\n\n  msg_info \"Building Pihole-Exporter\"\n  cd \"$var_addon_install_path\" || exit\n  $STD /usr/local/bin/go build -o ./pihole-exporter\n  msg_ok \"Built Pihole-Exporter\"\n\n  msg_info \"Creating configuration\"\n  cat \u003c\u003c EOF \u003e \"$var_addon_config_path\"\n# https://github.com/eko/pihole-exporter/?tab=readme-ov-file#available-cli-options\nPIHOLE_PASSWORD=\"${pihole_PASSWORD:-}\"\nPIHOLE_HOSTNAME=\"${pihole_HOSTNAME:-127.0.0.1}\"\nPIHOLE_PORT=\"${pihole_PORT:-443}\"\nSKIP_TLS_VERIFICATION=\"${pihole_SKIP_TLS:-false}\"\nPIHOLE_PROTOCOL=\"${pihole_PROTOCOL:-https}\"\nEOF\n  msg_ok \"Created configuration\"\n\n  msg_info \"Creating service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e \"/etc/init.d/${var_addon_service}\"\n#!/sbin/openrc-run\n\nname=\"pihole-exporter\"\ndescription=\"Pi-hole Exporter for Prometheus\"\ncommand=\"${var_addon_install_path}/pihole-exporter\"\ncommand_background=true\ndirectory=\"${var_addon_install_path}\"\npidfile=\"/run/\\${RC_SVCNAME}.pid\"\noutput_log=\"/var/log/pihole-exporter.log\"\nerror_log=\"/var/log/pihole-exporter.log\"\n\ndepend() {\n    need net\n    after firewall\n}\n\nstart_pre() {\n    if [ -f \"${var_addon_config_path}\" ]; then\n        export \\$(grep -v '^#' ${var_addon_config_path} | xargs)\n    fi\n}\nEOF\n    chmod +x \"/etc/init.d/${var_addon_service}\"\n    $STD rc-update add \"$var_addon_service\" default\n    $STD rc-service \"$var_addon_service\" start\n  else\n    cat \u003c\u003c EOF \u003e \"/etc/systemd/system/${var_addon_service}.service\"\n[Unit]\nDescription=pihole-exporter\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_install_path}\nEnvironmentFile=${var_addon_config_path}\nExecStart=${var_addon_install_path}/pihole-exporter\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now \"$var_addon_service\"\n  fi\n  msg_ok \"Created and started service\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Metrics:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}/metrics${CL}\"\n  echo -e \"${INFO}${YW}Config:${CL} ${var_addon_config_path}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if [[ ! -f \"${var_addon_install_path}/pihole-exporter\" ]]; then\n    msg_error \"${APP} is not installed. Nothing to update.\"\n    exit 233\n  fi\n  if check_for_gh_release \"pihole-exporter\" \"$var_addon_repo\"; then\n    msg_info \"Stopping service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop \"$var_addon_service\" \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped service\"\n\n    fetch_and_deploy_gh_release \"pihole-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n    setup_go\n\n    msg_info \"Building Pihole-Exporter\"\n    cd \"$var_addon_install_path\" || exit\n    $STD /usr/local/bin/go build -o ./pihole-exporter\n    msg_ok \"Built Pihole-Exporter\"\n\n    msg_info \"Starting service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" start\n    else\n      systemctl start \"$var_addon_service\"\n    fi\n    msg_ok \"Started service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    rc-update del \"$var_addon_service\" \u0026\u003e /dev/null || true\n    rm -f \"/etc/init.d/${var_addon_service}\"\n  else\n    systemctl disable -q --now \"$var_addon_service\" \u0026\u003e /dev/null || true\n    rm -f \"/etc/systemd/system/${var_addon_service}.service\"\n  fi\n  rm -rf \"$var_addon_install_path\"\n  rm -f \"$var_addon_config_path\"\n  rm -f \"$HOME/.pihole-exporter\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
+  "total_lines": 181,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: CrazyWolf13\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/eko/pihole-exporter/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"pihole-exporter\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_install_path=\"${var_addon_install_path:-/opt/pihole-exporter}\"\nvar_addon_config_path=\"${var_addon_config_path:-/opt/pihole-exporter.env}\"\nvar_addon_service=\"${var_addon_service:-pihole-exporter}\"\nvar_addon_repo=\"${var_addon_repo:-eko/pihole-exporter}\"\nvar_addon_default_port=\"${var_addon_default_port:-9617}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" \u0026\u0026 \"$OS_FAMILY\" != \"alpine\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)\"\n    exit 1\n  fi\n\n  echo \"\"\n  read -erp \"Enter the protocol to use (http/https), default https: \" pihole_PROTOCOL || true\n  read -erp \"Enter the hostname of Pihole, example: (127.0.0.1): \" pihole_HOSTNAME || true\n  read -erp \"Enter the port of Pihole, default 443: \" pihole_PORT || true\n  read -rsp \"Enter Pihole password: \" pihole_PASSWORD || true\n  printf \"\\n\"\n  read -erp \"Do you want to skip TLS-Verification (if using a self-signed Certificate on Pi-Hole) [y/N]: \" SKIP_TLS || true\n  if [[ \"${SKIP_TLS,,}\" =~ ^(y|yes)$ ]]; then\n    pihole_SKIP_TLS=\"true\"\n  fi\n\n  fetch_and_deploy_gh_release \"pihole-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n  setup_go\n\n  msg_info \"Building Pihole-Exporter\"\n  cd \"$var_addon_install_path\" || exit\n  $STD /usr/local/bin/go build -o ./pihole-exporter\n  msg_ok \"Built Pihole-Exporter\"\n\n  msg_info \"Creating configuration\"\n  cat \u003c\u003c EOF \u003e \"$var_addon_config_path\"\n# https://github.com/eko/pihole-exporter/?tab=readme-ov-file#available-cli-options\nPIHOLE_PASSWORD=\"${pihole_PASSWORD:-}\"\nPIHOLE_HOSTNAME=\"${pihole_HOSTNAME:-127.0.0.1}\"\nPIHOLE_PORT=\"${pihole_PORT:-443}\"\nSKIP_TLS_VERIFICATION=\"${pihole_SKIP_TLS:-false}\"\nPIHOLE_PROTOCOL=\"${pihole_PROTOCOL:-https}\"\nEOF\n  msg_ok \"Created configuration\"\n\n  msg_info \"Creating service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    cat \u003c\u003c EOF \u003e \"/etc/init.d/${var_addon_service}\"\n#!/sbin/openrc-run\n\nname=\"pihole-exporter\"\ndescription=\"Pi-hole Exporter for Prometheus\"\ncommand=\"${var_addon_install_path}/pihole-exporter\"\ncommand_background=true\ndirectory=\"${var_addon_install_path}\"\npidfile=\"/run/\\${RC_SVCNAME}.pid\"\noutput_log=\"/var/log/pihole-exporter.log\"\nerror_log=\"/var/log/pihole-exporter.log\"\n\ndepend() {\n    need net\n    after firewall\n}\n\nstart_pre() {\n    if [ -f \"${var_addon_config_path}\" ]; then\n        export \\$(grep -v '^#' ${var_addon_config_path} | xargs)\n    fi\n}\nEOF\n    chmod +x \"/etc/init.d/${var_addon_service}\"\n    $STD rc-update add \"$var_addon_service\" default\n    $STD rc-service \"$var_addon_service\" start\n  else\n    cat \u003c\u003c EOF \u003e \"/etc/systemd/system/${var_addon_service}.service\"\n[Unit]\nDescription=pihole-exporter\nAfter=network.target\n\n[Service]\nUser=root\nWorkingDirectory=${var_addon_install_path}\nEnvironmentFile=${var_addon_config_path}\nExecStart=${var_addon_install_path}/pihole-exporter\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\nEOF\n    systemctl enable -q --now \"$var_addon_service\"\n  fi\n  msg_ok \"Created and started service\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Metrics:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}/metrics${CL}\"\n  echo -e \"${INFO}${YW}Config:${CL} ${var_addon_config_path}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  if [[ ! -f \"${var_addon_install_path}/pihole-exporter\" ]]; then\n    msg_error \"${APP} is not installed. Nothing to update.\"\n    exit 233\n  fi\n  if check_for_gh_release \"pihole-exporter\" \"$var_addon_repo\"; then\n    msg_info \"Stopping service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true\n    else\n      systemctl stop \"$var_addon_service\" \u0026\u003e /dev/null || true\n    fi\n    msg_ok \"Stopped service\"\n\n    fetch_and_deploy_gh_release \"pihole-exporter\" \"$var_addon_repo\" \"tarball\" \"latest\" \"$var_addon_install_path\"\n    setup_go\n\n    msg_info \"Building Pihole-Exporter\"\n    cd \"$var_addon_install_path\" || exit\n    $STD /usr/local/bin/go build -o ./pihole-exporter\n    msg_ok \"Built Pihole-Exporter\"\n\n    msg_info \"Starting service\"\n    if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n      rc-service \"$var_addon_service\" start\n    else\n      systemctl start \"$var_addon_service\"\n    fi\n    msg_ok \"Started service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  svc_prepare_uninstall \"$var_addon_service\"\n  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then\n    rm -f \"/etc/init.d/${var_addon_service}\"\n  else\n    rm -f \"/etc/systemd/system/${var_addon_service}.service\"\n  fi\n  rm -rf \"$var_addon_install_path\"\n  rm -f \"$var_addon_config_path\"\n  rm -f \"$HOME/.pihole-exporter\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -154,12 +154,10 @@
     "",
     "function uninstall_script() {",
     "  msg_info \"Uninstalling ${APP}\"",
+    "  svc_prepare_uninstall \"$var_addon_service\"",
     "  if [[ \"$INIT_SYSTEM\" == \"openrc\" ]]; then",
-    "    rc-service \"$var_addon_service\" stop \u0026\u003e /dev/null || true",
-    "    rc-update del \"$var_addon_service\" \u0026\u003e /dev/null || true",
     "    rm -f \"/etc/init.d/${var_addon_service}\"",
     "  else",
-    "    systemctl disable -q --now \"$var_addon_service\" \u0026\u003e /dev/null || true",
     "    rm -f \"/etc/systemd/system/${var_addon_service}.service\"",
     "  fi",
     "  rm -rf \"$var_addon_install_path\"",
@@ -229,7 +227,7 @@
     {
       "name": "uninstall_script",
       "start_line": 148,
-      "end_line": 162,
+      "end_line": 160,
       "name_span": {
         "start_line": 148,
         "start_col": 10,
@@ -313,12 +311,12 @@
   ],
   "global_ranges": [
     {
-      "start_line": 167,
-      "end_line": 167
+      "start_line": 165,
+      "end_line": 165
     },
     {
-      "start_line": 174,
-      "end_line": 174
+      "start_line": 172,
+      "end_line": 172
     }
   ],
   "heredocs": [
@@ -2716,714 +2714,603 @@
       "end_col": 32
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "command",
       "start_line": 150,
       "start_col": 3,
       "end_line": 150,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 150,
+      "start_col": 25,
+      "end_line": 150,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 150,
+      "start_col": 26,
+      "end_line": 150,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 151,
+      "start_col": 3,
+      "end_line": 151,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 6,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 9,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 23
     },
     {
       "kind": "param-exp",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 10,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 24,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 27,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 36,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 38
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 38,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 150,
+      "start_line": 151,
       "start_col": 40,
-      "end_line": 150,
+      "end_line": 151,
       "end_col": 44
     },
     {
       "kind": "command",
-      "start_line": 151,
-      "start_col": 5,
-      "end_line": 151,
-      "end_col": 15
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 151,
-      "start_col": 16,
-      "end_line": 151,
-      "end_col": 36
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 151,
-      "start_col": 17,
-      "end_line": 151,
-      "end_col": 35
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 151,
-      "start_col": 42,
-      "end_line": 151,
-      "end_col": 44
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 151,
-      "start_col": 55,
-      "end_line": 151,
-      "end_col": 57
-    },
-    {
-      "kind": "command",
-      "start_line": 151,
-      "start_col": 58,
-      "end_line": 151,
-      "end_col": 62
-    },
-    {
-      "kind": "command",
       "start_line": 152,
       "start_col": 5,
       "end_line": 152,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 152,
-      "start_col": 19,
-      "end_line": 152,
-      "end_col": 39
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 152,
-      "start_col": 20,
-      "end_line": 152,
-      "end_col": 38
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 152,
-      "start_col": 40,
-      "end_line": 152,
-      "end_col": 42
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 152,
-      "start_col": 53,
-      "end_line": 152,
-      "end_col": 55
-    },
-    {
-      "kind": "command",
-      "start_line": 152,
-      "start_col": 56,
-      "end_line": 152,
-      "end_col": 60
-    },
-    {
-      "kind": "command",
-      "start_line": 153,
-      "start_col": 5,
-      "end_line": 153,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 153,
+      "start_line": 152,
       "start_col": 11,
-      "end_line": 153,
+      "end_line": 152,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 153,
+      "start_line": 152,
       "start_col": 24,
-      "end_line": 153,
+      "end_line": 152,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 154,
+      "start_line": 153,
       "start_col": 3,
+      "end_line": 153,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 154,
+      "start_col": 5,
       "end_line": 154,
       "end_col": 7
     },
     {
-      "kind": "command",
-      "start_line": 155,
-      "start_col": 5,
-      "end_line": 155,
-      "end_col": 14
-    },
-    {
       "kind": "string-dq",
-      "start_line": 155,
-      "start_col": 32,
-      "end_line": 155,
-      "end_col": 52
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 155,
-      "start_col": 33,
-      "end_line": 155,
-      "end_col": 51
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u003e",
-      "start_line": 155,
-      "start_col": 53,
-      "end_line": 155,
-      "end_col": 55
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 155,
-      "start_col": 66,
-      "end_line": 155,
-      "end_col": 68
-    },
-    {
-      "kind": "command",
-      "start_line": 155,
-      "start_col": 69,
-      "end_line": 155,
-      "end_col": 73
-    },
-    {
-      "kind": "command",
-      "start_line": 156,
-      "start_col": 5,
-      "end_line": 156,
-      "end_col": 7
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 156,
+      "start_line": 154,
       "start_col": 11,
-      "end_line": 156,
+      "end_line": 154,
       "end_col": 61
     },
     {
       "kind": "param-exp",
-      "start_line": 156,
+      "start_line": 154,
       "start_col": 32,
-      "end_line": 156,
+      "end_line": 154,
       "end_col": 52
     },
     {
       "kind": "keyword",
       "op": "fi",
+      "start_line": 155,
+      "start_col": 3,
+      "end_line": 155,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 156,
+      "start_col": 3,
+      "end_line": 156,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 156,
+      "start_col": 10,
+      "end_line": 156,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 156,
+      "start_col": 11,
+      "end_line": 156,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
       "start_line": 157,
       "start_col": 3,
       "end_line": 157,
       "end_col": 5
     },
     {
-      "kind": "command",
-      "start_line": 158,
-      "start_col": 3,
-      "end_line": 158,
-      "end_col": 5
-    },
-    {
       "kind": "string-dq",
-      "start_line": 158,
-      "start_col": 10,
-      "end_line": 158,
-      "end_col": 35
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 158,
-      "start_col": 11,
-      "end_line": 158,
-      "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 159,
-      "start_col": 3,
-      "end_line": 159,
-      "end_col": 5
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 159,
+      "start_line": 157,
       "start_col": 9,
-      "end_line": 159,
+      "end_line": 157,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 159,
+      "start_line": 157,
       "start_col": 10,
-      "end_line": 159,
+      "end_line": 157,
       "end_col": 32
     },
     {
       "kind": "command",
-      "start_line": 160,
+      "start_line": 158,
       "start_col": 3,
-      "end_line": 160,
+      "end_line": 158,
       "end_col": 5
     },
     {
       "kind": "string-dq",
-      "start_line": 160,
+      "start_line": 158,
       "start_col": 9,
-      "end_line": 160,
+      "end_line": 158,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 160,
+      "start_line": 158,
       "start_col": 10,
-      "end_line": 160,
+      "end_line": 158,
       "end_col": 15
     },
     {
       "kind": "command",
-      "start_line": 161,
+      "start_line": 159,
       "start_col": 3,
-      "end_line": 161,
+      "end_line": 159,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 161,
+      "start_line": 159,
       "start_col": 10,
-      "end_line": 161,
+      "end_line": 159,
       "end_col": 39
     },
     {
       "kind": "param-exp",
-      "start_line": 161,
+      "start_line": 159,
       "start_col": 11,
-      "end_line": 161,
+      "end_line": 159,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 160,
+      "start_col": 1,
+      "end_line": 160,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 162,
       "start_col": 1,
       "end_line": 162,
-      "end_col": 2
+      "end_col": 73
+    },
+    {
+      "kind": "comment",
+      "start_line": 163,
+      "start_col": 1,
+      "end_line": 163,
+      "end_col": 75
     },
     {
       "kind": "comment",
       "start_line": 164,
       "start_col": 1,
       "end_line": 164,
-      "end_col": 73
-    },
-    {
-      "kind": "comment",
-      "start_line": 165,
-      "start_col": 1,
-      "end_line": 165,
-      "end_col": 75
-    },
-    {
-      "kind": "comment",
-      "start_line": 166,
-      "start_col": 1,
-      "end_line": 166,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 1,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 3
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 4,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 6,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 22,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 23
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 35,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 37
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 38,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 167,
+      "start_line": 165,
       "start_col": 40,
-      "end_line": 167,
+      "end_line": 165,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 3,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 6,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 9,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 11
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 32,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 34
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 34,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 168,
+      "start_line": 166,
       "start_col": 36,
-      "end_line": 168,
+      "end_line": 166,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 169,
+      "start_line": 167,
       "start_col": 5,
-      "end_line": 169,
+      "end_line": 167,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 169,
+      "start_line": 167,
       "start_col": 16,
-      "end_line": 169,
+      "end_line": 167,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 169,
+      "start_line": 167,
       "start_col": 29,
-      "end_line": 169,
+      "end_line": 167,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 169,
+      "start_line": 167,
       "start_col": 32,
-      "end_line": 169,
+      "end_line": 167,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 169,
+      "start_line": 167,
       "start_col": 56,
-      "end_line": 169,
+      "end_line": 167,
       "end_col": 58
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 170,
+      "start_line": 168,
       "start_col": 3,
-      "end_line": 170,
+      "end_line": 168,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 5,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 12
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 20,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 22
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 33,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 36,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 43
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 171,
+      "start_line": 169,
       "start_col": 60,
-      "end_line": 171,
+      "end_line": 169,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 172,
+      "start_line": 170,
       "start_col": 3,
-      "end_line": 172,
+      "end_line": 170,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 173,
+      "start_line": 171,
       "start_col": 1,
-      "end_line": 173,
+      "end_line": 171,
       "end_col": 3
     },
     {
       "kind": "command",
-      "start_line": 174,
+      "start_line": 172,
       "start_col": 1,
-      "end_line": 174,
+      "end_line": 172,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 174,
+      "start_line": 172,
       "start_col": 17,
-      "end_line": 174,
+      "end_line": 172,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 174,
+      "start_line": 172,
       "start_col": 30,
-      "end_line": 174,
+      "end_line": 172,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 174,
+      "start_line": 172,
       "start_col": 34,
-      "end_line": 174,
+      "end_line": 172,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 174,
+      "start_line": 172,
       "start_col": 37,
-      "end_line": 174,
+      "end_line": 172,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 175,
+      "start_line": 173,
       "start_col": 3,
-      "end_line": 175,
+      "end_line": 173,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 175,
+      "start_line": 173,
       "start_col": 8,
-      "end_line": 175,
+      "end_line": 173,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 175,
+      "start_line": 173,
       "start_col": 61,
-      "end_line": 175,
+      "end_line": 173,
       "end_col": 63
     },
     {
       "kind": "command",
-      "start_line": 176,
+      "start_line": 174,
       "start_col": 3,
-      "end_line": 176,
+      "end_line": 174,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
+      "start_line": 175,
+      "start_col": 1,
+      "end_line": 175,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
       "start_line": 177,
       "start_col": 1,
       "end_line": 177,
-      "end_col": 2
+      "end_col": 22
+    },
+    {
+      "kind": "comment",
+      "start_line": 178,
+      "start_col": 1,
+      "end_line": 178,
+      "end_col": 28
     },
     {
       "kind": "comment",
       "start_line": 179,
       "start_col": 1,
       "end_line": 179,
-      "end_col": 22
-    },
-    {
-      "kind": "comment",
-      "start_line": 180,
-      "start_col": 1,
-      "end_line": 180,
-      "end_col": 28
-    },
-    {
-      "kind": "comment",
-      "start_line": 181,
-      "start_col": 1,
-      "end_line": 181,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 1,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 8,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 59
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 10,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 21,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 58
     },
     {
       "kind": "param-exp",
-      "start_line": 182,
+      "start_line": 180,
       "start_col": 22,
-      "end_line": 182,
+      "end_line": 180,
       "end_col": 32
     }
   ],
-  "bootstrap_line": 182,
+  "bootstrap_line": 180,
   "hooks": {
     "header_info": false,
     "install_script": true,

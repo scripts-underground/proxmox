@@ -436,7 +436,7 @@ get_active_logfile() {
     echo "$BUILD_LOG"
   else
     # Fallback for legacy scripts
-    echo "/tmp/build-$(date +%Y%m%d_%H%M%S).log"
+    echo "${TMPDIR:-/tmp}/build-$(date +%Y%m%d_%H%M%S).log"
   fi
 }
 
@@ -511,15 +511,17 @@ log_section() {
 # silent()
 #
 # - Executes command with output redirected to active log file
-# - On error: displays last 20 lines of log and exits with original exit code
-
-# - Temporarily disables error trap to capture exit code correctly
-# - Sources explain_exit_code() for detailed error messages
+# - Returns the command's status; the caller may handle it with if/||
+# - Unhandled failures reach the caller's existing ERR/errexit boundary
+# - Keeps same-shell effects, locally scopes set options and restores ERR
+# - As with any Bash conditional, functions must propagate intermediate failures
 # ------------------------------------------------------------------------------
 silent() {
+  local -
   local cmd="$*"
-  local caller_line="${BASH_LINENO[0]:-unknown}"
   local logfile="$(get_active_logfile)"
+  local rc=0 err_trap
+  err_trap=$(trap -p ERR)
 
   # Dryrun mode: Show command without executing
   if [[ "${DEV_MODE_DRYRUN:-false}" == "true" ]]; then
@@ -531,38 +533,21 @@ silent() {
     return 0
   fi
 
-  set +Eeuo pipefail
-  trap - ERR
-
-  "$@" >> "$logfile" 2>&1
-  local rc=$?
-
-  set -Eeuo pipefail
-  trap 'error_handler' ERR
-
-  if [[ $rc -ne 0 ]]; then
-    # Source explain_exit_code if needed
-    if ! declare -f explain_exit_code > /dev/null 2>&1; then
-      # shellcheck source=/dev/null
-      source <(curl -fsSL "${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/misc/error_handler.func")
-    fi
-
-    local explanation
-    explanation="$(explain_exit_code "$rc")"
-
-    printf "\e[?25h"
-    msg_error "in line ${caller_line}: exit code ${rc} (${explanation})"
-    msg_custom "→" "${YWB}" "${cmd}"
-
-    if [[ -s "$logfile" ]]; then
-      echo -e "\n${TAB}--- Last 20 lines of log ---"
-      tail -n 20 "$logfile"
-      echo -e "${TAB}-----------------------------------"
-      echo -e "${TAB}📋 Full log: ${logfile}\n"
-    fi
-
-    exit "$rc"
+  # No pipeline/subshell or option disabling: functions retain their effects and
+  # pipelines observe the caller's pipefail setting. The conditional captures the
+  # status without firing ERR for a failure the caller may explicitly handle.
+  if "$@" >> "$logfile" 2>&1; then
+    rc=0
+  else
+    rc=$?
   fi
+  # Clear registration first: after a function disables errtrace and changes ERR,
+  # eval alone can retain that changed trap when the function returned failure.
+  trap - ERR
+  if [[ -n "$err_trap" ]]; then
+    eval "$err_trap"
+  fi
+  return "$rc"
 }
 
 # ------------------------------------------------------------------------------
@@ -605,14 +590,15 @@ clear_line() {
 # stop_spinner()
 #
 # - Stops running spinner process by PID
-# - Reads PID from SPINNER_PID variable or /tmp/.spinner.pid file
+# - Reads PID from SPINNER_PID or the selected temporary root's .spinner.pid
 # - Attempts graceful kill, then forced kill if needed
 # - Cleans up temp file and resets terminal state
 # - Unsets SPINNER_PID and SPINNER_MSG variables
 # ------------------------------------------------------------------------------
 stop_spinner() {
   local pid="${SPINNER_PID:-}"
-  [[ -z "$pid" && -f /tmp/.spinner.pid ]] && pid=$(< /tmp/.spinner.pid)
+  local pid_file="${TMPDIR:-/tmp}/.spinner.pid"
+  [[ -z "$pid" && -f "$pid_file" ]] && pid=$(< "$pid_file")
 
   if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]]; then
     if kill "$pid" 2> /dev/null; then
@@ -620,7 +606,7 @@ stop_spinner() {
       kill -9 "$pid" 2> /dev/null || true
       wait "$pid" 2> /dev/null || true
     fi
-    rm -f /tmp/.spinner.pid
+    rm -f "$pid_file"
   fi
 
   unset SPINNER_PID SPINNER_MSG
@@ -671,7 +657,7 @@ msg_info() {
   color_spinner
   spinner &
   SPINNER_PID=$!
-  echo "$SPINNER_PID" > /tmp/.spinner.pid
+  echo "$SPINNER_PID" > "${TMPDIR:-/tmp}/.spinner.pid"
   disown "$SPINNER_PID" 2> /dev/null || true
 
   # Pause mode: Stop spinner and wait
@@ -914,11 +900,11 @@ run_update_script() {
   fi
   mkdir -p "$pending_dir" || exit $?
   printf '%s\n' "$mode" > "$_UPDATE_PENDING_FLAG" || exit $?
+  _UPDATE_CLEANUP=1
   # Plain call (no if/||): errexit must stay active inside the hook.
   execute_optional_hook update_script
   local hook_status=$?
   [[ $hook_status -eq 0 ]] || exit "$hook_status"
-  cleanup_lxc
   exit 0
 }
 
@@ -1558,19 +1544,28 @@ prompt_password() {
 # - Uses fallback error handling to prevent cleanup failures from breaking installs
 # ------------------------------------------------------------------------------
 cleanup_lxc() {
+  # Existing hooks may clean explicitly before exit. Acknowledge this update's
+  # cleanup so its EXIT owner does not repeat the same package/cache work.
+  if [[ "${_UPDATE_CLEANUP:-0}" == 1 ]]; then
+    _UPDATE_CLEANUP=0
+  fi
   msg_info "Cleaning up"
 
-  if is_alpine; then
+  if declare -F pkg_clean > /dev/null 2>&1; then
+    pkg_clean 2> /dev/null || msg_warn "Package cache cleanup failed (non-critical)"
+  elif is_alpine; then
     $STD apk cache clean || true
-    rm -rf /var/cache/apk/*
-  else
+  elif command -v apt > /dev/null 2>&1; then
     $STD apt -y autoremove 2> /dev/null || msg_warn "apt autoremove failed (non-critical)"
     $STD apt -y autoclean 2> /dev/null || msg_warn "apt autoclean failed (non-critical)"
     $STD apt -y clean 2> /dev/null || msg_warn "apt clean failed (non-critical)"
   fi
+  if is_alpine; then
+    rm -rf /var/cache/apk/* 2> /dev/null || true
+  fi
 
-  find /tmp /var/tmp -type f -name 'tmp*' -delete 2> /dev/null || true
-  find /tmp /var/tmp -type f -name 'tempfile*' -delete 2> /dev/null || true
+  # Temporary directories are shared contexts, not ownership declarations.
+  # Bundle/API owners remove their own stages; never sweep unrelated temp files.
 
   # Python
   if command -v pip &> /dev/null; then

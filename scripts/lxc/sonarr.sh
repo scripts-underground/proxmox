@@ -23,7 +23,7 @@ function install_script() {
   $STD apt install -y sqlite3 libicu-dev
   msg_ok "Installed Dependencies"
 
-  fetch_and_deploy_gh_release "Sonarr" "Sonarr/Sonarr" "prebuild" "latest" "/opt/Sonarr" "Sonarr.main.*.linux-$(get_system_arch).tar.gz"
+  fetch_and_deploy_gh_release "Sonarr" "Sonarr/Sonarr" "prebuild" "latest" "/opt/Sonarr" "Sonarr.main.*.linux-$(get_system_arch both x64 arm64).tar.gz" "v4."
   mkdir -p /var/lib/sonarr/
   chmod 775 /var/lib/sonarr/
 
@@ -65,12 +65,12 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "Sonarr" "Sonarr/Sonarr"; then
+  if check_for_gh_release "Sonarr" "Sonarr/Sonarr" "${var_appversion:-}" '' 'v4.'; then
     msg_info "Stopping Service"
     systemctl stop sonarr
     msg_ok "Stopped Service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Sonarr" "Sonarr/Sonarr" "prebuild" "latest" "/opt/Sonarr" "Sonarr.main.*.linux-$(get_system_arch).tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Sonarr" "Sonarr/Sonarr" "prebuild" "latest" "/opt/Sonarr" "Sonarr.main.*.linux-$(get_system_arch both x64 arm64).tar.gz" "v4."
 
     msg_info "Starting Service"
     systemctl start sonarr

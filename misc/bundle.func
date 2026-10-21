@@ -6,11 +6,64 @@
 # _framework_cache_ensure()
 #
 # Ensures the 5 framework .func files are cached on the host at
-# /tmp/framework-$SESSION_ID/. Fetches from REPO_BASE once per session.
+# ${TMPDIR:-/tmp}/framework-$SESSION_ID/. Fetches once per selected root/session.
 # Verifies size (> 100 bytes) and sentinel function presence.
 # ------------------------------------------------------------------------------
+_framework_cache_dir() {
+  printf '%s/framework-%s\n' "${TMPDIR:-/tmp}" "$SESSION_ID"
+}
+
+# Explicit receiver paths are lexical, absolute and non-root. Physical path
+# validation belongs to the receiver, never to the creator's filesystem.
+_validate_lxc_tmpdir() {
+  [[ -n "$1" ]] || return 0
+  case "$1" in
+    /*) ;;
+    *)
+      printf 'Invalid receiving temporary directory: expected an absolute non-root normalized path\n' >&2
+      return 65
+      ;;
+  esac
+  case "$1/" in
+    / | // | *//* | */./* | */../* | *$'\n'* | *$'\r'* | *$'\t'*)
+      printf 'Invalid receiving temporary directory: expected an absolute non-root normalized path\n' >&2
+      return 65
+      ;;
+  esac
+}
+
+_prepare_lxc_tmpdir() {
+  _validate_lxc_tmpdir "$1" || return $?
+  [[ -n "$1" ]] || return 0
+  local remaining="${1#/}" path='' component mode
+  # Inspect the complete existing prefix before creating anything. Bash -L also
+  # detects dangling symlinks; no GNU realpath options are required on Alpine.
+  while [[ -n "$remaining" ]]; do
+    component=${remaining%%/*}
+    path+="/$component"
+    if [[ -L "$path" ]]; then
+      printf 'Invalid receiving temporary directory: use its canonical non-symlink path\n' >&2
+      return 65
+    fi
+    if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+  done
+  remaining="${1#/}" path=''
+  while [[ -n "$remaining" ]]; do
+    component=${remaining%%/*}
+    path+="/$component"
+    # Only the selected leaf is shared. New parents must not let app users
+    # replace a removed leaf; existing administrator metadata is untouched.
+    mode=0755
+    [[ "$remaining" == */* ]] || mode=1777
+    if [[ ! -d "$path" ]]; then mkdir -m "$mode" -- "$path" || return $?; fi
+    if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+  done
+  export TMPDIR="$1"
+}
+
 _framework_cache_ensure() {
-  local cache_dir="/tmp/framework-${SESSION_ID}"
+  local cache_dir
+  cache_dir=$(_framework_cache_dir) || return $?
 
   if [[ -d "$cache_dir" ]] &&
     [[ -s "$cache_dir/core.func" ]] &&
@@ -23,7 +76,7 @@ _framework_cache_ensure() {
   fi
 
   msg_debug "framework cache miss: fetching from REPO_BASE=${REPO_BASE:-<unset>}"
-  mkdir -p "$cache_dir"
+  mkdir -p "$cache_dir" || return $?
 
   for f in core.func error_handler.func install.func tools.func github.func; do
     msg_debug "  fetching ${f} ..."
@@ -82,8 +135,8 @@ _framework_cache_ensure() {
 #   pipeline    — remaining args are exact commands to emit after the hook
 #
 # Bundle layout inside container:
-#   shebang, set -euo pipefail, set -x
-#   _wrap_log function with tag derived from name
+#   shebang, set -euo pipefail, minimal PATH and receiving temporary context
+#   app/var_lxc_* context baked with printf %q
 #   ═══ framework: core.func ═══ (inlined verbatim)
 #   ═══ framework: error_handler.func ═══
 #   ═══ framework: install.func ═══
@@ -95,27 +148,17 @@ _framework_cache_ensure() {
 #   [install] trap 'rm -f "${BASH_SOURCE[0]}"' EXIT  (self-destruct)
 #   [install] <pipeline steps in order>
 #   [update]  <pipeline steps in order>
-#   [uninstall] if <hook>; then rm -f "${BASH_SOURCE[0]}"; fi  (conditional)
+#   [uninstall] <hook>; remove commands only after its normal successful return
 # ------------------------------------------------------------------------------
-build_bundle() {
-  local name="$1" hook="$2" dest="$3" mode="$4"
-  shift 4
+_write_bundle() {
+  local name="$1" hook="$2" cache_dir="$3"
+  shift 3
   local pipeline=("$@")
-  local tag="${name:0:4}" && tag="${tag^^}"
-  local bundle_path="/tmp/${name}-bundle-${SESSION_ID}.sh"
-
-  declare -F "$hook" > /dev/null 2>&1 || {
-    msg_error "hook '${hook}' not defined"
-    return 1
-  }
-
-  _framework_cache_ensure || {
-    msg_error "framework cache failed"
-    return 1
-  }
-
-  {
-    cat << BUNDLE_HEADER
+  local tag="${name:0:4}" _v step f
+  tag="${tag^^}"
+  # Every producer checks its own status. The caller deliberately handles failure,
+  # so neither errexit nor a checked compound block can enforce this boundary.
+  cat << BUNDLE_HEADER || return $?
 #!/usr/bin/env bash
 set -euo pipefail
 # pct exec / cron / non-login shells provide a minimal PATH; bundles must be
@@ -126,26 +169,30 @@ unset TMPDIR
 
 BUNDLE_HEADER
 
-    echo "# ═══ runtime context (baked at bundle build time) ═══"
+  printf '%s\n' "# ═══ runtime context (baked at bundle build time) ═══" || return $?
 
-    printf 'declare -- APP=%q\n' "$APP"
-    printf 'declare -- NSAPP=%q\n' "$NSAPP"
-    printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE"
-    printf 'declare -- ENABLE_GPU=%q\n' "${ENABLE_GPU:-no}"
-    printf 'declare -- GPU_TYPE=%q\n' "${GPU_TYPE:-}"
-    printf 'declare -- INSTALL_NVIDIA_DRIVERS=%q\n' "${INSTALL_NVIDIA_DRIVERS:-}"
-    printf 'declare -- CTTYPE=%q\n' "${CT_TYPE:-${CTTYPE:-1}}"
+  printf 'declare -- APP=%q\n' "$APP" || return $?
+  printf 'declare -- NSAPP=%q\n' "$NSAPP" || return $?
+  printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE" || return $?
+  printf 'declare -- ENABLE_GPU=%q\n' "${ENABLE_GPU:-no}" || return $?
+  printf 'declare -- GPU_TYPE=%q\n' "${GPU_TYPE:-}" || return $?
+  printf 'declare -- INSTALL_NVIDIA_DRIVERS=%q\n' "${INSTALL_NVIDIA_DRIVERS:-}" || return $?
+  printf 'declare -- CTTYPE=%q\n' "${CT_TYPE:-${CTTYPE:-1}}" || return $?
 
-    while IFS= read -r _v; do
-      printf 'declare -- %s=%q\n' "$_v" "${!_v}"
-    done < <(compgen -v var_lxc_ | sort)
+  for _v in "${!var_lxc_@}"; do
+    printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
+  done
 
-    for f in core error_handler install tools github; do
-      echo "# ═══ framework: ${f}.func ═══"
-      cat "/tmp/framework-${SESSION_ID}/${f}.func"
-    done
+  # Run before library source-time effects as well as logs/spinners/hooks.
+  declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir || return $?
+  printf '%s\n' '_prepare_lxc_tmpdir "${var_lxc_tmpdir:-}" || exit $?' || return $?
 
-    cat << BUNDLE_INIT
+  for f in core error_handler install tools github; do
+    printf '%s\n' "# ═══ framework: ${f}.func ═══" || return $?
+    cat "${cache_dir}/${f}.func" || return $?
+  done
+
+  cat << BUNDLE_INIT || return $?
 # ═══ runtime init ═══
 command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
 command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
@@ -158,44 +205,78 @@ catch_errors
 color
 BUNDLE_INIT
 
-    echo "# ═══ hook: ${hook} ═══"
-    declare -f "$hook"
+  printf '%s\n' "# ═══ hook: ${hook} ═══" || return $?
+  declare -f "$hook" || return $?
 
-    case "$name" in
-      install)
-        echo "# ═══ install pipeline ═══"
-        echo "trap 'rm -f \"\${BASH_SOURCE[0]}\"' EXIT"
-        for step in "${pipeline[@]}"; do
-          echo "$step"
-        done
-        ;;
-      update)
-        echo "# ═══ update pipeline ═══"
-        for step in "${pipeline[@]}"; do
-          echo "$step"
-        done
-        ;;
-      uninstall)
-        echo "# ═══ uninstall (conditional self-destruct) ═══"
-        echo "if ${hook}; then"
-        echo "  # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —"
-        echo "  # resolve to the real bundle file so self-destruct removes both"
-        echo "  _self=\"\$(readlink -f \"\${BASH_SOURCE[0]}\" 2>/dev/null || echo \"\${BASH_SOURCE[0]}\")\""
-        echo "  rm -f \"\${BASH_SOURCE[0]}\" \"\$_self\""
-        echo "  rm -f /usr/local/sbin/update /usr/bin/update /usr/bin/uninstall"
-        echo "  echo \"[${tag}] uninstall complete, removed self\" >&2"
-        echo "fi"
-        ;;
-    esac
-  } > "$bundle_path"
+  case "$name" in
+    install)
+      printf '%s\n' "# ═══ install pipeline ═══" || return $?
+      printf '%s\n' "trap 'rm -f \"\${BASH_SOURCE[0]}\"' EXIT" || return $?
+      for step in "${pipeline[@]}"; do
+        printf '%s\n' "$step" || return $?
+      done
+      ;;
+    update)
+      printf '%s\n' "# ═══ update pipeline ═══" || return $?
+      for step in "${pipeline[@]}"; do
+        printf '%s\n' "$step" || return $?
+      done
+      ;;
+    uninstall)
+      printf '%s\n' "# ═══ uninstall (normal hook, success-only self-destruct) ═══" || return $?
+      printf '%s\n' "$hook" || return $?
+      printf '%s\n' "  # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —" || return $?
+      printf '%s\n' "  # resolve to the real bundle file so self-destruct removes both" || return $?
+      printf '%s\n' "  _self=\"\$(readlink -f \"\${BASH_SOURCE[0]}\" 2>/dev/null || echo \"\${BASH_SOURCE[0]}\")\"" || return $?
+      printf '%s\n' "  rm -f \"\${BASH_SOURCE[0]}\" \"\$_self\"" || return $?
+      printf '%s\n' "  rm -f /usr/local/sbin/update /usr/bin/update /usr/bin/uninstall" || return $?
+      printf '%s\n' "  echo \"[${tag}] uninstall complete, removed self\" >&2" || return $?
+      ;;
+  esac
+}
 
-  pct push "$CTID" "$bundle_path" "$dest" >&2
-  local push_exit=$?
-  if [[ $push_exit -ne 0 ]]; then
-    msg_error "pct push ${name} bundle failed (exit=${push_exit})"
-    return $push_exit
+build_bundle() {
+  local name="$1" hook="$2" dest="$3" mode="$4"
+  shift 4
+  local bundle_path cache_dir write_exit=0
+
+  _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
+  declare -F "$hook" > /dev/null 2>&1 || {
+    msg_error "hook '${hook}' not defined"
+    return 1
+  }
+  _framework_cache_ensure || {
+    msg_error "framework cache failed"
+    return 1
+  }
+  cache_dir=$(_framework_cache_dir) || return $?
+  bundle_path=$(mktemp "${TMPDIR:-/tmp}/${name}-bundle-${SESSION_ID}.XXXXXX") || return $?
+
+  _write_bundle "$name" "$hook" "$cache_dir" "$@" > "$bundle_path" || write_exit=$?
+  if [[ $write_exit -ne 0 ]]; then
+    rm -f -- "$bundle_path" || true
+    msg_error "${name} bundle generation failed (exit=${write_exit})" || true
+    return "$write_exit"
   fi
 
-  pct exec "$CTID" -- chmod "$mode" "$dest" > /dev/null 2>&1
+  # The receiver owns a same-filesystem stage too. A partial pct push or chmod
+  # failure must not truncate/replace its previous valid command.
+  local receiving_stage='' publication_exit=0
+  receiving_stage=$(pct exec "$CTID" -- mktemp "${dest}.XXXXXX") || publication_exit=$?
+  if [[ $publication_exit -eq 0 && ("$receiving_stage" != "$dest".* || "$receiving_stage" == *$'\n'*) ]]; then
+    receiving_stage=''
+    publication_exit=111
+  fi
+  if [[ $publication_exit -eq 0 ]]; then pct push "$CTID" "$bundle_path" "$receiving_stage" >&2 || publication_exit=$?; fi
+  if [[ $publication_exit -eq 0 ]]; then pct exec "$CTID" -- chmod "$mode" "$receiving_stage" > /dev/null 2>&1 || publication_exit=$?; fi
+  if [[ $publication_exit -eq 0 ]]; then pct exec "$CTID" -- mv -f -- "$receiving_stage" "$dest" || publication_exit=$?; fi
+  if [[ $publication_exit -ne 0 && -n "$receiving_stage" ]]; then
+    pct exec "$CTID" -- rm -f -- "$receiving_stage" > /dev/null 2>&1 || true
+  fi
+  rm -f -- "$bundle_path" || true
+  if [[ $publication_exit -ne 0 ]]; then
+    msg_error "${name} bundle publication failed (exit=${publication_exit})" || true
+    return "$publication_exit"
+  fi
   msg_debug "${name} bundle pushed → ${dest} (mode ${mode})"
 }

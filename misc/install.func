@@ -202,11 +202,16 @@ _bootstrap() {
   # Configurable base URL for development — override with REPO_BASE
   REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
-  # Source core functions
-  # shellcheck source=/dev/null
-  source <($_fetch "$REPO_BASE/misc/core.func")
-  # shellcheck source=/dev/null
-  source <($_fetch "$REPO_BASE/misc/error_handler.func")
+  # A frozen bundle already supplied these APIs. Fetch only missing libraries;
+  # otherwise a connected bootstrap could replace its inlined error handler.
+  if ! declare -F load_functions > /dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    source <($_fetch "$REPO_BASE/misc/core.func")
+  fi
+  if ! declare -F catch_errors > /dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    source <($_fetch "$REPO_BASE/misc/error_handler.func")
+  fi
   load_functions
   catch_errors
 
@@ -772,6 +777,193 @@ svc_stop() {
       return 1
       ;;
   esac
+}
+
+# ------------------------------------------------------------------------------
+# svc_prepare_uninstall(service, action=disable, was_running_var?)
+#
+# Uninstall-only checked stop/disable. Query failures are never absence. Existing
+# svc_stop/svc_disable keep their install/update semantics. "stop" leaves shared
+# service registration untouched; optional caller-owned output is yes/no.
+# Helper-local/output names beginning _svc_ are reserved; ordinary caller names
+# (including state) are never shadowed by the implementation.
+# ------------------------------------------------------------------------------
+svc_prepare_uninstall() {
+  local _svc_service="$1" _svc_action="${2:-disable}" _svc_result="${3:-}" _svc_rc=0 _svc_state
+  local _svc_load='' _svc_active='' _svc_enabled='' _svc_fragment _svc_entry _svc_key _svc_value _svc_fields=0 _svc_properties=0
+  local _svc_found=no _svc_levels _svc_level _svc_existing _svc_seen _svc_registrations _svc_discard=no
+  local -a _svc_runlevels=() _svc_level_words=()
+  if [[ -n "$_svc_result" && (! "$_svc_result" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ || "$_svc_result" == _svc_*) ]]; then
+    msg_error "Invalid uninstall output variable (reserved namespace: _svc_)"
+    return 65
+  fi
+  local -n _svc_running="${_svc_result:-_svc_discard}"
+  _svc_running=no
+  if [[ -z "$_svc_service" || "$_svc_service" == -* || "$_svc_service" == */* || "$_svc_service" == *[[:space:]]* || ("$_svc_action" != disable && "$_svc_action" != stop) ]]; then
+    msg_error "Invalid uninstall service/action: $_svc_service ($_svc_action)"
+    return 65
+  fi
+  case "${INIT_SYSTEM:-}" in
+    systemd)
+      _svc_state=$(systemctl show --property=LoadState --property=ActiveState --property=UnitFileState -- "$_svc_service") || {
+        _svc_rc=$?
+        msg_error "Cannot query $_svc_service before uninstall (status=$_svc_rc)"
+        return "$_svc_rc"
+      }
+      while IFS='=' read -r _svc_key _svc_value; do
+        _svc_properties=$((_svc_properties + 1))
+        case "$_svc_key" in
+          LoadState)
+            _svc_load="$_svc_value"
+            _svc_fields=$((_svc_fields | 1))
+            ;;
+          ActiveState)
+            _svc_active="$_svc_value"
+            _svc_fields=$((_svc_fields | 2))
+            ;;
+          UnitFileState)
+            _svc_enabled="$_svc_value"
+            _svc_fields=$((_svc_fields | 4))
+            ;;
+          *)
+            msg_error "Malformed service state for $_svc_service"
+            return 22
+            ;;
+        esac
+      done <<< "$_svc_state"
+      [[ "$_svc_fields" == 7 && "$_svc_properties" == 3 ]] || {
+        msg_error "Incomplete or duplicate service state for $_svc_service"
+        return 22
+      }
+      case "$_svc_load" in loaded | masked | not-found | bad-setting | error) ;; *)
+        msg_error "Unverified load state for $_svc_service: $_svc_load"
+        return 22
+        ;;
+      esac
+      case "$_svc_active" in inactive | failed | activating | deactivating | maintenance | refreshing) ;; active | reloading) _svc_running=yes ;; *)
+        msg_error "Unverified active state for $_svc_service: $_svc_active"
+        return 22
+        ;;
+      esac
+      case "$_svc_enabled" in '' | bad | enabled | enabled-runtime | linked | linked-runtime | alias | indirect | disabled | static | masked | masked-runtime | generated | transient) ;; *)
+        msg_error "Unverified unit-file state for $_svc_service: $_svc_enabled"
+        return 22
+        ;;
+      esac
+      if [[ "$_svc_load" == not-found && ("$_svc_active" == inactive || "$_svc_active" == failed) ]]; then return 0; fi
+      if [[ "$_svc_active" != inactive && "$_svc_active" != failed ]]; then
+        $STD systemctl stop -- "$_svc_service" || {
+          _svc_rc=$?
+          msg_error "Cannot stop $_svc_service before uninstall (status=$_svc_rc)"
+          return "$_svc_rc"
+        }
+      fi
+      # A successful stop quiesces a known running tombstone. There is no unit
+      # file to disable; native disable would fail simply because it is missing.
+      [[ "$_svc_load" != not-found ]] || return 0
+      # A completed empty unit-file state has no registration to disable, even
+      # while the manager retains a loaded failed unit until daemon-reload.
+      [[ -n "$_svc_enabled" ]] || return 0
+      if [[ "$_svc_enabled" == bad ]]; then
+        # systemd257 reports "bad" for the same cached removed-file case. Verify
+        # actual fragment absence; a query error/broken link is not absence.
+        _svc_fragment=$(systemctl show --property=FragmentPath --value -- "$_svc_service") || {
+          _svc_rc=$?
+          msg_error "Cannot query $_svc_service unit fragment (status=$_svc_rc)"
+          return "$_svc_rc"
+        }
+        [[ "$_svc_fragment" == /* && "$_svc_fragment" != *$'\n'* ]] || return 22
+        [[ -e "$_svc_fragment" || -L "$_svc_fragment" ]] || return 0
+      fi
+      if [[ "$_svc_action" == disable ]]; then
+        case "$_svc_enabled" in
+          bad | enabled | enabled-runtime | linked | linked-runtime | alias | indirect)
+            $STD systemctl disable -- "$_svc_service" || {
+              _svc_rc=$?
+              msg_error "Cannot disable $_svc_service before uninstall (status=$_svc_rc)"
+              return "$_svc_rc"
+            }
+            ;;
+        esac
+      fi
+      ;;
+    openrc)
+      # --exists returns the same failure for missing and unresolvable services.
+      # Consume only a completed successful list; an empty/failing query is not
+      # permission to remove data. Status codes are openrc-run's documented states.
+      _svc_state=$(rc-service --list) || {
+        _svc_rc=$?
+        msg_error "Cannot enumerate OpenRC services before uninstall (status=$_svc_rc)"
+        return "$_svc_rc"
+      }
+      [[ -n "$_svc_state" ]] || {
+        msg_error "Empty OpenRC service enumeration before uninstall"
+        return 22
+      }
+      while IFS= read -r _svc_entry; do
+        if [[ -z "$_svc_entry" || "$_svc_entry" == -* || "$_svc_entry" == */* || "$_svc_entry" == *[[:space:]]* ]]; then
+          msg_error "Invalid OpenRC service enumeration before uninstall"
+          return 22
+        fi
+        [[ "$_svc_entry" != "$_svc_service" ]] || _svc_found=yes
+      done <<< "$_svc_state"
+      if [[ "$_svc_found" == yes ]]; then
+        $STD rc-service "$_svc_service" status || _svc_rc=$?
+        case "$_svc_rc" in
+          3) ;; # verified stopped
+          0 | 4 | 8 | 16 | 32)
+            [[ "$_svc_rc" != 0 ]] || _svc_running=yes
+            $STD rc-service "$_svc_service" stop || {
+              _svc_rc=$?
+              msg_error "Cannot stop $_svc_service before uninstall (status=$_svc_rc)"
+              return "$_svc_rc"
+            }
+            ;;
+          *)
+            msg_error "Cannot query OpenRC state for $_svc_service (status=$_svc_rc)"
+            return "$_svc_rc"
+            ;;
+        esac
+      fi
+      if [[ "$_svc_action" == disable ]]; then
+        _svc_registrations=$(rc-update show) || {
+          _svc_rc=$?
+          msg_error "Cannot query all OpenRC registrations for $_svc_service (status=$_svc_rc)"
+          return "$_svc_rc"
+        }
+        while read -r _svc_entry _svc_key _svc_levels; do
+          [[ -n "$_svc_entry" ]] || continue
+          [[ "$_svc_key" == '|' ]] || {
+            msg_error "Invalid OpenRC registration query for $_svc_service"
+            return 22
+          }
+          read -r -a _svc_level_words <<< "$_svc_levels"
+          for _svc_level in "${_svc_level_words[@]}"; do
+            [[ "$_svc_level" =~ ^[a-zA-Z0-9_@.:-]+$ && "$_svc_level" != -* ]] || {
+              msg_error "Invalid OpenRC registration runlevel"
+              return 22
+            }
+            [[ "$_svc_entry" == "$_svc_service" ]] || continue
+            _svc_seen=no
+            for _svc_existing in "${_svc_runlevels[@]}"; do [[ "$_svc_existing" != "$_svc_level" ]] || _svc_seen=yes; done
+            [[ "$_svc_seen" != no ]] || _svc_runlevels+=("$_svc_level")
+          done
+        done <<< "$_svc_registrations"
+        for _svc_level in "${_svc_runlevels[@]}"; do
+          $STD rc-update del "$_svc_service" "$_svc_level" || {
+            _svc_rc=$?
+            msg_error "Cannot disable $_svc_service in $_svc_level before uninstall (status=$_svc_rc)"
+            return "$_svc_rc"
+          }
+        done
+      fi
+      ;;
+    *)
+      msg_error "Unsupported uninstall init system: ${INIT_SYSTEM:-unset}"
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 # ------------------------------------------------------------------------------
@@ -1379,12 +1571,12 @@ EOF
   fi
 
   # Install baked update and uninstall scripts
-  if [[ -f "/tmp/_update.sh" ]]; then
-    mv "/tmp/_update.sh" "/usr/local/bin/update"
+  if [[ -f "${TMPDIR:-/tmp}/_update.sh" ]]; then
+    mv "${TMPDIR:-/tmp}/_update.sh" "/usr/local/bin/update"
     chmod +x "/usr/local/bin/update"
   fi
-  if [[ -f "/tmp/_uninstall.sh" ]]; then
-    mv "/tmp/_uninstall.sh" "/usr/local/bin/uninstall"
+  if [[ -f "${TMPDIR:-/tmp}/_uninstall.sh" ]]; then
+    mv "${TMPDIR:-/tmp}/_uninstall.sh" "/usr/local/bin/uninstall"
     chmod +x "/usr/local/bin/uninstall"
   fi
 
@@ -1446,14 +1638,4 @@ os_info() {
   echo "OS Version:   $OS_VERSION"
   echo "Pkg Manager:  $PKG_MANAGER"
   echo "Init System:  $INIT_SYSTEM"
-}
-
-# ------------------------------------------------------------------------------
-# cleanup_lxc()
-#
-# Overrides core.func version to support all OS types (not just Alpine/Debian)
-# Cleans package caches and removes unnecessary packages after installation
-# ------------------------------------------------------------------------------
-cleanup_lxc() {
-  pkg_clean
 }

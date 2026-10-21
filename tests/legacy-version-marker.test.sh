@@ -22,7 +22,8 @@ getent() { return 0; }
 ensure_dependencies() { return 0; }
 _codeberg_release_json() { printf '{"tag_name":"v2.0.0"}'; }
 curl() {
-  local body='{"tag_name":"v2.0.0","draft":false,"prerelease":false}'
+  local body
+  body=$(printf '{"tag_name":"%s","draft":false,"prerelease":false}' "${GH_TAG:-v2.0.0}")
   while [[ "$1" != -o ]]; do shift; done
   [[ "$*" == *gitlab* ]] && body='[{"tag_name":"v2.0.0"}]'
   printf '%s' "$body" > "$2"
@@ -58,6 +59,18 @@ printf 1.0.0 > /opt/myapp_version.txt
 check_for_gh_release MyApp o/r latest
 [[ "$CHECK_UPDATE_RELEASE" == v2.0.0 ]]
 printf 'PASS GitHub latest pin is treated as no pin\n'
+
+reset
+printf 'version/4.2' > /opt/myapp_version.txt
+first=0 second=0
+GH_TAG=version/4.2 check_for_gh_release MyApp o/r || first=$?
+adopted=$(< "$HOME/.myapp")
+GH_TAG=version/4.2 check_for_gh_release MyApp o/r || second=$?
+if [[ "$adopted" != version/4.2 || "$first" != 1 || "$second" != 1 ]]; then
+  printf 'FAIL raw word marker adoption: marker=%s first=%s second=%s\n' "$adopted" "$first" "$second" >&2
+  exit 1
+fi
+printf 'PASS GitHub own legacy word tag stays unchanged across repeated checks\n'
 
 reset
 printf 'v2.0.0' > /opt/myapp_version.txt

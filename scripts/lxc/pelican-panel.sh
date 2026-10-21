@@ -33,7 +33,7 @@ function install_script() {
   msg_info "Installing Pelican Panel"
   cd /opt/pelican-panel || exit
   $STD composer install --no-dev --optimize-autoloader --no-interaction
-  $STD php artisan p:environment:setup
+  $STD php artisan p:environment:setup --url="http://${LOCAL_IP}" --no-interaction
   $STD php artisan p:environment:queue-service --no-interaction
   echo "* * * * * php /opt/pelican-panel/artisan schedule:run >> /dev/null 2>&1" | crontab -u www-data -
   chown -R www-data:www-data /opt/pelican-panel
@@ -95,30 +95,42 @@ function update_script() {
   fi
 
   if check_for_gh_release "pelican-panel" "pelican-dev/panel"; then
+    [[ -f /opt/pelican-panel/.env ]] || {
+      msg_error "Missing existing Pelican .env"
+      exit 65
+    }
+    local database_file
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env storage/app/public plugins)
+    # Keep each literal SQLite filename and its journal/WAL siblings losslessly.
+    for database_file in /opt/pelican-panel/database/*.sqlite*; do
+      [[ -e "$database_file" || -L "$database_file" ]] || continue
+      CLEAN_INSTALL_KEEP_PATHS+=("database/${database_file##*/}")
+    done
     msg_info "Stopping Service"
     cd /opt/pelican-panel || exit
     $STD php artisan down
     msg_ok "Stopped Service"
-
-    mkdir -p /opt/backup
-    cp -a /opt/pelican-panel/.env /opt/backup
-    mkdir -p /opt/backup/storage/app/
-    cp -a /opt/pelican-panel/storage/app/public /opt/backup/storage/app/
-
-    SQLITE_INSTALL=$(ls /opt/pelican-panel/database/*.sqlite 1> /dev/null 2>&1 && echo "true" || echo "false")
-    $SQLITE_INSTALL && cp -r /opt/pelican-panel/database/*.sqlite /opt/backup
-
-    find /opt/pelican-panel -mindepth 1 -maxdepth 1 ! -name 'backup' ! -name 'plugins' -exec rm -rf {} +
-
-    fetch_and_deploy_gh_release "pelican-panel" "pelican-dev/panel" "prebuild" "latest" "/opt/pelican-panel" "panel.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "pelican-panel" "pelican-dev/panel" "prebuild" "latest" "/opt/pelican-panel" "panel.tar.gz"
 
     msg_info "Updating Pelican Panel"
-    cp -a /opt/backup/.env /opt/pelican-panel/
-    $SQLITE_INSTALL && mv /opt/backup/*.sqlite /opt/pelican-panel/database/
-    cp -a /opt/backup/storage/app/public /opt/pelican-panel/storage/app/
-
     $STD composer install --no-dev --optimize-autoloader --no-interaction
-    $STD php artisan p:environment:setup
+    # Reuse the application's Dotenv grammar, including matched outer quotes and
+    # embedded apostrophes. Do not source .env or replace a missing URL by a guess.
+    local panel_url
+    panel_url=$(php -r '
+      require "vendor/autoload.php";
+      try {
+        $values = Dotenv\Dotenv::parse(file_get_contents(".env"));
+        $url = $values["APP_URL"] ?? null;
+        if (!is_string($url) || !preg_match("~^https?://[^\\r\\n\\t ]+$~D", $url)) {
+          fwrite(STDERR, "Missing or invalid existing APP_URL\n"); exit(65);
+        }
+        echo $url;
+      } catch (Throwable $error) {
+        fwrite(STDERR, "Cannot parse existing APP_URL\n"); exit(65);
+      }
+    ') || exit $?
+    $STD php artisan p:environment:setup --url="$panel_url" --no-interaction
     $STD php artisan view:clear
     $STD php artisan config:clear
     $STD php artisan filament:optimize

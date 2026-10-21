@@ -34,7 +34,8 @@ function install_script() {
   $STD uv venv /opt/apprise/.venv
   $STD uv pip install -r requirements.txt gunicorn supervisor -p /opt/apprise/.venv/bin/python
   ln -sf /opt/apprise/.venv/bin/supervisord /opt/apprise/.venv/bin/gunicorn /usr/local/bin/
-  cp -fr apprise_api/static /usr/share/nginx/html/s/
+  mkdir -p /usr/share/nginx/html/s
+  cp -a apprise_api/static/. /usr/share/nginx/html/s/
   mv apprise_api/ webapp
   touch /etc/nginx/server-override.conf
   touch /etc/nginx/location-override.conf
@@ -105,7 +106,8 @@ function update_script() {
     $STD uv venv /opt/apprise/.venv
     $STD uv pip install -r requirements.txt gunicorn supervisor -p /opt/apprise/.venv/bin/python
     ln -sf /opt/apprise/.venv/bin/supervisord /opt/apprise/.venv/bin/gunicorn /usr/local/bin/
-    cp -fr apprise_api/static /usr/share/nginx/html/s/
+    mkdir -p /usr/share/nginx/html/s
+    cp -a apprise_api/static/. /usr/share/nginx/html/s/
     mv apprise_api/ webapp
     touch /etc/nginx/server-override.conf
     touch /etc/nginx/location-override.conf

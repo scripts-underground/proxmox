@@ -174,7 +174,6 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now discourse discourse-sidekiq
   msg_ok "Created Services"
 
   msg_info "Configuring Nginx"
@@ -211,7 +210,6 @@ server {
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_set_header X-Accel-Mapping /opt/discourse/public/=/downloads/;
   }
 }
 EOF
@@ -219,6 +217,7 @@ EOF
   ln -sf /etc/nginx/sites-available/discourse /etc/nginx/sites-enabled/discourse
   rm -f /etc/nginx/sites-enabled/default
   $STD nginx -t
+  systemctl enable -q --now discourse discourse-sidekiq
   $STD systemctl enable --now nginx
   $STD systemctl reload nginx
   msg_ok "Configured Nginx"
@@ -245,35 +244,56 @@ function update_script() {
 
   if [[ ! -f /opt/discourse/.env ]]; then
     msg_error "No Discourse Configuration Found!"
-    exit
+    exit 65
   fi
 
-  msg_info "Stopping Service"
-  systemctl stop discourse
-  msg_ok "Stopped Service"
+  cd /opt/discourse || exit
+  export PATH="$HOME/.rbenv/bin:$HOME/.rbenv/shims:$PATH"
+  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+  set -a
+  source /opt/discourse/.env
+  set +a
+  export RAILS_ENV=production
+  [[ -n "${DISCOURSE_DB_NAME:-}" ]] || {
+    msg_error "Missing existing DISCOURSE_DB_NAME"
+    exit 65
+  }
 
-  msg_info "Backing up Data"
-  cp /opt/discourse/.env /opt/discourse_env.bak
-  msg_ok "Backed up Data"
+  msg_info "Stopping Services"
+  systemctl stop discourse discourse-sidekiq
+  msg_ok "Stopped Services"
 
   msg_info "Updating Discourse"
-  PG_VERSION="16" PG_MODULES="pgvector" setup_postgresql
-  cd /opt/discourse || exit
-  git pull origin main
-  $STD bundle install --deployment --without test development
-  $STD yarn install
-  $STD runuser -u postgres -- psql -d discourse -c "CREATE EXTENSION IF NOT EXISTS vector;"
-  $STD bundle exec rails assets:precompile
+  $STD git pull origin main
+  $STD corepack enable
+  $STD bundle config set --local deployment true
+  $STD bundle config set --local without 'test development'
+  $STD bundle install
+  $STD pnpm install
+  $STD runuser -u postgres -- psql -d "$DISCOURSE_DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;"
   $STD bundle exec rails db:migrate
+  $STD bundle exec rails assets:precompile
   msg_ok "Updated Discourse"
 
-  msg_info "Restoring Configuration"
-  mv /opt/discourse_env.bak /opt/discourse/.env
-  msg_ok "Restored Configuration"
+  if grep -q '^[[:space:]]*proxy_set_header[[:space:]]\+X-Accel-Mapping[[:space:]]' /etc/nginx/sites-available/discourse; then
+    local nginx_backup nginx_rc
+    nginx_backup=$(mktemp /etc/nginx/sites-available/.discourse-nginx.XXXXXX) || exit $?
+    cp -a /etc/nginx/sites-available/discourse "$nginx_backup"
+    sed -i '/^[[:space:]]*proxy_set_header[[:space:]]\+X-Accel-Mapping[[:space:]]/d' /etc/nginx/sites-available/discourse
+    if $STD nginx -t; then
+      rm -f -- "$nginx_backup"
+      systemctl reload nginx
+    else
+      nginx_rc=$?
+      cp -a "$nginx_backup" /etc/nginx/sites-available/discourse
+      rm -f -- "$nginx_backup"
+      exit "$nginx_rc"
+    fi
+  fi
 
-  msg_info "Starting Service"
-  systemctl start discourse
-  msg_ok "Started Service"
+  msg_info "Starting Services"
+  systemctl start discourse discourse-sidekiq
+  msg_ok "Started Services"
   msg_ok "Updated successfully!"
   exit
 }

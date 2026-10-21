@@ -195,7 +195,8 @@ function update_script() {
 function uninstall_script() {
   header_info
   msg_info "Stopping services"
-  systemctl -q disable --now scanopy-daemon scanopy-server
+  svc_prepare_uninstall scanopy-daemon
+  svc_prepare_uninstall scanopy-server
   msg_ok "Stopped services"
 
   msg_info "Removing service files"
@@ -210,7 +211,7 @@ function uninstall_script() {
   rm -f /usr/bin/scanopy-daemon
   rm -f ~/scanopy.creds
   msg_ok "Removed application files"
-  exit
+  return 0
 }
 
 # framework bootstrap

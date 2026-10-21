@@ -119,7 +119,8 @@ setup_case() {
   command mkdir -p "$fixture"/{home,stages,opt/strata/bin,etc/strata,etc/systemd/system,usr/local/bin,var/lib/strata}
   # Keep heredocs intact; their JSON braces are not Bash function boundaries.
   sed '/^source <(curl /d' "$ROOT/scripts/lxc/strata.sh" |
-    sed -e "s#/opt/#$fixture/opt/#g" -e "s#/etc/#$fixture/etc/#g" -e "s#/var/#$fixture/var/#g" -e "s#/usr/#$fixture/usr/#g" > "$fixture/hooks"
+    # Rewrite each original root once; the fixture prefix can itself contain /var.
+    sed -E "s#/(opt|etc|var|usr)/#$fixture/\1/#g" > "$fixture/hooks"
   # Reject any unmapped absolute system root before invoking either hook.
   if sed -e "s#$work/#SCRATCH/#g" -e 's#/dev/null#NULL#g' -e 's#/proc/#PROC/#g' -e 's#/sys/#SYS/#g' \
     -e 's#"\$[[:alnum:]_]*"/#VARIABLE/#g' "$fixture/hooks" |

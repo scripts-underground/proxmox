@@ -147,12 +147,10 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
+  svc_prepare_uninstall "$var_addon_service"
   if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-    rc-service "$var_addon_service" stop &> /dev/null || true
-    rc-update del "$var_addon_service" &> /dev/null || true
     rm -f "/etc/init.d/${var_addon_service}"
   else
-    systemctl disable -q --now "$var_addon_service" &> /dev/null || true
     rm -f "/etc/systemd/system/${var_addon_service}.service"
   fi
   rm -rf "$var_addon_install_path"

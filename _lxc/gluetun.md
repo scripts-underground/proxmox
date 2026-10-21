@@ -4,8 +4,8 @@ title: Gluetun
 tags: [vpn, wireguard, openvpn]
 logo: /assets/logos/gluetun.webp
 by: MickLesk
-repo: https://github.com/qdm12/gluetun
-site: https://github.com/qdm12/gluetun
+repo: https://github.com/passteque/gluetun
+site: https://github.com/passteque/gluetun
 port: 8000
 cpu: 2
 ram: 2048
@@ -23,4 +23,4 @@ VPN client tunnel for Lightweight LXC containers. Routes container traffic throu
 
 ## Links
 
-- [GitHub](https://github.com/qdm12/gluetun)
+- [GitHub](https://github.com/passteque/gluetun)

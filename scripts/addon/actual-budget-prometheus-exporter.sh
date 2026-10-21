@@ -125,7 +125,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling Actual-Budget-Prometheus-Exporter"
-  systemctl disable -q --now actual-budget-prometheus-exporter
+  svc_prepare_uninstall actual-budget-prometheus-exporter
   rm -f "$var_addon_service_path"
   rm -rf "$var_addon_install_path"
   rm -f "$var_addon_config_path"

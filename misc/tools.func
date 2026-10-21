@@ -167,7 +167,8 @@ curl_api_with_retry() {
       http_code=$("${curl_args[@]}" -o "$body_file" "$url" 2> /dev/null) || true
     else
       # Capture body and http_code separately
-      local tmp_body="/tmp/curl_api_body_$$"
+      local tmp_body
+      tmp_body=$(mktemp "${TMPDIR:-/tmp}/curl-api-body.XXXXXX") || return 7
       http_code=$("${curl_args[@]}" -o "$tmp_body" "$url" 2> /dev/null) || true
       if [[ -f "$tmp_body" ]]; then
         cat "$tmp_body"
@@ -211,7 +212,7 @@ curl_api_with_retry() {
 #   - Validates downloaded key
 #   - Multiple mirror fallback support
 #
-# Returns: 0 on success, 1 on failure
+# Returns: 0 on success, 7 on download/validation/publication failure
 # ------------------------------------------------------------------------------
 download_gpg_key() {
   local url="$1"
@@ -219,10 +220,21 @@ download_gpg_key() {
   local mode="${3:-auto}" # auto, dearmor, or binary
   local retries="${CURL_RETRIES:-3}"
   local timeout="${CURL_TIMEOUT:-30}"
-  local temp_key
-  temp_key=$(mktemp)
-
-  mkdir -p "$(dirname "$output")"
+  local temp_key staged_key output_dir metadata output_mode=644 output_uid output_gid resolved_mode
+  output_dir=$(dirname "$output") || return 7
+  mkdir -p "$output_dir" || return 7
+  temp_key=$(mktemp) || return 7
+  staged_key=$(mktemp "$output_dir/.gpg-key.XXXXXX") || {
+    rm -f -- "$temp_key"
+    return 7
+  }
+  if [[ -e "$output" ]]; then
+    metadata=$(stat -c '%a %u %g' "$output") || {
+      rm -f -- "$temp_key" "$staged_key"
+      return 7
+    }
+    read -r output_mode output_uid output_gid <<< "$metadata"
+  fi
 
   local attempt=1
   while [[ $attempt -le $retries ]]; do
@@ -236,29 +248,24 @@ download_gpg_key() {
       continue
     fi
 
-    # Auto-detect key format if mode is auto
-    if [[ "$mode" == "auto" ]]; then
-      if file "$temp_key" 2> /dev/null | grep -qi "pgp\\|gpg\\|public key"; then
-        mode="binary"
-      elif grep -q "BEGIN PGP" "$temp_key" 2> /dev/null; then
-        mode="dearmor"
-      else
-        # Try to detect by extension
-        [[ "$url" == *.asc || "$url" == *.txt ]] && mode="dearmor" || mode="binary"
-      fi
+    resolved_mode="$mode"
+    if [[ "$resolved_mode" == auto ]]; then
+      if grep -q 'BEGIN PGP' "$temp_key"; then resolved_mode=dearmor; else resolved_mode=binary; fi
     fi
 
-    # Process based on mode
-    if [[ "$mode" == "dearmor" ]]; then
-      if gpg --dearmor --yes -o "$output" < "$temp_key" 2> /dev/null && [[ -s "$output" ]]; then
-        rm -f "$temp_key"
-        debug_log "GPG key installed (dearmored): $output"
-        return 0
-      fi
+    # GPG may truncate its output before rejecting input. All modes therefore
+    # prepare/validate a private same-filesystem stage, never the live keyring.
+    local processed=0
+    if [[ "$resolved_mode" == dearmor ]]; then
+      gpg --batch --dearmor --yes -o "$staged_key" < "$temp_key" 2> /dev/null && processed=1
     else
-      if mv "$temp_key" "$output" 2> /dev/null; then
-        chmod 644 "$output"
-        debug_log "GPG key installed: $output"
+      cp -- "$temp_key" "$staged_key" 2> /dev/null && processed=1
+    fi
+    if [[ "$processed" == 1 && -s "$staged_key" ]] && gpg --batch --show-keys "$staged_key" > /dev/null 2>&1; then
+      if { [[ -z "${output_uid:-}" ]] || chown "$output_uid:$output_gid" "$staged_key"; } &&
+        chmod "$output_mode" "$staged_key" && mv -fT -- "$staged_key" "$output"; then
+        rm -f -- "$temp_key"
+        debug_log "GPG key installed ($resolved_mode): $output"
         return 0
       fi
     fi
@@ -268,7 +275,7 @@ download_gpg_key() {
     ((attempt++))
   done
 
-  rm -f "$temp_key"
+  rm -f -- "$temp_key" "$staged_key"
   debug_log "GPG key download FAILED after $retries attempts: $url"
   return 7
 }
@@ -1100,6 +1107,7 @@ version_gt() {
 # ------------------------------------------------------------------------------
 get_system_arch() {
   local arch_type="${1:-dpkg}" # dpkg, uname, or both
+  local amd64_alias="${2:-}" arm64_alias="${3:-}"
   local arch
 
   case "$arch_type" in
@@ -1118,6 +1126,11 @@ get_system_arch() {
       ;;
   esac
 
+  # Release names are caller-selected aliases, never global Debian renames.
+  case "$arch" in
+    amd64) [[ -z "$amd64_alias" ]] || arch="$amd64_alias" ;;
+    arm64) [[ -z "$arm64_alias" ]] || arch="$arm64_alias" ;;
+  esac
   echo "$arch"
 }
 
@@ -2332,30 +2345,28 @@ get_latest_gh_tag() {
 }
 
 # ------------------------------------------------------------------------------
+# Numeric-v compatibility is one contract for lookup, pins and own markers.
+# Word tags such as version/4.2 are literal tags, not v-prefixed versions.
+_gh_version_from_tag() {
+  local tag="$1"
+  if [[ "$tag" =~ ^v[0-9] ]]; then tag="${tag:1}"; fi
+  printf '%s\n' "$tag"
+}
+
 # Get latest GitHub release version with fallback to tags
-# Usage: get_latest_github_release "owner/repo" [strip_v] [include_prerelease]
+# Usage: get_latest_github_release "owner/repo" [strip_v]
 # ------------------------------------------------------------------------------
 get_latest_github_release() {
   local repo="$1"
   local strip_v="${2:-true}"
-  local temp_file=$(mktemp)
-
-  if ! github_api_call "https://api.github.com/repos/${repo}/releases/latest" "$temp_file"; then
-    msg_warn "GitHub API call failed for ${repo}"
-    rm -f "$temp_file"
-    return 22
-  fi
-
-  local version
-  version=$(extract_version_from_json "$(cat "$temp_file")" "tag_name" "$strip_v")
-  rm -f "$temp_file"
-
-  if [[ -z "$version" ]]; then
-    msg_error "Could not determine latest version for ${repo}"
-    return 250
-  fi
-
-  echo "$version"
+  local temp_file version rc=0
+  temp_file=$(mktemp "${TMPDIR:-/tmp}/gh-latest.XXXXXX") || return 252
+  _gh_release_json "$repo" latest '' "$temp_file" || rc=$?
+  if [[ $rc -eq 0 ]]; then version=$(jq -er '.tag_name // .name // empty' "$temp_file") || rc=250; fi
+  rm -f -- "$temp_file" || true
+  [[ $rc -eq 0 ]] || return "$rc"
+  if [[ "$strip_v" == true ]]; then version=$(_gh_version_from_tag "$version") || return 250; fi
+  printf '%s\n' "$version"
 }
 
 # ------------------------------------------------------------------------------
@@ -2566,14 +2577,200 @@ check_for_gh_tag() {
 # Notes:
 #   - Requires `jq` (auto-installed if missing)
 #   - Does not modify anything, only checks version state
-#   - Does not support pre-releases
+#   - Latest/prefix selection excludes pre-releases; explicit pins stay explicit
 # ------------------------------------------------------------------------------
+# One completed JSON request. Named HTTP output keeps token recovery in the
+# calling shell, so later asset downloads retain the recovered authentication.
+_github_release_request() {
+  local url="$1" out="$2" http_status='' curl_rc=0 attempt token_retry=0
+  local -n _request_status="$3"
+  _request_status=''
+  local -a headers=() timeouts=(60 120 240)
+  [[ -z "${GITHUB_TOKEN:-}" ]] || headers=(-H "Authorization: token $GITHUB_TOKEN")
+  for attempt in 0 1 2; do
+    : > "$out" || return 252
+    curl_rc=0
+    http_status=$(curl --connect-timeout 10 --max-time "${timeouts[$attempt]}" -sSL -w '%{http_code}' -o "$out" \
+      -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${headers[@]}" "$url" 2> /dev/null) || curl_rc=$?
+    _request_status="$http_status"
+    if [[ $curl_rc -eq 0 && "$http_status" == 200 ]]; then
+      if jq -e 'def release:
+        type=="object" and ((.tag_name // .name) | type=="string" and length>0) and
+        ((.assets // []) | type=="array") and ((.body // "") | type=="string") and
+        (.draft==null or (.draft | type=="boolean")) and
+        (.prerelease==null or (.prerelease | type=="boolean")) and
+        all(.assets[]?; type=="object" and (.browser_download_url | type=="string"));
+        if type=="array" then all(.[]; release) else release end' "$out" > /dev/null 2>&1; then return 0; fi
+      msg_error "GitHub returned invalid or empty release JSON for $url" >&2
+      return 22
+    fi
+    if [[ ("$http_status" == 401 || "$http_status" == 403) && $token_retry -eq 0 ]] && declare -F prompt_for_github_token > /dev/null; then
+      if prompt_for_github_token >&2; then
+        token_retry=1
+        headers=(-H "Authorization: token $GITHUB_TOKEN")
+        continue
+      fi
+    fi
+    [[ "$http_status" != 401 && "$http_status" != 404 ]] || break
+    [[ $attempt -eq 2 ]] || sleep "$((2 << attempt))"
+  done
+  if [[ $curl_rc -ne 0 ]]; then
+    msg_error "GitHub transfer failed or incomplete (curl=$curl_rc HTTP=$http_status)" >&2
+    return "$curl_rc"
+  fi
+  case "$http_status" in
+    401) msg_error "GitHub authentication failed (HTTP=401). Check that GITHUB_TOKEN is valid and has access to this repository." >&2 ;;
+    403 | 429) msg_error "GitHub metadata request denied (HTTP=$http_status): check API rate limits and repository permissions; set a valid GITHUB_TOKEN or retry after the rate-limit reset." >&2 ;;
+    404) msg_error "GitHub release not found (HTTP=404): check the repository and requested tag, and token access for private repositories." >&2 ;;
+    *) msg_error "GitHub metadata request failed (HTTP=$http_status). Check GitHub connectivity and service status." >&2 ;;
+  esac
+  return 22
+}
+
+# Complete release enumeration for range and prefix selection only.
+# A failed later page never leaves a plausible partial list for selection.
+_github_release_list() {
+  local repo="$1" out="$2" stage page=1 count signature previous='' rc=0 _list_code=''
+  local -n _list_status="$3"
+  _list_status=''
+  : > "$out" || return 252
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/gh-list.XXXXXX") || return 252
+  printf '[]\n' > "$stage/collected" || rc=252
+  while [[ $rc -eq 0 ]]; do
+    _github_release_request "https://api.github.com/repos/$repo/releases?per_page=100&page=$page" "$stage/page" _list_code || rc=$?
+    _list_status="$_list_code"
+    [[ $rc -eq 0 ]] || break
+    count=$(jq -er 'if type=="array" then length else error("expected release list") end' "$stage/page") || {
+      rc=22
+      break
+    }
+    signature=$(sha256sum "$stage/page") || {
+      rc=252
+      break
+    }
+    signature=${signature%% *}
+    if [[ "$signature" == "$previous" ]]; then
+      rc=22
+      break
+    fi
+    previous="$signature"
+    jq -s '.[0] + .[1]' "$stage/collected" "$stage/page" > "$stage/next" || {
+      rc=22
+      break
+    }
+    mv -f -- "$stage/next" "$stage/collected" || {
+      rc=252
+      break
+    }
+    [[ "$count" -eq 100 ]] || break
+    page=$((page + 1))
+  done
+  if [[ $rc -eq 0 ]]; then cp -- "$stage/collected" "$out" || rc=252; fi
+  if [[ $rc -ne 0 ]]; then : > "$out" || true; fi
+  rm -rf -- "$stage" || true
+  return "$rc"
+}
+
+_gh_release_tag_fallback() {
+  local repo="$1" version="$2" prefix="$3" refs tags tag wanted actual_tag
+  wanted=$(_gh_version_from_tag "$version") || return 250
+  refs=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null) || return 22
+  tags=$(printf '%s\n' "$refs" | sed -n 's|.*refs/tags/||p' | sort -Vr) || return 22
+  while IFS= read -r tag; do
+    [[ -n "$tag" && "$tag" != *'^{}' ]] || continue
+    if [[ "$version" == latest ]]; then
+      [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ && "$tag" == "$prefix"* ]] || continue
+    else
+      actual_tag=$(_gh_version_from_tag "$tag") || return 250
+      [[ "$actual_tag" == "$wanted" ]] || continue
+    fi
+    jq -cn --arg tag "$tag" '{tag_name:$tag,draft:false,prerelease:false,assets:[]}'
+    return $?
+  done <<< "$tags"
+  return 22
+}
+
+# Emits one selected release, preserving raw tags. Prefix limits latest only;
+# explicit requests are checked against the returned tag, never substituted.
+_gh_release_select() {
+  local repo="$1" version="$2" prefix="$3" raw="$4" code rc tag tags encoded wanted actual_tag
+  local base="https://api.github.com/repos/$repo/releases"
+  if [[ "$version" != latest ]]; then
+    encoded=$(jq -rn --arg tag "$version" '$tag | @uri') || return 250
+    rc=0
+    _github_release_request "$base/tags/$encoded" "$raw" code || rc=$?
+    if [[ $rc -eq 22 && "$code" == 404 && "$version" =~ ^[0-9] ]]; then
+      rc=0
+      _github_release_request "$base/tags/v$encoded" "$raw" code || rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+      [[ $rc -eq 22 && "$code" != 200 ]] || return "$rc"
+      _gh_release_tag_fallback "$repo" "$version" ''
+      return $?
+    fi
+    tag=$(jq -er 'if type == "object" then .tag_name // .name // empty else empty end | select(type=="string" and length>0)' "$raw") || return 250
+    wanted=$(_gh_version_from_tag "$version") || return 250
+    actual_tag=$(_gh_version_from_tag "$tag") || return 250
+    if [[ "$actual_tag" != "$wanted" ]]; then
+      msg_error "Requested release $version, but $repo returned $tag" >&2
+      return 250
+    fi
+    jq -ce '.' "$raw"
+    return $?
+  fi
+  if [[ -z "$prefix" ]]; then
+    rc=0
+    _github_release_request "$base/latest" "$raw" code || rc=$?
+    if [[ $rc -eq 0 ]] && jq -e 'type=="object" and .draft!=true and .prerelease!=true and (.tag_name | type=="string" and length>0)' "$raw" > /dev/null 2>&1; then
+      jq -ce '.' "$raw"
+      return $?
+    fi
+    [[ $rc -eq 0 || ($rc -eq 22 && "$code" != 200) ]] || return "$rc"
+  fi
+  rc=0
+  _github_release_list "$repo" "$raw" code || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    [[ -z "$prefix" ]] || return "$rc"
+    [[ $rc -eq 22 && "$code" != 200 ]] || return "$rc"
+    _gh_release_tag_fallback "$repo" latest "$prefix"
+    return $?
+  fi
+  tags=$(jq -r --arg prefix "$prefix" 'if type!="array" then error("expected release list") else
+    .[] | select(.draft!=true and .prerelease!=true) | .tag_name |
+    select(type=="string" and length>0) | select(startswith($prefix)) end' "$raw" | sort -Vr) || return 22
+  tag=${tags%%$'\n'*}
+  if [[ -z "$tag" ]]; then
+    if [[ -z "$prefix" ]]; then
+      _gh_release_tag_fallback "$repo" latest ''
+      return $?
+    fi
+    msg_error "No stable release matching prefix '$prefix' for $repo" >&2
+    return 250
+  fi
+  jq -ce --arg tag "$tag" 'first(.[] | select(.tag_name==$tag))' "$raw"
+}
+
+# Private per-call response owner shared by check and deploy; no cross-call sink.
+_gh_release_json() {
+  local repo="$1" version="${2:-latest}" prefix="${3:-}" out="$4" raw rc=0
+  ensure_dependencies jq || return 100
+  getent hosts api.github.com > /dev/null 2>&1 || {
+    msg_error "Cannot resolve api.github.com. Check the container's DNS and network connectivity." >&2
+    return 6
+  }
+  raw=$(mktemp "${TMPDIR:-/tmp}/gh-release.XXXXXX") || return 252
+  _gh_release_select "$repo" "$version" "$prefix" "$raw" > "$out" || rc=$?
+  rm -f -- "$raw" || true
+  return "$rc"
+}
+
 check_for_gh_release() {
   CHECK_UPDATE_RELEASE=""
   local app="$1"
   local source="$2"
   local pinned_version_in="${3:-}" # optional
   local pin_reason="${4:-}"        # optional reason shown to user
+  local tag_prefix="${5:-}"        # optional stable latest line
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
   local current_file="$HOME/.${app_lc}"
@@ -2583,137 +2780,29 @@ check_for_gh_release() {
 
   msg_info "Checking for update: ${app}"
 
-  # DNS check
-  if ! getent hosts api.github.com > /dev/null 2>&1; then
-    msg_error "Network error: cannot resolve api.github.com"
-    return 6
+  local meta_file selected rc=0
+  meta_file=$(mktemp "${TMPDIR:-/tmp}/gh-check.XXXXXX") || {
+    msg_error "Unable to allocate release-check metadata for $app" >&2
+    return 252
+  }
+  _gh_release_json "$source" "${pinned_version_in:-latest}" "$tag_prefix" "$meta_file" || rc=$?
+  if [[ $rc -eq 0 ]]; then selected=$(jq -er '.tag_name // .name // empty' "$meta_file") || rc=250; fi
+  rm -f -- "$meta_file" || true
+  if [[ $rc -ne 0 ]]; then
+    # This public owner started the spinner. Finish it even when a dependency,
+    # allocation or selection failure did not emit a lower-level diagnostic.
+    msg_error "Unable to check GitHub releases for $app (status=$rc)" >&2
+    return "$rc"
   fi
+  local -a raw_tags=("$selected")
 
-  ensure_dependencies jq
-
-  local meta_file
-  meta_file="$(mktemp)"
-
-  # Build auth header if token is available
-  local header_args=()
-  [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
-
-  # Try /latest endpoint for non-pinned versions (most efficient)
-  local releases_json="" http_code=""
-
-  # For pinned versions, query the specific release tag directly
-  if [[ -n "$pinned_version_in" ]]; then
-    local pinned_version_encoded="${pinned_version_in//\//%2F}"
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases/tags/${pinned_version_encoded}" 2> /dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
-      releases_json="[$(< "$meta_file")]"
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$meta_file"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$meta_file"
-      return 22
-    fi
-    rm -f "$meta_file"
-  fi
-
-  if [[ -z "$pinned_version_in" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases/latest" 2> /dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
-      releases_json="[$(< "$meta_file")]"
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$meta_file"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$meta_file"
-      return 22
-    fi
-    rm -f "$meta_file"
-  fi
-
-  # If no releases yet (pinned version OR /latest failed), fetch up to 100
-  if [[ -z "$releases_json" ]]; then
-    http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "${header_args[@]}" \
-      "https://api.github.com/repos/${source}/releases?per_page=100" 2> /dev/null) || true
-
-    if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
-      releases_json=$(< "$meta_file")
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication. Try: export GITHUB_TOKEN=\"ghp_your_token\""
-      fi
-      rm -f "$meta_file"
-      return 22
-    elif [[ "$http_code" == "403" ]]; then
-      msg_error "GitHub API rate limit exceeded (HTTP 403)."
-      msg_error "To increase the limit, export a GitHub token before running the script:"
-      msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-      rm -f "$meta_file"
-      return 22
-    elif [[ "$http_code" == "000" || -z "$http_code" ]]; then
-      msg_error "GitHub API connection failed (no response)."
-      msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
-      rm -f "$meta_file"
-      return 7
-    else
-      msg_error "Unable to fetch releases for ${app} (HTTP ${http_code})"
-      rm -f "$meta_file"
-      return 22
-    fi
-    rm -f "$meta_file"
-  fi
-
-  mapfile -t raw_tags < <(jq -r '.[] | select(.draft==false and .prerelease==false) | .tag_name' <<< "$releases_json")
-  if ((${#raw_tags[@]} == 0)); then
-    mapfile -t raw_tags < <(git ls-remote --tags "https://github.com/${source}.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr)
-    if ((${#raw_tags[@]} == 0)); then
-      msg_error "No stable releases found for ${app}"
-      return 250
-    fi
-  fi
-
-  local clean_tags=()
+  local clean_tags=() clean_tag
   for t in "${raw_tags[@]}"; do
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3)
-    if [[ "$t" =~ ^v[0-9] ]]; then
-      clean_tags+=("${t:1}")
-    else
-      clean_tags+=("$t")
-    fi
+    clean_tag=$(_gh_version_from_tag "$t") || {
+      msg_error "Unable to read selected release tag for $app"
+      return 250
+    }
+    clean_tags+=("$clean_tag")
   done
 
   local latest_raw="${raw_tags[0]}"
@@ -2727,21 +2816,28 @@ check_for_gh_release() {
     # Migration: adopt only this app's legacy version marker (never another app's)
     if [[ -f "/opt/${app_lc}_version.txt" ]]; then
       current="$(< "/opt/${app_lc}_version.txt")"
-      echo "${current#v}" > "$current_file"
+      current=$(_gh_version_from_tag "$current") || {
+        msg_error "Unable to read legacy version for $app"
+        return 250
+      }
+      printf '%s\n' "$current" > "$current_file" || {
+        msg_error "Unable to migrate $app version marker to $current_file"
+        return 252
+      }
     fi
   fi
-  if [[ "$current" =~ ^v[0-9] ]]; then
-    current="${current:1}"
-  fi
+  current=$(_gh_version_from_tag "$current") || {
+    msg_error "Unable to read installed version for $app"
+    return 250
+  }
 
   # Pinned version handling
   if [[ -n "$pinned_version_in" ]]; then
     local pin_clean
-    if [[ "$pinned_version_in" =~ ^v[0-9] ]]; then
-      pin_clean="${pinned_version_in:1}"
-    else
-      pin_clean="$pinned_version_in"
-    fi
+    pin_clean=$(_gh_version_from_tag "$pinned_version_in") || {
+      msg_error "Unable to read requested version for $app"
+      return 250
+    }
     local match_raw=""
     for i in "${!clean_tags[@]}"; do
       if [[ "${clean_tags[$i]}" == "$pin_clean" ]]; then
@@ -3116,56 +3212,384 @@ _diagnose_deb_failure() {
 #   $2 - target directory
 #   $3 - CLEAN_INSTALL value; 1 moves the old entries aside before copying
 #
-# The target itself is never renamed, so bind-mounted entries stay in place.
-# Old entries move into a hidden directory inside the target (same filesystem),
-# so a failed copy can put them back. Root dotfiles and mount points are neither
-# moved nor removed. Returns 252 when the copy fails; callers must then not write
-# their version marker.
+# Existing CLEAN_INSTALL_KEEP paths and mount points never leave the live tree.
+# A private source projection excludes their defaults; only replaceable siblings
+# enter the same-filesystem aside. Root metadata is never copied from extraction.
+# Invalid keep paths return65 before effects; deployment failures return252.
 _deploy_replace_contents() {
-  local source="$1" target="$2" clean="$3" aside="" entry
-  local -a entries=()
-  [[ -n "$target" && "$target" != / ]] || return 252
-  mkdir -p "$target" || return 252
-
-  if [[ "$clean" == 1 ]]; then
-    aside=$(mktemp -d "$target/.deploy-aside.XXXXXX") || return 252
-    mapfile -d '' entries < <(find "$target" -mindepth 1 -maxdepth 1 -not -name '.*' -print0)
-    for entry in "${entries[@]}"; do
-      mountpoint -q "$entry" 2> /dev/null && continue
-      mv "$entry" "$aside/" || {
-        _deploy_restore_aside "$target" "$aside"
-        return 252
-      }
-    done
+  local source="$1" target="$2" clean="$3" aside='' stage entry path part rest mount parent replace_error=0
+  local batch_parent='' declaration
+  local -a entries=() keep=() incoming=() old=() batch=() directories=()
+  local -A protected=() spines=() moved=() attempted=()
+  case "${CLEAN_INSTALL_KEEP:-}" in *$'\n'* | *$'\r'* | *$'\t'*) return 65 ;; esac
+  read -r -a keep <<< "${CLEAN_INSTALL_KEEP:-}"
+  if declaration=$(declare -p CLEAN_INSTALL_KEEP_PATHS 2> /dev/null); then
+    [[ "$declaration" =~ ^declare\ -[^[:space:]]*a[^[:space:]]*\  ]] || return 65
+    keep+=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
   fi
-
-  # Copy entries, including dotfiles, without copying the extraction root's metadata.
-  mapfile -d '' entries < <(find "$source" -mindepth 1 -maxdepth 1 -print0)
-  if ! cp -a -- "${entries[@]}" "$target/"; then
-    if [[ -n "$aside" ]]; then
-      mapfile -d '' entries < <(find "$target" -mindepth 1 -maxdepth 1 -not -name '.*' -print0)
-      for entry in "${entries[@]}"; do
-        mountpoint -q "$entry" 2> /dev/null && continue
-        rm -rf --one-file-system "$entry"
-      done
-      _deploy_restore_aside "$target" "$aside"
-    fi
+  for entry in "${keep[@]}"; do
+    [[ -n "$entry" ]] || return 65
+    case "/$entry/" in //* | *//* | */./* | */../* | *'*'* | *'?'* | *'['* | *']'*) return 65 ;; esac
+  done
+  [[ -n "$target" && "$target" != / ]] || return 252
+  source=$(cd -- "$source" && pwd -P) || return 252
+  [[ "$target/" != "$source/"* && ! "$source" -ef "$target" ]] || return 252
+  # Establish protection without following a declared path through a live link.
+  for entry in "${keep[@]}"; do
+    path='' rest="$entry"
+    while [[ -n "$rest" ]]; do
+      part=${rest%%/*}
+      path+="${path:+/}$part"
+      if [[ -L "$target/$path" ]]; then
+        protected["$path"]=1
+        break
+      fi
+      [[ -e "$target/$path" ]] || break
+      if [[ "$rest" != */* ]]; then
+        protected["$path"]=1
+        break
+      fi
+      [[ -d "$target/$path" ]] || return 65
+      rest=${rest#*/}
+    done
+  done
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/deploy-source.XXXXXX") || return 252
+  if ! find "$source" -mindepth 1 -maxdepth 1 -print0 > "$stage/input"; then
+    _deploy_remove_owned_trees "$stage"
     return 252
   fi
-
-  [[ -z "$aside" ]] || rm -rf --one-file-system "$aside"
+  mapfile -d '' -t entries < "$stage/input"
+  if [[ ${#entries[@]} -eq 0 ]] || ! mkdir "$stage/payload"; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  # Independent directories, shared immutable file inodes where supported. A
+  # failed hardlink attempt owns only these names; remove it before copy fallback.
+  for entry in "${entries[@]}"; do
+    batch+=("$entry")
+    if [[ ${#batch[@]} -eq 256 ]]; then
+      _deploy_project_entries "$stage/payload" "${batch[@]}" || replace_error=1
+      batch=()
+      [[ "$replace_error" == 0 ]] || break
+    fi
+  done
+  if [[ "$replace_error" == 0 && ${#batch[@]} -gt 0 ]]; then
+    _deploy_project_entries "$stage/payload" "${batch[@]}" || replace_error=1
+  fi
+  batch=()
+  if [[ "$replace_error" != 0 ]]; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  if ! mkdir -p "$target"; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  target=$(cd -- "$target" && pwd -P) || {
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  }
+  if [[ "$target" == / || "$source/" == "$target/"* ]]; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  # Linux mountinfo enumerates descendants without traversing mounted data, even
+  # for same-device bind mounts. Decode the kernel's four pathname escapes.
+  if [[ ! -r /proc/self/mountinfo ]]; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  while read -r _ _ _ _ mount _; do
+    mount=${mount//\\040/ }
+    mount=${mount//\\011/$'\t'}
+    mount=${mount//\\012/$'\n'}
+    mount=${mount//\\134/$'\\'}
+    [[ "$mount" != "$target/"* ]] || protected["${mount#"$target/"}"]=1
+  done < /proc/self/mountinfo
+  # Retain the existing top-level mountpoint boundary for supported adapters.
+  if ! find "$target" -mindepth 1 -maxdepth 1 -print0 > "$stage/target"; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  while IFS= read -r -d '' entry; do
+    if [[ -d "$entry" && ! -L "$entry" ]] && mountpoint -q "$entry" 2> /dev/null; then protected["${entry##*/}"]=1; fi
+  done < "$stage/target"
+  for entry in "${!protected[@]}"; do
+    parent="$entry"
+    while [[ "$parent" == */* ]]; do
+      parent=${parent%/*}
+      # Passed by name to the branch enumerator's nameref.
+      # shellcheck disable=SC2034
+      spines["$parent"]=1
+    done
+    path='' rest="$entry"
+    while [[ -n "$rest" ]]; do
+      part=${rest%%/*}
+      path+="${path:+/}$part"
+      if [[ -L "$stage/payload/$path" || ! -d "$stage/payload/$path" || "$rest" != */* ]]; then
+        _deploy_remove_owned_trees "$stage/payload/$path" || replace_error=1
+        break
+      fi
+      rest=${rest#*/}
+    done
+  done
+  if [[ "$replace_error" != 0 ]] || ! _deploy_incoming_entries "$stage/payload" "$target" "$clean" spines > "$stage/incoming"; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  mapfile -d '' -t incoming < "$stage/incoming"
+  # Existing merge directories are never projected or moved. Incoming leaf
+  # batches publish into them; unmentioned live bytes/inodes are never visited.
+  # A depth-first manifest establishes ownership before any live publication.
+  if [[ "$replace_error" != 0 ]] || ! find "$stage/payload" -mindepth 1 -depth -print0 > "$stage/planned"; then
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  aside=$(mktemp -d "$target/.deploy-aside.XXXXXX") || {
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  }
+  if [[ -e "$stage/payload/${aside##*/}" || -L "$stage/payload/${aside##*/}" ]]; then
+    rmdir "$aside"
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  if [[ "$clean" == 1 ]]; then
+    _deploy_replace_entries "$target" '' protected spines 0 > "$stage/old" || replace_error=1
+    mapfile -d '' -t old < "$stage/old"
+  fi
+  # Bounded argv batches by parent; associative sets avoid quadratic membership.
+  for entry in "${old[@]}" "${incoming[@]}"; do
+    [[ "$replace_error" == 0 ]] || break
+    [[ ! ${moved["$entry"]+yes} ]] || continue
+    moved["$entry"]=1
+    [[ -e "$target/$entry" || -L "$target/$entry" ]] || continue
+    parent=${entry%/*}
+    [[ "$parent" != "$entry" ]] || parent=''
+    if [[ ${#batch[@]} -gt 0 && ("$parent" != "$batch_parent" || ${#batch[@]} -eq 256) ]]; then
+      mkdir -p "$aside/${batch_parent:-.}" && mv -- "${batch[@]}" "$aside/${batch_parent:+$batch_parent/}" || replace_error=1
+      batch=()
+    fi
+    [[ "$replace_error" == 0 ]] || break
+    batch_parent="$parent"
+    batch+=("$target/$entry")
+  done
+  if [[ "$replace_error" == 0 && ${#batch[@]} -gt 0 ]]; then
+    mkdir -p "$aside/${batch_parent:-.}" && mv -- "${batch[@]}" "$aside/${batch_parent:+$batch_parent/}" || replace_error=1
+  fi
+  batch=()
+  if [[ "$replace_error" == 0 ]]; then
+    for entry in "${incoming[@]}"; do
+      parent=${entry%/*}
+      [[ "$parent" != "$entry" ]] || parent=''
+      if [[ ${#batch[@]} -gt 0 && ("$parent" != "$batch_parent" || ${#batch[@]} -eq 256) ]]; then
+        cp -a -- "${batch[@]}" "$target/${batch_parent:+$batch_parent/}" || replace_error=2
+        batch=()
+      fi
+      [[ "$replace_error" == 0 ]] || break
+      batch_parent="$parent"
+      batch+=("$stage/payload/$entry")
+      attempted["$entry"]=1
+    done
+    if [[ "$replace_error" == 0 && ${#batch[@]} -gt 0 ]]; then
+      cp -a -- "${batch[@]}" "$target/${batch_parent:+$batch_parent/}" || replace_error=2
+    fi
+  fi
+  batch=()
+  if [[ "$replace_error" != 0 ]]; then
+    if [[ "$replace_error" == 2 ]]; then
+      while IFS= read -r -d '' path; do
+        entry=${path#"$stage/payload/"}
+        parent="$entry"
+        while [[ ! ${attempted["$parent"]+yes} && "$parent" == */* ]]; do parent=${parent%/*}; done
+        [[ ${attempted["$parent"]+yes} ]] || continue
+        if [[ -d "$path" && ! -L "$path" ]]; then directories+=("$target/$entry"); else batch+=("$target/$entry"); fi
+        if [[ ${#batch[@]} -eq 256 ]]; then
+          rm -f -- "${batch[@]}" || replace_error=3
+          batch=()
+        fi
+      done < "$stage/planned"
+      if [[ ${#batch[@]} -gt 0 ]]; then rm -f -- "${batch[@]}" || replace_error=3; fi
+      # Only empty planned directories can be removed. New unrelated children are
+      # another writer's data, never evidence of a helper-owned partial copy.
+      for path in "${directories[@]}"; do
+        if [[ -d "$path" && ! -L "$path" ]]; then
+          rmdir -- "$path" 2> /dev/null || replace_error=3
+        fi
+      done
+    fi
+    _deploy_restore_aside "$target" "$aside" || msg_error "Deployment rollback incomplete; previous entries retained at $aside"
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  fi
+  _deploy_remove_owned_trees "$aside" || {
+    _deploy_remove_owned_trees "$stage"
+    return 252
+  }
+  _deploy_remove_owned_trees "$stage" || return 252
   return 0
 }
 
-# Move the entries of an aside directory back into the target and remove it.
+# The destination names must be absent and privately owned by the caller.
+_deploy_project_entries() {
+  local destination="$1" entry
+  shift
+  local -a partial=()
+  cp -al -- "$@" "$destination/" && return 0
+  for entry in "$@"; do partial+=("$destination/${entry##*/}"); done
+  _deploy_remove_owned_trees "${partial[@]}" || return 252
+  cp -a -- "$@" "$destination/"
+}
+
+# Check current mount containment, not only the earlier publication manifest.
+# Even a same-device bind mount must retain its containing owned tree intact.
+_deploy_remove_owned_trees() {
+  local root mount
+  [[ -r /proc/self/mountinfo ]] || return 252
+  while read -r _ _ _ _ mount _; do
+    mount=${mount//\\040/ }
+    mount=${mount//\\011/$'\t'}
+    mount=${mount//\\012/$'\n'}
+    mount=${mount//\\134/$'\\'}
+    for root in "$@"; do
+      [[ -n "$root" && "$root" != / ]] || return 252
+      if [[ "$mount" == "$root" || "$mount" == "$root/"* ]]; then
+        msg_error "Owned deployment tree contains mounted data; retained at $root"
+        return 252
+      fi
+    done
+  done < /proc/self/mountinfo
+  rm -rf -- "$@"
+}
+
+# Read source paths once; retain existing merge directories and descend only
+# through incoming paths. A maximal new/clean-replaced directory is one entry.
+_deploy_incoming_entries() {
+  local root="$1" target="$2" clean="$3" list path entry parent merge
+  local -n retained_spines="$4"
+  local -A branches=()
+  list=$(mktemp) || return 252
+  find "$root" -mindepth 1 -print0 > "$list" || {
+    rm -f -- "$list"
+    return 252
+  }
+  while IFS= read -r -d '' path; do
+    entry=${path#"$root/"}
+    parent="$entry"
+    while [[ "$parent" == */* && ! ${branches["$parent"]+yes} ]]; do parent=${parent%/*}; done
+    [[ ! ${branches["$parent"]+yes} ]] || continue
+    merge=no
+    [[ "$clean" == 1 && "$entry" != .* ]] || merge=yes
+    if [[ "$merge" == yes && (-e "$target/$entry" || -L "$target/$entry") ]]; then
+      if [[ -d "$path" && ! -L "$path" ]]; then
+        [[ -d "$target/$entry" && ! -L "$target/$entry" ]] || {
+          rm -f -- "$list"
+          return 252
+        }
+      elif [[ (-d "$target/$entry" && ! -L "$target/$entry") || (-L "$target/$entry" && ! -L "$path") ]]; then
+        rm -f -- "$list"
+        return 252
+      fi
+    fi
+    if [[ -d "$path" && ! -L "$path" && -d "$target/$entry" && ! -L "$target/$entry" && ("$merge" == yes || ${retained_spines["$entry"]+yes}) ]]; then continue; fi
+    printf '%s\0' "$entry" || {
+      rm -f -- "$list"
+      return 252
+    }
+    if [[ -d "$path" && ! -L "$path" ]]; then branches["$entry"]=1; fi
+  done < "$list"
+  rm -f -- "$list"
+}
+
+# Clean removal descends only protected spines, never kept/mounted contents.
+_deploy_replace_entries() {
+  local root="$1" relative="$2" include_hidden="$5" list child name path
+  local -n protected_paths="$3" protected_spines="$4"
+  list=$(mktemp) || return 252
+  find "$root/${relative:-.}" -mindepth 1 -maxdepth 1 -print0 > "$list" || {
+    rm -f -- "$list"
+    return 252
+  }
+  while IFS= read -r -d '' child; do
+    name=${child##*/}
+    path="${relative:+$relative/}$name"
+    [[ "$include_hidden" == 1 || -n "$relative" || "$name" != .* ]] || continue
+    [[ ! ${protected_paths["$path"]+yes} ]] || continue
+    if [[ ${protected_spines["$path"]+yes} ]]; then
+      if [[ -d "$root/$path" && ! -L "$root/$path" ]]; then
+        _deploy_replace_entries "$root" "$path" "$3" "$4" "$include_hidden" || {
+          rm -f -- "$list"
+          return 252
+        }
+      fi
+    else
+      printf '%s\0' "$path" || {
+        rm -f -- "$list"
+        return 252
+      }
+    fi
+  done < "$list"
+  rm -f -- "$list"
+}
+
+# Restore aside entries into retained ancestor directories without replacing them.
 _deploy_restore_aside() {
-  local target="$1" aside="$2" entry
-  local -a entries=()
-  mapfile -d '' entries < <(find "$aside" -mindepth 1 -maxdepth 1 -print0)
-  for entry in "${entries[@]}"; do
-    mv "$entry" "$target/" || return 1
+  local target="$1" aside="$2" entry name list
+  local -a batch=()
+  list=$(mktemp) || return 1
+  find "$aside" -mindepth 1 -maxdepth 1 -print0 > "$list" || {
+    rm -f -- "$list"
+    return 1
+  }
+  while IFS= read -r -d '' entry; do
+    name=${entry##*/}
+    if [[ -d "$entry" && ! -L "$entry" && -d "$target/$name" && ! -L "$target/$name" ]]; then
+      if [[ ${#batch[@]} -gt 0 ]]; then
+        _deploy_restore_batch "$target" "${batch[@]}" || {
+          rm -f -- "$list"
+          return 1
+        }
+        batch=()
+      fi
+      _deploy_restore_aside "$target/$name" "$entry" || {
+        rm -f -- "$list"
+        return 1
+      }
+    else
+      if [[ -e "$target/$name" || -L "$target/$name" ]]; then
+        rm -f -- "$list"
+        return 1
+      fi
+      batch+=("$entry")
+      if [[ ${#batch[@]} -eq 256 ]]; then
+        _deploy_restore_batch "$target" "${batch[@]}" || {
+          rm -f -- "$list"
+          return 1
+        }
+        batch=()
+      fi
+    fi
+  done < "$list"
+  if [[ ${#batch[@]} -gt 0 ]]; then
+    _deploy_restore_batch "$target" "${batch[@]}" || {
+      rm -f -- "$list"
+      return 1
+    }
+  fi
+  rm -f -- "$list"
+  rmdir -- "$aside"
+}
+
+_deploy_restore_batch() {
+  local target="$1" entry
+  shift
+  [[ -d "$target" && ! -L "$target" ]] || return 1
+  for entry in "$@"; do
+    [[ ! -e "$target/${entry##*/}" && ! -L "$target/${entry##*/}" ]] || return 1
   done
-  rmdir "$aside"
+  mv -n -- "$@" "$target/" || return 1
+  # GNU/BusyBox -n may skip collisions with status0; retained source is failure.
+  for entry in "$@"; do [[ ! -e "$entry" && ! -L "$entry" ]] || return 1; done
 }
 
 _codeberg_deploy_tree() {
@@ -3624,6 +4048,7 @@ fetch_and_deploy_codeberg_release() {
 #   $2 - mode (binary|prebuild|singlefile)
 #   $3 - asset_pattern (glob pattern for asset filename)
 #   $4 - tag to skip (the already-checked release)
+#   $5 - optional stable tag-prefix limit
 #
 # Output:
 #   Prints the release JSON of the first older release that has a matching asset.
@@ -3634,22 +4059,18 @@ _gh_scan_older_releases() {
   local mode="$2"
   local asset_pattern="$3"
   local skip_tag="$4"
-
-  local header=()
-  [[ -n "${GITHUB_TOKEN:-}" ]] && header=(-H "Authorization: token $GITHUB_TOKEN")
-
-  local releases_list
-  releases_list=$(curl --connect-timeout 10 --max-time 30 -fsSL \
-    -H 'Accept: application/vnd.github+json' \
-    -H 'X-GitHub-Api-Version: 2022-11-28' \
-    "${header[@]}" \
-    "https://api.github.com/repos/${repo}/releases?per_page=15" 2> /dev/null) || {
-    msg_warn "Failed to fetch older releases for ${repo}"
-    return 22
-  }
-
-  local count
-  count=$(echo "$releases_list" | jq 'length')
+  local tag_prefix="${5:-}" raw rc=0 releases_list count i code
+  raw=$(mktemp "${TMPDIR:-/tmp}/gh-older.XXXXXX") || return 252
+  # Retain the original bounded asset horizon. Range/prefix enumeration is a
+  # different consumer and must not make this compatibility scan unbounded.
+  _github_release_request "https://api.github.com/repos/$repo/releases?per_page=15" "$raw" code || rc=$?
+  [[ $rc -ne 0 || "$code" == 200 ]] || rc=22
+  if [[ $rc -eq 0 ]]; then
+    count=$(jq -er 'if type=="array" then length | if .<=15 then . else error("oversized bounded release list") end else error("expected releases") end' "$raw") || rc=22
+    releases_list=$(< "$raw")
+  fi
+  rm -f -- "$raw" || true
+  [[ $rc -eq 0 ]] || return "$rc"
 
   for ((i = 0; i < count; i++)); do
     local rel_tag rel_draft rel_prerelease
@@ -3660,6 +4081,7 @@ _gh_scan_older_releases() {
     # Skip drafts, prereleases, and the tag we already checked
     [[ "$rel_draft" == "true" || "$rel_prerelease" == "true" ]] && continue
     [[ "$rel_tag" == "$skip_tag" ]] && continue
+    [[ "$rel_tag" == "$tag_prefix"* ]] || continue
 
     local has_match=false
 
@@ -3725,6 +4147,11 @@ fetch_and_deploy_gh_release() {
   local version="${var_appversion:-${4:-latest}}"
   local target="${5:-/opt/$app}"
   local asset_pattern="${6:-}"
+  local tag_prefix="${7:-}" metadata_out="${8:-}"
+  local requested_version="$version"
+  # The optional recipient is caller-owned (and can cross a subshell boundary).
+  # Clear it before any dependency/DNS/transfer failure can retain stale metadata.
+  if [[ -n "$metadata_out" ]]; then : > "$metadata_out" || return 252; fi
 
   # Validate app name to prevent /root/. directory issues
   if [[ -z "$app" ]]; then
@@ -3739,103 +4166,41 @@ fetch_and_deploy_gh_release() {
   local app_lc=$(echo "${app,,}" | tr -d ' ')
   local version_file="$HOME/.${app_lc}"
 
-  local api_timeouts=(60 120 240)
-
   local current_version=""
   [[ -f "$version_file" ]] && current_version=$(< "$version_file")
 
-  ensure_dependencies jq
-
-  local api_url="https://api.github.com/repos/$repo/releases"
-  [[ "$version" != "latest" ]] && api_url="$api_url/tags/$version" || api_url="$api_url/latest"
-  local header=()
-  [[ -n "${GITHUB_TOKEN:-}" ]] && header=(-H "Authorization: token $GITHUB_TOKEN")
-
-  # dns pre check
-  local gh_host
-  gh_host=$(awk -F/ '{print $3}' <<< "$api_url")
-  if ! getent hosts "$gh_host" &> /dev/null; then
-    msg_error "DNS resolution failed for $gh_host – check /etc/resolv.conf or networking"
-    return 6
+  local tmpdir json tag_name rc=0
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/gh-deploy.XXXXXX") || return 252
+  _gh_release_json "$repo" "$version" "$tag_prefix" "$tmpdir/selected.json" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -rf -- "$tmpdir"
+    return "$rc"
   fi
-
-  local max_retries=${#api_timeouts[@]} retry_delay=2 attempt=1 success=false http_code
-
-  while ((attempt <= max_retries)); do
-    http_code=$(curl --connect-timeout 10 --max-time "${api_timeouts[$((attempt - 1))]:-240}" -sSL -w "%{http_code}" -o /tmp/gh_rel.json "${header[@]}" "$api_url" 2> /dev/null) || true
-    if [[ "$http_code" == "200" ]]; then
-      success=true
-      break
-    elif [[ "$http_code" == "401" ]]; then
-      msg_error "GitHub API authentication failed (HTTP 401)."
-      if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-      else
-        msg_error "The repository may require authentication."
-      fi
-      if prompt_for_github_token; then
-        header=(-H "Authorization: token $GITHUB_TOKEN")
-        continue
-      fi
-      break
-    elif [[ "$http_code" == "403" ]]; then
-      if ((attempt < max_retries)); then
-        msg_warn "GitHub API rate limit hit, retrying in ${retry_delay}s... (attempt $attempt/$max_retries)"
-        sleep "$retry_delay"
-        retry_delay=$((retry_delay * 2))
-      else
-        msg_error "GitHub API rate limit exceeded (HTTP 403)."
-        if prompt_for_github_token; then
-          header=(-H "Authorization: token $GITHUB_TOKEN")
-          retry_delay=2
-          attempt=1
-          continue
-        fi
-      fi
-    else
-      sleep "$retry_delay"
-    fi
-    ((attempt++))
-  done
-
-  if ! $success; then
-    if [[ "$version" == latest ]]; then
-      tag_name=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -1)
-    else
-      # A requested release is never replaced by another tag.
-      tag_name=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null | grep -v '\^{}' | awk -F/ '{print $NF}' | grep -Fx -e "${version#v}" -e "v${version#v}" | head -1 || true)
-    fi
-    if [[ -z "$tag_name" ]]; then
-      if [[ "$http_code" == "000" || -z "$http_code" ]]; then
-        msg_error "GitHub API connection failed (no response)."
-        msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
-      elif [[ "$http_code" != "401" ]]; then
-        msg_error "Failed to fetch release metadata (HTTP $http_code)"
-      fi
-      return 22
-    fi
-    [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
-  else
-    local json
-    json=$(< /tmp/gh_rel.json)
-    tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
-    if [[ "$version" != latest && "${tag_name#v}" != "${version#v}" ]]; then
-      msg_error "Requested $app release $version, but GitHub returned $tag_name"
-      return 250
-    fi
-    # Only strip leading 'v' when followed by a digit (e.g. v1.2.3), not words like "version/..."
-    [[ "$tag_name" =~ ^v[0-9] ]] && version="${tag_name:1}" || version="$tag_name"
-  fi
+  json=$(< "$tmpdir/selected.json")
+  tag_name=$(jq -er '.tag_name // .name // empty' <<< "$json") || {
+    rm -rf -- "$tmpdir"
+    return 250
+  }
+  version=$(_gh_version_from_tag "$tag_name") || {
+    rm -rf -- "$tmpdir"
+    return 250
+  }
   # Sanitize version for use in filenames (replace / with -)
   local version_safe="${version//\//-}"
 
   if [[ "$current_version" == "$version" && "${FORCE_DEPLOY:-0}" != "1" ]]; then
     $STD msg_ok "$app is already up-to-date (v$version)"
+    if [[ -n "$metadata_out" ]]; then
+      printf '%s\n' "$json" > "$metadata_out" || {
+        : > "$metadata_out" || true
+        rm -rf -- "$tmpdir"
+        return 252
+      }
+    fi
+    rm -rf -- "$tmpdir"
     return 0
   fi
 
-  local tmpdir
-  tmpdir=$(mktemp -d) || return 1
   local filename="" url=""
 
   msg_info "Fetching GitHub release: $app ($version)"
@@ -3913,12 +4278,15 @@ fetch_and_deploy_gh_release() {
     fi
 
     # Fallback: scan older releases for a matching .deb asset
-    if [[ -z "$url_match" ]]; then
+    if [[ -z "$url_match" && "$requested_version" == latest ]]; then
       local fallback_json
-      if fallback_json=$(_gh_scan_older_releases "$repo" "binary" "$asset_pattern" "$tag_name"); then
+      if fallback_json=$(_gh_scan_older_releases "$repo" "binary" "$asset_pattern" "$tag_name" "$tag_prefix"); then
         json="$fallback_json"
         tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
-        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        version=$(_gh_version_from_tag "$tag_name") || {
+          rm -rf -- "$tmpdir"
+          return 250
+        }
         msg_info "Fetching GitHub release: $app ($version)"
         assets=$(echo "$json" | jq -r '.assets[].browser_download_url')
         if [[ -n "$asset_pattern" ]]; then
@@ -3943,6 +4311,12 @@ fetch_and_deploy_gh_release() {
           for u in $assets; do
             [[ "$u" =~ \.deb$ ]] && url_match="$u" && break
           done
+        fi
+      else
+        rc=$?
+        if [[ $rc -ne 250 ]]; then
+          rm -rf -- "$tmpdir"
+          return "$rc"
         fi
       fi
     fi
@@ -3997,12 +4371,15 @@ fetch_and_deploy_gh_release() {
     done
 
     # Fallback: scan older releases for a matching asset
-    if [[ -z "$asset_url" ]]; then
+    if [[ -z "$asset_url" && "$requested_version" == latest ]]; then
       local fallback_json
-      if fallback_json=$(_gh_scan_older_releases "$repo" "prebuild" "$pattern" "$tag_name"); then
+      if fallback_json=$(_gh_scan_older_releases "$repo" "prebuild" "$pattern" "$tag_name" "$tag_prefix"); then
         json="$fallback_json"
         tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
-        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        version=$(_gh_version_from_tag "$tag_name") || {
+          rm -rf -- "$tmpdir"
+          return 250
+        }
         msg_info "Fetching GitHub release: $app ($version)"
         for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
           filename_candidate="${u##*/}"
@@ -4013,6 +4390,12 @@ fetch_and_deploy_gh_release() {
             ;;
           esac
         done
+      else
+        rc=$?
+        if [[ $rc -ne 250 ]]; then
+          rm -rf -- "$tmpdir"
+          return "$rc"
+        fi
       fi
     fi
 
@@ -4104,12 +4487,15 @@ fetch_and_deploy_gh_release() {
     done
 
     # Fallback: scan older releases for a matching asset
-    if [[ -z "$asset_url" ]]; then
+    if [[ -z "$asset_url" && "$requested_version" == latest ]]; then
       local fallback_json
-      if fallback_json=$(_gh_scan_older_releases "$repo" "singlefile" "$pattern" "$tag_name"); then
+      if fallback_json=$(_gh_scan_older_releases "$repo" "singlefile" "$pattern" "$tag_name" "$tag_prefix"); then
         json="$fallback_json"
         tag_name=$(echo "$json" | jq -r '.tag_name // .name // empty')
-        [[ "$tag_name" =~ ^v ]] && version="${tag_name:1}" || version="$tag_name"
+        version=$(_gh_version_from_tag "$tag_name") || {
+          rm -rf -- "$tmpdir"
+          return 250
+        }
         msg_info "Fetching GitHub release: $app ($version)"
         for u in $(echo "$json" | jq -r '.assets[].browser_download_url'); do
           filename_candidate="${u##*/}"
@@ -4120,6 +4506,12 @@ fetch_and_deploy_gh_release() {
             ;;
           esac
         done
+      else
+        rc=$?
+        if [[ $rc -ne 250 ]]; then
+          rm -rf -- "$tmpdir"
+          return "$rc"
+        fi
       fi
     fi
     [[ -z "$asset_url" ]] && {
@@ -4151,7 +4543,18 @@ fetch_and_deploy_gh_release() {
     return 65
   fi
 
-  echo "$version" > "$version_file"
+  if [[ -n "$metadata_out" ]]; then
+    printf '%s\n' "$json" > "$metadata_out" || {
+      : > "$metadata_out" || true
+      rm -rf -- "$tmpdir"
+      return 252
+    }
+  fi
+  printf '%s\n' "$version" > "$version_file" || {
+    [[ -z "$metadata_out" ]] || : > "$metadata_out" || true
+    rm -rf -- "$tmpdir"
+    return 252
+  }
   msg_ok "Deployed: $app ($version)"
   rm -rf "$tmpdir"
 }
@@ -4884,6 +5287,9 @@ setup_ffmpeg() {
 #
 # Variables:
 #   GO_VERSION     - Version to install (e.g. 1.22.2 or latest)
+#   GO_PROJECT_DIR - Optional selected source; its go.mod minimum is used only
+#                    when GO_VERSION is not explicitly supplied. go/toolchain
+#                    are minimums; a satisfying installed version stays in place.
 # ------------------------------------------------------------------------------
 
 setup_go() {
@@ -4897,8 +5303,67 @@ setup_go() {
       ;;
   esac
 
-  # Resolve "latest" version
-  local GO_VERSION="${GO_VERSION:-latest}"
+  local GO_BIN="/usr/local/bin/go" CURRENT_VERSION=""
+  if [[ -x "$GO_BIN" ]]; then
+    CURRENT_VERSION=$("$GO_BIN" version 2> /dev/null | awk '{print $3}' | sed 's/go//')
+  fi
+  # Explicit versions retain precedence. Project requirements are lower bounds,
+  # never an instruction to downgrade a satisfying local toolchain.
+  local GO_VERSION="${GO_VERSION:-}"
+  if [[ -z "$GO_VERSION" && -n "${GO_PROJECT_DIR:-}" ]]; then
+    local minimum toolchain='' directive value extra line go_count=0 toolchain_count=0
+    [[ -r "$GO_PROJECT_DIR/go.mod" ]] || return 65
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line=${line%%//*}
+      read -r directive value extra <<< "$line"
+      case "$directive" in
+        go)
+          [[ -z "$extra" && "$value" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || return 65
+          minimum="$value"
+          go_count=$((go_count + 1))
+          ;;
+        toolchain)
+          [[ -z "$extra" ]] || return 65
+          toolchain_count=$((toolchain_count + 1))
+          if [[ "$value" != default ]]; then
+            [[ "$value" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || return 65
+            toolchain=${value#go}
+          fi
+          ;;
+      esac
+    done < "$GO_PROJECT_DIR/go.mod"
+    [[ "$go_count" == 1 && "$toolchain_count" -le 1 ]] || return 65
+    if [[ -n "$toolchain" ]] && _go_version_at_least "$toolchain" "$minimum"; then minimum="$toolchain"; fi
+    if [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] && _go_version_at_least "$CURRENT_VERSION" "$minimum"; then
+      cache_installed_version go "$CURRENT_VERSION"
+      return 0
+    fi
+    local versions major minor
+    IFS=. read -r major minor _ <<< "$minimum"
+    versions=$(mktemp) || return 250
+    if ! curl_with_retry 'https://go.dev/dl/?mode=json&include=all' "$versions"; then
+      rm -f -- "$versions"
+      return 250
+    fi
+    GO_VERSION=$(jq -er --arg minor "$major.$minor" --arg arch "$ARCH" '
+      if type != "array" or any(.[]; type != "object" or (.version | type) != "string" or (.stable | type) != "boolean" or (.files | type) != "array") then error("invalid Go release list") else
+        [.[] | select(.stable == true)
+          | select(.version | test("^go[0-9]+\\.[0-9]+(\\.[0-9]+)?$"))
+          | select((.version | ltrimstr("go") | split(".")[:2]) == ($minor | split(".")))
+          | select(any(.files[]; .os == "linux" and .arch == $arch and .kind == "archive"))]
+        | sort_by(.version | ltrimstr("go") | split(".") | map(tonumber))
+        | last.version // error("no stable Go release for required minor") | ltrimstr("go")
+      end' "$versions") || {
+      rm -f -- "$versions"
+      return 250
+    }
+    rm -f -- "$versions"
+    if ! _go_version_at_least "$GO_VERSION" "$minimum"; then
+      msg_error "No stable Go patch satisfies selected source minimum $minimum"
+      return 65
+    fi
+  fi
+  GO_VERSION="${GO_VERSION:-latest}"
   if [[ "$GO_VERSION" == "latest" ]]; then
     local go_version_tmp
     go_version_tmp=$(curl_with_retry "https://go.dev/VERSION?m=text" "-" 2> /dev/null | head -n1 | sed 's/^go//') || true
@@ -4907,14 +5372,6 @@ setup_go() {
       return 250
     fi
     GO_VERSION="$go_version_tmp"
-  fi
-
-  local GO_BIN="/usr/local/bin/go"
-
-  # Get currently installed version
-  local CURRENT_VERSION=""
-  if [[ -x "$GO_BIN" ]]; then
-    CURRENT_VERSION=$("$GO_BIN" version 2> /dev/null | awk '{print $3}' | sed 's/go//')
   fi
 
   # Scenario 1: Already at target version
@@ -4926,7 +5383,6 @@ setup_go() {
   # Scenario 2: Different version or not installed
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then
     msg_info "Upgrade Go from $CURRENT_VERSION to $GO_VERSION"
-    remove_old_tool_version "go"
   else
     msg_info "Setup Go $GO_VERSION"
   fi
@@ -4942,6 +5398,12 @@ setup_go() {
     return 250
   fi
 
+  tar -tzf "$TMP_TAR" > /dev/null || {
+    rm -f -- "$TMP_TAR"
+    return 251
+  }
+  if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then remove_old_tool_version "go"; fi
+
   $STD tar -C /usr/local -xzf "$TMP_TAR" || {
     msg_error "Failed to extract Go tarball"
     rm -f "$TMP_TAR"
@@ -4955,6 +5417,15 @@ setup_go() {
   cache_installed_version "go" "$GO_VERSION"
   ensure_usr_local_bin_persist
   msg_ok "Setup Go $GO_VERSION"
+}
+
+_go_version_at_least() {
+  local a b c x y z
+  IFS=. read -r a b c <<< "$1"
+  IFS=. read -r x y z <<< "$2"
+  c=${c:-0}
+  z=${z:-0}
+  ((10#$a > 10#$x || (10#$a == 10#$x && (10#$b > 10#$y || (10#$b == 10#$y && 10#$c >= 10#$z)))))
 }
 
 # ------------------------------------------------------------------------------
@@ -5258,15 +5729,16 @@ setup_hwaccel() {
 # ══════════════════════════════════════════════════════════════════════════════
 # Resolve the IGC tag that the latest compute-runtime was built against.
 # Must be called AFTER a fetch_and_deploy_gh_release for intel/compute-runtime
-# so that /tmp/gh_rel.json contains the compute-runtime release metadata.
+# with an explicit caller-owned selected metadata file (argument2 here).
 # Sets the variable named by $1 (default: igc_tag) to the discovered tag.
 # ══════════════════════════════════════════════════════════════════════════════
 _resolve_igc_tag() {
   local -n _out_ref="${1:-igc_tag}"
   _out_ref=""
-  if [[ -f /tmp/gh_rel.json ]]; then
+  local metadata="${2:-}"
+  if [[ -n "$metadata" && -s "$metadata" ]]; then
     local _body _parsed
-    _body=$(jq -r 'if type == "array" then .[0] else . end | .body // empty' /tmp/gh_rel.json 2> /dev/null) || return 0
+    _body=$(jq -r 'if type == "array" then .[0] else . end | .body // empty' "$metadata" 2> /dev/null) || return 0
     _parsed=$(grep -oP 'intel-graphics-compiler/releases/tag/\K[^\s\)]+' <<< "$_body" | head -1) || true
     [[ -n "$_parsed" && "$_parsed" != latest ]] && _out_ref="$_parsed"
   fi
@@ -5303,13 +5775,15 @@ _setup_intel_arc() {
       # intel-opencl-icd declares this dependency; install it before the .debs.
       _hwaccel_apt_optional ocl-icd-libopencl1
 
-      # Fetch a compute-runtime package first so /tmp/gh_rel.json is populated,
+      # Keep the selected compute release across the optional-command subshell,
       # then resolve the matching IGC tag from the release notes.
       # libigdgmm - bundled in compute-runtime releases
-      local igc_tag=''
-      if _hwaccel_optional_command fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb"; then
-        _resolve_igc_tag igc_tag
+      local igc_tag='' compute_metadata
+      compute_metadata=$(mktemp "${TMPDIR:-/tmp}/intel-compute.XXXXXX") || return 252
+      if _hwaccel_optional_command fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb" '' "$compute_metadata"; then
+        _resolve_igc_tag igc_tag "$compute_metadata"
       fi
+      rm -f -- "$compute_metadata" || true
       if [[ -z "$igc_tag" ]]; then
         msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
       else
@@ -5369,13 +5843,15 @@ _setup_intel_modern() {
       # intel-opencl-icd declares this dependency; install it before the .debs.
       _hwaccel_apt_optional ocl-icd-libopencl1
 
-      # Fetch a compute-runtime package first so /tmp/gh_rel.json is populated,
+      # Keep the selected compute release across the optional-command subshell,
       # then resolve the matching IGC tag from the release notes.
       # libigdgmm first (bundled in compute-runtime releases)
-      local igc_tag=''
-      if _hwaccel_optional_command fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb"; then
-        _resolve_igc_tag igc_tag
+      local igc_tag='' compute_metadata
+      compute_metadata=$(mktemp "${TMPDIR:-/tmp}/intel-compute.XXXXXX") || return 252
+      if _hwaccel_optional_command fetch_and_deploy_gh_release "libigdgmm12" "intel/compute-runtime" "binary" "latest" "" "libigdgmm12_*_amd64.deb" '' "$compute_metadata"; then
+        _resolve_igc_tag igc_tag "$compute_metadata"
       fi
+      rm -f -- "$compute_metadata" || true
       if [[ -z "$igc_tag" ]]; then
         msg_warn "Could not read the IGC version compute-runtime pins - skipping OpenCL. VA-API still works."
       else
@@ -7175,6 +7651,13 @@ setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
 
+  # This must precede legacy cleanup and every npm command, not just modules.
+  mkdir -p /opt || return 127
+  cd /opt || {
+    msg_error "Failed to set safe working directory before npm install"
+    return 127
+  }
+
   # ALWAYS clean up legacy installations first (nvm, etc.) to prevent conflicts
   cleanup_legacy_install "nodejs"
 
@@ -7195,6 +7678,8 @@ setup_nodejs() {
   if [[ -n "$CURRENT_NODE_VERSION" && "$CURRENT_NODE_VERSION" == "$NODE_VERSION" ]]; then
     msg_info "Update Node.js $NODE_VERSION"
 
+    download_gpg_key "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" "/etc/apt/keyrings/nodesource.gpg" "dearmor" ||
+      msg_warn "Could not refresh the NodeSource signing key"
     ensure_apt_working || return 100
 
     # Upgrade to the latest minor/patch release from NodeSource
@@ -7309,15 +7794,6 @@ setup_nodejs() {
 
     export NODE_OPTIONS="--max-old-space-size=${node_heap_mb}"
   fi
-
-  # Ensure valid working directory for npm (avoids uv_cwd error)
-  if [[ ! -d /opt ]]; then
-    mkdir -p /opt
-  fi
-  cd /opt || {
-    msg_error "Failed to set safe working directory before npm install"
-    return 127
-  }
 
   # Install global Node modules
   if [[ -n "$NODE_MODULE" ]]; then
@@ -8415,15 +8891,14 @@ setup_rust() {
 #   - Extracts uv binary
 #   - Places it in /usr/local/bin
 #   - Optionally installs a specific Python version via uv
-#   - Selects explicit UV_VERSION, then UV_PROJECT_DIR's exact pin, then latest
+#   - Selects explicit UV_VERSION, then a compatible project requirement, then latest
 # ------------------------------------------------------------------------------
 
 # Adapted from community-scripts/core's runtime helper (MIT).
-# Only exact required-version pins are used; ranges retain latest behavior.
-_uv_required_version() {
+# Read the same first configuration/section for exact and range consumers.
+# Status1 means no requirement; malformed declared requirements fail with65.
+_uv_required_spec() {
   local dir="${1:?dir}" f want line
-  local q="[\"']"
-  local re="^[^=]*=[[:space:]]*${q}?(==)?([0-9][0-9A-Za-z.+-]*)${q}?[[:space:]]*(#.*)?\$"
   # uv reads only the first config file it finds: uv.toml, else pyproject.toml.
   f="$dir/uv.toml"
   want=""
@@ -8435,9 +8910,96 @@ _uv_required_version() {
   line=$(awk -v want="$want" '
     /^[[:space:]]*\[/ { sec = $0; sub(/#.*/, "", sec); gsub(/[[:space:]]/, "", sec); next }
     sec == want && /^[[:space:]]*required-version[[:space:]]*=/ { print; exit }
-  ' "$f" 2> /dev/null) || line=""
-  [[ "$line" =~ $re ]] || return 1
-  echo "${BASH_REMATCH[2]}"
+  ' "$f" 2> /dev/null) || return 65
+  [[ -n "$line" ]] || return 1
+  local double='^[^=]*=[[:space:]]*"([^"]*)"[[:space:]]*(#.*)?$'
+  local single="^[^=]*=[[:space:]]*'([^']*)'[[:space:]]*(#.*)?\$"
+  local bare="^[^=]*=[[:space:]]*([^#\"'[:space:]]+)[[:space:]]*(#.*)?\$"
+  if [[ "$line" =~ $double || "$line" =~ $single || "$line" =~ $bare ]]; then
+    [[ -n "${BASH_REMATCH[1]}" ]] || return 65
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    return 65
+  fi
+}
+
+# Retained exact-pin compatibility interface: ranges are not release tags.
+_uv_required_version() {
+  local spec exact='^(==)?([0-9][0-9A-Za-z.+-]*)$'
+  spec=$(_uv_required_spec "$1") || return 1
+  [[ "$spec" =~ $exact ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[2]}"
+}
+
+_uv_release_list() {
+  local raw rc=0 versions code
+  raw=$(mktemp "${TMPDIR:-/tmp}/uv-releases.XXXXXX") || return 252
+  _github_release_list astral-sh/uv "$raw" code || rc=$?
+  [[ $rc -ne 0 || "$code" == 200 ]] || rc=22
+  if [[ $rc -eq 0 ]]; then
+    versions=$(jq -r 'if type != "array" then error("expected releases") else
+      [.[] | select(.draft != true and .prerelease != true) | .tag_name |
+       select(type == "string") | sub("^v"; "") |
+       select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[] end' "$raw") || rc=22
+  fi
+  rm -f -- "$raw" || true
+  [[ $rc -eq 0 ]] || return "$rc"
+  printf '%s\n' "$versions" | sort -Vru
+}
+
+_uv_ver_ge() {
+  local -a left right
+  local i l r
+  IFS=. read -ra left <<< "$1"
+  IFS=. read -ra right <<< "$2"
+  for i in 0 1 2; do
+    l=$((10#${left[$i]:-0}))
+    r=$((10#${right[$i]:-0}))
+    ((l >= r)) || return 1
+    ((l == r)) || return 0
+  done
+}
+
+# Read stable versions from stdin; reject unsupported syntax before selection.
+_uv_pick_version() {
+  local spec="${1//[[:space:]]/}" clause op want v ok upper major minor
+  local syntax='^(==|!=|<=|>=|<|>|~=)([0-9]+(\.[0-9]+){0,2})$'
+  local -a clauses
+  [[ -n "$spec" && "$spec" != ,* && "$spec" != *, && "$spec" != *,,* ]] || return 65
+  IFS=, read -ra clauses <<< "$spec"
+  for clause in "${clauses[@]}"; do
+    [[ "$clause" =~ $syntax ]] || return 65
+    [[ "${BASH_REMATCH[1]}" != '~=' || "${BASH_REMATCH[2]}" == *.* ]] || return 65
+  done
+  while IFS= read -r v; do
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    ok=1
+    for clause in "${clauses[@]}"; do
+      [[ "$clause" =~ $syntax ]] || return 65
+      op="${BASH_REMATCH[1]}" want="${BASH_REMATCH[2]}"
+      case "$op" in
+        '==') _uv_ver_ge "$v" "$want" && _uv_ver_ge "$want" "$v" || ok=0 ;;
+        '!=') if _uv_ver_ge "$v" "$want" && _uv_ver_ge "$want" "$v"; then ok=0; fi ;;
+        '>=') _uv_ver_ge "$v" "$want" || ok=0 ;;
+        '>') _uv_ver_ge "$v" "$want" && ! _uv_ver_ge "$want" "$v" || ok=0 ;;
+        '<=') _uv_ver_ge "$want" "$v" || ok=0 ;;
+        '<') _uv_ver_ge "$want" "$v" && ! _uv_ver_ge "$v" "$want" || ok=0 ;;
+        '~=')
+          major=${want%%.*}
+          minor=${want#*.}
+          minor=${minor%%.*}
+          if [[ "$want" == *.*.* ]]; then upper="$major.$((10#$minor + 1)).0"; else upper="$((10#$major + 1)).0.0"; fi
+          _uv_ver_ge "$v" "$want" && ! _uv_ver_ge "$v" "$upper" || ok=0
+          ;;
+      esac
+      [[ $ok == 1 ]] || break
+    done
+    if [[ $ok == 1 ]]; then
+      printf '%s\n' "$v"
+      return 0
+    fi
+  done
+  return 250
 }
 
 setup_uv() {
@@ -8480,10 +9042,33 @@ setup_uv() {
 
   ensure_dependencies jq
 
-  # Keep the caller's override ahead of a project's pin; no pin means latest.
+  # A declared unsupported/unsatisfied/failed range is never "no requirement".
   local TARGET_VERSION="${UV_VERSION:-}"
   if [[ -z "$TARGET_VERSION" && -n "$PROJECT_DIR" ]]; then
-    TARGET_VERSION=$(_uv_required_version "$PROJECT_DIR") || TARGET_VERSION=""
+    local required_spec spec_rc=0 versions exact='^(==)?([0-9][0-9A-Za-z.+-]*)$'
+    required_spec=$(_uv_required_spec "$PROJECT_DIR") || spec_rc=$?
+    if [[ $spec_rc -eq 0 ]]; then
+      if [[ "$required_spec" =~ $exact ]]; then
+        TARGET_VERSION="${BASH_REMATCH[2]}"
+      else
+        # Validate clauses without relying on a process-substitution producer.
+        spec_rc=0
+        _uv_pick_version "$required_spec" < /dev/null > /dev/null || spec_rc=$?
+        [[ $spec_rc -eq 250 ]] || {
+          msg_error "Unsupported uv required-version: $required_spec"
+          return "$spec_rc"
+        }
+        versions=$(_uv_release_list) || return $?
+        TARGET_VERSION=$(_uv_pick_version "$required_spec" <<< "$versions") || {
+          spec_rc=$?
+          msg_error "No compatible stable uv release found for $required_spec"
+          return "$spec_rc"
+        }
+      fi
+    elif [[ $spec_rc -ne 1 ]]; then
+      msg_error "Invalid uv required-version configuration"
+      return "$spec_rc"
+    fi
   fi
   if [[ -z "$TARGET_VERSION" ]]; then
     TARGET_VERSION=$(get_latest_github_release "astral-sh/uv") || {
@@ -8770,12 +9355,6 @@ fetch_and_deploy_from_url() {
 
   msg_info "Extracting archive to $directory"
 
-  mkdir -p "$directory"
-
-  if [[ "${CLEAN_INSTALL:-0}" == "1" ]]; then
-    rm -rf "${directory:?}/"*
-  fi
-
   local unpack_tmp
   unpack_tmp=$(mktemp -d)
 
@@ -8797,36 +9376,13 @@ fetch_and_deploy_from_url() {
   local top_entries
   top_entries=$(find "$unpack_tmp" -mindepth 1 -maxdepth 1)
 
-  if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then
-    local inner_dir="$top_entries"
-    shopt -s dotglob nullglob
-    if compgen -G "$inner_dir/*" > /dev/null; then
-      cp -r "$inner_dir"/* "$directory/" || {
-        msg_error "Failed to copy contents from $inner_dir to $directory"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      }
-    else
-      msg_error "Inner directory is empty: $inner_dir"
-      rm -rf "$tmpdir" "$unpack_tmp"
-      return 252
-    fi
-    shopt -u dotglob nullglob
-  else
-    shopt -s dotglob nullglob
-    if compgen -G "$unpack_tmp/*" > /dev/null; then
-      cp -r "$unpack_tmp"/* "$directory/" || {
-        msg_error "Failed to copy contents to $directory"
-        rm -rf "$tmpdir" "$unpack_tmp"
-        return 252
-      }
-    else
-      msg_error "Unpacked archive is empty"
-      rm -rf "$tmpdir" "$unpack_tmp"
-      return 252
-    fi
-    shopt -u dotglob nullglob
-  fi
+  local inner_dir="$unpack_tmp"
+  if [[ "$(echo "$top_entries" | wc -l)" -eq 1 && -d "$top_entries" ]]; then inner_dir="$top_entries"; fi
+  _deploy_replace_contents "$inner_dir" "$directory" "${CLEAN_INSTALL:-0}" || {
+    msg_error "Failed to deploy extracted archive to $directory"
+    rm -rf "$tmpdir" "$unpack_tmp"
+    return 252
+  }
 
   rm -rf "$tmpdir" "$unpack_tmp"
   msg_ok "Successfully deployed archive to $directory"

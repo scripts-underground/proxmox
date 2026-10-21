@@ -4,7 +4,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
-# Source: https://github.com/qdm12/gluetun
+# Source: https://github.com/passteque/gluetun
 
 # shellcheck disable=SC2034
 # Read by the framework - shellcheck cannot see the caller
@@ -33,9 +33,8 @@ function install_script() {
   ln -sf /usr/sbin/openvpn /usr/sbin/openvpn2.6
   msg_ok "Configured iptables"
 
-  setup_go
-
-  fetch_and_deploy_gh_release "gluetun" "qdm12/gluetun" "tarball"
+  fetch_and_deploy_gh_release "gluetun" "passteque/gluetun" "tarball"
+  GO_PROJECT_DIR=/opt/gluetun setup_go
 
   msg_info "Building Gluetun"
   cd /opt/gluetun || exit
@@ -116,12 +115,13 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "gluetun" "qdm12/gluetun"; then
+  if check_for_gh_release "gluetun" "passteque/gluetun"; then
     msg_info "Stopping Service"
     systemctl stop gluetun
     msg_ok "Stopped Service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gluetun" "qdm12/gluetun" "tarball"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "gluetun" "passteque/gluetun" "tarball"
+    GO_PROJECT_DIR=/opt/gluetun setup_go
 
     msg_info "Building Gluetun"
     cd /opt/gluetun || exit

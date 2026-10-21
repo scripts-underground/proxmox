@@ -3,7 +3,7 @@
   "slug": "sure",
   "type": "lxc",
   "total_lines": 197,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: vhsdream\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://sure.am | Github: https://github.com/we-promise/sure\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Sure\"\nvar_tags=\"${var_tags:-finance}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-6}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    pkg-config \\\n    libpq-dev \\\n    libvips\n  msg_ok \"Installed Dependencies\"\n\n  fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"\n\n  PG_VERSION=$(sed -n '/postgres:/s/[^[:digit:]]*//p' /opt/sure/compose.example.yml) setup_postgresql\n  PG_DB_NAME=sure_production PG_DB_USER=sure_user setup_postgresql_db\n  RUBY_VERSION=$(cat /opt/sure/.ruby-version) RUBY_INSTALL_RAILS=false HOME=/root setup_ruby\n\n  msg_info \"Building Sure\"\n  cd /opt/sure || exit\n  export RAILS_ENV=production\n  export BUNDLE_DEPLOYMENT=1\n  export BUNDLE_WITHOUT=development\n  $STD ./bin/bundle install\n  $STD ./bin/bundle exec bootsnap precompile --gemfile -j 0\n  $STD ./bin/bundle exec bootsnap precompile -j 0 app/ lib/\n  export SECRET_KEY_BASE_DUMMY=1 \u0026\u0026 $STD ./bin/rails assets:precompile\n  unset SECRET_KEY_BASE_DUMMY\n  msg_ok \"Built Sure\"\n\n  msg_info \"Configuring Sure\"\n  KEY=$(openssl rand -hex 64)\n  mkdir -p /etc/sure\n  mv /opt/sure/.env.example /etc/sure/.env\n  sed -i -e \"/^SECRET_KEY_BASE=/s/secret-value/${KEY}/\" \\\n    -e 's/_KEY_BASE=.*$/\u0026\\n\\nRAILS_FORCE_SSL=false \\\n\\\n# Change to true when using a reverse proxy \\\nRAILS_ASSUME_SSL=false/' \\\n    -e \"/POSTGRES_PASSWORD=/s/postgres/${PG_DB_PASS}/\" \\\n    -e \"/POSTGRES_USER=/s/postgres/${PG_DB_USER}\\\\\nPOSTGRES_DB=${PG_DB_NAME}/\" \\\n    -e \"s|^APP_DOMAIN=|\u0026${LOCAL_IP}|\" /etc/sure/.env\n  msg_ok \"Configured Sure\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/sure.service\n[Unit]\nDescription=Sure Service\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:\\$PATH\nEnvironmentFile=/etc/sure/.env\nExecStartPre=/opt/sure/bin/rails db:prepare\nExecStart=/opt/sure/bin/rails server\nRestart=always\nRestartSec=5\nTimeoutStartSec=300\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/sure-worker.service\n[Unit]\nDescription=Sure Background Worker (Sidekiq)\nAfter=network.target redis-server.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:/usr/local/bin:/sbin:/bin\nEnvironmentFile=/etc/sure/.env\nExecStart=/opt/sure/bin/bundle exec sidekiq -e production\nRestart=always\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now sure sure-worker\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/sure ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"Sure\" \"we-promise/sure\"; then\n    if [[ ! -f /etc/systemd/system/sure-worker.service ]]; then\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/sure-worker.service\n[Unit]\nDescription=Sure Background Worker (Sidekiq)\nAfter=network.target redis-server.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:/usr/local/bin:/sbin:/bin\nEnvironmentFile=/etc/sure/.env\nExecStart=/opt/sure/bin/bundle exec sidekiq -e production\nRestart=always\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n      systemctl enable -q sure-worker\n      msg_info \"Stopping Service\"\n      $STD systemctl stop sure\n      msg_ok \"Stopped Service\"\n    else\n      msg_info \"Stopping services\"\n      $STD systemctl stop sure-worker sure\n      msg_ok \"Stopped services\"\n    fi\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"\n    RUBY_VERSION=$(cat /opt/sure/.ruby-version) RUBY_INSTALL_RAILS=false HOME=/root setup_ruby\n\n    msg_info \"Updating Sure\"\n    # shellcheck disable=SC1090\n    # User profile sourced for rbenv PATH - shellcheck cannot follow\n    source ~/.profile\n    cd /opt/sure || exit\n    export RAILS_ENV=production\n    export BUNDLE_DEPLOYMENT=1\n    export BUNDLE_WITHOUT=development\n    $STD ./bin/bundle install\n    $STD ./bin/bundle exec bootsnap precompile --gemfile -j 0\n    $STD ./bin/bundle exec bootsnap precompile -j 0 app/ lib/\n    export SECRET_KEY_BASE_DUMMY=1 \u0026\u0026 $STD ./bin/rails assets:precompile\n    unset SECRET_KEY_BASE_DUMMY\n    msg_ok \"Updated Sure\"\n\n    msg_info \"Starting Services\"\n    systemctl start sure sure-worker\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: vhsdream\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://sure.am | Github: https://github.com/we-promise/sure\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Sure\"\nvar_tags=\"${var_tags:-finance}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-6}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    pkg-config \\\n    libpq-dev \\\n    libvips\n  msg_ok \"Installed Dependencies\"\n\n  fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"\n\n  PG_VERSION=$(sed -n '/postgres:/s/[^[:digit:]]*//p' /opt/sure/compose.example.yml) setup_postgresql\n  PG_DB_NAME=sure_production PG_DB_USER=sure_user setup_postgresql_db\n  RUBY_VERSION=$(cat /opt/sure/.ruby-version) RUBY_INSTALL_RAILS=false HOME=/root setup_ruby\n\n  msg_info \"Building Sure\"\n  cd /opt/sure || exit\n  export RAILS_ENV=production\n  export BUNDLE_DEPLOYMENT=1\n  export BUNDLE_WITHOUT=development\n  $STD ./bin/bundle install\n  $STD ./bin/bundle exec bootsnap precompile --gemfile -j 0\n  $STD ./bin/bundle exec bootsnap precompile -j 0 app/ lib/\n  export SECRET_KEY_BASE_DUMMY=1 \u0026\u0026 $STD ./bin/rails assets:precompile\n  unset SECRET_KEY_BASE_DUMMY\n  msg_ok \"Built Sure\"\n\n  msg_info \"Configuring Sure\"\n  KEY=$(openssl rand -hex 64)\n  mkdir -p /etc/sure\n  mv /opt/sure/.env.example /etc/sure/.env\n  sed -i -e \"/^SECRET_KEY_BASE=/s/secret-value/${KEY}/\" \\\n    -e 's/_KEY_BASE=.*$/\u0026\\n\\nRAILS_FORCE_SSL=false \\\n\\\n# Change to true when using a reverse proxy \\\nRAILS_ASSUME_SSL=false/' \\\n    -e \"/POSTGRES_PASSWORD=/s/postgres/${PG_DB_PASS}/\" \\\n    -e \"/POSTGRES_USER=/s/postgres/${PG_DB_USER}\\\\\nPOSTGRES_DB=${PG_DB_NAME}/\" \\\n    -e \"s|^APP_DOMAIN=|\u0026${LOCAL_IP}|\" /etc/sure/.env\n  msg_ok \"Configured Sure\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/sure.service\n[Unit]\nDescription=Sure Service\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:\\$PATH\nEnvironmentFile=/etc/sure/.env\nExecStartPre=/opt/sure/bin/rails db:prepare\nExecStart=/opt/sure/bin/rails server\nRestart=always\nRestartSec=5\nTimeoutStartSec=300\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/sure-worker.service\n[Unit]\nDescription=Sure Background Worker (Sidekiq)\nAfter=network.target redis-server.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:/usr/local/bin:/sbin:/bin\nEnvironmentFile=/etc/sure/.env\nExecStart=/opt/sure/bin/bundle exec sidekiq -e production\nRestart=always\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now sure sure-worker\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/sure ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"Sure\" \"we-promise/sure\"; then\n    if [[ ! -f /etc/systemd/system/sure-worker.service ]]; then\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/sure-worker.service\n[Unit]\nDescription=Sure Background Worker (Sidekiq)\nAfter=network.target redis-server.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/sure\nEnvironment=RAILS_ENV=production\nEnvironment=BUNDLE_DEPLOYMENT=1\nEnvironment=BUNDLE_WITHOUT=development\nEnvironment=PATH=/root/.rbenv/shims:/root/.rbenv/bin:/usr/bin:/usr/local/bin:/sbin:/bin\nEnvironmentFile=/etc/sure/.env\nExecStart=/opt/sure/bin/bundle exec sidekiq -e production\nRestart=always\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n      systemctl enable -q sure-worker\n      msg_info \"Stopping Service\"\n      $STD systemctl stop sure\n      msg_ok \"Stopped Service\"\n    else\n      msg_info \"Stopping services\"\n      $STD systemctl stop sure-worker sure\n      msg_ok \"Stopped services\"\n    fi\n\n    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP=\"storage ${CLEAN_INSTALL_KEEP:-}\" fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"\n    RUBY_VERSION=$(cat /opt/sure/.ruby-version) RUBY_INSTALL_RAILS=false HOME=/root setup_ruby\n\n    msg_info \"Updating Sure\"\n    # shellcheck disable=SC1090\n    # User profile sourced for rbenv PATH - shellcheck cannot follow\n    source ~/.profile\n    cd /opt/sure || exit\n    export RAILS_ENV=production\n    export BUNDLE_DEPLOYMENT=1\n    export BUNDLE_WITHOUT=development\n    $STD ./bin/bundle install\n    $STD ./bin/bundle exec bootsnap precompile --gemfile -j 0\n    $STD ./bin/bundle exec bootsnap precompile -j 0 app/ lib/\n    export SECRET_KEY_BASE_DUMMY=1 \u0026\u0026 $STD ./bin/rails assets:precompile\n    unset SECRET_KEY_BASE_DUMMY\n    msg_ok \"Updated Sure\"\n\n    msg_info \"Starting Services\"\n    systemctl start sure sure-worker\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -171,7 +171,7 @@
     "      msg_ok \"Stopped services\"",
     "    fi",
     "",
-    "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"",
+    "    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP=\"storage ${CLEAN_INSTALL_KEEP:-}\" fetch_and_deploy_gh_release \"Sure\" \"we-promise/sure\" \"tarball\" \"latest\" \"/opt/sure\"",
     "    RUBY_VERSION=$(cat /opt/sure/.ruby-version) RUBY_INSTALL_RAILS=false HOME=/root setup_ruby",
     "",
     "    msg_info \"Updating Sure\"",
@@ -2055,46 +2055,75 @@
       "end_col": 18
     },
     {
-      "kind": "command",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 167,
       "start_col": 21,
-      "end_line": 167,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 167,
-      "start_col": 49,
-      "end_line": 167,
-      "end_col": 55
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 167,
-      "start_col": 56,
       "end_line": 167,
       "end_col": 73
     },
     {
+      "kind": "var-name",
+      "start_line": 167,
+      "start_col": 21,
+      "end_line": 167,
+      "end_col": 39
+    },
+    {
       "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 40,
+      "end_line": 167,
+      "end_col": 73
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 167,
+      "start_col": 49,
+      "end_line": 167,
+      "end_col": 72
+    },
+    {
+      "kind": "command",
       "start_line": 167,
       "start_col": 74,
       "end_line": 167,
-      "end_col": 83
+      "end_col": 101
     },
     {
       "kind": "string-dq",
       "start_line": 167,
-      "start_col": 84,
+      "start_col": 102,
       "end_line": 167,
-      "end_col": 92
+      "end_col": 108
     },
     {
       "kind": "string-dq",
       "start_line": 167,
-      "start_col": 93,
+      "start_col": 109,
       "end_line": 167,
-      "end_col": 104
+      "end_col": 126
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 127,
+      "end_line": 167,
+      "end_col": 136
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 137,
+      "end_line": 167,
+      "end_col": 145
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 167,
+      "start_col": 146,
+      "end_line": 167,
+      "end_col": 157
     },
     {
       "kind": "var-assign",

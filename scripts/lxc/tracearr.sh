@@ -27,13 +27,6 @@ function install_script() {
   NODE_VERSION="24" NODE_MODULE="corepack" setup_nodejs
   PG_VERSION="18" setup_postgresql
 
-  msg_info "Installing pnpm"
-  PNPM_VERSION="$(curl -fsSL "https://raw.githubusercontent.com/connorgallopo/Tracearr/refs/heads/main/package.json" | jq -r '.packageManager | split("@")[1]' | cut -d'+' -f1)"
-  COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-  export COREPACK_ENABLE_DOWNLOAD_PROMPT
-  $STD corepack prepare "pnpm@${PNPM_VERSION}" --activate
-  msg_ok "Installed pnpm"
-
   msg_info "Installing TimescaleDB"
   setup_deb822_repo \
     "timescaledb" \
@@ -63,8 +56,8 @@ function install_script() {
   $STD systemctl stop tailscaled
   msg_ok "Installed tailscale"
 
-  RELEASE=$(get_latest_github_release "connorgallopo/Tracearr")
   fetch_and_deploy_gh_release "tracearr" "connorgallopo/Tracearr" "tarball" "latest" "/opt/tracearr.build"
+  RELEASE=$(< "$HOME/.tracearr")
 
   msg_info "Building Tracearr"
   TZ=$(cat /etc/timezone)
@@ -72,25 +65,37 @@ function install_script() {
   NODE_OPTIONS="--max-old-space-size=4096"
   export NODE_OPTIONS
   cd /opt/tracearr.build || exit
+  PNPM_VERSION=$(jq -er '.packageManager | select(type=="string" and test("^pnpm@[0-9]+\\.[0-9]+\\.[0-9]+")) | split("@")[1] | split("+")[0]' package.json) || exit 65
+  $STD npm install -g --ignore-scripts=false --allow-scripts=pnpm "pnpm@$PNPM_VERSION"
   $STD pnpm install --frozen-lockfile --force
   $STD pnpm turbo telemetry disable
   $STD pnpm turbo run build --no-daemon --filter=@tracearr/shared --filter=@tracearr/server --filter=@tracearr/web
-  mkdir -p /opt/tracearr/{packages/shared,apps/server,apps/web,apps/server/src/db}
-  cp -rf package.json /opt/tracearr/
-  cp -rf pnpm-workspace.yaml /opt/tracearr/
-  cp -rf pnpm-lock.yaml /opt/tracearr/
-  cp -rf apps/server/package.json /opt/tracearr/apps/server/
-  cp -rf apps/server/dist /opt/tracearr/apps/server/dist
-  cp -rf apps/server/scripts /opt/tracearr/apps/server/scripts
-  cp -rf apps/web/dist /opt/tracearr/apps/web/dist
-  cp -rf packages/shared/package.json /opt/tracearr/packages/shared/
-  cp -rf packages/shared/dist /opt/tracearr/packages/shared/dist
-  cp -rf apps/server/src/db/migrations /opt/tracearr/apps/server/src/db/migrations
-  cp -rf data /opt/tracearr/data
-  mkdir -p /opt/tracearr/data/image-cache
-  rm -rf /opt/tracearr.build
+  local runtime runtime_rc
+  runtime=$(mktemp -d "${TMPDIR:-/tmp}/tracearr-runtime.XXXXXX") || exit $?
+  if mkdir -p "$runtime/"{packages/shared,packages/emails,apps/server/src/db,apps/web,assets} &&
+    cp -a package.json pnpm-workspace.yaml pnpm-lock.yaml "$runtime/" &&
+    cp -a apps/server/package.json apps/server/dist apps/server/scripts "$runtime/apps/server/" &&
+    cp -a apps/server/src/db/migrations "$runtime/apps/server/src/db/" &&
+    cp -a apps/web/dist "$runtime/apps/web/" &&
+    cp -a packages/shared/package.json packages/shared/dist "$runtime/packages/shared/" &&
+    cp -a packages/emails/package.json packages/emails/dist "$runtime/packages/emails/" &&
+    cp -a assets/logo.png "$runtime/assets/" && cp -a data "$runtime/"; then :; else
+    runtime_rc=$?
+    _deploy_remove_owned_trees "$runtime"
+    exit "$runtime_rc"
+  fi
+  cd "$runtime" || exit
+  if $STD pnpm install --prod --frozen-lockfile --ignore-scripts --filter @tracearr/server... &&
+    _deploy_replace_contents "$runtime" /opt/tracearr 1; then :; else
+    runtime_rc=$?
+    cd /opt || exit
+    _deploy_remove_owned_trees "$runtime"
+    exit "$runtime_rc"
+  fi
   cd /opt/tracearr || exit
-  $STD pnpm install --prod --frozen-lockfile --ignore-scripts
+  _deploy_remove_owned_trees "$runtime"
+  _deploy_remove_owned_trees /opt/tracearr.build
+  mkdir -p /opt/tracearr/data/image-cache
   msg_ok "Built Tracearr"
 
   msg_info "Configuring Tracearr"
@@ -208,45 +213,8 @@ function update_script() {
 
   NODE_VERSION="24" setup_nodejs
 
-  msg_info "Updating prestart script"
-  cat << EOF > /data/tracearr/prestart.sh
-#!/usr/bin/env bash
-# =============================================================================
-# Tune PostgreSQL for available resources (runs every startup)
-# =============================================================================
-if command -v timescaledb-tune &> /dev/null; then
-    total_ram_kb=\$(grep MemTotal /proc/meminfo | awk '{print \$2}')
-    ram_for_tsdb=\$((total_ram_kb / 1024 / 2))
-    timescaledb-tune -yes -memory "\$ram_for_tsdb"MB --quiet 2>/dev/null \
-        || echo "Warning: timescaledb-tune failed (non-fatal)"
-fi
-pg_config_file="/etc/postgresql/18/main/postgresql.conf"
-if [ -f \$pg_config_file ]; then
-    if grep -q "^timescaledb\.max_tuples_decompressed_per_dml_transaction" \$pg_config_file; then
-        current_value=\$(grep "^timescaledb\.max_tuples_decompressed_per_dml_transaction" \$pg_config_file | grep -oE '[0-9]+' | head -1)
-        if [ -n "\$current_value" ] && [ "\$current_value" -ne 0 ]; then
-            sed -i "s/^timescaledb\.max_tuples_decompressed_per_dml_transaction.*/timescaledb.max_tuples_decompressed_per_dml_transaction = 0/" \$pg_config_file
-        fi
-    elif ! grep -q "^timescaledb\.max_tuples_decompressed_per_dml_transaction" \$pg_config_file; then
-        echo "" >> \$pg_config_file
-        echo "# Allow unlimited tuple decompression for migrations on compressed hypertables" >> \$pg_config_file
-        echo "timescaledb.max_tuples_decompressed_per_dml_transaction = 0" >> \$pg_config_file
-    fi
-    if grep -q "^max_locks_per_transaction" \$pg_config_file; then
-        current_value=\$(grep "^max_locks_per_transaction" \$pg_config_file | grep -oE '[0-9]+' | head -1)
-        if [ -n "\$current_value" ] && [ "\$current_value" -lt 4096 ]; then
-            sed -i "s/^max_locks_per_transaction.*/max_locks_per_transaction = 4096/" \$pg_config_file
-        fi
-    elif ! grep -q "^max_locks_per_transaction" \$pg_config_file; then
-        echo "" >> \$pg_config_file
-        echo "# Increase lock table size for TimescaleDB hypertables with many chunks" >> \$pg_config_file
-        echo "max_locks_per_transaction = 4096" >> \$pg_config_file
-    fi
-fi
-systemctl restart postgresql
-sudo -u postgres psql -c "ALTER USER tracearr WITH SUPERUSER;"
-EOF
-  chmod +x /data/tracearr/prestart.sh
+  # The installed prestart script contains its actual DB-major/user tuning.
+  # App dependency maintenance must not replace that existing configuration.
 
   if command -v tailscale > /dev/null 2>&1; then
     $STD systemctl disable --now tailscaled
@@ -270,13 +238,6 @@ EOF
     systemctl stop tracearr postgresql redis-server
     msg_ok "Stopped Services"
 
-    msg_info "Updating pnpm"
-    PNPM_VERSION="$(curl -fsSL "https://raw.githubusercontent.com/connorgallopo/Tracearr/refs/heads/main/package.json" | jq -r '.packageManager | split("@")[1]' | cut -d'+' -f1)"
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-    export COREPACK_ENABLE_DOWNLOAD_PROMPT
-    $STD corepack prepare "pnpm@${PNPM_VERSION}" --activate
-    msg_ok "Updated pnpm"
-
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "tracearr" "connorgallopo/Tracearr" "tarball" "latest" "/opt/tracearr.build"
 
     msg_info "Building Tracearr"
@@ -285,33 +246,48 @@ EOF
     NODE_OPTIONS="--max-old-space-size=4096"
     export NODE_OPTIONS
     cd /opt/tracearr.build || exit
+    PNPM_VERSION=$(jq -er '.packageManager | select(type=="string" and test("^pnpm@[0-9]+\\.[0-9]+\\.[0-9]+")) | split("@")[1] | split("+")[0]' package.json) || exit 65
+    $STD npm install -g --ignore-scripts=false --allow-scripts=pnpm "pnpm@$PNPM_VERSION"
     $STD pnpm install --frozen-lockfile --force
     $STD pnpm turbo telemetry disable
     $STD pnpm turbo run build --no-daemon --filter=@tracearr/shared --filter=@tracearr/server --filter=@tracearr/web
-    rm -rf /opt/tracearr
-    mkdir -p /opt/tracearr/{packages/shared,apps/server,apps/web,apps/server/src/db}
-    cp -rf package.json /opt/tracearr/
-    cp -rf pnpm-workspace.yaml /opt/tracearr/
-    cp -rf pnpm-lock.yaml /opt/tracearr/
-    cp -rf apps/server/package.json /opt/tracearr/apps/server/
-    cp -rf apps/server/dist /opt/tracearr/apps/server/dist
-    cp -rf apps/server/scripts /opt/tracearr/apps/server/scripts
-    cp -rf apps/web/dist /opt/tracearr/apps/web/dist
-    cp -rf packages/shared/package.json /opt/tracearr/packages/shared/
-    cp -rf packages/shared/dist /opt/tracearr/packages/shared/dist
-    cp -rf apps/server/src/db/migrations /opt/tracearr/apps/server/src/db/migrations
-    cp -rf data /opt/tracearr/data
-    mkdir -p /opt/tracearr/data/image-cache
-    rm -rf /opt/tracearr.build
+    local runtime runtime_rc
+    runtime=$(mktemp -d "${TMPDIR:-/tmp}/tracearr-runtime.XXXXXX") || exit $?
+    if mkdir -p "$runtime/"{packages/shared,packages/emails,apps/server/src/db,apps/web,assets} &&
+      cp -a package.json pnpm-workspace.yaml pnpm-lock.yaml "$runtime/" &&
+      cp -a apps/server/package.json apps/server/dist apps/server/scripts "$runtime/apps/server/" &&
+      cp -a apps/server/src/db/migrations "$runtime/apps/server/src/db/" &&
+      cp -a apps/web/dist "$runtime/apps/web/" &&
+      cp -a packages/shared/package.json packages/shared/dist "$runtime/packages/shared/" &&
+      cp -a packages/emails/package.json packages/emails/dist "$runtime/packages/emails/" &&
+      cp -a assets/logo.png "$runtime/assets/" && cp -a data "$runtime/"; then :; else
+      runtime_rc=$?
+      _deploy_remove_owned_trees "$runtime"
+      exit "$runtime_rc"
+    fi
+    cd "$runtime" || exit
+    if $STD pnpm install --prod --frozen-lockfile --ignore-scripts --filter @tracearr/server... &&
+      $STD chown -R tracearr:tracearr "$runtime"; then :; else
+      runtime_rc=$?
+      cd /opt || exit
+      _deploy_remove_owned_trees "$runtime"
+      exit "$runtime_rc"
+    fi
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env data)
+    if _deploy_replace_contents "$runtime" /opt/tracearr 1; then :; else
+      runtime_rc=$?
+      cd /opt || exit
+      _deploy_remove_owned_trees "$runtime"
+      exit "$runtime_rc"
+    fi
     cd /opt/tracearr || exit
-    $STD pnpm install --prod --frozen-lockfile --ignore-scripts
-    $STD chown -R tracearr:tracearr /opt/tracearr
+    _deploy_remove_owned_trees "$runtime"
+    _deploy_remove_owned_trees /opt/tracearr.build
+    mkdir -p /opt/tracearr/data/image-cache
     msg_ok "Built Tracearr"
 
     msg_info "Configuring Tracearr"
     sed -i "s|^APP_VERSION=.*|APP_VERSION=${CHECK_UPDATE_RELEASE#v}|" /data/tracearr/.env
-    chmod 600 /data/tracearr/.env
-    chown -R tracearr:tracearr /data/tracearr
     mkdir -p /data/backup
     chown -R tracearr:tracearr /data/backup
     msg_ok "Configured Tracearr"

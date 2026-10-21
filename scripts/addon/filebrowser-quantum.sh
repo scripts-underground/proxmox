@@ -199,12 +199,10 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
+  svc_prepare_uninstall filebrowser
   if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-    rc-service filebrowser stop &> /dev/null || true
-    rc-update del filebrowser &> /dev/null || true
     rm -f /etc/init.d/filebrowser
   else
-    systemctl disable --now filebrowser.service &> /dev/null || true
     rm -f /etc/systemd/system/filebrowser.service
   fi
   rm -f "$var_addon_bin_path" "$var_addon_conf_path" "$HOME/.filebrowser-quantum"

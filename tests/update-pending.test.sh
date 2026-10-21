@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # An unfinished update is redone; --clean forces it; unknown options are refused.
-# Needs root (guest): the pending-flag directory is a tmpfs in a private mount namespace.
+# Needs root in a VM: only the pending directory is privately bound to a disk fixture.
 set -euo pipefail
+: "${TMPDIR:?provide a disk-backed fixture directory}"
+case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 
 if [[ "${UPDATE_PENDING_NS:-}" != 1 ]]; then
-  exec unshare -m --propagation private env UPDATE_PENDING_NS=1 bash -c \
-    'mkdir -p /var/lib/scripts-underground && mount -t tmpfs tmpfs /var/lib/scripts-underground && exec bash "$1"' _ "$0"
+  state=$(mktemp -d "$TMPDIR/update-pending-state.XXXXXX")
+  trap 'rm -rf -- "$state"' EXIT
+  mkdir -p /var/lib/scripts-underground/update-pending
+  [[ ! -L /var/lib/scripts-underground/update-pending ]]
+  unshare -m --propagation private env UPDATE_PENDING_NS=1 bash -c \
+    'mount --bind "$1" /var/lib/scripts-underground/update-pending && exec bash "$2"' _ "$state" "$0"
+  exit $?
 fi
 
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")

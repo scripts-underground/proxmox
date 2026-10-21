@@ -225,24 +225,25 @@ function uninstall_script() {
   fi
 
   msg_info "Stopping web server"
+  local apache_was_running=no
   if [[ "$OS_FAMILY" == "debian" ]]; then
-    systemctl stop apache2 2> /dev/null || true
+    svc_prepare_uninstall apache2 stop apache_was_running
   else
-    $STD rc-service lighttpd stop 2> /dev/null || true
+    svc_prepare_uninstall lighttpd
   fi
   msg_ok "Stopped web server"
-
-  msg_info "Removing phpMyAdmin directory"
-  rm -rf "$PMA_INSTALL_DIR"
 
   if [[ "$OS_FAMILY" == "alpine" ]]; then
     msg_info "Removing Lighttpd config"
     rm -f /etc/lighttpd/lighttpd.conf
-    $STD rc-service php-fpm restart 2> /dev/null || true
-    $STD rc-service lighttpd restart 2> /dev/null || true
-  else
+    # Its removed configuration served only phpMyAdmin. Shared PHP-FPM stays up.
+  elif [[ "$apache_was_running" == yes ]]; then
+    # Restore the shared server before deleting data so a control failure retains
+    # the app; never start an absent or previously stopped Apache service.
     $STD systemctl restart apache2
   fi
+  msg_info "Removing phpMyAdmin directory"
+  rm -rf "$PMA_INSTALL_DIR"
   msg_ok "${APP} has been uninstalled"
 }
 

@@ -135,7 +135,7 @@ EOF
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable -q --now "$var_addon_service" || true
+  svc_prepare_uninstall "$var_addon_service"
 
   if dpkg -l | grep -q prometheus-paperless-exporter; then
     $STD apt remove -y prometheus-paperless-exporter || $STD dpkg -r prometheus-paperless-exporter
