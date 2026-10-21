@@ -92,7 +92,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable --now sparkyfitness-garmin.service &> /dev/null || true
+  svc_prepare_uninstall sparkyfitness-garmin.service
   rm -rf "$var_addon_service_path" "$var_addon_config_path" "$var_addon_install_path" "$HOME/.sparkyfitness-garmin"
   msg_ok "${APP} has been uninstalled"
 }

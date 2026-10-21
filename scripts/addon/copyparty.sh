@@ -221,12 +221,10 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
+  svc_prepare_uninstall copyparty
   if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-    rc-service copyparty stop &> /dev/null || true
-    rc-update del copyparty &> /dev/null || true
     rm -f /etc/init.d/copyparty
   else
-    systemctl disable --now copyparty &> /dev/null || true
     rm -f /etc/systemd/system/copyparty.service
   fi
   rm -f "$var_addon_bin_path" "$var_addon_conf_path"

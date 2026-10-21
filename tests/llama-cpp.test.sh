@@ -106,7 +106,8 @@ setup_case() {
   fixture="$work/$1"
   command mkdir -p "$fixture"/{home,stages,opt/llama-cpp,etc/systemd/system,etc/ld.so.conf.d,var/lib/llama-cpp/models,var/cache/llama-cpp,usr/local/bin}
   sed -n '/^function install_script() {/,/^}/p; /^function update_script() {/,/^}/p' "$ROOT/scripts/lxc/llama-cpp.sh" |
-    sed -e "s#/opt/#$fixture/opt/#g" -e "s#/etc/#$fixture/etc/#g" -e "s#/var/#$fixture/var/#g" -e "s#/usr/#$fixture/usr/#g" > "$fixture/hooks"
+    # Rewrite each original root once; the fixture prefix can itself contain /var.
+    sed -E "s#/(opt|etc|var|usr)/#$fixture/\1/#g" > "$fixture/hooks"
   # Reject any unmapped absolute system root before invoking either hook.
   if sed -e "s#$work/#SCRATCH/#g" -e 's#/dev/null#NULL#g' -e 's#"\$[[:alnum:]_]*"/#VARIABLE/#g' "$fixture/hooks" |
     grep -nE "(^|[[:space:]=\"'(])/[[:alnum:]_]"; then

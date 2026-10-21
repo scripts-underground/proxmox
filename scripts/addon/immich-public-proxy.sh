@@ -174,7 +174,7 @@ EOF
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  systemctl disable --now immich-proxy.service &> /dev/null || true
+  svc_prepare_uninstall immich-proxy.service
   rm -f "$var_addon_service_path"
   rm -rf "$var_addon_install_path"
   rm -f "$HOME/.immichpublicproxy"

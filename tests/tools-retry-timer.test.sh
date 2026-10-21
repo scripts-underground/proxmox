@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # API retries preserve curl argv/status/body contracts; timers print elapsed time.
 set -euo pipefail
+: "${TMPDIR:?provide a disk-backed fixture directory}"
+case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 source "$ROOT/misc/tools.func"
@@ -8,6 +11,8 @@ source "$ROOT/misc/tools.func"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 calls="$work/calls" sleeps="$work/sleeps"
+body_paths="$work/body-paths"
+: > "$body_paths"
 failures=0
 
 check() {
@@ -55,6 +60,7 @@ curl() {
   attempt=$(wc -l < "$calls")
   code="${codes[$attempt]:-500}"
   printf '%s|%s|%s|%s|%s\n' "$format" "$max_time" "$connect_timeout" "$retry" "$url" >> "$calls"
+  printf '%s\n' "$output" >> "$body_paths"
   printf 'body-%s\n' "$code" > "$output"
   printf '%s' "${format//\%\{http_code\}/$code}"
   [[ "$code" == 2?? ]]
@@ -122,7 +128,9 @@ codes=(200)
 rc=0
 out=$(curl_api_with_retry "$url") || rc=$?
 check "$rc:$out" $'0:body-200\n200' 'omitted body path prints body followed by status'
-if [[ -e "/tmp/curl_api_body_$$" ]]; then
+temporary_body=$(tail -n 1 "$body_paths")
+check "${temporary_body#"$TMPDIR/"}" "$(basename "$temporary_body")" 'omitted body allocation uses the selected temporary root'
+if [[ -e "$temporary_body" ]]; then
   printf 'FAIL temporary body file was not removed\n' >&2
   failures=$((failures + 1))
 fi

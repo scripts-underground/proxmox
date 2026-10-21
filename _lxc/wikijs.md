@@ -4,7 +4,7 @@ title: Wiki.js
 tags: [wiki]
 logo: /assets/logos/wikijs.webp
 by: tteckster
-repo: https://github.com/requarks/wiki
+repo: https://github.com/requarks/wiki-v2
 site: https://js.wiki/
 port: 3000
 cpu: 2
@@ -19,9 +19,9 @@ A modern, lightweight, and powerful wiki app built on Node.js.
 
 - Access the web UI at `http://<ip>:3000` to complete setup.
 - Uses PostgreSQL as the database backend by default.
-- Wiki.js v3.x drops support for SQLite — update only from v2.x if using SQLite.
+- Follows the Wiki.js v2 release repository; existing SQLite installs retain their database and rebuild SQLite only when needed. PostgreSQL remains the fresh default.
 
 ## Links
 
-- [GitHub](https://github.com/requarks/wiki)
+- [GitHub](https://github.com/requarks/wiki-v2)
 - [Website](https://js.wiki/)

@@ -47,9 +47,9 @@ variables() {
   PVEHOST_NAME=$(hostname)
   RANDOM_UUID="$(cat /proc/sys/kernel/random/uuid)" # generates a random UUID and sets it to the RANDOM_UUID variable.
 
-  SESSION_ID="${RANDOM_UUID:0:8}"                        # Short session ID (first 8 chars of UUID) for log files
-  BUILD_LOG="/tmp/create-lxc-${SESSION_ID}.log"          # Host-side container creation log
-  combined_log="/tmp/install-${SESSION_ID}-combined.log" # Combined log (build + install) for failed installations
+  SESSION_ID="${RANDOM_UUID:0:8}"                                   # Short session ID (first 8 chars of UUID) for log files
+  BUILD_LOG="${TMPDIR:-/tmp}/create-lxc-${SESSION_ID}.log"          # Host-side container creation log
+  combined_log="${TMPDIR:-/tmp}/install-${SESSION_ID}-combined.log" # Combined log (build + install) for failed installations
   CTTYPE="${CTTYPE:-${CT_TYPE:-1}}"
 
   # Parse dev_mode early
@@ -3858,6 +3858,27 @@ _gpu_select_indices() {
   fi
 }
 
+# Shared checked preparation: callers may handle failures without disabling checks
+# inside the writer or entering the host's unrelated container-removal prompt.
+_prepare_container_bundles() {
+  local install_bundle="$1" receiving_context
+  _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
+  if [[ -n "${var_lxc_tmpdir:-}" ]]; then
+    receiving_context=$(declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir) || return $?
+    pct exec "$CTID" -- bash -c "$receiving_context"$'\n''_prepare_lxc_tmpdir "$1"' -- "$var_lxc_tmpdir" || return $?
+  fi
+  build_bundle install install_script "$install_bundle" 0700 \
+    setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc || return $?
+  if declare -F update_script > /dev/null 2>&1; then
+    pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update || return $?
+    build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"' || return $?
+  fi
+  if declare -F uninstall_script > /dev/null 2>&1; then
+    pct exec "$CTID" -- ln -sf /usr/local/sbin/uninstall /usr/bin/uninstall || return $?
+    build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0700 || return $?
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # build_container()
 #
@@ -3872,6 +3893,7 @@ _gpu_select_indices() {
 # - Posts installation status to API
 # ------------------------------------------------------------------------------
 build_container() {
+  _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
   execute_optional_hook pre_build_script
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
 
@@ -4622,33 +4644,25 @@ PROFILE
   export CACHER="$APT_CACHER" CACHER_IP="$APT_CACHER_IP"
   export VERBOSE="${VERBOSE:-no}"
 
-  # Disable error trap - container errors are handled internally via flag file
-  set +Eeuo pipefail
-  trap - ERR
-
   msg_info "Preparing container installer"
 
-  build_bundle install install_script /tmp/install-bundle.sh 0700 \
-    setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
-
-  if declare -F update_script > /dev/null 2>&1; then
-    build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"'
-    # bare `update` must work in minimal-PATH shells (pct enter/exec) too
-    pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update
-  fi
-
-  if declare -F uninstall_script > /dev/null 2>&1; then
-    build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0700
-    pct exec "$CTID" -- ln -sf /usr/local/sbin/uninstall /usr/bin/uninstall
-  fi
+  # A receiving filesystem may select its own temporary root. The creator's
+  # TMPDIR is never transported as an implicit container path.
+  local install_tmpdir="${var_lxc_tmpdir:-/tmp}"
+  local install_bundle="${install_tmpdir%/}/install-bundle.sh"
+  _prepare_container_bundles "$install_bundle"
 
   msg_ok "Container installer ready"
 
-  lxc-attach -n "$CTID" -- bash /tmp/install-bundle.sh
+  # Only the container execution is status-captured; bundle preparation above
+  # must still fail through the framework instead of executing a stale bundle.
+  set +Eeuo pipefail
+  trap - ERR
+  lxc-attach -n "$CTID" -- bash "$install_bundle"
   local lxc_exit=$?
   msg_debug "lxc-attach exit=$lxc_exit"
 
-  local install_log_host="/tmp/.install-pulled-${SESSION_ID}.log"
+  local install_log_host="${TMPDIR:-/tmp}/.install-pulled-${SESSION_ID}.log"
   pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$install_log_host" 2> /dev/null || true
   if [[ -s "$install_log_host" ]]; then
     msg_debug "pulled install log ($(wc -l < "$install_log_host") lines)"
@@ -4706,7 +4720,7 @@ PROFILE
       fi
 
       # Copy and append INSTALL_LOG from container
-      local temp_install_log="/tmp/.install-temp-${SESSION_ID}.log"
+      local temp_install_log="${TMPDIR:-/tmp}/.install-temp-${SESSION_ID}.log"
       if pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$temp_install_log" 2> /dev/null; then
         {
           echo "================================================================================"
@@ -4969,22 +4983,19 @@ PROFILE
             msg_info "Re-running installation script..."
 
             # Re-run install script in existing container (don't destroy/recreate)
+            local _LXC_CAPTURE_LOG="${TMPDIR:-/tmp}/.install-capture-${SESSION_ID}.log"
+
+            if _prepare_container_bundles "$install_bundle"; then
+              :
+            else
+              local preparation_exit=$?
+              msg_error "Retry preparation failed (exit code: ${preparation_exit}); container ${CTID} preserved" || true
+              CONTAINER_INSTALLING=false
+              exit "$preparation_exit"
+            fi
             set +Eeuo pipefail
             trap - ERR
-            local _LXC_CAPTURE_LOG="/tmp/.install-capture-${SESSION_ID}.log"
-
-            build_bundle install install_script /tmp/install-bundle.sh 0700 \
-              setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc
-
-            if declare -F update_script > /dev/null 2>&1; then
-              build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"'
-              pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update
-            fi
-            if declare -F uninstall_script > /dev/null 2>&1; then
-              build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0700
-              pct exec "$CTID" -- ln -sf /usr/local/sbin/uninstall /usr/bin/uninstall
-            fi
-            lxc-attach -n "$CTID" -- bash /tmp/install-bundle.sh 2>&1 | tee "$_LXC_CAPTURE_LOG"
+            lxc-attach -n "$CTID" -- bash "$install_bundle" 2>&1 | tee "$_LXC_CAPTURE_LOG"
             local apt_retry_exit=${PIPESTATUS[0]}
             set -Eeuo pipefail
             trap 'error_handler' ERR
@@ -5094,7 +5105,7 @@ PROFILE
   fi
 
   # Clean up host-side capture log (not needed on success, already in combined_log on failure)
-  rm -f "/tmp/.install-capture-${SESSION_ID}.log" 2> /dev/null
+  rm -f "${TMPDIR:-/tmp}/.install-capture-${SESSION_ID}.log" 2> /dev/null
 
   # Re-enable error handling after successful install or recovery menu completion
   set -Eeuo pipefail
@@ -5907,7 +5918,7 @@ create_lxc_container() {
     msg_custom "⏳" "${YW}" "Another container is being created with this template. Waiting... (attempt ${lock_attempts}/${max_lock_attempts})"
   done
 
-  LOGFILE="/tmp/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"
+  LOGFILE="${TMPDIR:-/tmp}/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"
 
   # Validate template before pct create (while holding lock)
   if [[ ! -s "$TEMPLATE_PATH" || "$(stat -c%s "$TEMPLATE_PATH" 2> /dev/null || echo 0)" -lt 1000000 ]]; then
@@ -6142,7 +6153,7 @@ ensure_log_on_host() {
 
   # Try pulling from container and creating combined log
   if [[ -n "${CTID:-}" && -n "${SESSION_ID:-}" ]] && command -v pct &> /dev/null; then
-    local combined_log="/tmp/${NSAPP:-lxc}-${CTID}-${SESSION_ID}.log"
+    local combined_log="${TMPDIR:-/tmp}/${NSAPP:-lxc}-${CTID}-${SESSION_ID}.log"
     if [[ ! -s "$combined_log" ]]; then
       # Create combined log
       {
@@ -6165,7 +6176,7 @@ ensure_log_on_host() {
         } >> "$combined_log"
       fi
       # Pull INSTALL_LOG from container (with timeout to prevent hangs on dead containers)
-      local temp_log="/tmp/.install-temp-${SESSION_ID}.log"
+      local temp_log="${TMPDIR:-/tmp}/.install-temp-${SESSION_ID}.log"
       if timeout 8 pct pull "$CTID" "/root/.install-${SESSION_ID}.log" "$temp_log" 2> /dev/null; then
         {
           echo "================================================================================"

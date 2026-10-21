@@ -27,10 +27,10 @@ function install_script() {
     fonts-dejavu-core
   msg_ok "Installed Dependencies"
 
-  JAVA_VERSION="17" setup_java
+  JAVA_VERSION="25" setup_java
   PG_VERSION="16" setup_postgresql
   PG_DB_NAME="thingsboard_db" PG_DB_USER="thingsboard" setup_postgresql_db
-  fetch_and_deploy_gh_release "thingsboard" "thingsboard/thingsboard" "binary" "latest" "/tmp" "thingsboard-*.deb"
+  fetch_and_deploy_gh_release "thingsboard" "thingsboard/thingsboard" "binary" "latest" "${TMPDIR:-/tmp}" "thingsboard-*.deb"
 
   msg_info "Configuring ThingsBoard"
   cat << EOF > /etc/thingsboard/conf/thingsboard.conf
@@ -72,11 +72,12 @@ function update_script() {
   fi
 
   if check_for_gh_release "thingsboard" "thingsboard/thingsboard"; then
+    JAVA_VERSION="25" setup_java
     msg_info "Stopping Service"
     systemctl stop thingsboard
     msg_ok "Stopped Service"
 
-    fetch_and_deploy_gh_release "thingsboard" "thingsboard/thingsboard" "binary" "latest" "/tmp" "thingsboard-*.deb"
+    DPKG_FORCE_CONFOLD=1 fetch_and_deploy_gh_release "thingsboard" "thingsboard/thingsboard" "binary" "latest" "${TMPDIR:-/tmp}" "thingsboard-*.deb"
 
     msg_info "Running Database Upgrade"
     $STD /usr/share/thingsboard/bin/install/upgrade.sh

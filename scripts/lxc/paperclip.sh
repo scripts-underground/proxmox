@@ -26,7 +26,7 @@ function install_script() {
     ripgrep
   msg_ok "Installed Dependencies"
 
-  NODE_VERSION="24" NODE_MODULE="pnpm" setup_nodejs
+  NODE_VERSION="24" NODE_MODULE="corepack" setup_nodejs
   PG_VERSION="17" setup_postgresql
   PG_DB_NAME="paperclip" PG_DB_USER="paperclip" setup_postgresql_db
 
@@ -36,7 +36,21 @@ function install_script() {
   cd /opt/paperclip-ai || exit
   export HUSKY=0
   export NODE_OPTIONS="--max-old-space-size=8192"
-  $STD pnpm install --frozen-lockfile
+  local manager dependency_log dependency_rc
+  manager=$(jq -er '.packageManager | select(type=="string" and test("^pnpm@[0-9]+\\.[0-9]+\\.[0-9]+"))' package.json) || exit 65
+  $STD corepack prepare "$manager" --activate
+  dependency_log=$(mktemp) || exit $?
+  if _HOST_LOGFILE="$dependency_log" BUILD_LOG="$dependency_log" $STD pnpm install --frozen-lockfile --reporter=ndjson > "$dependency_log" 2>&1; then dependency_rc=0; else dependency_rc=$?; fi
+  $STD cat "$dependency_log"
+  if [[ "$dependency_rc" != 0 ]]; then
+    if [[ "$dependency_rc" == 1 ]] && jq -Rne '[inputs | select(startswith("{")) | fromjson | select(.level=="error")] as $errors | ($errors|length)>0 and all($errors[]; .name=="pnpm" and .code=="ERR_PNPM_OUTDATED_LOCKFILE" and .err.code=="ERR_PNPM_OUTDATED_LOCKFILE")' "$dependency_log" > /dev/null; then
+      rm -f -- "$dependency_log"
+      $STD pnpm install --no-frozen-lockfile
+    else
+      rm -f -- "$dependency_log"
+      exit "$dependency_rc"
+    fi
+  else rm -f -- "$dependency_log"; fi
   $STD pnpm build
   unset NODE_OPTIONS
   msg_ok "Built Paperclip"
@@ -70,8 +84,7 @@ EOF
   msg_ok "Configured Paperclip"
 
   msg_info "Running Database Migrations"
-  set -a && source /opt/paperclip-ai/.env && set +a
-  $STD pnpm db:migrate
+  $STD node --env-file=/opt/paperclip-ai/.env -e 'const r=require("node:child_process").spawnSync("pnpm",["db:migrate"],{stdio:"inherit"});if(r.error)throw r.error;process.exit(r.status??1)'
   msg_ok "Ran Database Migrations"
 
   msg_info "Bootstrapping Paperclip"
@@ -180,27 +193,59 @@ function update_script() {
     msg_error "No ${APP} Installation Found!"
     exit
   fi
+  [[ -f /opt/paperclip-ai/.env ]] || {
+    msg_error "Missing existing Paperclip .env"
+    exit 65
+  }
+  NODE_VERSION="24" NODE_MODULE="corepack" setup_nodejs
+  cd /opt/paperclip-ai || exit
+  local keep_file
+  keep_file=$(mktemp) || exit $?
+  node - /opt/paperclip-ai/.env /opt/paperclip-ai > "$keep_file" << 'JS' || {
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const env=require('node:util').parseEnv(fs.readFileSync(process.argv[2],'utf8')),root=process.argv[3];
+for(const key of ['PAPERCLIP_HOME','PAPERCLIP_CONFIG']) {
+ if(!env[key])continue;
+ const raw=env[key].startsWith('~/')?path.join(os.homedir(),env[key].slice(2)):env[key];
+ const resolved=path.resolve(root,raw);
+ if(resolved===root)throw Error(key+' must not be the application source root');
+ if(resolved.startsWith(root+'/'))process.stdout.write(path.relative(root,resolved)+'\0');
+}
+JS
+    rm -f -- "$keep_file"
+    exit 65
+  }
+  local -a configured_paths=()
+  mapfile -d '' -t configured_paths < "$keep_file"
+  rm -f -- "$keep_file"
+  local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env "${configured_paths[@]}")
 
   if check_for_gh_release "paperclip-ai" "paperclipai/paperclip"; then
     msg_info "Stopping Service"
     systemctl stop paperclip
     msg_ok "Stopped Service"
 
-    msg_info "Backing up Configuration"
-    cp /opt/paperclip-ai/.env /opt/paperclip.env.bak
-    msg_ok "Backed up Configuration"
-
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "paperclip-ai" "paperclipai/paperclip" "tarball"
-
-    msg_info "Restoring Configuration"
-    mv /opt/paperclip.env.bak /opt/paperclip-ai/.env
-    msg_ok "Restored Configuration"
 
     msg_info "Rebuilding Paperclip"
     cd /opt/paperclip-ai || exit
     export HUSKY=0
     export NODE_OPTIONS="--max-old-space-size=8192"
-    $STD pnpm install --frozen-lockfile
+    local manager dependency_log dependency_rc
+    manager=$(jq -er '.packageManager | select(type=="string" and test("^pnpm@[0-9]+\\.[0-9]+\\.[0-9]+"))' package.json) || exit 65
+    $STD corepack prepare "$manager" --activate
+    dependency_log=$(mktemp) || exit $?
+    if _HOST_LOGFILE="$dependency_log" BUILD_LOG="$dependency_log" $STD pnpm install --frozen-lockfile --reporter=ndjson > "$dependency_log" 2>&1; then dependency_rc=0; else dependency_rc=$?; fi
+    $STD cat "$dependency_log"
+    if [[ "$dependency_rc" != 0 ]]; then
+      if [[ "$dependency_rc" == 1 ]] && jq -Rne '[inputs | select(startswith("{")) | fromjson | select(.level=="error")] as $errors | ($errors|length)>0 and all($errors[]; .name=="pnpm" and .code=="ERR_PNPM_OUTDATED_LOCKFILE" and .err.code=="ERR_PNPM_OUTDATED_LOCKFILE")' "$dependency_log" > /dev/null; then
+        rm -f -- "$dependency_log"
+        $STD pnpm install --no-frozen-lockfile
+      else
+        rm -f -- "$dependency_log"
+        exit "$dependency_rc"
+      fi
+    else rm -f -- "$dependency_log"; fi
     $STD pnpm build
     unset NODE_OPTIONS
     msg_ok "Rebuilt Paperclip"
@@ -212,8 +257,7 @@ function update_script() {
     msg_ok "Updated Agent CLIs"
 
     msg_info "Running Database Migrations"
-    set -a && source /opt/paperclip-ai/.env && set +a
-    $STD pnpm db:migrate
+    $STD node --env-file=/opt/paperclip-ai/.env -e 'const r=require("node:child_process").spawnSync("pnpm",["db:migrate"],{stdio:"inherit"});if(r.error)throw r.error;process.exit(r.status??1)'
     msg_ok "Ran Database Migrations"
 
     msg_info "Starting Service"

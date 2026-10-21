@@ -32,11 +32,11 @@ Each is called by `build.func` during `setup_script`:
 
 ### Logging & execution
 
-- **`get_active_logfile()`** — Returns path to the active log file. Reads `_HOST_LOGFILE` > `INSTALL_LOG` > `BUILD_LOG` > fallback.
+- **`get_active_logfile()`** — Returns path to the active log file. Reads `_HOST_LOGFILE` > `INSTALL_LOG` > `BUILD_LOG` > `${TMPDIR:-/tmp}/build-<timestamp>.log` fallback.
 - **`strip_ansi()`** — Strips ANSI escape codes from stdin/args. Called by `log_msg`.
 - **`log_msg()`** — Appends timestamped, ANSI-stripped line to the active log. Called by all `msg_*` helpers.
 - **`log_section()`** — Writes a `=== Name ===` divider to the log. Called by `build.func`.
-- **`silent()`** — Runs a command with stdout/stderr redirected to the log; on failure prints error + last 20 log lines and exits. This is what `$STD` resolves to unless `VERBOSE=yes`. Called via `$STD` from every helper that suppresses output.
+- **`silent()`** — Runs a command in the calling shell with stdout/stderr redirected to the active log and returns its exact status. Restores caller `set` options and ERR trap; command variable/cwd/umask effects remain. Pipelines observe caller pipefail. Handled failures can retry without diagnostics or stale global error context; unhandled failures reach the existing ERR/errexit handler. Normal Bash conditional/function status rules apply: unchecked `required && next` is not fatal sequencing; conditional consumers must explicitly propagate failures. `$STD` still selects this helper only in quiet mode; verbose remains direct passthrough.
 - **`spinner()`** — Backgrounds a Braille spinner animation. Called by `msg_info`.
 - **`clear_line()`** — Erases the current terminal line via `tput` or raw ANSI. Called by `msg_ok`.
 - **`stop_spinner()`** — Kills the spinner process, tidies terminal. Called by every `msg_*` helper.
@@ -68,7 +68,7 @@ Each is called by `build.func` during `setup_script`:
 
 ### Cleanup
 
-- **`cleanup_lxc()`** — (core.func version) Package-cache cleanup (apt/apk, pip/uv/npm/yarn/pnpm/go/cargo/gem/composer). Errors tolerated. Called by `install.func` wrapper postamble. NOTE: `install.func` defines a competing `cleanup_lxc` that shadows this one (supports all OS families).
+- **`cleanup_lxc()`** — Single shared implementation for package/language caches. Uses `pkg_clean` when available (all supported OS families), otherwise the existing apk/apt fallback; retains pip/uv/npm/yarn/pnpm/go/cargo/gem/composer cache behavior. Never recursively deletes arbitrary TMPDIR/shared temporary contents by filename; lifecycle owners remove their own stages. Installs call it in their postamble; `on_exit` calls it once for successful `run_update_script` runs, including explicit exit and no-op/no-new-release success. Package cleanup including applicable autoremove still runs for no-op success. An explicit call by the hook acknowledges that due cleanup, avoiding a second EXIT call. Noncritical update cleanup cannot replace original status or recurse through EXIT.
 - **`check_or_create_swap()`** — Detects swap; offers to create `/swapfile`. Reads user input via `prompt_*`.
 - **`get_lxc_ip()`** — Exports `LOCAL_IP`. Tries `/run/local-ip.env` then network probes.
 - **`ensure_profile_dot_d()`** — Sources `/etc/profile.d/*.sh` to fix PATH in non-login shells.
@@ -83,7 +83,11 @@ Called directly by `bootstrap/lxc` in order:
 
 - **`variables()`** — Initializes per-session globals: `NSAPP` (lowercase, no spaces), `var_install` (`<nsapp>-install`), `SESSION_ID` (8-char random), `BUILD_LOG`, `RANDOM_UUID`, `PVEHOST_NAME`, `PVEVERSION`, `KERNEL_VERSION`. Captures `APP_DEFAULT_*` from `var_*`. Reads `APP`, `var_cpu`/`ram`/`disk`, `/proc/sys/kernel/random/uuid`, `hostname`, `pveversion`.
 - **`start()`** — Context dispatcher. On Proxmox host (`pveversion` exists) → calls `setup_script` then returns. Inside existing container → runs update flow (`update_script` + `cleanup_lxc`). Reads `PHS_SILENT`, `SCRIPTS_URL`.
-- **`build_container()`** — The LXC creation orchestrator. Stages: `pre_build_script` → `pct create` → `pct start` → base packages → compose/push wrappers → `lxc-attach` → check failure flag → `post_build_script`. Also pre-stages `/tmp/_update.sh` and `/tmp/_uninstall.sh`. Reads: every container-config global (`CT_ID`, `HN`, `BRG`, `NET`, `GATE`, `CORE_COUNT`, `RAM_SIZE`, `DISK_SIZE`, `PW`, `var_os`, `var_version`, `SCRIPTS_URL`, `SESSION_ID`, etc.). Writes wrapper files, runs `pct` commands.
+- **`build_container()`** — The LXC creation orchestrator. Stages: `pre_build_script` → `pct create` → `pct start` → base packages → compose/push bundles → `lxc-attach` → check failure flag → `post_build_script`. Host staging/logs use `${TMPDIR:-/tmp}`. Optional baked `var_lxc_tmpdir` selects and creates the receiver's separate temporary root; push/execution and in-place retry use that same path. Creator TMPDIR is never implicitly transported. Reads container-config globals (`CT_ID`, `HN`, `BRG`, `NET`, `GATE`, `CORE_COUNT`, `RAM_SIZE`, `DISK_SIZE`, `PW`, `var_os`, `var_version`, `SCRIPTS_URL`, `SESSION_ID`, etc.). Persistent update/uninstall bundles go directly to `/usr/local/sbin`.
+- **`_prepare_container_bundles(path)`** — Checked normal/repair preparation for receiver root, install/update/uninstall bundles and command aliases. In-place repair callers report preparation failure and preserve the selected existing container instead of re-entering host error-handler removal.
+- **`_validate_lxc_tmpdir(path)` / `_prepare_lxc_tmpdir(path)`** (`bundle.func`) — Shared receiving-context contract. Empty selects the unchanged default; explicit values are absolute, non-root normalized paths without control separators. Bash component checks reject symlinks before creation, without GNU realpath options. Missing intermediate components use0755; only the selected leaf uses shared sticky01777. Existing metadata is preserved and must allow intended app users to traverse/write. Runs before library/log effects at every invocation. Bad input returns65; filesystem errors keep their status.
+- **`_write_bundle()` / `build_bundle()`** (`bundle.func`) — Explicitly checked linear producer and owned sender/receiver staging boundary. Generation failure removes its private stage and never pushes partial generated bytes. Receiving mktemp, push, chmod and atomic rename retain exact failure status, preserve the previous command and remove owned stages, including under conditional callers. Publication is per command, not a multi-bundle transaction.
+- **`_addon_bundle_contents()` / `_addon_bundle_write()`** (`addon_lxc.func`) — Checked addon serializer and private same-filesystem publication owner. Generation, write, chmod, alias and rename failures remove the owned stage and preserve the previous valid command; complete executable bytes publish by atomic rename. Both addon/LXC uninstall bundles invoke the hook normally under existing ERR/EXIT handling, never conditionally; cleanup of commands/marker follows only a successful return.
 - **`complete_install()`** — Finalization stage. Queries container IP, sets PVE web-UI description, runs `systemctl start ping-instances.service`, invokes `post_install_script` hook, prints final success message. Previously called `description`.
 
 ### Menu & settings
@@ -149,7 +153,7 @@ Text transported inside the install wrapper and sourced at container runtime.
 ### Bootstrap
 
 - **`detect_os()`** — Identifies distro and sets `OS_TYPE`, `OS_FAMILY`, `OS_VERSION`, `PKG_MANAGER`, `INIT_SYSTEM`. Reads `/etc/os-release`, Alpine/Debian/RedHat release files.
-- **_bootstrap()** (source-time side effect) — Ensures `curl` exists, sources `core.func` + `error_handler.func`, calls `catch_errors`, `get_lxc_ip`.
+- **_bootstrap()** (source-time side effect) — Retains the existing curl/transport baseline, initializes existing core/error APIs and fetches only missing libraries. Already inlined bundles keep their frozen handlers online/offline. Calls `load_functions`, `catch_errors`, `get_lxc_ip`.
 
 ### Package manager abstraction — Used by install_script() authors
 
@@ -164,6 +168,7 @@ Each reads `PKG_MANAGER` (set by `detect_os`) and dispatches to the correct tool
 
 Each dispatches based on `INIT_SYSTEM` (systemd / OpenRC / sysvinit):
 - `svc_enable()`, `svc_disable()`, `svc_start()`, `svc_stop()`, `svc_restart()`, `svc_status()`, `svc_reload_daemon()`. Each takes `$1` = service name.
+- **`svc_prepare_uninstall(service, action?, was_running_var?)`** — Uninstall-only checked service preparation; default `disable` stops/disables as needed, `stop` retains shared-service registration. Optional caller-owned scalar output is `yes`/`no`; helper-local namespace `_svc_` is reserved, ordinary names such as `state` work. Completed systemd properties distinguish not-found inactive/failed tombstones from removed-file running units that still require stop. Known bad-setting/error load and empty/bad unit-file states allow applicable checked control; missing properties/unknown values fail22. OpenRC uses completed service/state queries and all verified `rc-update show` registration columns, deleting each matched runlevel before init-file removal. Query/control errors retain exact status and diagnostics; unsupported init intentionally returns1, invalid service/action/output65. Plain hooks retain data/commands/markers on failure. Other init APIs preserve their existing semantics.
 
 ### Network & connectivity — Called by wrapper postamble
 
@@ -183,7 +188,7 @@ Each dispatches based on `INIT_SYSTEM` (systemd / OpenRC / sysvinit):
 ### Container customization — Called by wrapper postamble
 
 - **`setup_lxc()`** — Customize LXC: passwordless root, autologin gettys, disable services, install baked update/uninstall helpers, inject SSH key. Reads `PASSWORD`, `SSH_AUTHORIZED_KEY`.
-- **`cleanup_lxc()`** — (install.func version, shadows core.func) — `pkg_clean()` + OS-agnostic cleanup.
+- **`cleanup_lxc()`** — Provided by `core.func`; this file supplies the `pkg_clean` package-manager boundary, not an override.
 - **`validate_tz()`** — Returns 0 if timezone exists in zoneinfo.
 - **`set_timezone()`** — Apply timezone to the container.
 - **`os_info()`** — Debug dump of OS detection globals.
@@ -204,7 +209,7 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 
 - **`curl_with_retry()`** — Retry-safe HTTP download. `$1`=url, `$2`=output (default stdout). DNS pre-check, exponential backoff. Env: `CURL_RETRIES`, `CURL_TIMEOUT`.
 - **`curl_api_with_retry()`** — HTTP GET with status code capture. `$1`=url, `$2`=optional body file, `$3`=extra curl options split on whitespace (no quoting). Prints the code to stdout, preceded by the body when no file is given. Returns 0 on 2xx, 7 after `CURL_RETRIES` attempts. Env: `CURL_RETRIES`, `CURL_TIMEOUT`, `CURL_CONNECT_TO`.
-- **`download_gpg_key()`** — Downloads and installs a GPG key to keyring path. Auto-detects armored/binary.
+- **`download_gpg_key(url, output, mode?)`** — Downloads privately, processes/validates the public key with real GPG, and atomically publishes a same-filesystem stage. Auto-detects armored/binary; retains explicit modes. Returns0 on success,7 on failure. Transfer, processing, validation, metadata or publication failure preserves the last-known-good key; existing mode/owner are retained, new keyrings use0644.
 - **`download_with_progress()`** — `pv`-metered download.
 - **`curl_download()`** — Speed-sensitive download for large files (no `--max-time`, uses `--speed-limit`).
 - **`debug_log()`** — Prints `[DEBUG]` to stderr when `TOOLS_DEBUG=true`.
@@ -212,7 +217,7 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 ### OS / arch detection
 
 - **`get_os_info()`** — Cached reader of `/etc/os-release` fields. Exports `_OS_ID`, `_OS_CODENAME`, `_OS_VERSION`, `_OS_VERSION_FULL`.
-- **`get_system_arch()`** — Prints `amd64`/`arm64`.
+- **`get_system_arch(source=dpkg, amd64_alias?, arm64_alias?)`** — Retains dpkg/default and normalized uname/both output; optional caller-selected release aliases map amd64/arm64 only, e.g. `get_system_arch both x64 aarch64`. Other detected architecture names retain their existing behavior.
 - **`is_debian()`**, **`is_ubuntu()`**, **`is_alpine()`** — Boolean OS checks.
 - **`get_os_version_major()`** — Major version from `VERSION_ID`.
 - **`get_parallel_jobs()`** — Safe parallel job count (CPU + memory-aware).
@@ -272,15 +277,18 @@ Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgr
 
 Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. With `UPDATE_FORCE=1` (set by `run_update_script`) a matching version is reported as due:
 - **`check_for_gh_tag()`** — Compare latest GitHub tag. `$1`=app, `$2`=repo, `$3`=tag prefix.
-- **`check_for_gh_release()`** — Compare latest GitHub release. Supports pinned versions. 28+ callers in `scripts/lxc/`.
+- **`check_for_gh_release(app, repo, pin?, reason?, prefix?)`** — Compare a checked GitHub selection. Explicit pin wins; optional stable prefix limits latest selection using raw `startswith` (include `v` and a separator, e.g. `v1.2.`, to exclude `v1.20.0`). Returns0 when due,1 when unchanged, other status on error; CHECK_UPDATE_RELEASE contains the raw tag only when due. Default designated latest, unfiltered semver-tag fallback when no stable release exists, own legacy marker and UPDATE_FORCE behavior are retained. Failures end the owned spinner and provide diagnostics without exposing tokens.
 - **`check_for_codeberg_release()`**, **`check_for_gl_release()`** — Same contract for Codeberg/GitLab.
 
 ### Release fetch & deploy
 
 - **`fetch_and_deploy_gh_tag()`** — Download tag archive via `refs/tags/<tag>.tar.gz`, extract to target. Modes: tag-only repos.
-- **`fetch_and_deploy_gh_release()`** — Workhorse deployer. Modes: `tarball`/`binary`/`prebuild`/`singlefile`. 62+ callers in user scripts. Handles arch-matched `.deb` search with older-release fallback. `FORCE_DEPLOY=1` explicitly redeploys the selected release without changing its version marker; normal same-version calls remain idempotent.
+- **`fetch_and_deploy_gh_release(app, repo, mode?, version?, target?, asset?, prefix?, selected_json_file?)`** — Modes: `tarball`/`binary`/`prebuild`/`singlefile`. Uses private completed/parsed metadata; latest asset fallback stays in the optional raw tag-prefix and cannot replace an explicit pin. Older-asset fallback uses one checked request for at most15 releases, in API order; complete pagination remains for uv/prefix enumeration. The optional caller-owned JSON output is cleared at entry, filled on success with the actual selected object, and survives optional subshell calls without shared state. FORCE_DEPLOY, same-version idempotency and checked-copy/marker protections remain.
+- **`_github_release_request(url, body_file, status_var)` / `_gh_release_json(repo, version, prefix, selected_file)`** — Small internal request/selection and private response ownership boundaries. Check transfer status and JSON before use; retain token recovery in the calling shell. Version getter, checker and deployer share selection instead of separate unchecked response paths.
+- **`_resolve_igc_tag(outvar, selected_json_file)`** — Resolve the compiler tag from the explicitly supplied selected compute-runtime release, clearing output when absent/unusable. No shared-file lookup. Callers own/remove the metadata file; no hardware policy change.
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
-- **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and extraction.
+- **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and checked extraction, then the same replacement/persistence helper as release/source providers. Failed extraction never clears the target.
+- **`_deploy_replace_contents(source, target, clean)`** — Checked shared source/archive replacement. Legacy `CLEAN_INSTALL_KEEP` stays a space-separated string; optional indexed Bash array `CLEAN_INSTALL_KEEP_PATHS=('database/custom name.sqlite' 'database/custom name.sqlite-wal')` adds lossless normalized relative paths. Existing keeps/links/mounts stay in place; missing keeps can receive defaults. Invalid paths fail65 before effects, deployment failures252 prevent marker advancement, and incompatible merge types fail before live effects. Source-only archive hardlink projection has independent directories and checked copy fallback. Existing merge/dot-merge directories retain identity/mode; only incoming replaced leaves/new directories move/copy in bounded batches with associative lookups. Old-only live subtrees are never projected/copied/moved/traversed. Failed publication removes only attempted planned leaves/empty new directories and preserves unrelated writers. Restore batches require absent destination names, use checked no-clobber moves and retain/report a conflicting aside. Fresh mountinfo containment checks before every owned recursive tree removal retain/report newly mounted stages/asides. Input bytes/mode/owner/mtime and target-root mode/owner remain preserved.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
 
 ### Runtime setups — Each reads version from env, installs, caches version
@@ -290,7 +298,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`setup_composer()`** — Install/self-update PHP Composer.
 - **`setup_docker()`** — Install/upgrade Docker (distro packages or official repo). Optional Portainer. Reads `USE_DOCKER_REPO`, `DOCKER_PORTAINER`.
 - **`setup_ffmpeg()`** — Install FFmpeg (static binary or source build). Reads `FFMPEG_VERSION`, `FFMPEG_TYPE`.
-- **`setup_go()`** — Install Go from official tarball. Reads `GO_VERSION`.
+- **`setup_go()`** — Install Go from official tarball. Explicit `GO_VERSION` retains priority and its existing selection. Optional `GO_PROJECT_DIR` treats numeric go and toolchain directives as minimums: preserve an installed stable satisfying both, otherwise select the latest available stable patch of the required minor from checked official JSON/architecture metadata. Actual pre1.21 initial tags without .0 are supported. Missing/malformed/duplicate project requirements fail65; failed/incomplete metadata or no matching release fails250 without global-latest fallback. Download/archive validation precedes removing an older installation. With neither input, existing latest behavior is unchanged. Gluetun supplies its selected source; no global major bump.
 - **`setup_gs()`** — Install Ghostscript from source.
 - **`setup_imagemagick()`** — Build ImageMagick 7 from source.
 - **`setup_java()`** — Install Temurin JDK via Adoptium repo. Reads `JAVA_VERSION`.
@@ -299,13 +307,13 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`setup_meilisearch()`** — Install/upgrade MeiliSearch. Dump/restore migration for major upgrades.
 - **`setup_mongodb()`** — Install/upgrade MongoDB. AVX check. Reads `MONGO_VERSION`.
 - **`setup_mysql()`** — Install/upgrade MySQL (distro packages or official repo). Reads `MYSQL_VERSION`.
-- **`setup_nodejs()`** — Install/upgrade Node.js via NodeSource. Reads `NODE_VERSION`. Computes safe heap limit.
+- **`setup_nodejs()`** — Install/upgrade configured Node.js via NodeSource, with safe cwd before all npm work and signing-key refresh before same-major apt metadata/upgrade. Retains noncritical key warning, module choices, npm/pnpm pins and safe heap limit.
 - **`setup_php()`** — Install PHP + modules (Sury repo). Reads `PHP_VERSION`, `PHP_MODULE`, `PHP_APACHE`/`PHP_FPM`.
 - **`setup_postgresql()`** — Install/upgrade PostgreSQL (distro packages or PGDG repo). Pre-upgrade dump/restore. Reads `PG_VERSION`, `PG_MODULES`.
 - **`setup_postgresql_db()`** — Provision role + database. Reads `PG_DB_NAME`/`USER`/`PASS`. Exports DB vars.
 - **`setup_ruby()`** — Install rbenv + ruby-build. Reads `RUBY_VERSION`, `RUBY_INSTALL_RAILS`.
 - **`setup_rust()`** — Install rustup + toolchain + crates. Reads `RUST_TOOLCHAIN`, `RUST_CRATES`.
-- **`setup_uv()`** — Install `uv` (astral-sh) binary. Selects explicit `UV_VERSION`, then an exact `required-version` pin in `UV_PROJECT_DIR` (`uv.toml` first, then `[tool.uv]` in `pyproject.toml`), then latest. Reads `USE_UVX`, `PYTHON_VERSION`; requested Python installations are also handled when uv is already at the selected version.
+- **`setup_uv()`** — Select explicit UV_VERSION, then exact/compatible project required-version, then latest only without a requirement. `_uv_required_spec` shares TOML precedence/section/quote reading; `_uv_required_version` keeps its exact-only interface. Numeric AND ranges support ==/!=/</<=/>/>=/~= over completely paged, checked stable release enumeration. Unsupported65, no match250 and page/lookup errors never fall through to latest. USE_UVX/PYTHON_VERSION and same-version Python requests remain supported.
 - **`setup_yq()`** — Install/update `mikefarah/yq`.
 - **`setup_nltk()`** — Download NLTK data packages.
 - **`setup_nonfree()`** — Enable Debian non-free repositories.
@@ -324,7 +332,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 
 - **`catch_errors()`** — Enables `set -Ee -o pipefail`, installs ERR/EXIT/INT/TERM/HUP traps. Called by `bootstrap/lxc`, `build.func`, wrapper preamble.
 - **`error_handler()`** — ERR-trap handler. Prints error info, writes container failure flag, may offer to destroy broken LXC. Reads exit code from `$1`/`$?`, command from `$2`/`$BASH_COMMAND`.
-- **`on_exit()`** — EXIT-trap handler. Stops orphaned container, cleans lockfile, removes the `run_update_script` pending flag when the exit status is 0.
+- **`on_exit()`** — Captures original status, removes its EXIT registration, performs due successful-update cleanup once in a noncritical subshell, then best-effort lock/pending handling and exits with the captured status. Failed updates retain pending state and skip cleanup; noncritical cleanup failure/exit cannot replace success. Existing failed-install collection/orphan handling remains.
 - **`on_interrupt()`** — SIGINT handler. Stops LXC, exits 130.
 - **`on_terminate()`** — SIGTERM handler. Stops LXC. Exits 143.
 - **`on_hangup()`** — SIGHUP handler. Stops LXC. Exits 129.
