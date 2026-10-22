@@ -108,6 +108,157 @@ End-to-end test scripts for community scripts against the PVE VM. Each
 script installs a community LXC script on the PVE testbed, validates the
 result, and reports pass/fail.
 
+## Globnotes native-Deno maintenance
+
+`maintenance-globnotes.test.sh --native` runs the actual cold-generated hooks,
+release helpers, native filesystem operations and systemd EnvironmentFile parser
+in private root/mount fixtures. Release responses, compiler output and app/service
+HTTP boundaries are models in that focused suite. Its baseline mode is an
+expected-failure control against the obsolete installer, not a migration test.
+
+The focused suite first compiles every literal Python heredoc in itself and the
+native harness without executing those programs. `maintenance-globnotes.test.sh
+--python-syntax-only` runs just this guard; optional file arguments support negative
+controls. Unsupported Python-heredoc headers fail closed. This covers unexecuted
+native stages that Bash syntax/format/lint checks cannot parse.
+
+The separate `maintenance-globnotes-lxc.test.sh` and
+`maintenance-globnotes-browser.mjs` use the installed application. Run them only
+inside the assigned virtual machine
+`proxmox-scripts-underground-globnotes-deno` on `ark.home`, from
+`/var/lib/scripts-underground/globnotes-deno-refresh/source`, with disk-backed
+`TMPDIR=/var/lib/scripts-underground/globnotes-deno-refresh/tmp`. The native runner
+requires `--guard-manifest <absolute-file>` and validates VM/filesystem identity,
+source/index bytes and modes, declared input hashes, protected data, storage floors
+and CT/MAC/volume ownership **before creating evidence, locks or lifecycle effects**.
+It does not use the legacy destructive harness below. Corrected creation proofs
+use CT2112 (`default`) and CT2113 (`custom`), with independent browser profiles and
+private credentials; pre-correction CT2110/2111 remain stopped retained evidence.
+The native runner rejects those earlier IDs for lifecycle work.
+
+### External native guard (schema version 1)
+
+The guard is task-owned JSON data, root-owned and not group/world writable in the
+guest. It contains no executable expressions. Prepare it from independently
+verified provisioning/preservation receipts and compare current facts to those
+receipts; never refresh unknown protected values just to make a check pass.
+All paths are canonical absolute guest paths. Missing/invalid/mismatched guards,
+missing tools or source/index differences fail closed. `--stage guard` performs
+the same admission/protection checks without starting a CT or browser.
+
+| # | Required field | Shape / meaning |
+|---|---|---|
+| 1 | `version` | Integer `1`; unknown top-level fields are rejected |
+| 2 | `workspace` | Root-owned disk-backed task workspace; checkout is its `source`, TMPDIR its `tmp`, evidence below its `artifacts` |
+| 3 | `source` | `{ "tree": "<expected Git index tree SHA1>", "uid": <checkout owner UID> }`; all indexed working files, modes and Git blob availability are checked using Git/Python, with no delivery-only helper files |
+| 4 | `vm` | `{ "uuid": "<DMI UUID>", "root_uuid": "<root FS UUID>", "serial": "<vda serial>", "disk_bytes": <integer> }` |
+| 5 | `protected.checkout` | File reference `{ "path": "<inventory JSON>", "sha256": "<SHA256>" }`; inventory maps root-relative names to numeric `mode`, `uid`, `gid`, optional regular `sha256` or symlink `link` |
+| 6 | `protected.pve_tree` | Same file-reference shape; original pmxcfs `tree` rows `[inode,parent,version,writer,mtime,type,name,data]`, blob data hex-encoded; the historical `pve` subtree is checked against the read-only database |
+| 7 | `protected.lvs` | Map LV name → `{ "uuid": "<LV UUID>", "bytes": <integer>, "inactive": <boolean> }`; `inactive:true` also requires the historical thin CT LV to remain inactive |
+| 8 | `protected.retained_cts` | Map protected stopped CT ID → `{ "config_sha256": "<native config-file SHA256>", "root_path": "<retained raw root>", "fs_uuid": "<recorded FS UUID>" }`; native moves/grows are recorded here, never encoded in the harness |
+| 9 | `fixtures` | Map authorized mutable CT ID → fixture record below; these are separate from the stopped protected CTs |
+
+Each fixture record has exactly `role` (`default`/`custom`), `ip`, `mac`, `name`,
+`state` (absolute app state path), `lv_uuid`, `fs_uuid`, `baseline` (explicit
+artifact directory), `receipts` and `completed` (boolean). For an authorized fresh
+installation only, volume identities start as JSON null and baseline may equal
+the new evidence directory: absence is checked, then the guarded creation intent
+and resulting identities are retained before further effects. Existing volumes
+are never adopted through that path.
+
+`receipts` maps labels to the same `{path,sha256}` file-reference shape. A completed
+fixture requires `identity.json`, `install.status`, `installer.sha256`,
+`browser/fixture.json`, `target` and `completion`; custom fixtures also require
+`operator-env-expected`, `http-fixture.json`, `http-provider-unit.txt` and
+`update.status`. Except `target`/`completion`, these paths must equal
+`baseline/<label>`. `completion` references the original completed native record.
+`target` references a retained genuine selection record containing `tag`, `version`,
+peeled `commit`, published GitHub `release` JSON and `gitObjects` used to peel the
+tag. Keep original creation and transition records, even if a later release exists.
+Only the small declared continuation inputs are copied to a new evidence directory;
+the original artifact directory is never overwritten.
+
+Completed `all` runs are read-only preservation continuations: they do not replay
+setup, notes, settings, no-op, consent, import-consume or update operations. They
+compare the deployed version/commit to the **original** target and capture current
+published latest as a separate observation. New installs/updates record genuine
+selected published metadata and resolve annotated tags to a commit; mismatches
+report a possible external-input race and stop without replay or result relabeling.
+Only the initial custom fixture input remains fixed at v2.3.3.
+
+Native prerequisites are the admitted private `vmbrgn24` network, exact candidate
+served at `http://10.248.24.1:8240`, available Debian13 template, and the ordinary
+framework storage check. The browser driver additionally needs pinned Deno2.9.6
+at the workspace's `tools/deno`, a nonroot sandboxed Chromium with private disk
+profile/cache/temp storage and loopback-only CDP9335, and ordinary OS resolution
+of `globnotes.home` to the active CT. The application origin is always
+`http://globnotes.home` on port80, with `isSecureContext === false`.
+
+`--runtime-lock-only` is the focused narrow regression interface. It verifies both
+real cold hooks' released-lock invariance, exact runtime seed, private0750/0600
+ownership, nonroot write boundaries and absolute service argument. The full
+focused suite also checks restoration of the previous runtime lock with old code
+after failed publication/health. The native service must use
+`--lock=/opt/globnotes/runtime/dependency-lock/deno.lock` while retaining cached-only;
+the released source lock remains immutable. New-generation lock metadata is seeded
+afresh rather than merged with a previous generation's plugin integrity entries.
+
+The native runner exposes explicit stages so a failed observer does not cause
+onboarding, saved notes or settings commits to be replayed:
+
+| # | `--stage` | Actual boundary |
+|---|---|---|
+| 1 | `install` | Full host bootstrap; default current stable release on2112 or initial v2.3.3 plus a space-containing public state override on2113; records status, source, CT/MAC/LV identity and resource samples |
+| 2 | `checkpoint` | Existing successful install only; HTTP version/revision, baked override context, permissions and native unit/disk evidence |
+| 3 | `first-run` | Real wizard/password login, nested Source and WYSIWYG create/edit/save, exact API/UI/disk values, search/open and plugin settings/Worker consumers |
+| 4 | `finish-settings`, `verify` | Guarded continuation or read-only consumer observation of the original fixture; never recreates its notes or repeats setup |
+| 5 | `restart` | Real service restart, unchanged auth/operator configuration and fresh browser login/content/search/settings consumers |
+| 6 | `noop` | Plain installed update command in the default role; requires exit0, unchanged MainPID and identical code/environment/installed-marker hashes |
+| 7 | Dependency outcome | Actual cached-only Worker command/private-state outcomes are required; a cache directory or successful cache command alone is insufficient. Earlier npm diagnostics remain external retained evidence |
+| 8 | `inspect`, `stop` | Identity-checked observation or graceful stop of only the recorded CT; retains its data and evidence |
+| 9 | `http-prepare`, `http-consent`, `http-before` | Separate HTTP-module fixture, service-account cache preparation, normal UI import consent and an actual Worker/data outcome only after the private provider is stopped |
+| 10 | `update` | Plain v2.3.3→selected published latest installed update command, gated on a successful offline dependency baseline; records selected tag/peeled commit, unchanged persistent hashes, provider unavailability, retired-stage cleanup and sampled RSS/cgroup/swap/CPU/disk/cache measurements |
+| 11 | `all` (default) | Resume the recorded installed fixture and its completed setup/note/settings flow; fresh core consumers, default no-op or custom release transition/offline dependency continuation, final consumer screenshot and graceful fixture stop |
+| 12 | `force-measure` | Separately authorized one-time current-version `update --clean` on the completed custom fixture, provider still stopped; captures full native build resources and preservation, then a real offline import/private counter3 and fresh read-back. Never substitutes for the original released-version transition |
+| 13 | `guard` | Explicit manifest, source/index, tool, protected-data/identity and storage-floor checks; no CT/browser start |
+
+For example, inside that guest after prerequisite/admission checks:
+
+```bash
+export TMPDIR=/var/lib/scripts-underground/globnotes-deno-refresh/tmp
+timeout --signal=TERM --kill-after=60 900 bash tests/maintenance-globnotes.test.sh --native
+timeout --signal=TERM --kill-after=60 3600 bash tests/maintenance-globnotes-lxc.test.sh --native --guard-manifest /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/native-guard.json --ctid 2112 --role default --origin http://globnotes.home --cdp http://127.0.0.1:9335 --evidence /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/corrected-default --stage install
+# Complete native acceptance resumes a successful, recorded installed fixture:
+timeout --signal=TERM --kill-after=60 3600 bash tests/maintenance-globnotes-lxc.test.sh --native --guard-manifest /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/native-guard.json --ctid 2112 --origin http://globnotes.home --cdp http://127.0.0.1:9335 --evidence /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/final-default
+timeout --signal=TERM --kill-after=60 3600 bash tests/maintenance-globnotes-lxc.test.sh --native --guard-manifest /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/native-guard.json --ctid 2113 --origin http://globnotes.home --cdp http://127.0.0.1:9335 --evidence /var/lib/scripts-underground/globnotes-deno-refresh/artifacts/final-custom-state
+```
+
+Supervise potentially long native stages with owned finite guest systemd units
+and retain their logs/statuses before resuming. A successful earlier stage is not
+whole-native acceptance: that also requires the real published-release transition,
+preserved authentication/settings/secrets/notes/search and a previously working
+cached dependency to function after publication without dependency refetch. The
+v2.3.3→v2.4.0 pair shares Deno2.9.6; runtime-pin transition and removed-endpoint
+controls have their separate focused proof boundary. Unsupported phases fail
+closed rather than reporting native completion.
+
+Failed dependency commands retain their attempt flags and native diagnostics.
+The complete runner will not automatically retry a command whose outcome needs
+inspection, reapprove permissions after an update, or turn a standalone Deno
+probe into an application preservation baseline. Raw resource samples distinguish
+the owning CT parent cgroup, process RSS and filesystem/thin-pool free space.
+They also capture `memory.max`, `memory.swap.max`, `memory.swap.current` and
+`memory.swap.peak` where supported (null means unavailable). Update summaries give
+sampled swap current maximum and kernel cgroup-lifetime peak separately; without
+a kernel peak, samples establish only a lower bound, not zero lifetime swap.
+Record pressure/event deltas and successful native build outcomes. A memory peak
+below a configured hard cap is not independent evidence of adequate headroom.
+Historical operations that did not record swap have **unknown** swap peaks even
+if their final process VmSwap snapshot was zero. A later instrumented forced build
+is additional evidence and does not rewrite that historical limitation.
+The runner restores its exact pre-run hosts bytes, stops its own browser and
+gracefully stops its recorded CT on exit; original fixtures/data stay retained.
+
 ## Quick start
 
 ```bash
