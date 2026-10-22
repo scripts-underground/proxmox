@@ -46,6 +46,7 @@ the legacy CT-destroying harness described below.
 | 34 | `maintenance-zigbee2mqtt.test.sh` | Actual cold update, native tar/zstd decompression and archived settings/database bytes in both STD modes; repeated same-version unique archives, producer/sink failure status and partial cleanup; source/build/copy failure data preservation. Network/build/service commands modeled |
 | 35 | `maintenance-immich.test.sh` | Cold fresh/update/source-pin/library/CPU/same-version/missing-record/failure controls, native selected-source country-name reader and live CLI publication checks; disk-backed cross-device global scratch proves app-disk projection without full-copy fallback; each pnpm/tool/ML/publication failure checks exact current-stage cleanup, prior unknown-stage retention, source inputs and status/retry/pending truth. All mutable roots are validated/mapped before execution with VM-global pre/post boundaries. CLI artifacts, image/app compilers, ML, DB/service and other downloads are explicitly modeled |
 | 36 | `maintenance-retry-callers.test.sh` | Native execution of actual Frigate wheel and all eight Immich Python/ML loop fragments in quiet/verbose modes; all three attempts, reachable third-attempt recovery, exact exhaustion status and no false continuation/success. Dependency commands are models |
+| 37 | `maintenance-template-lock.test.sh` | Real concurrent processes, flock/FD/inode lifetime, atomic archive publication, different TMPDIRs, cache aliases, independent storages/names, ancient mtime, waiter/ERR/EXIT/death, surviving productive child and guest-PTY spinner. Actual tar/xz/openEuler bytes and unsafe file/owner/mode/read failures; pvesm activation/path, pveam catalogue/download and pct boundaries are explicitly modeled |
 
 The build-hook Paperclip controls include actual fresh install with inherited
 INSTALL_LOG and higher-priority _HOST_LOGFILE in both STD modes. Only an exact
@@ -87,6 +88,7 @@ These fixtures establish helper/lifecycle outcomes, not full application install
 real package maintenance or postponed hardware behavior. Every native command
 status must be captured before reporting a result; an infrastructure/fixture
 failure is not proof of the target regression.
+
 The cleanup test includes no-new-release success explicitly: no deployment occurs,
 but successful EXIT cleanup still runs once, including the package manager's
 autoremove behavior. This is the approved success contract, not a failed update.
@@ -97,6 +99,67 @@ selected leaf uses01777; tests observe nonroot temp creation, inability to squat
 removed leaf and owner recreation. Existing selected paths retain
 metadata and must already support the intended child users. This receiving
 contract does not change private agent workspaces or SSH TMPDIR permissions.
+
+### Template-cache lock fixture
+
+The template-lock test requires root and creates private mount/network/PID
+namespaces. It hides actual framework metadata, storage configuration, local
+template cache and subuid/subgid files behind owned disk fixtures. Source and
+TMPDIR paths are preserved from their actual first components below managed
+metadata, with no project/workspace/domain assumption. The inherited guest `/tmp`
+is remounted read-only as a write tripwire, never rebound to disk. Actual catalogue
+and log destinations are read-only, and their hashes/metadata are compared before
+and after each run. Evidence and concurrency timelines remain at the printed
+disk path.
+
+Every PVE command boundary is a recording executable, including timeout's child;
+native paths are also shadowed inside the namespace. Positive update/final-list/
+producer/pct probes and expected probe transcripts must exist: a crashed observer
+or empty output cannot pass. Real flock is only wrapped to record entry, then
+executes unchanged. Waiter entry is observed while the controlled publisher still
+holds its real inode. Full non-Alpine PTY cache-work and mid-publisher launcher
+death check all process FDs after productive work ends; the separate helper death
+checks are not substituted for that endpoint.
+Launcher status is recorded independently: the PTY master/drainer remains alive
+through actual publisher completion and the FD/flock assertions, and closes only
+after explicit assertion release. A bounded intentional nonproductive TTY writer
+inherits the real lock FD; the suite must detect it while its heartbeat still
+advances, stop only its verified PID/starttime/command identity, then observe an
+available inode before closing the terminal. Terminal-induced cleanup cannot
+substitute for productive descriptor lifetime.
+
+It does not create a real CT, run native catalogue/network/package maintenance or
+prove real PVE download-worker behavior. The model publishes real complete
+archives atomically; real tar/xz and consumer files, inode identity and FD lifetime
+are observed. Repair producer/validation failure, exact local/fallback terminal
+statuses, safety refusal, final223, storage.cfg resolution and fallback stack retry
+are covered. The newer-template prompt is unreachable with the current discovery
+contract (local selection clears ONLINE_TEMPLATE), so changed-name preservation is
+honestly tested at the actual prepare-owner boundary, not called a full prompt run.
+
+```bash
+# Inside the admitted VM, with disk-backed TMPDIR already set:
+timeout --signal=TERM --kill-after=60 600 bash tests/maintenance-template-lock.test.sh --native
+timeout --signal=TERM --kill-after=60 600 bash tests/maintenance-template-lock.test.sh --baseline "$OWNED_BASELINE/build.func"
+```
+
+For that negative control, preserve/hash the old `build.func` and matching
+`error_handler.func` below the disk workspace. In a separate old-subject copy
+replace **only** `lockfile="/tmp/template.${TEMPLATE}.lock"` with
+`lockfile="${LEGACY_LOCK_ROOT}/template.${TEMPLATE}.lock"`. Pass the copy as the
+baseline argument, with the original error handler beside it. The harness requires
+that instrumentation and supplies its owned disk LEGACY_LOCK_ROOT. This is not
+untouched native old code; the original forbidden write must never run to get RED.
+Lock-only controls extract the actual old acquisition block; full-create controls
+execute the whole old function. `--review-baseline <owned-build.func>` additionally
+exercises newly added review checks on a preserved safe framework subject, skipping
+only the unchanged300-second timeout gate; native default always includes it.
+`--pty-baseline <owned-safe-test.sh>` extracts only a preserved old PTY transport
+into the current safe harness, adding status/FD observations without changing its
+close-on-launcher-exit lifetime. This is a labeled transport negative control,
+not a product mutation or replay of an older command boundary.
+Intended RED means observed ownership/lifetime/behavior failures with an unchanged
+real-node boundary, never fixture setup failure.
 
 `uv-project-version.test.sh` is a live runtime test: it additionally checks a closed
 uv range and runs the real uv/project Python consumer. `github-force-deploy.test.sh`

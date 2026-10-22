@@ -5416,6 +5416,225 @@ validate_storage_space() {
 # SECTION 8: CONTAINER CREATION
 # ==============================================================================
 
+# Resolve after every storage/name selection. pvesm list activates the checked
+# native storage and prepares its configured content directories (also for an
+# empty cache); do not mkdir a guessed path on an inactive network mount.
+_template_resolve_path() {
+  [[ "${TEMPLATE:-}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || {
+    msg_error "Invalid template archive name: ${TEMPLATE:-<empty>}"
+    return 220
+  }
+  if pvesm list "$TEMPLATE_STORAGE" --content vztmpl > /dev/null; then :; else
+    local _template_resolve_status=$?
+    msg_error "Cannot prepare template storage '$TEMPLATE_STORAGE' for archive '$TEMPLATE' (status $_template_resolve_status)"
+    return "$_template_resolve_status"
+  fi
+  TEMPLATE_PATH=$(pvesm path "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" 2> /dev/null || true)
+  if [[ -z "$TEMPLATE_PATH" ]]; then
+    local _template_base
+    _template_base=$(awk -v s="$TEMPLATE_STORAGE" '$2==s {f=1; next} /^[^[:space:]]/ {f=0} f && $1=="path" {print $2; exit}' /etc/pve/storage.cfg)
+    [[ -z "$_template_base" ]] || TEMPLATE_PATH="$_template_base/template/cache/$TEMPLATE"
+  fi
+  [[ -n "$TEMPLATE_PATH" ]] || TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
+  [[ "$TEMPLATE_PATH" == /* && "${TEMPLATE_PATH##*/}" == "$TEMPLATE" && -d "${TEMPLATE_PATH%/*}" ]] || {
+    msg_error "Cannot resolve template cache path '$TEMPLATE_PATH': expected an absolute archive path with an available cache parent"
+    return 220
+  }
+}
+
+# Persistent empty inodes, never stale files to unlink. The private namespace
+# makes check/open safe against unprivileged replacement; verify the opened FD
+# as well as the path. Cache-parent identity survives atomic archive replacement
+# and collapses symlink/bind aliases without coupling different cache directories.
+_template_lock_acquire() {
+  stop_spinner
+  local _template_dir _template_mode _template_identity _template_key _template_before
+  for _template_dir in /var /var/lib /var/lib/scripts-underground /var/lib/scripts-underground/template-locks; do
+    if [[ ! -e "$_template_dir" && ! -L "$_template_dir" ]]; then
+      mkdir -m 700 -- "$_template_dir" 2> /dev/null || [[ -d "$_template_dir" ]] || {
+        msg_error "Cannot create private template lock directory: $_template_dir"
+        return 200
+      }
+    fi
+    [[ ! -L "$_template_dir" && -d "$_template_dir" && $(stat -c %u -- "$_template_dir") == 0 ]] || {
+      msg_error "Unsafe template lock directory: $_template_dir (requires a nonsymlink root-owned directory)"
+      return 200
+    }
+    _template_mode=$(stat -c %a -- "$_template_dir") || {
+      msg_error "Cannot inspect template lock directory permissions: $_template_dir"
+      return 200
+    }
+    (((8#$_template_mode & 0022) == 0)) || {
+      msg_error "Unsafe template lock directory: $_template_dir (group/world writable)"
+      return 200
+    }
+  done
+  [[ "$_template_mode" == 700 ]] || {
+    msg_error "Unsafe template lock directory: $_template_dir (requires mode 0700)"
+    return 200
+  }
+  case "$(findmnt -nr -T "$_template_dir" -o FSTYPE)" in
+    '' | tmpfs | ramfs)
+      msg_error "Unsafe template lock filesystem: $_template_dir (requires persistent disk storage)"
+      return 200
+      ;;
+  esac
+  _template_identity=$(stat -Lc '%d-%i' -- "${TEMPLATE_PATH%/*}") || {
+    msg_error "Cannot identify template cache parent: ${TEMPLATE_PATH%/*}"
+    return 200
+  }
+  _template_key=$(printf '%s' "${TEMPLATE_PATH##*/}" | sha256sum) || {
+    msg_error "Cannot identify template archive basename: $TEMPLATE_PATH"
+    return 200
+  }
+  _TEMPLATE_LOCK_PATH="$_template_dir/$_template_identity-${_template_key%% *}.lock"
+  if [[ ! -e "$_TEMPLATE_LOCK_PATH" && ! -L "$_TEMPLATE_LOCK_PATH" ]]; then
+    # noclobber creation tolerates another creator winning, without truncation.
+    (
+      umask 077
+      set -C
+      : > "$_TEMPLATE_LOCK_PATH"
+    ) 2> /dev/null || true
+  fi
+  [[ ! -L "$_TEMPLATE_LOCK_PATH" && -f "$_TEMPLATE_LOCK_PATH" ]] || {
+    msg_error "Unsafe template lock file: $_TEMPLATE_LOCK_PATH (requires a nonsymlink regular file)"
+    return 200
+  }
+  _template_before=$(stat -c '%d:%i:%u:%a:%h:%s' -- "$_TEMPLATE_LOCK_PATH") || {
+    msg_error "Cannot inspect template lock file: $_TEMPLATE_LOCK_PATH"
+    return 200
+  }
+  [[ "$_template_before" == *:0:600:1:0 ]] || {
+    msg_error "Unsafe template lock file: $_TEMPLATE_LOCK_PATH (requires root ownership, mode 0600, one link and zero bytes)"
+    return 200
+  }
+  exec {_TEMPLATE_LOCK_FD}>> "$_TEMPLATE_LOCK_PATH" || {
+    msg_error "Cannot append-open template lock file: $_TEMPLATE_LOCK_PATH"
+    return 200
+  }
+  if [[ "$(stat -Lc '%d:%i:%u:%a:%h:%s' -- "/proc/self/fd/$_TEMPLATE_LOCK_FD")" != "$_template_before" ||
+  -L "$_TEMPLATE_LOCK_PATH" || "$(stat -c '%d:%i:%u:%a:%h:%s' -- "$_TEMPLATE_LOCK_PATH")" != "$_template_before" ]]; then
+    _template_lock_release
+    msg_error "Template lock path/descriptor identity changed while opening: $_TEMPLATE_LOCK_PATH"
+    return 200
+  fi
+  local _template_attempt=0
+  while ! flock -w 30 "$_TEMPLATE_LOCK_FD"; do
+    _template_attempt=$((_template_attempt + 1))
+    if ((_template_attempt >= 10)); then
+      msg_error "Timeout while waiting for template lock after 10 attempts: $_TEMPLATE_LOCK_PATH"
+      # Actual kernel holders, no advice to delete a live lock inode.
+      lslocks --output PID,COMMAND,PATH 2> /dev/null || true
+      _template_lock_release
+      return 211
+    fi
+    msg_custom "⏳" "${YW}" "Waiting for template cache $_TEMPLATE_LOCK_PATH (attempt $_template_attempt/10)"
+  done
+}
+
+_template_lock_release() {
+  if [[ "${_TEMPLATE_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+    exec {_TEMPLATE_LOCK_FD}>&-
+    unset _TEMPLATE_LOCK_FD
+  fi
+}
+
+# All archive consumers/producers below run under the descriptor, with no
+# background UI children. Productive synchronous children inherit it deliberately:
+# launcher death must not expose an archive while its producer is still alive.
+_template_cache_work() {
+  local _template_route="$1" _template_download=0 _template_attempt
+  if [[ -L "$TEMPLATE_PATH" || (-e "$TEMPLATE_PATH" && ! -f "$TEMPLATE_PATH") ]]; then
+    msg_error "Template path is not a regular archive: $TEMPLATE_PATH"
+    return 221
+  elif [[ -e "$TEMPLATE_PATH" && ! -r "$TEMPLATE_PATH" ]]; then
+    msg_error "Template archive is not readable – check permissions: $TEMPLATE_PATH"
+    return 221
+  elif [[ ! -s "$TEMPLATE_PATH" || $(stat -c %s -- "$TEMPLATE_PATH") -lt 1000000 ]]; then
+    _template_download=1
+  elif ! tar -tf "$TEMPLATE_PATH" &> /dev/null; then
+    if [[ -n "$ONLINE_TEMPLATE" || "$_template_route" != initial ]]; then
+      _template_download=1
+    else
+      msg_warn "Template appears corrupted, but no online version exists. Keeping local file."
+    fi
+  fi
+  if ((_template_download)); then
+    if rm -f -- "$TEMPLATE_PATH"; then :; else
+      local _template_remove_status=$?
+      msg_error "Cannot remove invalid template archive '$TEMPLATE_PATH' (status $_template_remove_status)"
+      return "$_template_remove_status"
+    fi
+    for _template_attempt in {1..3}; do
+      msg_custom "⏳" "${YW}" "Downloading template $TEMPLATE to $TEMPLATE_STORAGE (attempt $_template_attempt)"
+      if pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" > /dev/null 2>&1; then
+        break
+      else
+        local _template_rc=$?
+        if [[ "$_template_route" != initial ]]; then
+          msg_error "Template $_template_route download failed for '$TEMPLATE_PATH' on '$TEMPLATE_STORAGE' (status $_template_rc)"
+          return "$_template_rc"
+        fi
+      fi
+      if ((_template_attempt == 3)); then
+        msg_error "Failed after 3 attempts to download '$TEMPLATE_PATH'. Please check network access, permissions, or manually run:\n  pveam download $TEMPLATE_STORAGE $TEMPLATE"
+        return 222
+      fi
+      sleep $((_template_attempt * 5))
+    done
+    if [[ ! -f "$TEMPLATE_PATH" || -L "$TEMPLATE_PATH" || $(stat -c %s -- "$TEMPLATE_PATH") -lt 1000000 ]]; then
+      msg_error "Downloaded template is missing, unsafe or too small: $TEMPLATE_PATH"
+      return 222
+    fi
+    if ! tar -tf "$TEMPLATE_PATH" &> /dev/null; then
+      msg_error "Downloaded template archive validation failed: $TEMPLATE_PATH"
+      return 222
+    fi
+  fi
+  if ! pveam list "$TEMPLATE_STORAGE" 2> /dev/null | grep -Fq "$TEMPLATE"; then
+    msg_error "Template archive '$TEMPLATE_PATH' not listed in storage '$TEMPLATE_STORAGE' after validation."
+    return 223
+  fi
+
+  # PVE's CentOS setup needs redhat-release in openEuler archives.
+  if [[ "${var_os:-}" == openeuler ]]; then
+    if ! tar -tf "$TEMPLATE_PATH" 2> /dev/null | grep -qE '^\.?/?etc/redhat-release$'; then
+      msg_custom "⏳" "${YW}" "Patching openEuler template (adding /etc/redhat-release)"
+      local _oe_tmp
+      _oe_tmp=$(mktemp -d) || _oe_tmp=""
+      if [[ -n "$_oe_tmp" ]] && mkdir -p "$_oe_tmp/etc"; then
+        local _oe_ver="${var_version:-25.03}"
+        echo "CentOS Linux release ${_oe_ver} (openEuler)" > "$_oe_tmp/etc/redhat-release"
+        if xz -dc "$TEMPLATE_PATH" > "$_oe_tmp/template.tar" 2> /dev/null &&
+          tar -C "$_oe_tmp" --append -f "$_oe_tmp/template.tar" etc/redhat-release 2> /dev/null &&
+          xz -f "$_oe_tmp/template.tar" 2> /dev/null &&
+          mv -f "$_oe_tmp/template.tar.xz" "$TEMPLATE_PATH"; then
+          msg_ok "Patched openEuler template"
+        else
+          msg_warn "Failed to patch openEuler template – pct create may fail in post_create_hook"
+        fi
+        rm -rf "$_oe_tmp"
+      fi
+    fi
+  fi
+}
+
+_template_prepare_archive() {
+  local _TEMPLATE_LOCK_FD _TEMPLATE_LOCK_PATH _template_status=0 _template_failure_output="${2:-}"
+  # The caller may recover only archive work failures, not namespace/lock/resolve
+  # refusals. Classify where ownership changes, never by a native status number.
+  [[ -z "$_template_failure_output" ]] || printf -v "$_template_failure_output" '%s' safety
+  _template_resolve_path || return $?
+  _template_lock_acquire || return $?
+  [[ -z "$_template_failure_output" ]] || printf -v "$_template_failure_output" '%s' archive
+  _template_cache_work "$1" || _template_status=$?
+  _template_lock_release
+  if [[ "$_template_status" == 0 && -n "$_template_failure_output" ]]; then
+    printf -v "$_template_failure_output" '%s' ''
+  fi
+  return "$_template_status"
+}
+
 # ------------------------------------------------------------------------------
 # create_lxc_container()
 #
@@ -5804,60 +6023,13 @@ create_lxc_container() {
   msg_ok "Template ${BL}$TEMPLATE${CL} [$TEMPLATE_SOURCE]"
   msg_debug "Resolved TEMPLATE_PATH=$TEMPLATE_PATH"
 
-  NEED_DOWNLOAD=0
-  if [[ ! -f "$TEMPLATE_PATH" ]]; then
-    msg_info "Template not present locally – will download."
-    NEED_DOWNLOAD=1
-  elif [[ ! -r "$TEMPLATE_PATH" ]]; then
-    msg_error "Template file exists but is not readable – check permissions."
-    exit 221
-  elif [[ "$(stat -c%s "$TEMPLATE_PATH")" -lt 1000000 ]]; then
-    if [[ -n "$ONLINE_TEMPLATE" ]]; then
-      msg_warn "Template file too small (<1MB) – re-downloading."
-      NEED_DOWNLOAD=1
-    else
-      msg_warn "Template looks too small, but no online version exists. Keeping local file."
-    fi
-  elif ! tar -tf "$TEMPLATE_PATH" &> /dev/null; then
-    if [[ -n "$ONLINE_TEMPLATE" ]]; then
-      msg_warn "Template appears corrupted – re-downloading."
-      NEED_DOWNLOAD=1
-    else
-      msg_warn "Template appears corrupted, but no online version exists. Keeping local file."
-    fi
-  else
-    $STD msg_ok "Template $TEMPLATE is present and valid."
-  fi
-
   if [[ "$TEMPLATE_SOURCE" == "local" && -n "$ONLINE_TEMPLATE" && "$TEMPLATE" != "$ONLINE_TEMPLATE" ]]; then
     msg_warn "Local template is outdated: $TEMPLATE (latest available: $ONLINE_TEMPLATE)"
     if whiptail --yesno "A newer template is available:\n$ONLINE_TEMPLATE\n\nDo you want to download and use it instead?" 12 70; then
       TEMPLATE="$ONLINE_TEMPLATE"
-      NEED_DOWNLOAD=1
     else
       msg_custom "ℹ️" "${BL}" "Continuing with local template $TEMPLATE"
     fi
-  fi
-
-  if [[ "$NEED_DOWNLOAD" -eq 1 ]]; then
-    [[ -f "$TEMPLATE_PATH" ]] && rm -f "$TEMPLATE_PATH"
-    for attempt in {1..3}; do
-      msg_info "Attempt $attempt: Downloading template $TEMPLATE to $TEMPLATE_STORAGE"
-      if pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" > /dev/null 2>&1; then
-        msg_ok "Template download successful."
-        break
-      fi
-      if [[ $attempt -eq 3 ]]; then
-        msg_error "Failed after 3 attempts. Please check network access, permissions, or manually run:\n  pveam download $TEMPLATE_STORAGE $TEMPLATE"
-        exit 222
-      fi
-      sleep $((attempt * 5))
-    done
-  fi
-
-  if ! pveam list "$TEMPLATE_STORAGE" 2> /dev/null | grep -q "$TEMPLATE"; then
-    msg_error "Template $TEMPLATE not available in storage $TEMPLATE_STORAGE after download."
-    exit 223
   fi
 
   # ------------------------------------------------------------------------------
@@ -5886,85 +6058,8 @@ create_lxc_container() {
   -rootfs $CONTAINER_STORAGE:${PCT_DISK_SIZE:-8}"
   fi
 
-  # Lock by template file (avoid concurrent template downloads/validation)
-  lockfile="/tmp/template.${TEMPLATE}.lock"
-
-  # Cleanup stale lock files (older than 1 hour - likely from crashed processes)
-  if [[ -f "$lockfile" ]]; then
-    local lock_age=$(($(date +%s) - $(stat -c %Y "$lockfile" 2> /dev/null || echo 0)))
-    if [[ $lock_age -gt 3600 ]]; then
-      msg_warn "Removing stale template lock file (age: ${lock_age}s)"
-      rm -f "$lockfile"
-    fi
-  fi
-
-  exec 9> "$lockfile" || {
-    msg_error "Failed to create lock file '$lockfile'."
-    exit 200
-  }
-
-  # Retry logic for template lock (another container creation may be running)
-  local lock_attempts=0
-  local max_lock_attempts=10
-  local lock_wait_time=30
-
-  while ! flock -w "$lock_wait_time" 9; do
-    lock_attempts=$((lock_attempts + 1))
-    if [[ $lock_attempts -ge $max_lock_attempts ]]; then
-      msg_error "Timeout while waiting for template lock after ${max_lock_attempts} attempts."
-      msg_custom "💡" "${YW}" "Another container creation may be stuck. Check running processes or remove: $lockfile"
-      exit 211
-    fi
-    msg_custom "⏳" "${YW}" "Another container is being created with this template. Waiting... (attempt ${lock_attempts}/${max_lock_attempts})"
-  done
-
   LOGFILE="${TMPDIR:-/tmp}/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"
-
-  # Validate template before pct create (while holding lock)
-  if [[ ! -s "$TEMPLATE_PATH" || "$(stat -c%s "$TEMPLATE_PATH" 2> /dev/null || echo 0)" -lt 1000000 ]]; then
-    msg_info "Template file missing or too small – downloading"
-    rm -f "$TEMPLATE_PATH"
-    pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" > /dev/null 2>&1
-    msg_ok "Template downloaded"
-  elif ! tar -tf "$TEMPLATE_PATH" &> /dev/null; then
-    if [[ -n "$ONLINE_TEMPLATE" ]]; then
-      msg_info "Template appears corrupted – re-downloading"
-      rm -f "$TEMPLATE_PATH"
-      pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" > /dev/null 2>&1
-      msg_ok "Template re-downloaded"
-    else
-      msg_warn "Template appears corrupted, but no online version exists. Skipping re-download."
-    fi
-  fi
-
-  # openEuler templates are detected by PVE as ostype 'centos' but ship without
-  # /etc/redhat-release, which makes PVE::LXC::Setup::post_create_hook abort with
-  # "can't open '/etc/redhat-release' - No such file or directory".
-  # Patch the cached template once to inject a CentOS-compatible release file.
-  if [[ "${var_os:-}" == "openeuler" ]]; then
-    if ! tar -tf "$TEMPLATE_PATH" 2> /dev/null | grep -qE '^\.?/?etc/redhat-release$'; then
-      msg_info "Patching openEuler template (adding /etc/redhat-release)"
-      local _oe_tmp
-      _oe_tmp=$(mktemp -d) || _oe_tmp=""
-      if [[ -n "$_oe_tmp" ]] && mkdir -p "$_oe_tmp/etc"; then
-        # Content is parsed by PVE's CentOS setup plugin (expects "<name> release <ver>")
-        local _oe_ver="${var_version:-25.03}"
-        echo "CentOS Linux release ${_oe_ver} (openEuler)" > "$_oe_tmp/etc/redhat-release"
-        if xz -dc "$TEMPLATE_PATH" > "$_oe_tmp/template.tar" 2> /dev/null &&
-          tar -C "$_oe_tmp" --append -f "$_oe_tmp/template.tar" etc/redhat-release 2> /dev/null &&
-          xz -f "$_oe_tmp/template.tar" 2> /dev/null &&
-          mv -f "$_oe_tmp/template.tar.xz" "$TEMPLATE_PATH"; then
-          msg_ok "Patched openEuler template"
-        else
-          msg_warn "Failed to patch openEuler template – pct create may fail in post_create_hook"
-        fi
-        rm -rf "$_oe_tmp"
-      fi
-    fi
-  fi
-
-  # Release lock after template validation - pct create has its own internal locking
-  exec 9>&-
+  _template_prepare_archive initial || exit $?
 
   msg_debug "pct create command: pct create $CTID ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} $PCT_OPTIONS"
   msg_debug "Logfile: $LOGFILE"
@@ -5974,27 +6069,25 @@ create_lxc_container() {
     msg_debug "Container creation failed on ${TEMPLATE_STORAGE}. Checking error..."
 
     # Check if template issue - retry with fresh download
+    local _template_repair_failed=0 template_failure='' _template_repair_status
     if grep -qiE 'unable to open|corrupt|invalid' "$LOGFILE"; then
-      msg_info "Template may be corrupted – re-downloading"
-      rm -f "$TEMPLATE_PATH"
-      pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" > /dev/null 2>&1
-      msg_ok "Template re-downloaded"
+      if _template_prepare_archive repair template_failure; then :; else
+        _template_repair_status=$?
+        if [[ "$template_failure" != archive || "$TEMPLATE_STORAGE" == local ]]; then
+          exit "$_template_repair_status"
+        fi
+        _template_repair_failed=1
+        msg_warn "Template repair failed on '$TEMPLATE_STORAGE'; trying checked local storage without reusing '$TEMPLATE_PATH'"
+      fi
     fi
 
     # Retry after repair
-    if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
+    if [[ "$_template_repair_failed" == 1 ]] || ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
       # Fallback to local storage if not already on local
       if [[ "$TEMPLATE_STORAGE" != "local" ]]; then
         msg_info "Retrying container creation with fallback to local storage"
-        LOCAL_TEMPLATE_PATH="/var/lib/vz/template/cache/$TEMPLATE"
-        if [[ ! -f "$LOCAL_TEMPLATE_PATH" ]]; then
-          msg_ok "Trying local storage fallback"
-          msg_info "Downloading template to local"
-          pveam download local "$TEMPLATE" > /dev/null 2>&1
-          msg_ok "Template downloaded to local"
-        else
-          msg_ok "Trying local storage fallback"
-        fi
+        TEMPLATE_STORAGE=local
+        _template_prepare_archive fallback || exit $?
         if ! pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
           # Local fallback also failed - check for LXC stack version issue
           if grep -qiE 'unsupported .* version' "$LOGFILE"; then

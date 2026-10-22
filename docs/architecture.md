@@ -380,6 +380,55 @@ fetch and later inlining reads; changing TMPDIR does not reuse another root's
 bytes. Each sender bundle and addon staging directory is privately allocated,
 and cleanup removes only that owned staging artifact.
 
+Template-cache coordination is persistent metadata, independent of those temporary
+roots. `_template_prepare_archive` resolves the selected storage/name afresh and
+uses checked native `pvesm list --content vztmpl` storage activation to prepare
+the configured cache parent. It never creates a guessed directory on an inactive
+storage mount. `_template_lock_acquire` keys one empty lock inode by that parent's
+device/inode and the archive basename (SHA256 for a bounded filename), under
+`/var/lib/scripts-underground/template-locks`. Symlink/bind aliases of one cache
+therefore serialize together; different cache directories or names remain independent.
+The directory must be root-owned, private0700 on disk, with root-owned ancestors
+that are not group/world-writable;
+existing incompatible paths are refused, never chmodded. Lock paths
+must be nonsymlink regular root-owned0600 files with one link and zero bytes. The
+append-open descriptor and path identities are checked before real flock waits.
+
+Initial classification, removal, downloads, final archive/list validation and the
+openEuler patch all belong to this owner. Repair and local fallback resolve and
+re-acquire their target, then recheck after waiting; a competing creator's valid
+publication is reused. Selection/operator prompts and LXC-stack upgrades happen
+outside the hold. Every `pct create` runs after release and uses its own PVE lock.
+The existing ten30-second waits remain bounded; timeout diagnostics show kernel
+holders instead of advising inode deletion. Lock files are never unlinked for
+mtime, waiter timeout, ERR, EXIT or process failure. Generic EXIT does not own a
+caller variable named `lockfile`; resource owners retain their own cleanup.
+
+Template names must match `^[a-zA-Z0-9][a-zA-Z0-9._+-]*$`; invalid names or an
+unavailable resolved cache parent fail220. Archive symlinks and nonregular or
+unreadable archives are refused with221, without following or replacing their
+targets. Refusals identify the offending path and condition. The prepare owner
+classifies failures at its safety/archive boundary through a checked caller output,
+independently of native status numbers. Resolve/storage-preparation/namespace/lock
+failures remain fatal. A non-local repair producer or archive-validation failure
+skips pct reuse of those known-invalid bytes and enters the existing checked local
+fallback; local repair and failed fallback retain their exact terminal status.
+A producer returning200 therefore does not masquerade as a lock refusal, and a
+real lock refusal cannot be swallowed into fallback. Initial download exhaustion
+remains222 and failed final storage-list validation223.
+
+The cache owner stops an existing spinner before opening its descriptor and uses
+non-spawning progress messages during the hold. Synchronous archive producers and
+validators deliberately inherit the FD: if the launcher dies, a surviving producer
+keeps protection until its work ends. Normal release closes the owner's FD after
+those children complete; kernel closure handles failure/death. A background UI
+process must never inherit this descriptor. This protocol is host-local and does
+not coordinate with other PVE nodes or already-running old-version creators.
+Drain those old creators before deploying the new namespace; no legacy temporary
+lock cleanup or compatibility acquisition is attempted.
+Keys identify the active local mount instance: a remount may create new metadata,
+and separately mounted exports with different device identities do not share keys.
+
 Creator and receiver temporary roots are different filesystem contexts. LXC
 bundles still discard inherited creator TMPDIR. An explicit `var_lxc_tmpdir`
 uses the existing baked `var_lxc_*` context to select the receiving root before
