@@ -1,5 +1,104 @@
 # Tests
 
+## Kosmozoo native-release acceptance
+
+Run these only inside the explicitly owned Proxmox test VM, with a disk-backed
+workspace and `TMPDIR`. They do not invoke the legacy CT-destroying harness.
+The external JSON guard is data, independently issued for the exact candidate:
+guest UUID/MAC/disk serial/machine-id, workspace filesystem, actual Git HEAD,
+reviewed full index tree, file hashes/modes, release/tool/fixture identities and
+declared CT allocations. Unstaged changes and untracked source files refuse.
+`source.base` must be an ancestor of the real HEAD; `source.head` must match the
+actual checkout (or defaults to `source.base` when `source.head` is omitted).
+The guard must still bind all five required source files.
+After committing, issue a new guard recording the actual new HEAD and tree; do
+not fake HEAD or reuse an earlier working-tree guard. No ephemeral VM identity
+is embedded in these tests.
+
+| # | Entry point | Current proof boundary |
+|---|---|---|
+| 1 | `bash tests/maintenance-kosmozoo.test.sh --native --guard-manifest "$G" --hooks-only` | Real cold hook bundles/files/processes and actual systemd EnvironmentFile parsing; apt, release/download, app lifecycle and readiness boundaries are explicitly modeled. Retains 83 failure/no-op/retry controls. |
+| 2 | Same command without `--hooks-only` | Also exercises the hash-verified published standalone ELF, embedded SQLite/VFS, actual HTTP/media/state consumers, separately from full CT integration. |
+| 3 | `bash tests/maintenance-kosmozoo.test.sh --lxc --guard-manifest "$G" --ctid 2120 --stage bootstrap` | Full ordinary host bootstrap against candidate-served REPO_BASE, real public release download, script resource defaults, actual root serve/HTTP80 and Debian system bus/getters. Requires declared free CT/config/LV; retains data and stops the CT afterward. Refuses an existing CT instead of reinstalling it. |
+| 4 | Same `--lxc` command with `--stage browser-smoke` | Starts a positively guard-owned stopped CT and nonroot sandboxed Chromium, maps the OS hosts file to its actual private IP, invokes the observer with explicit loopback CDP, then restores hosts/network and stops owned browser/CT. Proves fresh source state, HTTP insecure context and loaded embedded logo; does not imply media/judgment/update/failure acceptance. |
+| 5 | Same `--lxc` command with `--stage browser-first` | Requires original empty/seeded app state, an independently prepared guard-declared sample directory and no pre-existing mp0. Attaches the sample read-only as test setup, serves the hash-verified frozen Comfy fixture independently, and invokes real UI media/judgment/settings/source writes. Saves an accepted consumer baseline and source metadata; refuses to adopt or replay partial writes. Stops processes/CT, retains samples and the declared test mount. |
+| 6 | `tests/maintenance-kosmozoo.browser.mjs` | Deno2.9.6 CDP observer with explicit `--guard-manifest`, `--ctid`, `--origin http://kosmozoo.home`, `--cdp-endpoint http://127.0.0.1:9335`, `--phase` and disk `--evidence`. It never spawns a browser and needs no `--allow-run`. Mutation, restart/update verification, running activity, final output and scratch recovery verification have separate observable outcomes. |
+| 7 | `--stage browser-resume` | Narrow continuation after recorded local judgments: requires the exact existing declared test mount and an external `resume.phase=local-judged` guard with the expected prior hash/judgment. Re-observes those authorized writes without toggling them, refuses any discrepancy or already-judged remote entry, and performs only the unfinished remote/settings actions. The native Store prunes cleared favorite/bookmark fields to null/absence; UI `aria-pressed=false` is tested independently. Never regenerate continuation expectations by blindly accepting unknown live data. |
+| 8 | `--stage lifecycle` | Requires guard-declared actual CT LV/FS and explicit `acceptance.phase=installed` (original seeded state) or `consumers` (hash-bound prior accepted baseline/profile/mount). Owns one provider PID/start time and browser profile through engine restart and normal installed update. Verifies actual effective parent cgroup, typed system bus and literal second EnvironmentFile, genuine ELF/marker, UI/API/export persistence, running upstream activity, real final output bytes/metadata/render, and known cache bytes with source unreachable. The same-version branch separately asserts no-op PID/code/marker/config identity. The full entry point sequences or reuses this outcome explicitly. |
+| 9 | `--stage configuration` | Requires a hash-bound prior lifecycle receipt and its explicit accepted consumer baseline/profile. Creates only a new owned operator fixture, cold-starts with fresh disk TMPDIR and PATH=/nonexistent, asserts actual bundled SQLite mappings/hash and HOSTS presence/value (including explicit empty). The declared nonstandard-port case performs a real forced same-release update to port18081, proves real unit/listener/runtime ownership and preserved operator input hashes, then restores only the fixture port to80 and rereads the same UI/API/export baseline. |
+| 10 | `bash tests/maintenance-kosmozoo.test.sh --lxc --guard-manifest "$G" --ctid 2120` (also2121/2122) | Complete tracked orchestration from `new` (explicit creation authority) or a declared known checkpoint. Runs every missing ordinary bootstrap/lifecycle/configuration or scratch-failure stage; records only child stages that actually completed and cleaned up. Independently supplied prior proofs require exact paths/hashes/source provenance/actual ownership and domain-specific media/job/no-op/recovery/resource semantics before effects. A status string alone is insufficient. Finishes with fresh ordinary-HTTP sandboxed UI/API/export/cache/native-unit observations and actual stopped-disk SQLite/code/config/ownership checks. It never repeats completed mutations to manufacture success. |
+
+The approved scratch failure fixture is CT2122, separately declared as
+`role: failure` with its own private identity. It never replaces or downgrades
+the accepted CTs. Its ordinary bootstrap reserves a measured conservative2GiB
+physical install-plus-update growth above the2GiB thin-data floor, independently
+of the framework's normal4GiB virtual-root admission. A sampler starts BEFORE
+bootstrap, records root/thin extraction growth before payload boot, then discovers
+the owned init's actual1GiB ancestor cgroup and namespace-root code/data/temp
+throughout OS/app installation. Creation LV/FS/config facts are recorded once and
+checked against the final ordinary bootstrap receipt. No old CT, snapshot or
+fixture/evidence deletion is a capacity fallback.
+
+`--stage failures` is limited to that freshly installed, positively guard-owned
+scratch CT. The real app/unit/ELFs/markers/state remain actual: asset-network
+refusal uses an unreachable proxy only for GitHub asset hosts while public API
+metadata remains direct; actual API writes in an owned ExecStartPost actor precede
+its intentional status23; a separate owned updater-unit crash tests the natural
+newer-ELF/older-marker window without killing the app unit; actual CT reboot,
+version-floor/refusal, safe retry and lingering graceful-stop controls follow.
+Checksum controls have an **explicitly modeled corruption seam** at OS curl:
+download actual public bytes, prove their official digest, then corrupt the owned
+stage file. This proves the native checksum refusal/old-service outcome, not that
+the publisher distributed a bad asset. No runtime response or release/helper
+selection is replaced. Actors and corruption function files are generated from
+this tracked test, hash-checked before reuse/removal, and retained as evidence.
+
+All-mode guards declare `acceptance.phase` as `new`, `installed`, `consumers`,
+`lifecycle`, `configuration`, `activation-failed`, or `failures`. Completed kinds
+have a `kind`, canonical owned `evidence` directory, exact `source_tree`, and a
+`files` map binding every semantically consumed relative evidence filename to its
+SHA256. The tracked `all_metadata` reader defines the required files and validates
+their contents, original VM/CT/config identity and unchanged installer/framework
+blobs. Normal baselines/profile and current version/digest remain separate from
+creation facts; scratch latest authorized recovery state is explicit. The common
+representative install resource checkpoint names its declared owner CT. Initial
+guard production is independent data preparation, never core acceptance logic.
+The all-mode driver only derives a next guard for stages its own invocation just
+completed, and stops on any failure instead of adopting unknown live state.
+
+Every invocation has a unique disk pipeline directory/logs. Prior records are
+never overwritten. The final consumer starts a **new** fixture lifetime and does
+not require the retired provider's output catalogue; it reads known cached output
+bytes and existing original-image judgments without retyping/toggling them.
+Before starting complete checkpoint CTs it checks exact known operator input
+recipes, managed ELF/marker and no unknown drop-ins/unfinished activation. A
+read-mostly final continuation admits64MiB concrete thin growth above the unchanged
+2GiB reserve; payload-install/update paths retain their larger actual admissions.
+
+Use a bounded guest supervisor for the up-to-1800-second bootstrap and retain its
+logs, source/guard receipt and unique artifact directory. `--stage bootstrap`
+is a resumable checkpoint, **not** the complete plan's acceptance command.
+A declared `new` full sequence needs a finite durable supervisor covering the
+sum of its child bounds: up to four2300-second stages plus cleanup (for example,
+`RuntimeMaxSec=9600` around `timeout --signal=TERM --kill-after=90 9500 bash
+tests/maintenance-kosmozoo.test.sh --lxc --guard-manifest "$G" --ctid "$CTID"`,
+with disk TMPDIR/cwd and durable logs set by that guest supervisor). The2400-second
+known-checkpoint continuation bound applies to a final-consumer-only resume,
+not a wholly new multi-stage install. The original plan is unchanged; these
+different entry states require different outer operation bounds.
+Browser prerequisites are test tooling in the PVE VM, never app dependencies in
+the CT: the pinned Deno archive/binary, packaged Chromium plus its ordinary
+sandbox, and a dedicated guard-declared nonroot account with traverse-only access
+to the task workspace and private disk profile/temp/runtime directories. CDP is
+loopback-only; neither a secure-context override nor disabled sandbox is allowed.
+
+The default LXC starts with an explicitly empty HOSTS value. Debian's template
+already contains Python for OS tooling; its presence is not an app dependency.
+The separate cold process/environment check must establish no installed runtime
+on the app's PATH instead of claiming that the OS lacks Python. Capture actual
+release provenance and cgroup/swap/disk measurements; a capped peak or a single
+zero-swap snapshot does not establish resource headroom.
+
 ## Focused maintenance contracts
 
 These plain Bash tests run inside an isolated Linux VM with an existing writable
