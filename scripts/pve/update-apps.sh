@@ -311,7 +311,9 @@ if [ "$UNATTENDED_UPDATE" == "yes" ]; then
 fi
 
 containers_needing_reboot=()
+containers_skipped_temporary=()
 for container in $CHOICE; do
+  batch_started=0
   echo -e "${BL}[INFO]${CL} Updating container $container"
 
   if [ "$BACKUP_CHOICE" == "yes" ]; then
@@ -324,6 +326,7 @@ for container in $CHOICE; do
   if [ "$template" == "false" ] && [ "$status" == "status: stopped" ]; then
     echo -e "${BL}[Info]${GN} Starting${BL} $container ${CL} \n"
     pct start $container
+    if [ $? -eq 0 ]; then batch_started=1; fi
     echo -e "${BL}[Info]${GN} Waiting For${BL} $container${CL}${GN} To Start ${CL} \n"
     sleep 5
   fi
@@ -386,6 +389,20 @@ for container in $CHOICE; do
   esac
   exit_code=$?
 
+  # A competing maintenance owner may still be modifying this CT. Status75 can
+  # also be an app's temporary failure: neither permits automatic rollback.
+  if [ "$exit_code" -eq 75 ]; then
+    printf 'Container %s temporarily unavailable/busy (status75); skipped without automatic rollback, shutdown, resource restore or reboot. Any backup already taken is retained.\n' "$container" >&2
+    if [ "$batch_started" -eq 1 ]; then
+      printf 'Container %s: this batch started it; it is left running.\n' "$container" >&2
+    fi
+    if [ "$UPDATE_BUILD_RESOURCES" -eq 1 ]; then
+      printf 'Container %s: requested build resources cores=%s memory=%s (run cores=%s memory=%s); no automatic restore was attempted. Check the actual configuration and restore intended settings after maintenance finishes.\n' "$container" "$build_cpu" "$build_ram" "$run_cpu" "$run_ram" >&2
+    fi
+    containers_skipped_temporary+=("$container")
+    continue
+  fi
+
   if [ "$template" == "false" ] && [ "$status" == "status: stopped" ]; then
     echo -e "${BL}[Info]${GN} Shutting down${BL} $container ${CL} \n"
     pct shutdown $container &
@@ -423,7 +440,11 @@ done
 
 wait
 header_info
-echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
+if [ "${#containers_skipped_temporary[@]}" -gt 0 ]; then
+  printf 'Batch partially complete; temporary/busy skips (not updated): %s. Batch-started skipped CTs remain running; requested build-resource changes were not automatically restored (see per-CT details).\n' "${containers_skipped_temporary[*]}"
+else
+  echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
+fi
 if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
   echo -e "${RD}The following containers require a reboot:${CL}"
   for container_name in "${containers_needing_reboot[@]}"; do
@@ -448,4 +469,7 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
       pct reboot ${container}
     done
   fi
+fi
+if [ "${#containers_skipped_temporary[@]}" -gt 0 ]; then
+  exit 75
 fi

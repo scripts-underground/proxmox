@@ -43,7 +43,7 @@ Each is called by `build.func` during `setup_script`:
 
 ### Message output — Called from framework files and user scripts everywhere
 
-- **`msg_info()`** — Prints a step-in-progress line + spinner. Reads `$1` (message).
+- **`msg_info()`** — Prints a step-in-progress line + spinner. Reads `$1` (message). Its background UI child closes only the app-maintenance FD; productive descendants retain ownership.
 - **`msg_ok()`** — Replaces spinner with green checkmark. Reads `$1` (message).
 - **`msg_error()`** — Prints red error line. Reads `$1` (message). Does not exit.
 - **`msg_warn()`** — Prints yellow warning line. Reads `$1` (message).
@@ -64,7 +64,14 @@ Each is called by `build.func` during `setup_script`:
 
 ### Update runner
 
-- **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Writes the per-app pending flag `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; `on_exit` removes it only when the run exits 0. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`. Other options exit 65. Called by `lxc_setup` and the LXC/addon update bundles.
+- **`app_maintenance_acquire <key>`** — Returning helper for one app's maintenance fork lineage. Keys are 1–64 ASCII lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric. Acquires a native nonblocking flock on a stable empty private inode under `/var/lib/scripts-underground/maintenance-locks`; validates root ownership, safe nonsymlink ancestors, 0700 leaf and 0600 one-link regular file plus opened-FD/path identity. Returns 0 held/validated same-key fork borrow, 65 bad key, 69 unsafe/unavailable infrastructure, 70 different-key lineage misuse, 75 contention. Requires executable flock/stat/mkdir (including compatible BusyBox applets), never installs dependencies or repairs existing metadata. State is non-exported even under set-a; exec'd commands acquire independently. Never unlink/unlock the inode: final kernel FD closure releases it, including productive children surviving launcher death. A new independent update must not borrow.
+- **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Pure argument/key validation precedes a fresh maintenance owner; in-lineage wrapper re-entry exits 70. Ownership covers pending admission, hook/recovery, outer `on_exit` cleanup and pending retirement, including explicit hook exit. Writes `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; successful EXIT removes it. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`; other options exit 65. Busy 75 runs no preparation/hook/cleanup or pending mutation. Refusals use non-spawning stderr diagnostics without stopping another owner's spinner. Called by `lxc_setup` and LXC update bundles.
+- **`_run_update_script <prepare-function-or-empty> [--clean]`** — Internal literal callback injection used by addon bundles with `addon_baseline`. Validates the declared preparation function, acquires a fresh owner, calls preparation normally **before** pending/FORCE admission, then follows the public update path. Preparation failure preserves its status and any prior pending bit without arming app cleanup. No public `--prepare` option or addon import in core.
+
+The fresh owner clears its transient pending/cleanup variables after acquiring,
+before preparation; refusals do not clear an outer owner's state. Those variables
+remain non-exported after normal assignment even under set-a, so an exec'd
+framework descendant cannot inherit cleanup or another live pending obligation.
 
 ### Cleanup
 

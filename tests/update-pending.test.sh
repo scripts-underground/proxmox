@@ -11,13 +11,14 @@ if [[ "${UPDATE_PENDING_NS:-}" != 1 ]]; then
   trap 'rm -rf -- "$state"' EXIT
   mkdir -p /var/lib/scripts-underground/update-pending
   [[ ! -L /var/lib/scripts-underground/update-pending ]]
-  unshare -m --propagation private env UPDATE_PENDING_NS=1 bash -c \
+  unshare -m --propagation private env UPDATE_PENDING_NS=1 UPDATE_MAINTENANCE_ROOT="$state/maintenance-locks" bash -c \
     'mount --bind "$1" /var/lib/scripts-underground/update-pending && exec bash "$2"' _ "$state" "$0"
   exit $?
 fi
 
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
-source "$ROOT/misc/core.func"
+# shellcheck source=/dev/null
+source <(sed "s|/var/lib/scripts-underground/maintenance-locks|$UPDATE_MAINTENANCE_ROOT|g" "$ROOT/misc/core.func")
 source "$ROOT/misc/error_handler.func"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

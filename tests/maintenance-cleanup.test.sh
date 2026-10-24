@@ -19,7 +19,10 @@ if [[ "${1:-}" == --child ]]; then
     mount --bind "$FIXTURE_CACHE" /var/cache
     mkdir -p /var/lib/scripts-underground/update-pending
     mount --bind "$FIXTURE_STATE" /var/lib/scripts-underground/update-pending
-    source "$ROOT/misc/core.func"
+    # The owner executes natively; only its fixed namespace is mapped to this
+    # private root so no mountpoint is created in the node's shared metadata.
+    # shellcheck source=/dev/null
+    source <(sed "s|/var/lib/scripts-underground/maintenance-locks|$CASE_ROOT/maintenance-locks|g" "$ROOT/misc/core.func")
   else
     source "$CASE_ROOT/core-subject.func"
   fi
@@ -87,6 +90,7 @@ work=$(mktemp -d "$TMPDIR/maintenance-cleanup.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/subjects"
 sed -e 's|/var/lib/scripts-underground/update-pending|${FIXTURE_STATE}|g' \
+  -e 's|/var/lib/scripts-underground/maintenance-locks|${CASE_ROOT}/maintenance-locks|g' \
   -e 's|/var/cache/apk|${FIXTURE_CACHE}/apk|g' \
   -e 's|/var/tmp|${FIXTURE_VAR_TMP}|g' \
   -e 's|/tmp|${FIXTURE_TMP}|g' -e 's|/root|${FIXTURE_HOME}|g' \

@@ -655,7 +655,10 @@ msg_info() {
   fi
 
   color_spinner
-  spinner &
+  {
+    _app_maintenance_ui_detach
+    spinner
+  } &
   SPINNER_PID=$!
   echo "$SPINNER_PID" > "${TMPDIR:-/tmp}/.spinner.pid"
   disown "$SPINNER_PID" 2> /dev/null || true
@@ -871,6 +874,150 @@ execute_optional_hook() {
 }
 
 # ------------------------------------------------------------------------------
+# app_maintenance_acquire <key>
+#
+# A stable per-app inode protects this shell's productive fork lineage. Hooks may
+# borrow that lineage's held FD; exec'd commands always acquire independently.
+# No explicit unlock/unlink: the last kernel FD closure ends ownership.
+# ------------------------------------------------------------------------------
+_app_maintenance_refuse() {
+  local _am_status=$1
+  shift
+  printf 'App maintenance: %s\n' "$*" >&2
+  return "$_am_status"
+}
+
+_app_maintenance_import_guard() {
+  local _am_name _am_declaration _am_attributes
+  for _am_name in _APP_MAINTENANCE_FD _APP_MAINTENANCE_KEY; do
+    if _am_declaration=$(declare -p "$_am_name" 2> /dev/null); then
+      _am_attributes=${_am_declaration#declare -}
+      _am_attributes=${_am_attributes%% *}
+      if [[ "$_am_attributes" == *x* ]]; then
+        unset _APP_MAINTENANCE_FD _APP_MAINTENANCE_KEY
+        break
+      fi
+    fi
+  done
+}
+
+_app_maintenance_lock() {
+  local _am_key=${1:-} _am_policy=${2:-borrow}
+  local _am_root=/var/lib/scripts-underground/maintenance-locks
+  local _am_remaining _am_part _am_dir='' _am_mode _am_metadata _am_path _am_before _am_fd _am_status=0 _am_borrow=0
+  if [[ -z "$_am_key" || ${#_am_key} -gt 64 || "$_am_key" == *[!abcdefghijklmnopqrstuvwxyz0123456789._-]* ||
+    "$_am_key" != [abcdefghijklmnopqrstuvwxyz0123456789]* ]]; then
+    _app_maintenance_refuse 65 "invalid app key: $_am_key"
+    return $?
+  fi
+  _app_maintenance_import_guard
+  if [[ -v _APP_MAINTENANCE_FD || -v _APP_MAINTENANCE_KEY ]]; then
+    if [[ "$_am_policy" == fresh || "${_APP_MAINTENANCE_KEY:-}" != "$_am_key" ]]; then
+      _app_maintenance_refuse 70 "owner lineage already active; cannot start $_am_key"
+      return $?
+    fi
+    [[ "${_APP_MAINTENANCE_FD:-}" =~ ^[0-9]+$ ]] || {
+      _app_maintenance_refuse 69 "invalid held descriptor for $_am_key"
+      return $?
+    }
+    _am_borrow=1 _am_fd=$_APP_MAINTENANCE_FD
+  fi
+  type -P flock stat mkdir > /dev/null || {
+    _app_maintenance_refuse 69 "$_am_key requires executable flock, stat and mkdir"
+    return $?
+  }
+  _am_remaining=${_am_root#/}
+  while [[ -n "$_am_remaining" ]]; do
+    _am_part=${_am_remaining%%/*}
+    _am_dir+="/$_am_part"
+    if [[ ! -e "$_am_dir" && ! -L "$_am_dir" && "$_am_borrow" == 0 ]]; then
+      _am_mode=0755
+      [[ "$_am_dir" != "$_am_root" ]] || _am_mode=0700
+      command mkdir -m "$_am_mode" -- "$_am_dir" 2> /dev/null || [[ -d "$_am_dir" ]] || {
+        _app_maintenance_refuse 69 "cannot create $_am_dir for $_am_key"
+        return $?
+      }
+    fi
+    [[ ! -L "$_am_dir" && -d "$_am_dir" ]] || {
+      _app_maintenance_refuse 69 "unsafe directory $_am_dir for $_am_key"
+      return $?
+    }
+    _am_metadata=$(command stat -c '%u:%a' -- "$_am_dir") || {
+      _app_maintenance_refuse 69 "cannot inspect directory $_am_dir for $_am_key"
+      return $?
+    }
+    _am_mode=${_am_metadata#*:}
+    [[ "${_am_metadata%%:*}" == 0 && "$_am_mode" =~ ^[0-7]+$ ]] &&
+      (((8#$_am_mode & 0022) == 0)) &&
+      [[ "$_am_dir" != "$_am_root" || "$_am_mode" == 700 ]] || {
+      _app_maintenance_refuse 69 "unsafe ownership/mode at $_am_dir for $_am_key"
+      return $?
+    }
+    if [[ "$_am_remaining" == */* ]]; then _am_remaining=${_am_remaining#*/}; else _am_remaining=''; fi
+  done
+  _am_path=$_am_root/$_am_key.lock
+  if [[ ! -e "$_am_path" && ! -L "$_am_path" && "$_am_borrow" == 0 ]]; then
+    (
+      umask 077
+      set -C
+      : > "$_am_path"
+    ) 2> /dev/null || true
+  fi
+  [[ ! -L "$_am_path" && -f "$_am_path" ]] || {
+    _app_maintenance_refuse 69 "unsafe lock $_am_path"
+    return $?
+  }
+  _am_before=$(command stat -c '%d:%i:%u:%a:%h:%s' -- "$_am_path") || {
+    _app_maintenance_refuse 69 "cannot inspect lock $_am_path for $_am_key"
+    return $?
+  }
+  [[ "$_am_before" == *:0:600:1:0 ]] || {
+    _app_maintenance_refuse 69 "unsafe lock ownership/mode/links/size at $_am_path"
+    return $?
+  }
+  if [[ "$_am_borrow" == 0 ]]; then
+    exec {_am_fd}>> "$_am_path" || {
+      _app_maintenance_refuse 69 "cannot open $_am_path"
+      return $?
+    }
+  fi
+  if [[ "$(command stat -Lc '%d:%i:%u:%a:%h:%s' -- "/proc/self/fd/$_am_fd")" != "$_am_before" ||
+  -L "$_am_path" || "$(command stat -c '%d:%i:%u:%a:%h:%s' -- "$_am_path")" != "$_am_before" ]]; then
+    [[ "$_am_borrow" != 0 ]] || exec {_am_fd}>&-
+    _app_maintenance_refuse 69 "path/descriptor identity changed at $_am_path"
+    return $?
+  fi
+  command flock -n "$_am_fd" || _am_status=$?
+  if [[ "$_am_status" != 0 ]]; then
+    [[ "$_am_borrow" != 0 ]] || exec {_am_fd}>&-
+    if [[ "$_am_borrow" == 0 && "$_am_status" == 1 ]]; then
+      _app_maintenance_refuse 75 "$_am_key temporarily unavailable/busy at $_am_path; retry after the holder finishes; do not delete the lock"
+    else
+      _app_maintenance_refuse 69 "cannot establish ownership at $_am_path (flock status $_am_status)"
+    fi
+    return $?
+  fi
+  _APP_MAINTENANCE_FD=$_am_fd _APP_MAINTENANCE_KEY=$_am_key
+  export -n _APP_MAINTENANCE_FD _APP_MAINTENANCE_KEY
+}
+
+app_maintenance_acquire() {
+  [[ $# == 1 ]] || {
+    _app_maintenance_refuse 65 'expected one app key'
+    return $?
+  }
+  _app_maintenance_lock "$1" borrow
+}
+
+# Only the actual background UI spawn calls this. Productive children retain the
+# descriptor, including after launcher death; foreground spinner calls never close it.
+_app_maintenance_ui_detach() {
+  if [[ "${_APP_MAINTENANCE_FD:-}" =~ ^[1-9][0-9]+$ ]]; then
+    exec {_APP_MAINTENANCE_FD}>&-
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # run_update_script [--clean]
 #
 # - Runs the update_script hook; terminal (always exits)
@@ -881,19 +1028,41 @@ execute_optional_hook() {
 #   redeployed through the app's normal backup/restore path
 # ------------------------------------------------------------------------------
 run_update_script() {
+  _run_update_script '' "$@"
+}
+
+# Internal preparation injection; no public command-line preparation option.
+_run_update_script() {
+  local prepare=${1:-}
+  shift
   local mode=normal pending_dir=/var/lib/scripts-underground/update-pending
+  if [[ -n "$prepare" ]] && { [[ ! "$prepare" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || ! declare -F "$prepare" > /dev/null; }; then
+    _app_maintenance_refuse 70 "invalid preparation function: $prepare" || exit $?
+  fi
   if [[ $# -eq 1 && "$1" == "--clean" ]]; then
     mode=clean
   elif [[ $# -ne 0 ]]; then
-    msg_error "Unsupported update options; use: update  or  update --clean"
+    printf 'Unsupported update options; use: update  or  update --clean\n' >&2
     exit 65
   fi
   local slug="${NSAPP:-${APP_SLUG:-}}"
   if [[ -z "$slug" ]]; then
-    msg_error "Cannot determine the app to update"
+    printf 'Cannot determine the app to update\n' >&2
     exit 65
   fi
+  _app_maintenance_lock "$slug" fresh || exit $?
+  # Only a fresh owner initializes these transient obligations. Refused nested
+  # calls must not clear the outer owner's state, and exec must not transport it.
+  unset _UPDATE_PENDING_FLAG _UPDATE_CLEANUP
+  _UPDATE_CLEANUP=0
+  export -n _UPDATE_CLEANUP
+  if [[ -n "$prepare" ]]; then
+    "$prepare"
+    local prepare_status=$?
+    [[ $prepare_status -eq 0 ]] || exit "$prepare_status"
+  fi
   _UPDATE_PENDING_FLAG="${pending_dir}/${slug}"
+  export -n _UPDATE_PENDING_FLAG
   if [[ "$mode" == "clean" || -e "$_UPDATE_PENDING_FLAG" ]]; then
     [[ "$mode" == "clean" ]] || msg_warn "Previous ${APP:-$slug} update did not finish - redoing it"
     export UPDATE_FORCE=1 FORCE_DEPLOY=1
@@ -901,6 +1070,7 @@ run_update_script() {
   mkdir -p "$pending_dir" || exit $?
   printf '%s\n' "$mode" > "$_UPDATE_PENDING_FLAG" || exit $?
   _UPDATE_CLEANUP=1
+  export -n _UPDATE_CLEANUP
   # Plain call (no if/||): errexit must stay active inside the hook.
   execute_optional_hook update_script
   local hook_status=$?

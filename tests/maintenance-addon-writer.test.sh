@@ -18,12 +18,12 @@ check() {
 for fault in cat missing context write chmod link publish none; do
   c="$work/$fault"
   mkdir -p "$c/stage" "$c/sbin" "$c/bin"
-  printf 'load_functions() { :; }; color() { :; }; run_update_script() { update_script; }\n' > "$c/stage/core.func"
+  printf 'load_functions() { :; }; color() { :; }; _run_update_script() { "$1"; shift; update_script "$@"; }\n' > "$c/stage/core.func"
   printf 'catch_errors() { :; }\n' > "$c/stage/error_handler.func"
   printf 'pkg_install() { :; }\n' > "$c/stage/install.func"
   printf 'fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
   printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
-  printf 'addon_baseline() { :; }\n' > "$c/stage/addon.func"
+  printf 'addon_baseline() { printf "baseline\\n" >> "$ORDER_FILE"; }\n' > "$c/stage/addon.func"
   printf '#!/bin/bash\nprintf "PREVIOUS_VALID\\n"\n' > "$c/sbin/update_probe"
   chmod 0755 "$c/sbin/update_probe"
   cp -p "$c/sbin/update_probe" "$c/previous"
@@ -33,7 +33,10 @@ for fault in cat missing context write chmod link publish none; do
   (
     source "$c/subject.func"
     export APP=Probe APP_SLUG=probe REPO_BASE=offline
-    update_script() { printf 'NEW_RESULT\n'; }
+    update_script() {
+      printf 'hook\n' >> "$ORDER_FILE"
+      printf 'NEW_RESULT\n'
+    }
     cat() {
       [[ "$fault" != cat || "${1:-}" != */tools.func ]] || return 47
       if [[ "$fault" == write ]]; then command cat "$@" > /dev/full; else command cat "$@"; fi
@@ -68,7 +71,8 @@ for fault in cat missing context write chmod link publish none; do
     check "$(cmp -s "$c/previous" "$c/sbin/update_probe" && printf same || printf changed)" same "$fault previous valid bundle bytes preserved"
     check "$(stat -c %a "$c/sbin/update_probe")" 755 "$fault previous bundle mode preserved"
   else
-    check "$(bash "$c/sbin/update_probe")" NEW_RESULT 'success atomically publishes executable consumer result'
+    check "$(ORDER_FILE="$c/order" bash "$c/sbin/update_probe")" NEW_RESULT 'success atomically publishes executable consumer result'
+    check "$(cat "$c/order")" $'baseline\nhook' 'literal runner transports preparation before the hook (owner modeled)'
   fi
   if [[ -f "$c/owned-stages" ]]; then
     while IFS= read -r stage; do

@@ -6,7 +6,8 @@ systemd-detect-virt --vm --quiet || exit 1
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 if [[ "${1:-}" == --hook ]]; then
   c="$CASE_DIR"
-  source "$ROOT/misc/core.func"
+  # shellcheck source=/dev/null
+  source <(sed "s|/var/lib/scripts-underground/maintenance-locks|$c/maintenance-locks|g" "$ROOT/misc/core.func")
   source "$ROOT/misc/error_handler.func"
   source "$ROOT/misc/tools.func"
   load_functions

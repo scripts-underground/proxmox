@@ -42,7 +42,8 @@ for mode in no yes; do
     c="$work/aria-$mode-$fault"
     mkdir -p "$c/state" "$c/tmp"
     : > "$c/aria2c"
-    sed "s|/var/lib/scripts-underground/update-pending|$c/state|g" "$ROOT/misc/core.func" > "$c/core.func"
+    sed -e "s|/var/lib/scripts-underground/update-pending|$c/state|g" \
+      -e "s|/var/lib/scripts-underground/maintenance-locks|$c/maintenance-locks|g" "$ROOT/misc/core.func" > "$c/core.func"
     sed -n '/^function update_script() {/,/^}/p' "$ROOT/scripts/lxc/aria2.sh" | sed "s|/usr/bin/aria2c|$c/aria2c|g" > "$c/hook.sh"
     rc=0
     env -i PATH="$PATH" TMPDIR="$c/tmp" HOME="$c" CASE_ROOT="$c" FAULT="$fault" VERBOSE="$mode" \

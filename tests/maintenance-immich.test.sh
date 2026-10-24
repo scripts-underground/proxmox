@@ -50,7 +50,8 @@ elif [[ "${1:-}" == --child ]]; then
   mount --bind "$c/cache" /var/cache
   mount --bind "$c/state" /var/lib/scripts-underground/update-pending
   [[ "$(stat -c %d /opt/immich)" != "$(stat -c %d "$TMPDIR")" ]]
-  source "$ROOT/misc/core.func"
+  # shellcheck source=/dev/null
+  source <(sed "s|/var/lib/scripts-underground/maintenance-locks|$c/maintenance-locks|g" "$ROOT/misc/core.func")
   source "$ROOT/misc/error_handler.func"
   source "$ROOT/misc/tools.func"
   load_functions

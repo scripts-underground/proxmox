@@ -11,7 +11,7 @@ the legacy CT-destroying harness described below.
 | # | Test | Actual outcome and modeled boundary |
 |---|---|---|
 | 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed |
-| 2 | `maintenance-cleanup.test.sh` | Default filesystem-literal model supports safe RED; `--native` uses unmodified helpers with private disk-backed root/cache/state binds. Actual cache bytes/pending/exit outcomes; package/language executables are modeled, not real package removal |
+| 2 | `maintenance-cleanup.test.sh` | Default filesystem-literal model supports safe RED; `--native` uses original cleanup helpers with private disk-backed root/cache/state binds and the maintenance namespace literal mapped to its owned fixture. Actual cache bytes/pending/exit outcomes; package/language executables are modeled, not real package removal |
 | 3 | `maintenance-temp-root.test.sh` | Default literal-path instrumentation supports safe RED; `--native` executes unmodified temp/cache/bundle/API helpers. Curl/pct and final addon-destination writing are modeled; fetched/delivered bytes and owned-stage cleanup are actual files |
 | 4 | `maintenance-build-temp.test.sh` | Actual normal/retry preparation fragments and bundle assembler, executed receiver environment/path/mode and failed-preparation boundary; pct/OS hooks are modeled. `--baseline` reads immutable5914963 history and instruments its old paths for the intended negative control |
 | 5 | `maintenance-bundle-bootstrap.test.sh` | Actual install bootstrap and error/cleanup consumer against modeled deployed-baseline network responses; mapped filesystem literals. Verifies already inlined handlers are not refetched/replaced |
@@ -47,6 +47,7 @@ the legacy CT-destroying harness described below.
 | 35 | `maintenance-immich.test.sh` | Cold fresh/update/source-pin/library/CPU/same-version/missing-record/failure controls, native selected-source country-name reader and live CLI publication checks; disk-backed cross-device global scratch proves app-disk projection without full-copy fallback; each pnpm/tool/ML/publication failure checks exact current-stage cleanup, prior unknown-stage retention, source inputs and status/retry/pending truth. All mutable roots are validated/mapped before execution with VM-global pre/post boundaries. CLI artifacts, image/app compilers, ML, DB/service and other downloads are explicitly modeled |
 | 36 | `maintenance-retry-callers.test.sh` | Native execution of actual Frigate wheel and all eight Immich Python/ML loop fragments in quiet/verbose modes; all three attempts, reachable third-attempt recovery, exact exhaustion status and no false continuation/success. Dependency commands are models |
 | 37 | `maintenance-template-lock.test.sh` | Real concurrent processes, flock/FD/inode lifetime, atomic archive publication, different TMPDIRs, cache aliases, independent storages/names, ancient mtime, waiter/ERR/EXIT/death, surviving productive child and guest-PTY spinner. Actual tar/xz/openEuler bytes and unsafe file/owner/mode/read failures; pvesm activation/path, pveam catalogue/download and pct boundaries are explicitly modeled |
+| 38 | `maintenance-update-lock.test.sh --native` | Actual owner/wrapper/EXIT/cleanup, cold LXC/addon writers, installed exec and lxc_setup; native util-linux/Alpine BusyBox, safe metadata, fresh-wrapper hook borrow, transient non-exported obligations and productive-child death. Real identified spinner is observed alive while owner is held and after launcher SIGKILL, with PTY master/drainer alive; a core copy with only the detach call removed must fail (`--ui-no-detach <core>`). `--review-baseline <preserved-subjects>` tests pre-correction owner/batch behavior; `--baseline <original-framework-dir>` tests the old pending race. Whole batch partial75, successful-CT reboot and ordinary failure execute with recording PVE/network boundaries, never real CT/backup operations. Requires root, private disk TMPDIR and `ALPINE_BUSYBOX` |
 
 The build-hook Paperclip controls include actual fresh install with inherited
 INSTALL_LOG and higher-priority _HOST_LOGFILE in both STD modes. Only an exact
@@ -77,10 +78,15 @@ timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-cleanup.test.s
 timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-temp-root.test.sh --native
 timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-build-temp.test.sh
 timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-bundle-bootstrap.test.sh
+timeout --signal=TERM --kill-after=30 600 bash tests/maintenance-update-lock.test.sh --native
 ```
 
-`update-pending.test.sh` binds only the pending directory to its disk fixture,
-leaving a workspace elsewhere under `/var/lib/scripts-underground` visible.
+`update-pending.test.sh` binds the pending directory and maps the maintenance-lock
+literal into the same owned disk fixture, leaving the real framework namespace
+and workspace untouched. The affected app/cleanup/bootstrap/consumer fixtures
+likewise map only the new lock literal while retaining their original assertions;
+the owner still executes native flock/stat/mkdir. These modes require root and a
+root-owned private TMPDIR ancestry without group/world-writable components.
 `container-install-failure.test.sh` preserves both inherited-creator/default and
 explicit receiving `var_lxc_tmpdir` assertions; its unset-creator allocation case
 labels and instruments the legacy default rather than writing into guest RAM.

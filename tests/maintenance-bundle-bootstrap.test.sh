@@ -47,6 +47,7 @@ printf 'cached\n' > "$work/home/.cache/pip/proof"
 git -C "$ROOT" show 59149630ec9f1805295f1d01f43ba5cbafe4b77a:misc/core.func > "$work/old-core.func"
 git -C "$ROOT" show 59149630ec9f1805295f1d01f43ba5cbafe4b77a:misc/error_handler.func > "$work/old-error.func"
 sed -e 's|/var/lib/scripts-underground/update-pending|${FIXTURE}/state|g' \
+  -e 's|/var/lib/scripts-underground/maintenance-locks|${FIXTURE}/maintenance-locks|g' \
   -e 's|/var/tmp|${FIXTURE}/vartmp|g' -e 's|/tmp|${FIXTURE}/tmp|g' -e 's|/root|${FIXTURE}/home|g' \
   "$ROOT/misc/core.func" > "$work/core.func"
 rc=0

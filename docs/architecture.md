@@ -110,7 +110,48 @@ bundles pushed at install time:
   `/usr/local/sbin/uninstall_<slug>` (same lifecycle rules)
 
 Update bundles and `lxc_setup` run `update_script` through `run_update_script`
-(core.func): `update` or `update --clean`, other options exit 65. A flag in
+(core.func): `update` or `update --clean`, other options exit 65. The runner
+acquires a fresh per-app maintenance owner before pending admission. One stable
+empty root-owned 0600 one-link inode lives under the private 0700
+`/var/lib/scripts-underground/maintenance-locks`; its nonsymlink ancestors must be
+root-owned and not group/world writable. Existing unsafe metadata is refused,
+never repaired. Opening checks path/FD identity, using executable flock/stat/mkdir
+rather than caller function models. No filesystem-type or findmnt dependency is
+introduced. Canonical keys use the existing NSAPP/APP_SLUG: 1–64 ASCII lowercase
+alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric. Different keys
+and CT filesystems remain independent.
+
+`app_maintenance_acquire(key)` can acquire a direct owner or borrow the matching
+validated FD in that owner's productive fork lineage. Owner state stays
+non-exported, including under set-a; exported/imported values are discarded. An exec'd command
+acquires independently. A different-key borrow or re-entering the terminal update
+runner in the same lineage refuses 70. Bad keys return 65, unsafe/unavailable
+infrastructure 69 and contention 75. Nonblocking `flock -n FD` supports util-linux
+and compatible BusyBox applets; BusyBox's coarser native status 1 fails closed 75.
+Missing executables fail before update effects, without package installation.
+Diagnostics use builtin stderr output, avoiding another owner's shared spinner
+PID file. Lock inodes are never unlinked, replaced or age-deleted.
+
+The main update shell keeps its FD through hook subshells, app recovery and outer
+EXIT cleanup/pending retirement. No second global EXIT trap or explicit unlock is
+needed: the last kernel FD closure releases ownership. Productive children retain
+it after launcher death until their work ends. Only msg_info's actual background
+UI spawn closes the maintenance FD before spinner; foreground spinner calls and
+productive work do not. PID 1-started services do not inherit the hook's descriptor.
+A directly spawned persistent daemon that retains the descriptor keeps the app
+lock until it exits; later independent updates then report 75.
+This protocol covers participating generations only: drain old unguarded updaters
+before deploying/refreshing frozen bundles. Framework source-time bootstrap still
+precedes update ownership; this does not promise no effects from an old/missing
+transport prerequisite before the runner is reached.
+
+Addon update bundles pass their literal `addon_baseline` preparation to internal
+`_run_update_script`, so baseline runs under the same owner but before pending and
+FORCE admission. Its failure preserves the original status and prior flag without
+arming app cleanup; invalid user options refuse before preparation. Core does not
+know its addon consumer or expose arbitrary preparation as a user option.
+
+A flag in
 `/var/lib/scripts-underground/update-pending/<app>` is written before the hook and
 removed only when the run exits 0. If the flag already exists, or `--clean` is
 given, the run sets `UPDATE_FORCE=1 FORCE_DEPLOY=1`: release checks report
@@ -133,6 +174,17 @@ a directory selection does not establish file ownership. Bundle/API owners remov
 their own exact stages at their lifecycle boundaries instead.
 An existing hook that calls this public helper explicitly acknowledges the same
 due cleanup, so its later successful exit does not repeat package/cache work.
+
+The PVE batch updater treats raw status 75 conservatively as temporary/busy, not
+as proof of a unique authenticated refusal: a hook can also return 75. Immediately
+after result capture it skips automatic shutdown, resource restore, backup
+rollback and reboot eligibility, preserving state at result capture and retaining
+any backup already taken. A CT successfully started by this
+batch remains running; any requested build-resource increase is not automatically
+restored. Messages identify successful starts and requested build/run values,
+without claiming a requested config change succeeded. Final output reports partial
+completion and skipped CTs, then exits 75 after ordinary successful-CT reboot
+handling. Ordinary successful and non-75 failure behavior is unchanged.
 
 `silent` is a returning same-shell command wrapper. Quiet command output goes to
 the active log, and its exact status is available to `if`/`||` retry branches.
