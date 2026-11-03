@@ -4,11 +4,26 @@ Proxmox scripts — upstream picks, community additions, fork-friendly.
 
 ## Development
 
-The recommended way to work on this project is inside the included devcontainer.
-It ships with everything the project needs — Ruby 3.3, Jekyll and plugins,
-Go 1.25 for the AST tool, `pre-commit`, `shellcheck`, and `shfmt` — and wires
-the pre-commit git hook automatically on container create. Jekyll auto-starts
-on port 4000 (forwarded to the host).
+The normal test route is **guest-first**: edit source in your checkout, then
+deliver an exact candidate and independently owned context into the assigned VM.
+Run `tests/run` inside that guest. The repository does not select or SSH to a VM.
+See [tests/README.md](tests/README.md) for admission, scopes and evidence.
+
+```bash
+# Inside the assigned guest's admitted source checkout; TMPDIR is declared by context.
+python3 -B tests/run --list
+python3 -B tests/run --check --context "$CONTEXT" --suite workflow-ownership --mode fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite workflow-ownership --mode fixture
+```
+
+The trusted outer VM-owner route generates/delivers context. It binds its receipt,
+actual DMI/disks/filesystems, byte+mode source manifest and selected operations
+before effects. A fixture must never certify its own current values. Builds,
+tests, generators and consumers execute in the assigned VM; an unavailable guest
+is a blocker. Each child uses disk-backed TMPDIR.
+
+The devcontainer provides Ruby3.3/Jekyll, Go1.25, pre-commit, ShellCheck and shfmt.
+Run development containers inside the assigned VM as well.
 
 ### Open in a devcontainer
 
@@ -20,14 +35,13 @@ on port 4000 (forwarded to the host).
   `.devcontainer/devpod_reset.sh` is included to nuke stale containers when
   you need a fresh build
 
-Once inside the devcontainer, no further setup is required — commits will
-run the pre-commit hooks automatically and Jekyll will be reachable at
-`http://localhost:4000`.
+Use the assigned guest workspace when opening a development container. Its
+pre-commit hooks are wired automatically. Inspect the guest's actual preview
+listener and use the existing outer-owner route for any requested forwarding.
 
 ### Without a devcontainer
 
-If you can't or prefer not to use a devcontainer, you can set up the toolchain
-on your host directly.
+You can also provision the toolchain natively inside the assigned development VM.
 
 #### Prerequisites
 
@@ -72,10 +86,10 @@ docker run --rm -it \
   jekyll serve --livereload
 ```
 
-#### Pre-commit hooks (host setup)
+#### Pre-commit hooks (guest setup)
 
-Inside the devcontainer these are wired automatically. On the host, install
-manually before your first commit:
+Inside the devcontainer these are wired automatically. In a native guest checkout,
+install them before your first commit:
 
 ```bash
 uv tool install pre-commit    # or: pipx install pre-commit

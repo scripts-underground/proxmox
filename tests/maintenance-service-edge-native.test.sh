@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Native manager tombstones/broken settings; unique owned unit fixtures only.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" maintenance-service-edge-native "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 systemd-detect-virt --vm --quiet || exit 1
 : "${TMPDIR:?disk-backed TMPDIR required}" "${L2_NATIVE_FIXTURES:?explicit native fixture scope required}"
 [[ "$L2_NATIVE_FIXTURES" == owned-maintenance-vm ]] || exit 65

@@ -393,6 +393,20 @@ Rules specific to addons:
 
 ## Pre-commit checklist
 
+Run formatting, linting, generators and behavior tests inside the assigned VM,
+using disk-backed TMPDIR. Source editing and custody/export are separate from
+guest execution. The normal guest test entrypoint is `python3 -B tests/run`:
+`--list` shows registered suites/modes; `--check --context "$CONTEXT" --suite
+<name> --mode <mode>` performs read-only admission; replace `--check` with `--run`
+to dispatch that fixed source consumer. See [the test guide](../tests/README.md).
+
+The trusted outer owner supplies context from its VM receipt, independently
+observed identity and exact source manifest. Keep it root-owned/read-only outside
+the candidate, beneath nonsymlink root-owned non-writable ancestors. Do not
+generate authority from a connection or a fixture's current state. Changed source
+bytes/modes require a newly archived/admitted revision. Keep baseline subjects,
+failures and logs; do not refresh a guard to bless drift.
+
 - [ ] `shfmt -i 2 -ci -sr -w scripts/lxc/<slug>.sh`
 - [ ] `shellcheck --severity=warning scripts/lxc/<slug>.sh`
 - [ ] `go run ./tools/ast/.` — regenerate AST files (REPO_BASE check runs here)

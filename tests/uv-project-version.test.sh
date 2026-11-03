@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Real runtime-helper checks. Run as root only in a disposable guest.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" uv-project-version "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 systemd-detect-virt -q || {
   printf 'Run this test inside a disposable VM/container.\n' >&2
   exit 1
@@ -116,3 +118,7 @@ UV_PROJECT_DIR="$work/closed-range" setup_uv
 test "$(/usr/local/bin/uv --version | cut -d' ' -f2)" == 0.12.22
 (cd "$work/closed-range" && /usr/local/bin/uv sync)
 "$work/closed-range/.venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 14); print("PASS real project consumer accepts selected closed-range uv and Python")'
+printf 'RUNTIME_FINAL_UV '
+/usr/local/bin/uv --version
+"$work/closed-range/.venv/bin/python" -c 'import json,sys; print("RUNTIME_PROJECT_PYTHON",json.dumps({"version":sys.version,"executable":sys.executable}))'
+sha256sum /usr/local/bin/uv "$work/closed-range/.venv/bin/python" "$work/closed-range/pyproject.toml"

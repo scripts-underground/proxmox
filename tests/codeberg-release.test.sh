@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Deterministic release-provider regressions. Run inside a disposable guest.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" codeberg-release "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 source "$ROOT/misc/tools.func"
@@ -15,8 +17,10 @@ if [[ "${1:-}" == --bundle ]]; then
   source "$ROOT/misc/error_handler.func"
   source "$ROOT/misc/bundle.func"
   load_functions
-  CTID="${2:?supply the disposable container ID}"
-  export REPO_BASE="${3:?supply the HTTP-served candidate tree}"
+  trap 'rm -rf "$work"' EXIT
+  CTID="${SU_TEST_CTID:?checked outer owner required}"
+  export REPO_BASE="${SU_TEST_REPO_BASE:?owned candidate publisher required}"
+  export var_lxc_tmpdir=/var/lib/scripts-underground-test/tmp
   SESSION_ID=$(openssl rand -hex 4)
   export APP='Codeberg Provider Probe'
   export NSAPP=codeberg-provider-probe
@@ -28,6 +32,7 @@ if [[ "${1:-}" == --bundle ]]; then
       0.23.4 "$var_lxc_probe_target" 'readeck-*-linux-amd64'
     "$var_lxc_probe_target/$var_lxc_probe_app" version
     test "$(< "$HOME/.$var_lxc_probe_app")" == 0.23.4
+    sha256sum "$var_lxc_probe_target/$var_lxc_probe_app" "$HOME/.$var_lxc_probe_app"
     printf 'PASS self-contained Codeberg update bundle\n'
   }
   destination="/root/provider-update-$SESSION_ID.sh"
@@ -41,6 +46,7 @@ if [[ "${1:-}" == --live ]]; then
   source "$ROOT/misc/core.func"
   source "$ROOT/misc/error_handler.func"
   load_functions
+  trap 'rm -rf "$work"' EXIT
   export HOME="$work/home" INSTALL_LOG="$work/provider.log"
   mkdir "$HOME"
   for spec in \
@@ -52,6 +58,7 @@ if [[ "${1:-}" == --live ]]; then
     expected=$(get_latest_codeberg_release "$repo")
     check_for_codeberg_release "$app" "$repo"
     selected="$CHECK_UPDATE_RELEASE"
+    printf 'RUNTIME_SELECTED_REFERENCE app=%s repo=%s selected=%s expected=%s\n' "$app" "$repo" "$selected" "$expected"
     VERBOSE=yes set_std_mode
     fetch_and_deploy_codeberg_release "$app" "$repo" "$mode" "$selected" "$target" "$pattern"
     test -s "$target/$required"
@@ -74,6 +81,7 @@ if [[ "${1:-}" == --live ]]; then
       "$target/readeck" version
     fi
     printf 'PASS live install/update %s (%s)\n' "$app" "$expected"
+    sha256sum "$target/$required" "$target/.provider-test" "$HOME/.$app"
   done
   exit 0
 fi

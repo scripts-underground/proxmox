@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-of-chain checks inside an installed disposable RomM container.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" romm-live-verification "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 systemd-detect-virt -q
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Native acceptance runs only in the explicitly owned PVE guest. No generic CT harness.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" maintenance-globnotes-lxc "$@" || exit $?
 
 ctid='' origin='' cdp='' evidence='' guard_manifest='' fixture_role='' stage=all native=0
 run_id="$(date -u +%Y%m%dT%H%M%S)-$$"
@@ -53,9 +54,9 @@ repo=$(realpath -- "$(dirname -- "${BASH_SOURCE[0]}")/..")
 # Data only: no shell evaluation, commands or implicit delivery files in the guard.
 # This preflight is read-only, including dependency/source/protection checks.
 verify_guard() {
-  python3 - "$guard_manifest" "$repo" "$ctid" "$evidence" << 'PY'
+  python3 - "$guard_manifest" "$repo" "$ctid" "$evidence" "$stage" << 'PY'
 import hashlib,json,os,pathlib,re,shutil,sqlite3,stat,subprocess,sys
-gpath,repo,ctid,evidence=sys.argv[1:];r=pathlib.Path(repo)
+gpath,repo,ctid,evidence,stage=sys.argv[1:];r=pathlib.Path(repo)
 def require(ok,message):
     if not ok: raise SystemExit('Native guard: '+message)
 def absolute(value):
@@ -71,7 +72,22 @@ def command(*args):return subprocess.check_output(args,text=True,close_fds=True)
 try:
  require(pathlib.Path(gpath).stat().st_uid==0 and pathlib.Path(gpath).stat().st_mode&0o022==0,'guard must be root-owned and not group/world writable')
  g=json.loads(pathlib.Path(gpath).read_text())
- require(set(g)=={'version','workspace','source','vm','protected','fixtures'},'top-level schema')
+ require(set(g)=={'version','workspace','source','vm','protected','fixtures','topology'},'top-level schema')
+ sys.path.insert(0,str(r/'tests/lib'))
+ from test_context import read_custody,Context
+ require(read_custody(pathlib.Path(gpath))==g,'independent strong manifest custody')
+ topology=g['topology']
+ require(set(topology)=={'bridge','storage','template_storage','vg','pool','root_prefix','source_url','dependency_url'},'topology schema')
+ for key in ['bridge','storage','template_storage','vg','pool']:
+    require(isinstance(topology[key],str) and re.fullmatch('[A-Za-z0-9_-]{1,40}',topology[key]),'topology identifier')
+ require(topology['root_prefix']=='/dev/'+topology['vg'],'topology root-volume prefix')
+ require(pathlib.Path('/sys/class/net/'+topology['bridge']).is_dir(),'declared bridge missing')
+ from urllib.parse import urlsplit
+ admitted=Context.admit(os.environ['SU_TEST_CONTEXT'],'maintenance-globnotes-lxc','guard' if stage=='guard' else 'native-app')
+ address=admitted.operation['native']['address']
+ for key in ['source_url','dependency_url']:
+    url=urlsplit(topology[key]);require(url.scheme=='http' and url.hostname==address and url.port and not url.username and not url.password,'private declared HTTP topology')
+ pool_device=topology['vg'].replace('-','--')+'-'+topology['pool'].replace('-','--')+'-tpool'
  require(g['version']==1,'unsupported schema version')
  for tool in ['git','jq','pct','lvs','dmsetup','findmnt','flock','curl','systemctl','systemd-run','chromium','runuser','ss','getent','timeout','lxc-info','lxc-ls','sha256sum','df','free','du','stat','cmp','realpath','blkid','cp','mkdir','cat','tr','sed','grep','cut','ps','install','chown']:
     require(shutil.which(tool) is not None,'missing dependency: '+tool)
@@ -144,14 +160,14 @@ try:
  if pathlib.Path('/etc/pve/lxc/'+ctid+'.conf').exists():
     config=command('pct','config',ctid)
     require('hostname: '+f['name']+'\n' in config+'\n' and 'hwaddr='+f['mac'].lower() in config.lower(),'CT name/MAC mismatch')
-    require('bridge=vmbrgn24' in config and 'rootfs: local-lvm:vm-'+ctid+'-disk-0,size=8G' in config,'CT network/root ownership')
+    require('bridge='+topology['bridge'] in config and 'rootfs: '+topology['storage']+':vm-'+ctid+'-disk-0,size=8G' in config,'CT network/root ownership')
     expected_lv,expected_fs=f['lv_uuid'],f['fs_uuid']
     if expected_lv is None and not f['completed']:
       intent=json.loads((e/'create-intent.json').read_text());created=json.loads((e/'identity.json').read_text())
       require(intent['freeBeforeCreate'] is True and intent['ctid']==ctid and intent['mac']==f['mac'],'missing guarded creation intent')
       expected_lv,expected_fs=created['lv_uuid'],created['fs_uuid']
-    require(command('lvs','--noheadings','-o','lv_uuid','pve/vm-'+ctid+'-disk-0')==expected_lv,'CT LV mismatch')
-    require(command('blkid','-s','UUID','-o','value','/dev/pve/vm-'+ctid+'-disk-0')==expected_fs,'CT filesystem mismatch')
+    require(command('lvs','--noheadings','-o','lv_uuid',topology['vg']+'/vm-'+ctid+'-disk-0')==expected_lv,'CT LV mismatch')
+    require(command('blkid','-s','UUID','-o','value',topology['root_prefix']+'/vm-'+ctid+'-disk-0')==expected_fs,'CT filesystem mismatch')
  else:require(not f['completed'] and f['lv_uuid'] is None and f['fs_uuid'] is None,'recorded CT missing')
  protected=g['protected'];require(set(protected)=={'checkout','pve_tree','lvs','retained_cts'},'protection schema')
  historical=json.loads(checked_file(protected['checkout']).read_text())
@@ -178,7 +194,7 @@ try:
     require(command('pct','status',old)=='status: stopped','retained CT running')
     require(hashlib.sha256(pathlib.Path('/etc/pve/lxc/'+old+'.conf').read_bytes()).hexdigest()==item['config_sha256'],'retained CT config changed')
     require(command('blkid','-s','UUID','-o','value',item['root_path'])==item['fs_uuid'],'retained CT filesystem changed')
- fs=os.statvfs(w);pool=command('dmsetup','status','pve-data-tpool').split();used,total=map(int,pool[5].split('/'));mu,mt=map(int,pool[4].split('/'))
+ fs=os.statvfs(w);pool=command('dmsetup','status',pool_device).split();used,total=map(int,pool[5].split('/'));mu,mt=map(int,pool[4].split('/'))
  require(fs.f_bavail*fs.f_frsize>4*1024**3+512*1024**2 and fs.f_favail>50000,'root free floor/headroom')
  require((total-used)*65536>2*1024**3 and mu/mt<.8,'thin free floor/metadata')
  require((w/'tools/deno').is_file() and os.access(w/'tools/deno',os.X_OK),'missing browser Deno prerequisite')
@@ -188,7 +204,19 @@ except (KeyError,ValueError,TypeError,StopIteration,OSError,subprocess.CalledPro
 PY
 }
 verify_guard
-if [[ "$stage" == guard ]]; then exit 0; fi
+if [[ "$stage" == guard || "${SU_TEST_GUARD_ONLY:-0}" == 1 ]]; then exit 0; fi
+bridge=$(jq -r .topology.bridge "$guard_manifest")
+storage=$(jq -r .topology.storage "$guard_manifest")
+template_storage=$(jq -r .topology.template_storage "$guard_manifest")
+vg=$(jq -r .topology.vg "$guard_manifest")
+pool=$(jq -r .topology.pool "$guard_manifest")
+root_prefix=$(jq -r .topology.root_prefix "$guard_manifest")
+source_url=$(jq -r .topology.source_url "$guard_manifest")
+dependency_url=$(jq -r .topology.dependency_url "$guard_manifest")
+dependency_host=${dependency_url#http://}
+dependency_host=${dependency_host%%/*}
+pool_device="${vg//-/--}-${pool//-/--}-tpool"
+export SU_TEST_GLOBNOTES_MANIFEST="$guard_manifest" SU_TEST_POOL_DEVICE="$pool_device"
 W=$(jq -r .workspace "$guard_manifest")
 manifest_role=$(jq -r --arg id "$ctid" '.fixtures[$id].role' "$guard_manifest")
 fixture_role=${fixture_role:-$manifest_role}
@@ -232,13 +260,13 @@ admission() {
   df -i / >> "$evidence/capacity-$1.txt"
   free -b >> "$evidence/capacity-$1.txt"
   lvs -a --units b --nosuffix -o lv_name,lv_uuid,lv_size,lv_attr,data_percent,metadata_percent >> "$evidence/capacity-$1.txt" 9>&-
-  dmsetup status pve-data-tpool >> "$evidence/capacity-$1.txt"
+  dmsetup status "$pool_device" >> "$evidence/capacity-$1.txt"
   python3 - "$1" "${2:-2200}" "${3:-3}" "${4:-0}" << 'PY'
 import os, subprocess,sys
 s=os.statvfs('/')
 assert s.f_bavail*s.f_frsize > 4*1024**3+512*1024**2, 'PVE root stage admission'
 assert s.f_favail > 50000, 'PVE root inode admission'
-status=subprocess.check_output(['dmsetup','status','pve-data-tpool'],text=True).split()
+status=subprocess.check_output(['dmsetup','status',os.environ['SU_TEST_POOL_DEVICE']],text=True).split()
 used,total=map(int,status[5].split('/'))
 assert (total-used)*65536 > 2*1024**3+int(sys.argv[3])*1024**3, 'thin mapped-growth admission plus 2GiB floor'
 meta_used,meta_total=map(int,status[4].split('/'))
@@ -252,14 +280,14 @@ owned() {
   [[ -s "$evidence/identity.json" ]]
   local config lv
   config=$(pct config "$ctid")
-  [[ "$config" == *"hostname: $name"* && "${config,,}" == *"hwaddr=${mac,,}"* && "$config" == *'bridge=vmbrgn24'* ]]
-  lv=$(lvs --noheadings -o lv_uuid "pve/vm-$ctid-disk-0" 9>&- | tr -d ' ')
+  [[ "$config" == *"hostname: $name"* && "${config,,}" == *"hwaddr=${mac,,}"* && "$config" == *"bridge=$bridge"* ]]
+  lv=$(lvs --noheadings -o lv_uuid "$vg/vm-$ctid-disk-0" 9>&- | tr -d ' ')
   [[ "$lv" == "$(jq -r .lv_uuid "$evidence/identity.json")" ]]
   local expected_lv expected_fs
   expected_lv=$(jq -r --arg id "$ctid" '.fixtures[$id].lv_uuid' "$guard_manifest")
   expected_fs=$(jq -r --arg id "$ctid" '.fixtures[$id].fs_uuid' "$guard_manifest")
   if [[ "$expected_lv" != null ]]; then [[ "$lv" == "$expected_lv" ]]; fi
-  if [[ "$expected_fs" != null ]]; then [[ $(blkid -s UUID -o value "/dev/pve/vm-$ctid-disk-0") == "$expected_fs" ]]; fi
+  if [[ "$expected_fs" != null ]]; then [[ $(blkid -s UUID -o value "$root_prefix/vm-$ctid-disk-0") == "$expected_fs" ]]; fi
 }
 
 snapshot() {
@@ -267,7 +295,7 @@ snapshot() {
   if [[ -f "$evidence/operator-env-expected" ]]; then cache='/var/cache/globnotes custom cache'; fi
   pct config "$ctid" > "$evidence/config-$1.txt"
   pct status "$ctid" > "$evidence/status-$1.txt"
-  lvs --units b --nosuffix -o lv_name,lv_uuid,lv_size,lv_attr,data_percent "pve/vm-$ctid-disk-0" > "$evidence/lv-$1.txt" 9>&-
+  lvs --units b --nosuffix -o lv_name,lv_uuid,lv_size,lv_attr,data_percent "$vg/vm-$ctid-disk-0" > "$evidence/lv-$1.txt" 9>&-
   pct exec "$ctid" -- env TMPDIR=/var/lib/globnotes/tmp bash -c '
     systemctl show globnotes -p MainPID -p ActiveState -p ControlGroup -p MemoryCurrent -p MemoryPeak -p CPUUsageNSec -p User -p Group -p ExecStart -p AmbientCapabilities -p CapabilityBoundingSet
     ss -lntp
@@ -285,8 +313,8 @@ snapshot() {
 
 install_native() {
   [[ ! -e "/etc/pve/lxc/$ctid.conf" && ! -e "$evidence/install-attempted" ]]
-  if lvs "pve/vm-$ctid-disk-0" > /dev/null 2>&1 9>&-; then return 65; fi
-  [[ -d /sys/class/net/vmbrgn24 ]]
+  if lvs "$vg/vm-$ctid-disk-0" > /dev/null 2>&1 9>&-; then return 65; fi
+  [[ -d /sys/class/net/$bridge ]]
   admission before-install
   verify_guard > "$evidence/source-index.txt"
   jq -r .source.tree "$guard_manifest" > "$evidence/source-tree.txt"
@@ -329,9 +357,9 @@ PY
   # Full framework: real host bootstrap, OS setup and generated install/update bundles.
   local status=0
   timeout --signal=TERM --kill-after=60 1800 env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root TERM=xterm-256color TMPDIR="$TMPDIR" \
-    REPO_BASE=http://10.248.24.1:8240 mode=default PHS_SILENT=1 UNATTENDED=1 dev_mode=keep,logs \
-    var_ctid="$ctid" var_hostname="$name" var_mac="$mac" var_brg=vmbrgn24 var_net="$ip/24" var_gateway=10.248.24.1 var_ns=-nameserver=192.168.122.1 \
-    var_container_storage=local-lvm var_template_storage=local var_ipv6_method=none var_verbose=yes \
+    REPO_BASE="$source_url" mode=default PHS_SILENT=1 UNATTENDED=1 dev_mode=keep,logs \
+    var_ctid="$ctid" var_hostname="$name" var_mac="$mac" var_brg="$bridge" var_net=dhcp \
+    var_container_storage="$storage" var_template_storage="$template_storage" var_ipv6_method=none var_verbose=yes \
     var_lxc_tmpdir=/var/lib/globnotes-bootstrap-tmp INSTALL_NVIDIA_DRIVERS=no "${extra[@]}" \
     bash -c 'umask 022; exec bash "$1"' -- "$repo/scripts/lxc/globnotes.sh" < /dev/null > "$evidence/install.log" 2>&1 9>&- || status=$?
   printf '%s\n' "$status" > "$evidence/install.status"
@@ -339,8 +367,8 @@ PY
   if [[ -e "/etc/pve/lxc/$ctid.conf" ]]; then
     pct config "$ctid" > "$evidence/created-config.txt"
     local lv
-    lv=$(lvs --noheadings -o lv_uuid "pve/vm-$ctid-disk-0" 9>&- | tr -d ' ')
-    jq -n --arg ctid "$ctid" --arg mac "$mac" --arg name "$name" --arg lv "$lv" --arg state "$state" --arg fs "$(blkid -s UUID -o value "/dev/pve/vm-$ctid-disk-0")" \
+    lv=$(lvs --noheadings -o lv_uuid "$vg/vm-$ctid-disk-0" 9>&- | tr -d ' ')
+    jq -n --arg ctid "$ctid" --arg mac "$mac" --arg name "$name" --arg lv "$lv" --arg state "$state" --arg fs "$(blkid -s UUID -o value "$root_prefix/vm-$ctid-disk-0")" \
       '{ctid:$ctid,mac:$mac,name:$name,lv_uuid:$lv,fs_uuid:$fs,state:$state}' > "$evidence/identity.json"
     owned
     pct set "$ctid" --onboot 0
@@ -418,7 +446,7 @@ browser_native() {
   [[ "$revision" =~ ^[a-f0-9]{40}$ ]]
   sha256sum "$repo/tests/maintenance-globnotes-browser.mjs" > "$evidence/browser-driver-$label.sha256"
   DENO_DIR="$W/cache/browser-driver" timeout --signal=TERM --kill-after=60 600 "$W/tools/deno" run \
-    --no-config --no-lock --cached-only --allow-net --allow-read --allow-write --allow-env \
+    --no-config --no-lock --cached-only --allow-net --allow-read --allow-write --allow-env --allow-run=/usr/bin/python3 \
     "$repo/tests/maintenance-globnotes-browser.mjs" --origin "$origin" --cdp "$cdp" --phase "$phase" --label "$label" \
     --evidence "$evidence/browser" --expected-version "$version" --expected-revision "$revision" "${extra[@]}" > "$evidence/browser-$label.log" 2>&1
   jq -e '.completed==true and (.notes|length)==2 and all(.notes[]; (.path|type)=="string" and (.content|type)=="string")' "$evidence/browser/$label-consumers.json" > /dev/null
@@ -459,7 +487,7 @@ browser_native() {
   if [[ "$phase" == http-before || "$phase" == http-after || "$phase" == http-force ]]; then
     pct exec "$ctid" -- cat "$state/plugin-data/native-http-cache/data.json" > "$evidence/http-private-$label.json"
     jq -e --slurpfile consumer "$evidence/browser/$label-consumers.json" '.values==$consumer[0].httpDependency.result' "$evidence/http-private-$label.json" > /dev/null
-    pct exec "$ctid" -- jq -e --arg url http://10.248.24.1:8242/dependency-v2.mjs \
+    pct exec "$ctid" -- jq -e --arg url "$dependency_url" \
       --arg sha "$(jq -r .moduleSha256 "$evidence/http-fixture.json")" '.remote[$url]==$sha' \
       /opt/globnotes/runtime/dependency-lock/deno.lock > "$evidence/runtime-integrity-$label.txt"
   fi
@@ -567,7 +595,7 @@ resume_native() {
   grep -Fxq 'cores: 2' <<< "$config"
   grep -Fxq 'memory: 2048' <<< "$config"
   grep -Fxq 'unprivileged: 1' <<< "$config"
-  grep -Fxq "rootfs: local-lvm:vm-$ctid-disk-0,size=8G" <<< "$config"
+  grep -Fxq "rootfs: $storage:vm-$ctid-disk-0,size=8G" <<< "$config"
 }
 
 browser_start() {
@@ -624,7 +652,7 @@ prepare_http() {
   owned
   [[ "$fixture_role" == custom && ! -e "$evidence/http-preparation-attempted" ]]
   [[ $(pct exec "$ctid" -- cat /root/.globnotes) == 2.3.3 ]]
-  [[ -z $(ss -H -lnt 'sport = :8242') ]]
+  [[ -z $(ss -H -lnt "sport = :${dependency_host##*:}") ]]
   admission "http-$run_id" 256 1
   : > "$evidence/http-preparation-attempted"
   mkdir -m 700 -- "$evidence/http-provider"
@@ -633,23 +661,23 @@ prepare_http() {
   printf '%s\n' "$unit" > "$evidence/http-provider-unit.txt"
   systemd-run --quiet --unit "$unit" --property RuntimeMaxSec=900 --property "WorkingDirectory=$evidence/http-provider" \
     --property "StandardOutput=append:$evidence/http-provider.log" --property "StandardError=append:$evidence/http-provider.log" \
-    --setenv "TMPDIR=$W/tmp" python3 -m http.server 8242 --bind 10.248.24.1 --directory "$evidence/http-provider" 9>&-
-  curl -fsS --retry 5 --retry-connrefused --max-time 5 http://10.248.24.1:8242/dependency-v2.mjs > "$evidence/http-provider/received.mjs"
+    --setenv "TMPDIR=$W/tmp" python3 -m http.server "${dependency_host##*:}" --bind "${dependency_host%:*}" --directory "$evidence/http-provider" 9>&-
+  curl -fsS --retry 5 --retry-connrefused --max-time 5 "$dependency_url" > "$evidence/http-provider/received.mjs"
   cmp "$evidence/http-provider/dependency-v2.mjs" "$evidence/http-provider/received.mjs"
   pct exec "$ctid" -- sha256sum /opt/globnotes/deno.lock > "$evidence/http-app-lock-before.sha256"
-  pct exec "$ctid" -- env TMPDIR=/var/lib/globnotes-bootstrap-tmp bash -s -- "$state" > "$evidence/http-preparation.log" 2>&1 << 'SHELL'
+  pct exec "$ctid" -- env TMPDIR=/var/lib/globnotes-bootstrap-tmp bash -s -- "$state" "$dependency_host" "$dependency_url" > "$evidence/http-preparation.log" 2>&1 << 'SHELL'
 set -euo pipefail
 state=$1
+dependency_host=$2
+dependency_url=$3
 test ! -e "$state/plugins/native-http-cache"
 sha256sum /opt/globnotes/deno.lock
 systemctl stop globnotes
 test "$(systemctl show globnotes -p MainPID --value)" = 0
 install -d -m 750 -o globnotes -g globnotes "$state/plugins/native-http-cache"
-cat > "$state/plugins/native-http-cache/manifest.json" <<'JSON'
-{"id":"native-http-cache","name":"Native HTTP cache acceptance","version":"1.0.0","runtime":{"server":"service.js"},"capabilities":{"network":false,"imports":["10.248.24.1:8242"]}}
-JSON
-cat > "$state/plugins/native-http-cache/service.js" <<'JS'
-const url='http://10.248.24.1:8242/dependency-v2.mjs';
+jq -n --arg host "$dependency_host" '{id:"native-http-cache",name:"Native HTTP cache acceptance",version:"1.0.0",runtime:{server:"service.js"},capabilities:{network:false,imports:[$host]}}' > "$state/plugins/native-http-cache/manifest.json"
+printf 'const url=%s;\n' "$(jq -n --arg url "$dependency_url" '$url')" > "$state/plugins/native-http-cache/service.js"
+cat >> "$state/plugins/native-http-cache/service.js" <<'JS'
 export function activate(ctx) {
   ctx.commands.register({id:'consume',label:'Consume offline HTTP module',target:'server'},async()=>{
     try {
@@ -665,14 +693,14 @@ export function activate(ctx) {
 JS
 chown globnotes:globnotes "$state/plugins/native-http-cache/manifest.json" "$state/plugins/native-http-cache/service.js"
 runuser -u globnotes -- env -i PATH=/opt/globnotes/runtime:/usr/bin:/bin HOME=/var/lib/globnotes TMPDIR=/var/lib/globnotes/tmp DENO_DIR='/var/cache/globnotes custom cache' \
-  deno cache --no-config --no-lock --allow-import=10.248.24.1:8242 http://10.248.24.1:8242/dependency-v2.mjs
+  deno cache --no-config --no-lock "--allow-import=$dependency_host" "$dependency_url"
 sha256sum /opt/globnotes/deno.lock
 systemctl start globnotes
 SHELL
   pct exec "$ctid" -- sha256sum "$state/plugins/native-http-cache/manifest.json" "$state/plugins/native-http-cache/service.js" > "$evidence/http-plugin-source.sha256"
   pct exec "$ctid" -- sha256sum /opt/globnotes/deno.lock > "$evidence/http-app-lock-after.sha256"
   cmp "$evidence/http-app-lock-before.sha256" "$evidence/http-app-lock-after.sha256"
-  jq -n --arg url http://10.248.24.1:8242/dependency-v2.mjs --arg sha "$(sha256sum "$evidence/http-provider/dependency-v2.mjs" | cut -d ' ' -f1)" \
+  jq -n --arg url "$dependency_url" --arg sha "$(sha256sum "$evidence/http-provider/dependency-v2.mjs" | cut -d ' ' -f1)" \
     --arg unit "$unit" '{pluginId:"native-http-cache",moduleUrl:$url,moduleSha256:$sha,providerUnit:$unit,effectiveCache:"/var/cache/globnotes custom cache"}' > "$evidence/http-fixture.json"
 }
 
@@ -700,8 +728,8 @@ provider_stopped() {
   state=$(systemctl show "$unit" -p ActiveState --value)
   pid=$(systemctl show "$unit" -p MainPID --value)
   [[ "$state" == inactive || "$state" == failed ]] && [[ "$pid" == 0 ]]
-  [[ -z $(ss -H -lnt 'sport = :8242') ]]
-  curl -fsS --max-time 2 http://10.248.24.1:8242/dependency-v2.mjs > /dev/null 2>&1 || status=$?
+  [[ -z $(ss -H -lnt "sport = :${dependency_host##*:}") ]]
+  curl -fsS --max-time 2 "$dependency_url" > /dev/null 2>&1 || status=$?
   [[ "$status" == 7 ]]
 }
 
@@ -773,7 +801,7 @@ with (out/(label+'-resources.jsonl')).open('x') as f:
         for key in ['memory.current','memory.peak','memory.max','memory.events','memory.swap.max','memory.swap.peak','memory.swap.current','cpu.stat']:
             row[key]=(cg/key).read_text() if (cg/key).exists() else None
         if _%4==0:
-            pool=subprocess.check_output(['dmsetup','status','pve-data-tpool'],text=True).split()
+            pool=subprocess.check_output(['dmsetup','status',os.environ['SU_TEST_POOL_DEVICE']],text=True).split()
             used,total=map(int,pool[5].split('/'));row['thinFreeBytes']=(total-used)*65536
         processes={}
         for group in cg.rglob('cgroup.procs'):
@@ -823,7 +851,7 @@ PY
   check_target "$target" "$evidence/$operation-$run_id-http.json"
   [[ $(pct exec "$ctid" -- cat /root/.globnotes) == "$(jq -r .version "$target")" ]]
   jq -n --arg before "$before_version" --slurpfile target "$target" --arg operation "$operation" '{operation:$operation,fromVersion:$before,toVersion:$target[0].version,toCommit:$target[0].commit,currentVersionForcedRebuild:($operation=="force")}' > "$evidence/$operation-$run_id-transition.json"
-  pct exec "$ctid" -- env TMPDIR=/var/lib/globnotes/tmp bash -e -c 'cd /opt/globnotes; sha256sum -c runtime/released-lock.sha256; jq -e --arg url http://10.248.24.1:8242/dependency-v2.mjs '\''(.remote // {})|has($url)|not'\'' runtime/dependency-lock/deno.lock' > "$evidence/new-generation-lock-seed.txt"
+  pct exec "$ctid" -- env TMPDIR=/var/lib/globnotes/tmp bash -e -c 'cd /opt/globnotes; sha256sum -c runtime/released-lock.sha256; jq -e --arg url "$1" '\''(.remote // {})|has($url)|not'\'' runtime/dependency-lock/deno.lock' -- "$dependency_url" > "$evidence/new-generation-lock-seed.txt"
   provider_stopped
   preserved_files "after-$operation-$run_id"
   cmp "$evidence/preserved-before-$operation-$run_id.sha256" "$evidence/preserved-after-$operation-$run_id.sha256"

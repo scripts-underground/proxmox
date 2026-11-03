@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Public guest catalogue/admission/dispatch. No outer VM lifecycle."""
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import sys
+import json
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+from test_context import AdmissionError, Context
+from test_registry import REGISTRY
+from entrypoint import dispatch, execute, preflight
+
+
+def main():
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument('--list', action='store_true')
+    action.add_argument('--check', action='store_true')
+    action.add_argument('--run', action='store_true')
+    action.add_argument('--status',metavar='RUN')
+    action.add_argument('--finalize',metavar='RUN')
+    parser.add_argument('--supervise',action='store_true')
+    parser.add_argument('--deadline',type=int,default=1300)
+    parser.add_argument('--context', type=Path)
+    parser.add_argument('--suite')
+    parser.add_argument('--mode')
+    args = parser.parse_args()
+    if args.supervise and not args.run:parser.error('--supervise requires --run')
+    if args.list:
+        if args.context or args.suite or args.mode:
+            parser.error('--list takes no invocation context')
+        for name, row in sorted(REGISTRY.items()):
+            print(f'{name}\t{row.path}\t{row.role}\t{",".join(row.modes)}\t{row.args}')
+        return 0
+    if not all((args.context, args.suite, args.mode)):
+        parser.error('--context, --suite and --mode required')
+    context = Context.admit(args.context, args.suite, args.mode)
+    if args.status:
+        from test_pve import runtime_status
+        print(json.dumps(runtime_status(context,args.status),sort_keys=True));return 0
+    if args.finalize:
+        from test_pve import finalize_runtime
+        return finalize_runtime(context,args.finalize)
+    if args.check:
+        preflight(context)
+        print('CONTEXT_OK', args.suite, args.mode, context.document['source']['tree_sha256'])
+        return 0
+    if args.supervise:
+        from entrypoint import supervise
+        print(json.dumps(supervise(context,args.deadline),sort_keys=True));return 0
+    return dispatch(context.document, args.context, args.suite, args.mode, execute)
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (AdmissionError, ValueError, OSError, subprocess.SubprocessError) as error:
+        print(f'CONTEXT_REFUSED: {error}', file=sys.stderr)
+        raise SystemExit(65)

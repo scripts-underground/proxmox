@@ -2,6 +2,8 @@
 # Run inside a disposable guest with Angie and Python installed.
 # Proves archive deployment and the generated proxy config, not the RomM UI.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" romm-player-serving "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 source "$ROOT/misc/core.func"
 source "$ROOT/misc/error_handler.func"
@@ -16,6 +18,8 @@ if [[ "${1:-}" == --setup ]]; then
     "$(get_os_info codename)" \
     main
   $STD apt install -y angie python3 p7zip-full
+  angie -v
+  dpkg-query -W angie python3 p7zip-full
   exit 0
 fi
 
@@ -34,14 +38,14 @@ mkdir "$HOME"
 test ! -e /opt/romm/frontend/dist/index.html
 VERBOSE=no set_std_mode
 fetch_and_deploy_gh_release EmulatorJS EmulatorJS/EmulatorJS prebuild v4.2.3 \
-  /opt/romm/frontend/dist/assets/emulatorjs '4.2.3.7z'
+  /opt/romm/frontend/dist/assets/emulatorjs '4.2.3.7z' '' "$work/emulatorjs-release.json"
 test -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js
 grep -q 'Everything is Ok' "$INSTALL_LOG"
 printf 'PASS .7z deployment and quiet-mode extraction log\n'
 
 VERBOSE=yes set_std_mode
 fetch_and_deploy_gh_release ruffle ruffle-rs/ruffle prebuild latest \
-  /opt/romm/frontend/dist/assets/ruffle 'ruffle-*-web-selfhosted.zip'
+  /opt/romm/frontend/dist/assets/ruffle 'ruffle-*-web-selfhosted.zip' '' "$work/ruffle-release.json"
 test -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js
 printf 'PASS GitHub ZIP regression\n'
 
@@ -82,6 +86,9 @@ for route in /rom/1/ejs /rom/36/ejs '/rom/36/ejs?test=1'; do
   cmp /opt/romm/frontend/dist/index.html "$work/page"
   grep -qi '^Cross-Origin-Embedder-Policy: require-corp' "$work/headers"
   grep -qi '^Cross-Origin-Opener-Policy: same-origin' "$work/headers"
+  printf 'RUNTIME_PLAYER_ROUTE %s\n' "$route"
+  cat "$work/headers"
+  sha256sum "$work/page"
 done
 printf 'PASS player routes serve SPA HTML with both isolation headers\n'
 
@@ -101,5 +108,11 @@ for file in /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js "$core"; do
   url="${file#/opt/romm/frontend/dist}"
   curl -fsS "http://127.0.0.1:8080$url" -o "$work/asset"
   cmp "$file" "$work/asset"
+  printf 'RUNTIME_SERVED_ASSET %s\n' "$url"
+  sha256sum "$file" "$work/asset"
 done
 printf 'PASS deployed loader and DOS core served byte-for-byte\n'
+for input in "$work/emulatorjs-release.json" "$work/ruffle-release.json"; do
+  printf 'RUNTIME_SELECTED_RELEASE '
+  jq -c '{id,tag_name,published_at,assets:[.assets[]|{name,size,digest,browser_download_url}]}' "$input"
+done

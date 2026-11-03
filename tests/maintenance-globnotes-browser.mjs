@@ -1,4 +1,14 @@
 // Real installed-service consumers. No application modules, response stubs or state injection.
+// Admission precedes Deno.mkdir, CDP, network and application effects.
+const admission = await new Deno.Command('/usr/bin/python3', {
+  args: ['-B', new URL('./lib/entrypoint.py', import.meta.url).pathname, 'globnotes-browser'],
+  stdout: 'piped', stderr: 'piped',
+}).output();
+if (!admission.success) throw Error(new TextDecoder().decode(admission.stderr));
+if (Deno.env.get('SU_TEST_GUARD_ONLY') === '1') Deno.exit(0);
+const strong = JSON.parse(await Deno.readTextFile(Deno.env.get('SU_TEST_GLOBNOTES_MANIFEST')));
+const fixtureWorkspace = strong.workspace;
+const dependencyHost = new URL(strong.topology.dependency_url).host;
 const args = {};
 for (let i = 0; i < Deno.args.length; i += 2) {
   if (!Deno.args[i].startsWith("--") || Deno.args[i + 1] === undefined) throw Error("Expected --key value");
@@ -9,8 +19,8 @@ const label = args.label ?? phase;
 if (!/^[A-Za-z0-9-]+$/.test(label)) throw Error("Invalid evidence label");
 if (origin !== "http://globnotes.home" || cdp !== "http://127.0.0.1:9335") throw Error("Native local HTTP origin / loopback CDP required");
 if (!["first-run", "finish-settings", "restart", "update", "verify", "http-consent", "http-before", "http-after", "http-force", "all-before", "all-after"].includes(phase)) throw Error("Unknown browser phase");
-if (!evidence?.startsWith("/var/lib/scripts-underground/globnotes-deno-refresh/artifacts/")) throw Error("Owned disk-backed evidence required");
-if (!Deno.env.get("TMPDIR")?.startsWith("/var/lib/scripts-underground/globnotes-deno-refresh/")) throw Error("Disk TMPDIR required");
+if (!evidence?.startsWith(`${fixtureWorkspace}/artifacts/`) || evidence.split('/').includes('..')) throw Error("Owned disk-backed evidence required");
+if (Deno.env.get("TMPDIR") !== `${fixtureWorkspace}/tmp`) throw Error("Disk TMPDIR required");
 await Deno.mkdir(evidence, { recursive: true, mode: 0o700 });
 const record = { phase, origin, checks: [], exceptions: [], network: [] };
 const assert = (ok, message) => { if (!ok) throw Error(message); record.checks.push(message); console.log(`ok: ${message}`); };
@@ -126,8 +136,8 @@ const httpPermissionRoute = "/_/api/plugin-host/native-http-cache/permissions";
 function permittedHttp(view) {
   return view.allowNetwork === true && view.approvedNetwork.length === 0 &&
     view.approvedImports.length === 1 && view.approvedImports[0].type === "host" &&
-    view.approvedImports[0].authority === "10.248.24.1:8242" &&
-    view.rows.some(row => row.kind === "imports" && row.scope.authority === "10.248.24.1:8242" && row.effective);
+    view.approvedImports[0].authority === dependencyHost &&
+    view.rows.some(row => row.kind === "imports" && row.scope.authority === dependencyHost && row.effective);
 }
 async function consentHttp() {
   let view = await api(httpPermissionRoute);
@@ -143,9 +153,9 @@ async function consentHttp() {
       await poll(`fetch(${json(httpPermissionRoute)},{headers:{authorization:'Bearer '+sessionStorage.getItem('token')}}).then(r=>r.json()).then(v=>v.allowNetwork===true)`);
     }
     view = await api(httpPermissionRoute);
-    if (!view.approvedImports.some(scope => scope.type === "host" && scope.authority === "10.248.24.1:8242")) {
-      await button("Approve", '[data-permission-kind="imports"][data-permission-scope="host:10.248.24.1:8242"]');
-      await poll(`fetch(${json(httpPermissionRoute)},{headers:{authorization:'Bearer '+sessionStorage.getItem('token')}}).then(r=>r.json()).then(v=>v.rows.some(row=>row.kind==='imports'&&row.scope.authority==='10.248.24.1:8242'&&row.effective))`);
+    if (!view.approvedImports.some(scope => scope.type === "host" && scope.authority === dependencyHost)) {
+      await button("Approve", `[data-permission-kind="imports"][data-permission-scope="host:${dependencyHost}"]`);
+      await poll(`fetch(${json(httpPermissionRoute)},{headers:{authorization:'Bearer '+sessionStorage.getItem('token')}}).then(r=>r.json()).then(v=>v.rows.some(row=>row.kind==='imports'&&row.scope.authority===${json(dependencyHost)}&&row.effective))`);
     }
     await settingsClose();
   }

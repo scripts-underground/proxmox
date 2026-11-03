@@ -1,12 +1,147 @@
 # Tests
 
+## Normal guest entrypoint
+
+`tests/run` is the public guest-local catalogue/admission/dispatch CLI. The
+existing external VM owner retains lifecycle and pinned access. All builds,
+tests and experiments run inside the explicitly assigned VM, never on a physical
+host. An unavailable guest is a blocker, not a fallback route.
+
+```bash
+# Inside the admitted guest source directory, with context's disk TMPDIR set.
+python3 -B tests/run --list
+python3 -B tests/run --check --context "$CONTEXT" --suite workflow-entrypoints --mode fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite workflow-entrypoints --mode fixture
+```
+
+Context is version1 data, not shell policy: closed fields bind the target receipt,
+DMI/MAC/root/workspace/disks, selected source bytes/modes/index/history,
+operation scope/inputs/deadline/TMPDIR and exact nested resources. The trusted
+outer route installs it root-owned/read-only outside source, under root-owned
+nonsymlink ancestors without group/world writes. Fixtures cannot bless their own
+facts. Deliver standalone history and explicitly intended new files; exclude
+credentials, ignored files and host Git configuration. Archive source/context
+revisions instead of silently refreshing admission.
+
+| # | Registry class | Consumer / permission boundary |
+|---|---|---|
+| 1 | Guest/native-root fixture | Original assertions, private mounts and recording package/pct models retain their owners; public runner admits invocation. |
+| 2 | Native unit | Shared admission plus original L2_NATIVE_FIXTURES token, unique units and verified removal. |
+| 3 | Live release/runtime | Actual releases/executables; mutable runtime/profile/cache/completion and application roots live in an owned nested runtime fixture. |
+| 4 | Nested install/bundle | Exact absent CTID, unpredictable tag/MAC/name, topology/resources and immutable creation/current receipts; candidate-only publisher. |
+| 5 | Installed probe/browser | Trusted creation/transition lineage and actual current namespace/root/source; stronger application protection remains required. |
+| 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
+
+The catalogue covers all69 original shell suites, two workflow regressions,
+browser and contribution surfaces. Listing a row is not runtime proof. Unknown
+suite/mode/options refuse. There are 92 public suite/mode combinations. The
+template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
+by their original owning suite; neither is a public mode or named command input.
+Effecting direct entrypoints require SU_TEST_CONTEXT
+before scratch or framework imports. SU_TEST_GUARD_ONLY=1 checks only admission,
+including scope prerequisites, never full application acceptance. Runtime setup
+and installed probes require checked outer delegation; an inside-CT flag is
+insufficient. Native Globnotes retains its strong manifest/protection/floors.
+
+`test_context.py` owns admission/locks/receipts; `test_pve.py` supplies typed local
+native effects and a private command-shadow namespace around the unchanged
+framework. IDs/storage fallback outside scope refuse before native mutation.
+`test_registry.execution_policy` owns execution routing and public/direct phases
+for every suite/mode. Codeberg `live`, for example, is an owned-runtime operation
+even though its stable context role remains `live`. Public run/check perform
+read-only native absence or current-lineage admission before locks, scratch or
+listeners. Direct runtime consumers require sealed inner delegation; a bundle's
+direct publisher consumer instead requires existing lineage and publisher birth.
+IDs, bridge/address, storage/VG/pool and resource requests come from independently
+installed context data and are checked against actual guest facts and capacity;
+campaign IDs/topology are not repository defaults. Native creation tags must be
+fresh unpredictable tokens. Failure handling uses bounded graceful `pct shutdown
+--timeout 60 --forceStop 0` with direct stopped-state proof, never forced fallback.
+Actual native children use umask022 while evidence remains private.
+Failed runs stop only verified-owned resources and preserve config/volumes/status;
+successful runs retire exact-owned resources after evidence. Failed stop never
+authorizes destroy. Cookies, credentials and logs use private disk scratch.
+
+Successful native consumers now stop at an enforced preservation barrier:
+exit75 with `awaiting-external-preservation` means consumer0, stopped owned CT,
+and **pending**, not a passing complete workflow. Run/creation/source-transition/
+result/config/LV and declared evidence hashes are sealed in the pending receipt.
+The trusted external custody actor copies and verifies actual off-guest bytes,
+sizes and SHA256, retains its manifest, then installs the matching read-only
+acknowledgement beneath independently root-owned safe ancestry outside source.
+The guest application does not issue its own acknowledgement. Missing/stale/wrong
+or unsafe acknowledgement cannot reach destroy. Finalization rechecks identity,
+config, source and declared evidence immediately before exact retirement.
+
+```bash
+# Inside the assigned guest, using the same independently admitted context:
+python3 -B tests/run --run --supervise --deadline 1300 --context "$CONTEXT" --suite <suite> --mode <mode>
+python3 -B tests/run --status <run-id> --context "$CONTEXT" --suite <suite> --mode <mode>
+# Only after the external actor has verified/copied and installed the bound ack:
+python3 -B tests/run --finalize <exact-run-directory-name> --context "$CONTEXT" --suite <suite> --mode <mode>
+```
+
+Guest supervision is finite and single-instance with owned cwd/TMPDIR/job lock,
+private logs and source/context/PID receipts. It owns no outer VM lifecycle.
+Status separates the consumer, preservation and retirement outcomes; the original
+supervisor's75 pending result is retained even after explicit finalization0.
+Original failed source and creation/failure records remain immutable. Existing
+installed probes and bundle publisher consumers use their declared creation
+lineage. Unregistered recovery options refuse before admission or effects.
+
+### Existing test inputs
+
+An operation may include `parameters`, a closed object selected by suite/mode in
+`test_registry.INPUT_BINDINGS`. Omission means the original optional defaults;
+missing required fields refuse at `--check`, before a Run, lock or consumer.
+Values are literal argv elements or the fixed test-process environment key below.
+They are separate from the framework's receiving-export allowset. Caller argv,
+environment maps, PATH, BASH_ENV, loader variables and credentials are not inputs.
+
+| # | Suite / modes | Named parameters -> consumer |
+|---|---|---|
+| 1 | maintenance-globnotes / all | Optional `subject` file -> positional subject (or one Python syntax source) |
+| 2 | maintenance-template-lock / baseline, review-baseline, pty-baseline | Required `baseline` file -> second positional argument |
+| 3 | maintenance-update-lock / baseline, review-baseline, ui-no-detach | Required `baseline` tree for the first two modes, file for ui-no-detach; `alpine_busybox` executable in every mode -> ALPINE_BUSYBOX |
+| 4 | maintenance-receiver-portability, maintenance-replacement-review / fixture | `alpine_busybox` executable -> ALPINE_BUSYBOX |
+| 5 | maintenance-gpg-key / fixture | `gpg_fixture` file -> GPG_FIXTURE |
+| 6 | maintenance-app-compat / fixture | `apprise_asset`, `apprise_supervisor` files and `apprise_asset_path` normalized relative path -> APPRISE_ASSET_FIXTURE, APPRISE_SUPERVISOR_FIXTURE, APPRISE_ASSET_PATH |
+| 7 | maintenance-runtime-hooks, maintenance-paperless-format-source, maintenance-build-hooks / fixture | `maintenance_references` tree -> MAINTENANCE_REFERENCES |
+| 8 | maintenance-node24-vite, maintenance-build-hooks / fixture | `runtime_extra_references` tree -> RUNTIME_EXTRA_REFERENCES |
+| 9 | maintenance-node24-vite, maintenance-build-hooks, maintenance-immich / fixture | `runtime_node` executable -> RUNTIME_NODE; node24-vite additionally requires `runtime_npm` file -> RUNTIME_NPM |
+| 10 | maintenance-webtrees, maintenance-zigbee2mqtt, maintenance-immich / fixture | `maintenance_next_references` tree -> MAINTENANCE_NEXT_REFERENCES; webtrees additionally requires `maintenance_caddy` executable -> MAINTENANCE_CADDY |
+| 11 | maintenance-replacement-review / fixture | Optional `replacement_tools` file, `large_size` integer, `budget_workspace` path, `budget_bytes` integer -> REPLACEMENT_TOOLS, REPLACEMENT_LARGE_SIZE, REPLACEMENT_TASK_WORKSPACE, REPLACEMENT_TASK_BUDGET_BYTES |
+
+All other registered modes have an empty named-input contract. File/executable
+values are `{ "path": "/absolute/guest/file", "sha256": "<64 lowercase hex>" }`.
+External references require root-owned safe nonsymlink ancestry; source files
+already have admitted source custody. Executables must have executable mode.
+Tree values use the same reference shape, pointing to root-custody JSON with
+exactly `root` and `files`. `root` is an absolute guest workspace directory;
+`files` is its complete sorted projection of `{path, kind:"file", mode, sha256}`
+rows (relative paths, integer Unix modes). Extra/missing/changed files refuse.
+The selected manifest and member bytes are included at native preservation.
+
+Integers must be positive, at most 2^63-1; `large_size` is at most 1000000. A size
+of at least 10000 also requires both budget fields. `budget_workspace` must be
+inside the operation's run root and contain its disk TMPDIR; the original suite
+still enforces actual disk usage, reserve and fixture-peak admission. No budget
+is inferred from available free space.
+
+For example, independently admit a GPG operation with
+`"parameters":{"gpg_fixture":{"path":"/var/lib/scripts-underground/inputs/public-key.gpg","sha256":"<actual SHA256>"}}`,
+then run `python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-gpg-key --mode fixture`.
+For a preserved template subject, admit `parameters.baseline` with the actual
+file path/hash, then use `--suite maintenance-template-lock --mode review-baseline`.
+The public CLI never takes the baseline path as an extra command-line argument.
+
 ## Focused maintenance contracts
 
 These plain Bash tests run inside an isolated Linux VM with an existing writable
 disk-backed `TMPDIR`; the guest's `/tmp`/tmpfs is not a fixture destination.
 Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
-inside the admitted project workspace before launching a test. They do not call
-the legacy CT-destroying harness described below.
+inside the admitted project workspace before launching a test. Use the registered
+fixture route described above.
 
 | # | Test | Actual outcome and modeled boundary |
 |---|---|---|
@@ -73,12 +208,12 @@ client uses a disk-backed project TMPDIR writable by its actual operating user.
 Example commands **inside the admitted VM**, with TMPDIR already set:
 
 ```bash
-timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-silent.test.sh
-timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-cleanup.test.sh --native
-timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-temp-root.test.sh --native
-timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-build-temp.test.sh
-timeout --signal=TERM --kill-after=5s 120s bash tests/maintenance-bundle-bootstrap.test.sh
-timeout --signal=TERM --kill-after=30 600 bash tests/maintenance-update-lock.test.sh --native
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-silent --mode fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-cleanup --mode native-fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-temp-root --mode native-fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-build-temp --mode fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-bundle-bootstrap --mode fixture
+python3 -B tests/run --run --context "$CONTEXT" --suite maintenance-update-lock --mode native-fixture
 ```
 
 `update-pending.test.sh` binds the pending directory and maps the maintenance-lock
@@ -192,11 +327,12 @@ controls. Unsupported Python-heredoc headers fail closed. This covers unexecuted
 native stages that Bash syntax/format/lint checks cannot parse.
 
 The separate `maintenance-globnotes-lxc.test.sh` and
-`maintenance-globnotes-browser.mjs` use the installed application. Run them only
-inside the assigned virtual machine
-`proxmox-scripts-underground-globnotes-deno` on `ark.home`, from
-`/var/lib/scripts-underground/globnotes-deno-refresh/source`, with disk-backed
-`TMPDIR=/var/lib/scripts-underground/globnotes-deno-refresh/tmp`. The native runner
+`maintenance-globnotes-browser.mjs` use the installed application. Their original
+native evidence came from `proxmox-scripts-underground-globnotes-deno` on Ark;
+those identities and protected baselines are historical controls, not permission
+to retarget or adopt current resources. Current invocations require shared
+source/operation admission in the assigned guest, plus the strong manifest's
+root-owned workspace, source and disk-backed TMPDIR. The native runner
 requires `--guard-manifest <absolute-file>` and validates VM/filesystem identity,
 source/index bytes and modes, declared input hashes, protected data, storage floors
 and CT/MAC/volume ownership **before creating evidence, locks or lifecycle effects**.
@@ -255,9 +391,13 @@ selected published metadata and resolve annotated tags to a commit; mismatches
 report a possible external-input race and stop without replay or result relabeling.
 Only the initial custom fixture input remains fixed at v2.3.3.
 
-Native prerequisites are the admitted private `vmbrgn24` network, exact candidate
-served at `http://10.248.24.1:8240`, available Debian13 template, and the ordinary
-framework storage check. The browser driver additionally needs pinned Deno2.9.6
+The strong manifest additionally declares `topology`: bridge, storage,
+template_storage, vg, pool, root_prefix, source_url and dependency_url. These
+replace actual network/storage assumptions only; protected data, historical
+baseline identities and existing capacity floors retain their original checks.
+URLs are bound to the admitted private guest network and candidate publisher.
+An available authenticated Debian13 template and ordinary framework storage
+checks remain prerequisites. The browser driver additionally needs pinned Deno2.9.6
 at the workspace's `tools/deno`, a nonroot sandboxed Chromium with private disk
 profile/cache/temp storage and loopback-only CDP9335, and ordinary OS resolution
 of `globnotes.home` to the active CT. The application origin is always
@@ -328,179 +468,39 @@ is additional evidence and does not rewrite that historical limitation.
 The runner restores its exact pre-run hosts bytes, stops its own browser and
 gracefully stops its recorded CT on exit; original fixtures/data stay retained.
 
-## Quick start
+## Application and live consumers
 
-```bash
-# Run the CWA test
-./tests/calibre-web-automated.test.sh
-```
+Select these through `tests/run --run --context "$CONTEXT" --suite <suite>
+--mode <mode>` inside the admitted guest. Prerequisites and resource peaks are
+admitted before creation/download; missing network/packages/resources block the
+positive proof. Use exactly the context's CTID; never choose another free ID.
 
-Requires:
-- PVE VM reachable at `192.168.122.50` (override with `PVE_HOST`)
-- SSH key deployed on the PVE VM
-- Outbound TCP working on PVE
-
-## How tests work
-
-### Generic checks (every test)
-
-Every test script runs these phases:
-
-| Phase | Check |
-|---|---|
-| Preflight | PVE reachable, outbound TCP works |
-| Cleanup | Destroy containers 100 and 101 |
-| Install | Run the community script on PVE, extract CTID |
-| Services | All expected systemd services active |
-| Users | All required user accounts exist |
-| Paths | All required directories present |
-| Web UI | App responds on its configured port |
-| Logs | No forbidden patterns in service logs |
-
-Each phase uses helpers from `tests/lib/test-common.sh`. When a second
-test script is written, these will extract into a shared harness.
-
-### App-specific checks
-
-Test scripts can add app-specific phases after the generic checks. The
-CWA test adds a book upload phase (Phase 9) that authenticates with
-CSRF, uploads a test EPUB, waits for ingest, and verifies the book
-count increases.
-
-## Codeberg release helpers
-
-Run these inside a disposable Linux guest with `bash`, `jq`, `curl`, `zip`,
-and `unzip` installed:
-
-```bash
-bash tests/codeberg-release.test.sh
-bash tests/codeberg-release.test.sh --live
-```
-
-The deterministic suite covers release selection, pins, bounded API requests,
-malformed responses, interrupted downloads, staging cleanup, and preserving an
-existing installation when copying or publishing a replacement fails. It does
-not invoke the PVE harness or destroy containers.
-
-The live mode fetches and redeploys all four Codeberg consumers' actual releases
-in temporary directories using the framework's verbose and quiet modes. It checks
-version markers, configuration preservation, source files, and executable
-versions. These are release-helper checks, not full application/service installs.
-
-To verify the actual persistent-bundle path, serve the candidate checkout over
-HTTP and run this on the disposable PVE guest, supplying a test container ID:
-
-```bash
-bash tests/codeberg-release.test.sh --bundle 103 http://192.168.122.50:8001
-```
-
-It uses `build_bundle()` to inline the candidate framework and a probe hook,
-then deploys and runs Readeck from the resulting update bundle inside that CT.
-
-## RomM player-serving probe
-
-In a fresh disposable guest, install the prerequisites and run:
-
-```bash
-bash tests/romm-player-serving.test.sh --setup
-bash tests/romm-player-serving.test.sh
-```
-
-This deploys actual EmulatorJS `.7z`, Ruffle ZIP and uv TAR releases using the
-GitHub helper. It runs the Angie configuration extracted from `romm.sh` on port
-8080, with fixture SPA HTML, and checks isolation headers, ordinary SPA routes,
-and byte-for-byte HTTP delivery of the emulator loader and DOS core. It does
-not install the RomM backend or prove in-browser gameplay. The guest must not
-already have `/opt/romm/frontend/dist/index.html`.
-
-## uv project-version helper
-
-Run as root inside a disposable VM/container with `curl` and `jq` available:
-
-```bash
-bash tests/uv-project-version.test.sh
-```
-
-It uses real uv releases to check exact pins in `pyproject.toml`/`uv.toml`,
-explicit override precedence, selecting an older release, and latest fallback.
-It also verifies that an already-installed uv still installs a newly requested
-Python interpreter, that `uv sync` selects a project-compatible Python despite
-a different setup request, and that helper calls preserve the caller's exit trap.
-
-## Same-version GitHub asset repair
-
-```bash
-bash tests/github-force-deploy.test.sh
-```
-
-Run inside a disposable guest. It deploys a real release, damages only its
-temporary test payload, verifies normal same-version idempotence, and verifies
-that `FORCE_DEPLOY=1` repairs the payload while retaining the correct marker.
-
-## Installed RomM verification
-
-```bash
-bash tests/romm-live-verification.test.sh
-```
-
-Run inside a disposable installed RomM container. It checks the actual built
-player assets over HTTP, isolation headers, and active/enabled services. It also
-checks the cron process's configured schedules in Redis and sends isolated
-probe jobs to both ordinary and scan queues, verifying the returned results.
-
-## Configuration
-
-Each test script has a config block at the top:
-
-```bash
-SCRIPT_NAME="app-name"
-EXPECTED_SERVICES=(svc1 svc2)
-REQUIRED_USERS=(user1)
-REQUIRED_PATHS=(/path1 /path2)
-WEB_PORT=80
-FORBIDDEN_LOG_ERRORS=("pattern1" "pattern2")
-```
-
-Per-script details:
-
-| Script | What it validates | App-specific phase |
+| # | Suite / mode | Required downstream observation |
 |---|---|---|
-| `calibre-web-automated.test.sh` | CWA LXC install | Book upload via CSRF, ingest pipeline, `abc` user, Docker paths |
+| 1 | `calibre-web-automated / nested-install` | Normal unchanged framework/bootstrap install; all four CWA services, `abc`, four application/data paths, HTTP80 and clean logs. Hash the selected admitted EPUB; actual CSRF login/upload plus bounded fresh-session polling must show after>before AND the selected title's populated library DB/file consumer. Upload200 alone fails. |
+| 2 | `odysseus / nested-install` | Normal framework install, `odysseus` service, `/opt/odysseus` and actual HTTP80 response. |
+| 3 | `codeberg-release / fixture` | Original deterministic selection/pin/timeout/failure/preservation/concurrency assertions and zero leaked stages. |
+| 4 | `codeberg-release / live` | Actual three Codeberg consumers (Autocaliweb, Forgejo, Readeck), selected markers/configuration/executable versions. Endurain uses GitHub. |
+| 5 | `codeberg-release / bundle` | Candidate-only publisher, owned CT, self-contained normal `build_bundle` consumer and actual Readeck version/marker. No supplied numeric CT or arbitrary URL. |
+| 6 | `romm-player-serving / setup, live-runtime` | Separately admitted setup in the owned generic runtime CT; actual `.7z`/ZIP/TAR deployment, Angie routes/isolation headers and loader/core bytes. Mutable `/opt/romm` disappears only with exact-owned retirement. This is not full RomM/gameplay proof. |
+| 7 | `uv-project-version / live-runtime` | Real selected uv/Python/project consumers, closed range, precedence/cache and trap preservation; runtime/profile/cache/completion are isolated in the CT. |
+| 8 | `github-force-deploy / live-runtime` | Actual same-version idempotence and forced repair of damaged executable bytes without falsifying its marker. |
+| 9 | `romm-live-verification / installed-probe` | Explicit existing trusted CT lineage/delegation; unchanged service/HTTP/assets/Redis scheduled/ordinary+scan queue consumers. Guard/dispatch-only evidence is labeled separately from installed acceptance. |
 
-## Writing a new test
+`tests/assets/the-raven-noimages.epub` is the public-domain Poe/Gutenberg fixture.
+The context's selected input path/hash is authoritative, including when using a
+different TEST_BOOK. Private cookies and credentials never belong in source or
+published evidence. Preserve original failure statuses and truthful resource
+states, and checksum-copy guest-only evidence before retiring successful owned
+resources. Failed/unknown resources are retained for inspection.
 
-1. Copy `calibre-web-automated.test.sh` as a template
-2. Update the config block with the new app's services, users, paths
-3. Add any app-specific phases after the generic checks
-4. Place test assets in `tests/assets/`
+The registry and both workflow regressions are test infrastructure, not a new
+application installer. New suites register fixed source consumers and their
+appropriate effect class, reuse shared admission and keep their own actual
+consumer assertions. Never turn a recording pct model into a native CT operation.
 
-## Shared library
-
-`tests/lib/test-common.sh` — sourced by every test script. Provides:
-
-- `pass()` / `fail()` / `warn()` — colored output
-- `pve_exec()` / `pve_pct()` — SSH wrappers
-- `preflight_checks()` — connectivity + outbound TCP
-- `cleanup_containers()` — destroy CT 100, 101
-- `check_service()` / `check_user()` / `check_path()` — single checks
-- `check_no_log_errors()` — grep for forbidden patterns in journalctl
-
-## Test assets
-
-`tests/assets/` holds files needed by tests:
-
-| File | Description |
-|---|---|
-| `the-raven-noimages.epub` | The Raven (Poe, 1845), public domain. 52 KB. Project Gutenberg #17192. Used by the CWA book upload phase. |
-
-## PVE VM
-
-The test scripts target a PVE VM at `192.168.122.50`. The VM should:
-- Have the scripts-underground repo cloned at `/opt/scripts-underground`
-- Have the `debian-13` LXC template available
-- Have a working bridge (`vmbr0`) and outbound internet
-- Be clean (no leftover containers from previous runs)
-
-The `cleanup_containers` phase destroys CT 100 and 101 before each run.
-If your VM has important data at those CT IDs, override the CTIDs or
-skip the cleanup phase.
+Contribution verification is still a later gate: successful commands, nonempty
+catalogue output and a home-page title do not prove it. Before claiming that gate,
+observe actual JSON catalogue/AST contents and the generated HTML pages' script,
+AST and catalogue crosslinks on the exact output projection. These outcomes have
+not been verified by the source/admission checkpoint.

@@ -2,6 +2,8 @@
 # Native installed systemd in the dedicated project VM. Only uniquely named,
 # positively owned unit fixtures are installed/removed. No application is installed.
 set -euo pipefail
+python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/lib/entrypoint.py" maintenance-service-systemd "$@" || exit $?
+[[ "${SU_TEST_GUARD_ONLY:-0}" != 1 ]] || exit 0
 systemd-detect-virt --vm --quiet || exit 1
 : "${TMPDIR:?disk-backed TMPDIR required}" "${L2_NATIVE_FIXTURES:?explicit native systemd fixture authorization required}"
 [[ "$L2_NATIVE_FIXTURES" == owned-maintenance-vm ]] || exit 65
