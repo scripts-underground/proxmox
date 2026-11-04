@@ -18,6 +18,8 @@ from test_registry import REGISTRY, policy
 
 
 DIRECT = {
+    'maintenance-kosmozoo-current': [[]],
+    'maintenance-kosmozoo-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
     'romm-player-serving': [[], ['--setup']],
     'romm-live-verification': [[]],
@@ -47,7 +49,9 @@ class Entrypoints(unittest.TestCase):
         actual = {p.relative_to(self.source).as_posix() for p in (self.source / 'tests').glob('*.test.sh')}
         declared = {r.path for r in REGISTRY.values() if r.path.endswith('.test.sh')}
         self.assertEqual(actual, declared)
-        self.assertEqual(len(actual - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
+        additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh'}
+        self.assertTrue(additions <= actual)
+        self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
             for mode in row.modes:
                 with self.subTest(suite=suite, mode=mode):
@@ -57,7 +61,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 shell=71 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=2 shell=73 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -84,13 +88,19 @@ class Entrypoints(unittest.TestCase):
                     op['parameters']={name:dict(path=str(manifest if rule.kind=='tree' else leaf),sha256=sha((manifest if rule.kind=='tree' else leaf).read_bytes()))
                                       for name,rule in INPUT_BINDINGS[suite,mode].items() if rule.required and rule.kind in ('tree','file','executable')}
                     if suite=='maintenance-app-compat':op['parameters']['apprise_asset_path']='css/source.css'
+                    recording_calls = None
                     if suite in ('maintenance-globnotes-lxc','globnotes-browser'):
+                        native,recording_calls,_ = self.native_fixture()
+                        op['native'] = copy.deepcopy(native.n)
+                        op['nested'] = copy.deepcopy(native.run.context.operation['nested'])
+                        self.assertEqual(set(json.loads(strong.read_bytes())['fixtures']),{str(op['nested'][0]['ctid'])})
                         op['inputs'] = [dict(path=str(strong),sha256=sha(strong.read_bytes()))]
                     d['operations'] = [op]
                     admitted=Context.validate(d,self.context.path,suite,mode)
                     argv=command_for(admitted)
                     self.assertTrue(any(str(self.source) in a for a in argv),argv)
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
+                    if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
@@ -669,6 +679,24 @@ for i in range(2):
             self.assertEqual(native.owner.finish(17),17)
         print('NATIVE_PATH_BOUNDARY absolute=1 timeout_child=1 native=recording mounts=actual',flush=True)
 
+    def test_kosmozoo_delegation_requires_exact_native_scope(self):
+        from test_pve import admit_delegated,admit_scope
+        c,_,_=self.review_context('maintenance-kosmozoo-native','live-runtime')
+        original=c.document;op=c.operation;root=Path('/').stat()
+        delegated=self.run_owner.directory/'kosmozoo-delegation-model.json'
+        d=dict(schema=1,context_sha256=sha(self.context.path.read_bytes()),suite=op['suite'],mode=op['mode'],resource=op['nested'][0],
+               namespaces={k:os.readlink('/proc/self/ns/'+k) for k in ('mnt','pid','user')},root=[root.st_dev,root.st_ino],source=original['source']['tree_sha256'])
+        lineage=json.loads(Path(op['native']['lineage']).read_bytes())
+        # Parsed custody seam only; never mint a delegation for the outer guest.
+        def read(path):return {str(delegated):d,str(self.context.path):original,op['native']['lineage']:lineage}[str(path)]
+        with patch('test_pve.read_custody',side_effect=read),patch.dict(os.environ,SU_TEST_DELEGATION=str(delegated),TMPDIR=op['native']['receiver_tmpdir']):
+            admitted=admit_delegated(self.context.path,op['suite'],op['mode']);admit_scope(admitted,'delegated')
+            for key,value in [('suite','github-force-deploy'),('source','0'*64),('root',[0,0]),('namespaces',{})]:
+                saved=d[key];d[key]=value
+                with self.assertRaises(AdmissionError):admit_delegated(self.context.path,op['suite'],op['mode'])
+                d[key]=saved
+        print('KOSMOZOO_DELEGATION actual_source_namespace_root checks=5 custody=recording no_native_effects=1',flush=True)
+
     def review_context(self, suite, mode):
         """Parsed operation/model seam; authoritative context is never rewritten."""
         native, calls, _ = self.native_fixture()
@@ -706,6 +734,7 @@ for i in range(2):
 
     def test_review_actual_public_execution_routes(self):
         cases=[('codeberg-release','live','runtime'),('codeberg-release','bundle','runtime'),
+               ('maintenance-kosmozoo-native','live-runtime','runtime'),
                ('github-force-deploy','live-runtime','runtime'),('uv-project-version','live-runtime','runtime'),
                ('romm-player-serving','live-runtime','runtime'),('romm-player-serving','setup','runtime'),
                ('romm-live-verification','installed-probe','installed'),
@@ -730,12 +759,12 @@ for i in range(2):
                 with patch('entrypoint.command_for',return_value=['/bin/bash',str(self.source/REGISTRY[suite].path)]),patch('test_pve.admit_scope'),patch('test_pve.runtime_dispatch',side_effect=runtime),patch('test_pve.installed_dispatch',side_effect=installed),patch('subprocess.run',side_effect=process),patch.object(Context,'validate',return_value=c):
                     self.assertEqual(self.public_main(c),0)
                 self.assertEqual(events,[expected], 'public route escaped the source-owned effect owner')
-        print('PUBLIC_EXECUTION_ROUTES cases=14 codeberg_live=owned-runtime effects=recording',flush=True)
+        print('PUBLIC_EXECUTION_ROUTES cases=15 codeberg_live=owned-runtime kosmozoo_native=owned-runtime effects=recording',flush=True)
 
     def test_review_preflight_precedes_run_and_public_check(self):
         from test_context import Resource
         from test_pve import runtime_dispatch,installed_dispatch
-        for suite,mode,consumer in [('github-force-deploy','live-runtime',runtime_dispatch),('codeberg-release','bundle',runtime_dispatch),('romm-live-verification','installed-probe',installed_dispatch)]:
+        for suite,mode,consumer in [('maintenance-kosmozoo-native','live-runtime',runtime_dispatch),('github-force-deploy','live-runtime',runtime_dispatch),('codeberg-release','bundle',runtime_dispatch),('romm-live-verification','installed-probe',installed_dispatch)]:
             for action in ('consumer','public-run','public-check'):
                 with self.subTest(suite=suite,action=action):
                     c,parent,observed=self.review_context(suite,mode)
@@ -752,7 +781,7 @@ for i in range(2):
                     after=self.tree_state(parent)
                     self.assertEqual(before,after,'refusal created run lock/directory/receipt before native ownership preflight')
                     self.assertNotIn('CONTEXT_OK',out.getvalue())
-        print('NATIVE_BEFORE_EFFECTS cases=9 direct_publicrun_publiccheck locks_runs_publishers=0',flush=True)
+        print('NATIVE_BEFORE_EFFECTS cases=12 direct_publicrun_publiccheck locks_runs_publishers=0',flush=True)
 
     def test_review_bundle_bootstrap_and_publisher_phases_are_distinct(self):
         from test_context import Resource

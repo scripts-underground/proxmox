@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Actual cold writers/wrapper/hooks/EXIT and kernel flock/FIFOs. Release tags,
+# executable version text and systemd lifecycle remain explicitly synthetic.
+kosmozoo_ownership_contracts() {
+  local work=$1 ownership_baseline=$2 ROOT=$3
+  local saved_scenario=${scenario:-} ownership_case rc subject ownership_assertions_total=0
+  if [[ "$ownership_baseline" == 1 ]]; then
+    subject="$work/pre-integration.sh"
+    git -C "$ROOT" show bfd66b05e02689cba26f0a5132a55f187abced93:scripts/lxc/kosmozoo.sh > "$subject"
+    [[ "$(sha256sum "$subject" | cut -d ' ' -f1)" == c36f6c94952504d81b9398bf042088e2d8c0b1dc28a6416fc03eabc13d07efe9 ]] || return 65
+    curl() { :; }
+    # The immutable hash above binds this generated Git-object source. The live
+    # product file is linted separately; there is no generated file at lint time.
+    # shellcheck source=/dev/null
+    source "$subject"
+    unset -f curl
+  fi
+  ownership_probe() { app_maintenance_acquire "${NSAPP:-}"; }
+  for ownership_case in wrapper direct install cleanup recovery buffered-floor; do
+    scenario=update
+    c="$work/ownership-$ownership_case"
+    prepare_cold_case
+    _write_bundle update update_script "$ROOT/misc" 'source /fixture/models.sh' 'update_script' > "$c/root/fixture/direct-template"
+    _write_bundle update ownership_probe "$ROOT/misc" 'source /fixture/models.sh' 'ownership_probe' > "$c/root/fixture/lock-template"
+    cp "$c/root/fixture/update.sh" "$c/root/fixture/wrapper-template"
+    cp "$c/root/fixture/install.sh" "$c/root/fixture/install-template"
+    cp "$c/root/fixture/new" "$c/root/fixture/future"
+    printf '\nSYNTHETIC-0.3.0\n' >> "$c/root/fixture/future"
+    cp "$c/root/fixture/new" "$c/root/fixture/bigger"
+    printf '\nSYNTHETIC-0.4.0\n' >> "$c/root/fixture/bigger"
+    jq -n --arg old "$(sha256sum "$c/root/fixture/old" | cut -d ' ' -f1)" \
+      --arg new "$(sha256sum "$c/root/fixture/new" | cut -d ' ' -f1)" \
+      --arg future "$(sha256sum "$c/root/fixture/future" | cut -d ' ' -f1)" \
+      --arg bigger "$(sha256sum "$c/root/fixture/bigger" | cut -d ' ' -f1)" \
+      '{versions:{"0.2.1":{path:"/fixture/old",sha256:$old},"0.2.2":{path:"/fixture/new",sha256:$new},"0.3.0":{path:"/fixture/future",sha256:$future},"0.4.0":{path:"/fixture/bigger",sha256:$bigger}},binaries:{($old):"0.2.1",($new):"0.2.2",($future):"0.3.0",($bigger):"0.4.0"}}' > "$c/root/fixture/ownership-versions.json"
+    cat > "$c/root/fixture/ownership-models.sh" << 'OWNMODELS'
+ownership_point() {
+  local point=$1 caller=$BASHPID inode=none fd=${_APP_MAINTENANCE_FD:-none}
+  printf '%s|%s\n' "${CASE_ROLE:-setup}" "$point" >> /fixture/ownership-events
+  if [[ "${CASE_ROLE:-}" == held && "$point" == "${HOLD_POINT:-}" && ! -e /fixture/held-once ]]; then
+    if [[ "$fd" =~ ^[0-9]+$ ]]; then inode=$(command stat -Lc '%d:%i' "/proc/$caller/fd/$fd") || return 97; fi
+    printf '%s|%s|%s|%s\n' "$point" "$caller" "$fd" "$inode" > /fixture/ready
+    : > /fixture/held-once
+    IFS= read -r -t 10 signal < /fixture/proceed || return 97
+    [[ "$signal" == continue ]] || return 97
+  fi
+}
+OWNMODELS
+    cat > "$c/root/fixture/scenario.sh" << 'OWNCASE'
+set -euo pipefail
+export FAULT=none PIN=0.2.2 CURRENT_VERSION=0.2.1 CASE_ROLE=setup
+race_assertions=0 race_failures=0
+observe() {
+  race_assertions=$((race_assertions + 1))
+  if [[ "$1" == "$2" ]]; then printf 'PASS ownership %s\n' "$3"; else printf 'FAIL ownership %s: expected <%s>, got <%s>\n' "$3" "$2" "$1"; race_failures=$((race_failures + 1)); fi
+}
+invoke() {
+  local role=$1 kind=$2 pin=$3 fault=$4 point=${5:-} status=0
+  command cp "/fixture/$kind-template" "/fixture/actor-$role.sh"
+  command timeout --signal=TERM --kill-after=2 15 env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root TMPDIR=/data/testtmp LOCAL_IP=127.0.0.1 CASE_ROLE="$role" HOLD_POINT="$point" \
+    FAULT="$fault" PIN="$pin" var_appversion="$pin" CURRENT_VERSION=0.2.1 \
+    bash "/fixture/actor-$role.sh" > "/fixture/$role.log" 2>&1 || status=$?
+  printf '%s\n' "$status" > "/fixture/$role.status"
+}
+status() { command cat "/fixture/$1.status"; }
+events() { grep -c "^$1|" /fixture/ownership-events || true; }
+operation() { grep -c "^$1|$2$" /fixture/ownership-events || true; }
+snapshot() {
+  for path in /opt/kosmozoo /etc/kosmozoo /etc/systemd/system/kosmozoo.service /root/.kosmozoo /data/state /data/cache /var/lib/scripts-underground/update-pending; do
+    if [[ -e "$path" ]]; then
+      find "$path" -type f -print0 | sort -z | xargs -0 -r sha256sum
+    else printf 'absent %s\n' "$path"; fi
+  done
+}
+source /fixture/models.sh
+: > /fixture/ownership-events
+printf inactive > /fixture/active
+printf enabled > /fixture/enabled
+printf 0 > /fixture/pid
+printf active > /fixture/os-dbus
+printf 'user state\n' > /data/state/user
+printf 'user cache\n' > /data/cache/user
+printf '%s\0' HOME=/data TMPDIR=/data/tmp KOZMOZOO_STATE=/data/state KOZMOZOO_CACHE=/data/cache KOZMOZOO_BIND=0.0.0.0 KOZMOZOO_PORT=80 KOZMOZOO_HOSTS= KOZMOZOO_PLUGINS=/data/plugins > /fixture/environment
+kind=wrapper pin=0.2.2 fault=none point=selection
+if [[ "$OWN_CASE" == install ]]; then
+  kind=install point=architecture
+else
+  mkdir -p /opt/kosmozoo /etc/kosmozoo
+  command cp /fixture/old /opt/kosmozoo/kosmozoo
+  printf '0.2.1\n' > /root/.kosmozoo
+  printf 'OPERATOR ENV\n' > /etc/kosmozoo/env
+  printf 'OPERATOR UNIT\n' > /etc/systemd/system/kosmozoo.service
+  if [[ "$OWN_CASE" == cleanup ]]; then command cp /fixture/new /opt/kosmozoo/kosmozoo; printf '0.2.2\n' > /root/.kosmozoo; fi
+  systemctl start kosmozoo
+fi
+case "$OWN_CASE" in
+  direct) kind=direct ;;
+  cleanup) point=outer-cleanup ;;
+  recovery) pin=0.3.0 fault=start point=recovery ;;
+  buffered-floor) kind=direct ;;
+esac
+mkfifo /fixture/proceed
+exec 9<> /fixture/proceed
+invoke held "$kind" "$pin" "$fault" "$point" &
+holder=$!
+deadline=$((SECONDS + 8))
+while [[ ! -s /fixture/ready ]]; do
+  if ! kill -0 "$holder" 2>/dev/null || ((SECONDS >= deadline)); then printf 'INCOMPLETE ownership barrier %s\n' "$OWN_CASE" >&2; exit 97; fi
+  command sleep 0.01
+done
+IFS='|' read -r reached caller heldfd inode < /fixture/ready
+observe "$reached" "$point" "$OWN_CASE real hook reached requested FIFO barrier"
+observe "$([[ "$inode" != none ]] && printf held || printf missing)" held "$OWN_CASE held actual hook maintenance FD"
+invoke kernel lock 0.2.2 none
+observe "$(status kernel)" 75 "$OWN_CASE independent real-kernel contender sees owner"
+before=$(snapshot)
+if [[ "$OWN_CASE" == buffered-floor ]]; then
+  invoke contender wrapper 0.3.0 start
+  observe "$(status contender)" 75 'buffered old admission excludes concurrent newer wrapper before its hook'
+  observe "$(events contender)" 0 'newer contender did not reach synthetic architecture/release/service boundary'
+else
+  case "$OWN_CASE" in install) contenders=(install) ;; wrapper | cleanup | recovery) contenders=(direct install wrapper) ;; direct) contenders=(wrapper direct install) ;; esac
+  for contender in "${contenders[@]}"; do
+    role="contender-$contender"
+    invoke "$role" "$contender" 0.2.2 none
+    observe "$(status "$role")" 75 "$OWN_CASE versus $contender refuses exact75"
+    observe "$(events "$role")" 0 "$OWN_CASE versus $contender refuses before hook boundary"
+  done
+fi
+observe "$(snapshot)" "$before" "$OWN_CASE contenders preserve actual code/fact/pending/operator/data bytes"
+printf 'continue\n' >&9
+wait "$holder"
+if [[ "$OWN_CASE" == recovery ]]; then expected=55; else expected=0; fi
+observe "$(status held)" "$expected" "$OWN_CASE actual primary status after release"
+invoke released lock 0.2.2 none
+observe "$(status released)" 0 "$OWN_CASE actual final FD closure permits a fresh owner"
+if [[ "$OWN_CASE" == recovery || "$OWN_CASE" == buffered-floor ]]; then
+  if [[ "$OWN_CASE" == buffered-floor ]]; then
+    invoke newer wrapper 0.3.0 start
+    observe "$(status newer)" 55 'newer synthetic release really fails after activation attempt publication'
+  fi
+  observe "$(command jq -r .release /opt/kosmozoo/activation-attempt.json)" 0.3.0 'actual failed newer hook leaves its real synthetic attempt floor'
+  observe "$([[ -f /var/lib/scripts-underground/update-pending/kosmozoo ]] && printf pending || printf missing)" pending 'failed wrapper retains actual framework pending state'
+  attempt=$(command sha256sum /opt/kosmozoo/activation-attempt.json)
+  invoke fresh-older wrapper 0.2.2 none
+  observe "$(status fresh-older)" 65 'fresh older invocation re-evaluates retained newer floor'
+  observe "$(operation fresh-older download)" 0 'fresh older floor refusal precedes download'
+  observe "$(operation fresh-older start)" 0 'fresh older floor refusal precedes start'
+  observe "$(command sha256sum /opt/kosmozoo/activation-attempt.json)" "$attempt" 'older refusal preserves exact newer fact bytes'
+  invoke safe-same wrapper 0.3.0 none
+  observe "$(status safe-same)" 0 'actual same-version synthetic repair succeeds'
+  observe "$(command cat /root/.kosmozoo)" 0.3.0 'same repair advances actual marker through real hook'
+  observe "$([[ ! -e /var/lib/scripts-underground/update-pending/kosmozoo ]] && printf cleared || printf pending)" cleared 'successful repair retires its own pending state'
+  invoke safe-newer wrapper 0.4.0 none
+  observe "$(status safe-newer)" 0 'actual newer synthetic repair succeeds'
+  observe "$(command cat /root/.kosmozoo)" 0.4.0 'newer synthetic release reaches marker consumer'
+  observe "$(command cat /fixture/enabled)" enabled 'repair restores original declared enablement'
+fi
+printf '%s %s\n' "$race_assertions" "$race_failures" > /fixture/ownership-summary
+printf 'OWNERSHIP_SCHEDULE_COMPLETE %s assertions=%s failures=%s\n' "$OWN_CASE" "$race_assertions" "$race_failures"
+OWNCASE
+    rc=0
+    export c ownership_case
+    timeout --signal=TERM --kill-after=5 60 unshare --mount --pid --fork --propagation private bash -c '
+      set -euo pipefail
+      mount --bind /usr "$c/root/usr"
+      mount -o remount,bind,ro "$c/root/usr"
+      mount -t proc proc "$c/root/proc"
+      mount --bind "$c/root/data/cache" "$c/root/data/cache"
+      env -i PATH=/usr/sbin:/usr/bin:/bin HOME=/root TMPDIR=/data/testtmp OWN_CASE="$ownership_case" \
+        chroot "$c/root" /bin/bash /fixture/test.sh --fixture-child
+    ' > "$c/ownership-output" 2>&1 || rc=$?
+    check "$rc" 0 "$ownership_case ownership schedule completed without fixture crash/timeout"
+    if [[ "$rc" != 0 || ! -s "$c/root/fixture/ownership-summary" ]]; then
+      printf 'INCOMPLETE ownership fixture: %s\n' "$c/ownership-output" >&2
+      return 97
+    fi
+    cat "$c/ownership-output"
+    read -r ownership_assertions ownership_failures < "$c/root/fixture/ownership-summary"
+    ownership_assertions_total=$((ownership_assertions_total + ownership_assertions))
+    failures=$((failures + ownership_failures))
+  done
+  printf 'OWNERSHIP_CONTRACTS_COMPLETE schedules=6 assertions=%s baseline=%s\n' "$ownership_assertions_total" "$ownership_baseline"
+  scenario=$saved_scenario
+}

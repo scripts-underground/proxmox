@@ -17,7 +17,7 @@ invidious-companion-update jellyfin-ffmpeg keycloak-keep-install legacy-version-
 llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preservation
 maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap
 maintenance-bundle-writer maintenance-consumers maintenance-go-minimum
-maintenance-gpg-key maintenance-immich maintenance-keep maintenance-merge-inplace
+maintenance-gpg-key maintenance-immich maintenance-keep maintenance-kosmozoo-current maintenance-merge-inplace
 maintenance-node24-vite maintenance-nodejs maintenance-paperless-format-source
 maintenance-prefix-arch maintenance-receiver-portability maintenance-receiving-context
 maintenance-release-boundaries maintenance-release-metadata maintenance-replacement-review
@@ -33,6 +33,7 @@ REGISTRY.update({
     'odysseus': Suite('tests/odysseus.test.sh', ('nested-install',), 'nested-install'),
     'codeberg-release': Suite('tests/codeberg-release.test.sh', ('fixture', 'live', 'bundle'), 'mode-specific', (('live', '--live'), ('bundle', '--bundle'))),
     'github-force-deploy': Suite('tests/github-force-deploy.test.sh', ('live-runtime',), 'live-runtime'),
+    'maintenance-kosmozoo-native': Suite('tests/maintenance-kosmozoo-native.test.sh', ('live-runtime',), 'live-runtime'),
     'uv-project-version': Suite('tests/uv-project-version.test.sh', ('live-runtime',), 'live-runtime'),
     'romm-player-serving': Suite('tests/romm-player-serving.test.sh', ('live-runtime', 'setup'), 'live-runtime', (('setup', '--setup'),)),
     'romm-live-verification': Suite('tests/romm-live-verification.test.sh', ('installed-probe',), 'installed-probe'),

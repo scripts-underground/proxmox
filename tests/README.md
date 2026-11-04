@@ -32,9 +32,9 @@ revisions instead of silently refreshing admission.
 | 5 | Installed probe/browser | Trusted creation/transition lineage and actual current namespace/root/source; stronger application protection remains required. |
 | 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
 
-The catalogue covers all69 original shell suites, two workflow regressions,
-browser and contribution surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 92 public suite/mode combinations. The
+The catalogue covers all69 original shell suites, two Kosmozoo consumers, two
+workflow regressions, browser and contribution surfaces. Listing a row is not runtime proof. Unknown
+suite/mode/options refuse. There are 94 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -136,6 +136,24 @@ file path/hash, then use `--suite maintenance-template-lock --mode review-baseli
 The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
+
+`maintenance-kosmozoo-current/fixture` executes cold install/update bundles with
+real files, ELF processes, private root/mount/PID fixtures and kernel maintenance
+ownership. Release transport/version text, apt and service control are explicitly
+modeled. It checks normalized bare hosts, bounded decimal ports (including extreme
+lengths), duplicate/control refusal, folder-before-start admission, protected
+operator/state/cache/mount metadata, activation recovery and six concurrent-owner
+schedules. It does not execute the historical fixed-ID Kosmozoo campaign.
+
+`maintenance-kosmozoo-native/live-runtime` uses the existing generic runtime CT
+owner, candidate publisher and sealed direct delegation. It creates no outer
+network or lifecycle owner. Its cold-generated native install/update bundles run
+the actual published ELF/service. The consumer checks local image bytes/SHA256,
+saved judgment/settings in HTTP and SQLite/files/cache, runtime/private identity,
+operator overrides, restart and an explicit same-version no-op update. Native
+logs/records are included in the owner-recorded stdout for external preservation.
+Guard-only or syntax evidence proves admission/load only; the full native consumer
+must succeed on the final combined source before native acceptance is claimed.
 
 These plain Bash tests run inside an isolated Linux VM with an existing writable
 disk-backed `TMPDIR`; the guest's `/tmp`/tmpfs is not a fixture destination.
