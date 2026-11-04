@@ -10,7 +10,7 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 # shellcheck disable=SC2034
 # Read by the framework - shellcheck cannot see the caller
 APP="Paperless-GPT"
-var_tags="${var_tags:-os}"
+var_tags="${var_tags:-ai;document}"
 var_cpu="${var_cpu:-3}"
 var_ram="${var_ram:-2048}"
 var_disk="${var_disk:-7}"

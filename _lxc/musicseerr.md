@@ -13,13 +13,18 @@ disk: 8
 maintainer: michelroegl-brunner
 ---
 
-Music request and discovery platform. Connects Lidarr, Jellyfin, Navidrome, Plex, ListenBrainz, and Last.fm into a single interface for browsing, requesting, playing, and discovering music.
+Music request and discovery platform for browsing, requesting, playing, and discovering music from your library and supported services.
 
 ## Notes
 
 - Access the web UI at `http://<ip>:8688`
-- Requires a running Lidarr instance
-- On first launch, create an admin account and connect Lidarr in Settings
+- On first launch, create an admin account, then configure your library and download client in Settings
+
+## Configuration and storage
+
+The installed service uses `/opt/musicseerr/backend` as its application root. Configuration lives in `/opt/musicseerr/backend/config`; cache lives in `/opt/musicseerr/backend/cache`.
+
+Retain and back up both directories. Although artwork and metadata caches can be rebuilt, the currently selected upstream release also stores `library.db` under the cache directory. Do not treat the entire cache directory as disposable or remove it to clear cached images.
 
 ## Links
 

@@ -1,7 +1,7 @@
 ---
 slug: paperless-gpt
 title: Paperless-GPT
-tags: [os]
+tags: [ai, document]
 logo: /assets/logos/paperless-gpt.webp
 by: MickLesk
 repo: https://github.com/icereed/paperless-gpt

@@ -56,7 +56,8 @@ function post_install_script() {
   echo -e "${INFO}${YW}Access the web UI at:${CL}"
   echo -e "${GATEWAY}${BGN}http://${IP}${CL}"
   echo -e "${INFO}${YW}LocalSend protocol listens on port 53317 (TCP+UDP, multicast discovery).${CL}"
-  echo -e "${INFO}${YW}The CT's /opt directory is the default share root — mount your storage anywhere under /opt (pct mp, NFS, virtiofs) and it appears in the picker with no config changes.${CL}"
+  echo -e "${INFO}${YW}The default files=/opt share shows readable storage mounted under /opt in the file browser for sending.${CL}"
+  echo -e "${INFO}${YW}Receiving uses a configured named share root, not the browsed folder. To receive directly into /opt/inbox, configure inbox=/opt/inbox and grant the native service write access.${CL}"
 }
 
 function update_script() {
