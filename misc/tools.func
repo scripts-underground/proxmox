@@ -1161,18 +1161,135 @@ create_temp_dir() {
 #     the script exits before the update runs against unprotected data (the
 #     paths already recorded are left in place, so a retry only redoes the one
 #     that failed).
+#   - Unmanifested objects are retained beside the store, never merged into a
+#     retry. Manifest and copy failures abort with the original command status.
 #
 # restore_backup
 #   - Copies every path recorded in the manifest back to its origin (replacing
 #     whatever the update left there), then deletes the store.
 #   - On any failure it returns non-zero and keeps the store for a retry.
+#   - Uncertified contents are retained beside the store after restoration.
 #   - No-op (with a warning) if no store exists.
 #
 # Override the store location with BACKUP_DIR if the default does not fit.
 # Store name falls back to APP_SLUG (addon bundles bake APP_SLUG, not NSAPP).
 # ------------------------------------------------------------------------------
+_backup_select_coverage() {
+  # Coalesce old and new newline manifests in memory, without changing format.
+  local _backup_rows="$1" _backup_entry _backup_root _backup_i _backup_covered
+  local -n _backup_selected="$2"
+  _backup_selected=()
+  while IFS= read -r _backup_entry; do
+    [[ -n "$_backup_entry" ]] || continue
+    _backup_covered=0
+    for _backup_root in "${_backup_selected[@]}"; do
+      if [[ "$_backup_entry" == "$_backup_root" || "$_backup_entry" == "$_backup_root/"* ]]; then
+        _backup_covered=1
+        break
+      fi
+    done
+    [[ "$_backup_covered" == 0 ]] || continue
+    for _backup_i in "${!_backup_selected[@]}"; do
+      [[ "${_backup_selected[$_backup_i]}" != "$_backup_entry/"* ]] || unset '_backup_selected[_backup_i]'
+    done
+    _backup_selected+=("$_backup_entry")
+  done <<< "$_backup_rows"
+}
+
+_backup_check_parents() {
+  # Check lexical components, never resolve a saved link into external data.
+  local base="$1" relative="$2" component
+  [[ ! -L "$base" && (! -e "$base" || -d "$base") ]] || return 252
+  while [[ "$relative" == */* ]]; do
+    component=${relative%%/*}
+    relative=${relative#*/}
+    base+="/$component"
+    [[ ! -L "$base" && (! -e "$base" || -d "$base") ]] || return 252
+  done
+}
+
+_backup_record_path() {
+  local manifest="$1" backup_rows="$2" path="$3" candidate mode backup_status
+  candidate=$(mktemp "${manifest%/.manifest}.manifest.XXXXXX") || return $?
+  mode=$(stat -c '%a' -- "$manifest") || return $?
+  # A failed/short append must not leave a partial row in the active manifest.
+  if printf '%s\n' "$backup_rows" > "$candidate" &&
+    printf '%s\n' "$path" >> "$candidate" &&
+    chmod "$mode" "$candidate" && mv -T -- "$candidate" "$manifest"; then
+    return 0
+  else
+    backup_status=$?
+    msg_warn "Unpublished backup manifest retained at $candidate"
+    return "$backup_status"
+  fi
+}
+
+_backup_compose_directory() {
+  local store="$1" path="$2" prepared="$3" saved relative target parent
+  shift 3
+  [[ -d "$path" && ! -L "$path" ]] || return 252
+  cp -a -- "$path" "$prepared" || return $?
+  for saved in "$@"; do
+    [[ "$saved" == "$path/"* ]] || continue
+    _backup_check_parents "$store/files" "${saved#/}" || return $?
+    relative=${saved#"$path/"}
+    saved="$store/files$saved"
+    [[ -e "$saved" || -L "$saved" ]] || return 252
+    _backup_check_parents "$prepared" "$relative" || return $?
+    target="$prepared/$relative"
+    parent=$(dirname -- "$target") || return $?
+    mkdir -p "$parent" || return $?
+    if [[ -d "$saved" && ! -L "$saved" ]]; then
+      [[ ! -L "$target" && (! -e "$target" || -d "$target") ]] || return 252
+      rm -rf -- "$target" || return $?
+    elif [[ -L "$saved" ]]; then
+      [[ ! -d "$target" || -L "$target" ]] || return 252
+      rm -f -- "$target" || return $?
+    else
+      [[ ! -d "$target" || -L "$target" ]] || return 252
+      if [[ -L "$target" ]]; then
+        rm -f -- "$target" || return $?
+      fi
+      # In-place native file copying preserves a prepared hardlink group when
+      # its certified member supplies the original bytes and mode.
+      if [[ -f "$saved" && -f "$target" ]]; then
+        cp -p -- "$saved" "$target" || return $?
+        continue
+      fi
+    fi
+    cp -a -- "$saved" "$target" || return $?
+  done
+}
+
+_backup_extend_directory() {
+  local store="$1" path="$2" dest="$3" preparation incomplete backup_status
+  shift 3
+  preparation=$(mktemp -d "${store}.prepare.XXXXXX") || return $?
+  if _backup_compose_directory "$store" "$path" "$preparation/object" "$@"; then
+    :
+  else
+    backup_status=$?
+    msg_warn "Backup preparation retained at $preparation"
+    return "$backup_status"
+  fi
+  incomplete=$(mktemp -d "${store}.incomplete.XXXXXX") || return $?
+  mv -T -- "$dest" "$incomplete/object" || return $?
+  if mv -T -- "$preparation/object" "$dest"; then
+    rmdir -- "$preparation" || return $?
+    msg_warn "Previous backup backing retained at $incomplete/object"
+  else
+    backup_status=$?
+    if ! mv -T -- "$incomplete/object" "$dest"; then
+      msg_error "Backup publication failed; original coverage retained at $incomplete/object"
+    fi
+    msg_warn "Backup preparation retained at $preparation"
+    return "$backup_status"
+  fi
+}
+
 create_backup() {
-  local store manifest path dest
+  local store manifest path dest parent backup_rows backup_status incomplete certified covered extending
+  local -a coverage=()
   store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}"
   manifest="${store}/.manifest"
 
@@ -1181,18 +1298,43 @@ create_backup() {
     return 0
   }
 
-  if ! mkdir -p "$store" || ! touch "$manifest"; then
+  mkdir -p "$store" && touch "$manifest" || {
+    backup_status=$?
     msg_error "Backup failed: could not create store at ${store} - aborting update"
-    exit 1
-  fi
+    exit "$backup_status"
+  }
+  backup_rows=$(cat -- "$manifest") || {
+    backup_status=$?
+    msg_error "Backup manifest read failed - recovery copies retained"
+    exit "$backup_status"
+  }
+  _backup_select_coverage "$backup_rows" coverage || exit $?
 
   msg_info "Backing up data"
   for path in "$@"; do
     path="${path%/}"
-    if grep -qxF "$path" "$manifest" 2> /dev/null; then
+    if grep -qxF -- "$path" <<< "$backup_rows"; then
       continue
+    else
+      backup_status=$?
+      if [[ "$backup_status" != 1 ]]; then
+        msg_error "Backup manifest lookup failed - recovery copies retained"
+        exit "$backup_status"
+      fi
     fi
-    if [[ ! -e "$path" ]]; then
+    covered=0
+    extending=0
+    for certified in "${coverage[@]}"; do
+      if [[ "$path" == "$certified/"* ]]; then
+        _backup_check_parents "$store/files" "${path#/}" || exit $?
+        [[ -d "$store/files$certified" && ! -L "$store/files$certified" ]] || exit 252
+        covered=1
+      elif [[ "$certified" == "$path/"* ]]; then
+        extending=1
+      fi
+    done
+    [[ "$covered" == 0 ]] || continue
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
       msg_warn "Skipping backup of '${path}' (not found)"
       continue
     fi
@@ -1201,17 +1343,64 @@ create_backup() {
       continue
     fi
     dest="${store}/files${path}"
-    if ! mkdir -p "$(dirname "$dest")" || ! cp -a "$path" "$dest"; then
-      msg_error "Backup of '${path}' failed - aborting update"
-      exit 1
+    _backup_check_parents "$store/files" "${path#/}" || exit $?
+    parent=$(dirname -- "$dest") || exit $?
+    if [[ "$extending" == 1 ]]; then
+      _backup_extend_directory "$store" "$path" "$dest" "${coverage[@]}" || exit $?
+    else
+      if [[ -e "$dest" || -L "$dest" ]]; then
+        # No manifest record certifies this partial copy. Keep its exact topology
+        # outside the active store before copying to a fresh destination.
+        incomplete=$(mktemp -d "${store}.incomplete.XXXXXX") || exit $?
+        mv -T -- "$dest" "$incomplete/object" || exit $?
+        msg_warn "Uncertified backup retained at $incomplete/object"
+      fi
+      mkdir -p "$parent" && cp -a -- "$path" "$dest" || {
+        backup_status=$?
+        msg_error "Backup of '${path}' failed - aborting update"
+        exit "$backup_status"
+      }
     fi
-    echo "$path" >> "$manifest"
+    _backup_record_path "$manifest" "$backup_rows" "$path" || exit $?
+    backup_rows+=$'\n'"$path"
+    _backup_select_coverage "$backup_rows" coverage || exit $?
   done
   msg_ok "Backed up data to ${store}"
 }
 
+_backup_has_unmanifested_objects() (
+  # Inspection must not leak shell options into the caller. Walk only the store;
+  # globstar does not follow directory symlinks into unrelated user data.
+  local store="$1" backup_rows="$2" object relative path certified
+  unset GLOBIGNORE || return 252
+  set +f
+  shopt -u failglob
+  shopt -s dotglob nullglob globstar
+  for object in "$store"/*; do
+    [[ "$object" == "$store/.manifest" || "$object" == "$store/files" ]] || return 0
+  done
+  [[ ! -e "$store/files" && ! -L "$store/files" ]] && return 1
+  [[ -d "$store/files" && ! -L "$store/files" ]] || return 0
+  for object in "$store"/files/**; do
+    [[ "$object" == "$store/files/" ]] && continue
+    relative=${object#"$store/files"}
+    certified=0
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      if [[ "$relative" == "$path" || "$relative" == "$path/"* ||
+        "$path" == "$relative/"* && -d "$object" && ! -L "$object" ]]; then
+        certified=1
+        break
+      fi
+    done <<< "$backup_rows"
+    [[ "$certified" == 1 ]] || return 0
+  done
+  return 1
+)
+
 restore_backup() {
-  local store manifest path src
+  local store manifest path src parent backup_rows inspection_status uncertified incomplete
+  local -a coverage=()
   store="${BACKUP_DIR:-/opt/${NSAPP:-${APP_SLUG:-app}}.backup}"
   manifest="${store}/.manifest"
 
@@ -1221,15 +1410,37 @@ restore_backup() {
   fi
 
   msg_info "Restoring data"
-  while IFS= read -r path; do
+  # Complete the read before any destructive restore or store retirement. A
+  # failed read must never masquerade as an empty/completed manifest loop.
+  backup_rows=$(cat -- "$manifest") || return $?
+  _backup_select_coverage "$backup_rows" coverage || return $?
+  for path in "${coverage[@]}"; do
+    _backup_check_parents "$store/files" "${path#/}" || return $?
+    [[ -e "$store/files$path" || -L "$store/files$path" ]] || return 252
+  done
+  if _backup_has_unmanifested_objects "$store" "$backup_rows"; then
+    uncertified=1
+  else
+    inspection_status=$?
+    [[ "$inspection_status" == 1 ]] || return "$inspection_status"
+    uncertified=0
+  fi
+  for path in "${coverage[@]}"; do
     [[ -z "$path" ]] && continue
     src="${store}/files${path}"
-    [[ -e "$src" ]] || continue
-    mkdir -p "$(dirname "$path")" || return
-    rm -rf "$path" || return
-    cp -a "$src" "$path" || return
-  done < "$manifest"
-  rm -rf "$store" || return
+    [[ -e "$src" || -L "$src" ]] || return 252
+    parent=$(dirname -- "$path") || return $?
+    mkdir -p "$parent" || return $?
+    rm -rf -- "$path" || return $?
+    cp -a -- "$src" "$path" || return $?
+  done
+  if [[ "$uncertified" == 1 ]]; then
+    incomplete=$(mktemp -d "${store}.incomplete.XXXXXX") || return $?
+    mv -T -- "$store" "$incomplete/object" || return $?
+    msg_warn "Uncertified backup retained at $incomplete/object"
+  else
+    rm -rf -- "$store" || return $?
+  fi
   msg_ok "Restored data"
 }
 
