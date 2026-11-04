@@ -296,8 +296,13 @@ for clean in 0 1; do
   printf 'new planned payload\n' > "$source_dir/planned-partial"
   cp() {
     if [[ "${!#}" == "$target/"* ]]; then
-      printf partial > "$target/planned-partial"
-      return 41
+      local entry
+      for entry in "$@"; do
+        if [[ "$entry" == */planned-partial ]]; then
+          printf partial > "$target/planned-partial"
+          return 41
+        fi
+      done
     fi
     command cp "$@"
   }
