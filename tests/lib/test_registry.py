@@ -16,7 +16,7 @@ endurain-github filebrowser-retry-install gpu-passthrough gpu-userspace
 invidious-companion-update jellyfin-ffmpeg keycloak-keep-install legacy-version-marker
 llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preservation
 maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap maintenance-current-hardening
-maintenance-bundle-writer maintenance-consumers maintenance-go-minimum
+maintenance-bundle-writer maintenance-consumers maintenance-cron-update maintenance-go-minimum
 maintenance-gpg-key maintenance-immich maintenance-keep maintenance-kosmozoo-current maintenance-merge-inplace
 maintenance-node24-vite maintenance-nodejs maintenance-paperless-format-source
 maintenance-prefix-arch maintenance-receiver-portability maintenance-receiving-context

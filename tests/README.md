@@ -33,9 +33,9 @@ revisions instead of silently refreshing admission.
 | 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
 
 The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
-current-hardening fixture, two workflow regressions, browser and contribution
+current-hardening and cron-update fixtures, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 95 public suite/mode combinations. The
+suite/mode/options refuse. There are 96 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -137,6 +137,26 @@ file path/hash, then use `--suite maintenance-template-lock --mode review-baseli
 The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
+
+`maintenance-cron-update/fixture` runs the actual cron manager through its menu,
+review and Add/Update/Run/Remove paths, then cold-executes the installed generated
+worker. Native private mounts/chroot isolate config, executable and log bytes;
+recording PVE, package and crontab executables model target state and failures.
+Assertions observe package outcomes, exclusions/templates, distro dispatch,
+exact statuses, continuation, checked start/graceful restoration and preserved
+operator state on refusal/publication failure. No real CT or OS package upgrade
+is performed, and this does not establish whole-container production upgrades.
+Newly started-target cases observe configured metadata retries before a single
+upgrade, exhaustion/restoration/continuation and missing safe-timeout refusal.
+Post-start-only status-query errors also reach the shared restoration path,
+with no metadata/upgrade effects and original-error retention if shutdown fails.
+The actual generated worker requests 120-second metadata attempts and a 5-second
+KILL grace (three attempts plus retry waits: 385 seconds, excluding transport
+startup). Only the named hanging deadline fixtures explicitly substitute native
+1-second TERM/1-second KILL arguments, retaining real GNU group/status/descendant
+checks without claiming a measured 120-second wait. A separate unscaled real
+23-second metadata case completes in one attempt followed by one upgrade; the
+old 20-second budget fails it. Package/repository and PVE boundaries stay models.
 
 `filebrowser-retry-install/fixture` also exercises Filebrowser and Qui through
 their actual cold-generated update commands and current pending/maintenance

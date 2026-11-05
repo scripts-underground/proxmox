@@ -145,6 +145,16 @@ before deploying/refreshing frozen bundles. Framework source-time bootstrap stil
 precedes update ownership; this does not promise no effects from an old/missing
 transport prerequisite before the runner is reached.
 
+`app_maintenance_contents` emits the component-owned acquisition function closure
+with checked `declare -f`. It emits definitions only, without current owner state,
+descriptors, initialization or traps. Offline consumers do not select or name its
+private dependencies. The cron updater's manager uses this public emitter when
+publishing its self-contained worker. Both scheduled and manual execution acquire
+the literal `cron-update-lxcs` key before config parsing or PVE effects, keeping the
+FD through metadata, upgrades and graceful restoration. A busy worker returns 75;
+unsafe or unavailable locking returns 69 before target effects. Refresh existing
+workers and drain unguarded generations before relying on this serialization.
+
 Addon update bundles pass their literal `addon_baseline` preparation to internal
 `_run_update_script`, so baseline runs under the same owner but before pending and
 FORCE admission. Its failure preserves the original status and prior flag without
