@@ -32,10 +32,65 @@ function install_script() {
       msg_error 'Kosmozoo requires GNU/Linux x86_64'
       return 65
     }
+    local libc
+    libc=$(getconf GNU_LIBC_VERSION) || return 65
+    [[ "$libc" =~ ^glibc\ ([0-9]+\.[0-9]+)$ && "$(printf '%s\n' 2.27 "${BASH_REMATCH[1]}" | sort -V | tail -n 1)" == "${BASH_REMATCH[1]}" ]] || {
+      msg_error 'Native Kosmozoo requires glibc >=2.27 (not musl/Alpine)' >&2
+      return 65
+    }
     [[ ! -e /opt/kosmozoo && ! -L /opt/kosmozoo && ! -e /etc/kosmozoo/env &&
       ! -e /etc/systemd/system/kosmozoo.service && ! -e /etc/systemd/system/kosmozoo.service.d ]] || {
       msg_error 'Fresh installation requires an unused native layout'
       return 65
+    }
+
+    # One static runtime identity per cold hook. Root remains the administrator.
+    local kz_user=kosmozoo kz_uid kz_gid kz_groups kz_account kz_account_home
+    local -a kz_credentials=()
+    kz_identity() {
+      local record group extra groups
+      record=$(getent passwd "$kz_user") || return 65
+      [[ "$record" != *$'\n'* ]] || return 65
+      IFS=: read -r kz_user _ kz_uid kz_gid _ kz_account_home _ <<< "$record"
+      [[ "$kz_uid" =~ ^[0-9]+$ && "$kz_gid" =~ ^[0-9]+$ && "$kz_uid" != 0 && "$kz_gid" != 0 ]] || return 65
+      kz_account=$kz_user
+      record=$(getent initgroups "$kz_user") || return 65
+      read -r group groups <<< "$record"
+      [[ "$group" == "$kz_user" ]] || return 65
+      extra=$kz_gid
+      for group in $groups; do
+        [[ "$group" =~ ^[0-9]+$ ]] || return 65
+        extra+=" $group"
+      done
+      local -a group_ids=()
+      read -r -a group_ids <<< "$extra"
+      kz_groups=$(printf '%s\n' "${group_ids[@]}" | sort -nu | paste -sd,) || return $?
+      kz_credentials=(setpriv "--reuid=$kz_uid" "--regid=$kz_gid" "--groups=$kz_groups")
+    }
+    if ! getent passwd kosmozoo > /dev/null; then
+      useradd --system --user-group --home-dir /data --no-create-home --shell /usr/sbin/nologin kosmozoo ||
+        return $?
+    fi
+    kz_identity || {
+      msg_error 'Kosmozoo needs an existing valid static non-root account/group; account properties were not changed' >&2
+      return 65
+    }
+    kz_access() {
+      local path=$1 mode=$2 ancestor=$1
+      while [[ "$mode" == write && "$ancestor" != / ]]; do
+        [[ ! -L "$ancestor" ]] || return 65
+        ancestor=${ancestor%/*}
+        ancestor=${ancestor:-/}
+      done
+      [[ -d "$path" ]] || return 65
+      if [[ "$mode" == write && "$(stat -c %u "$path")" != "$kz_uid" ]]; then
+        msg_error "Existing runtime directory $path must be owned by UID $kz_uid; metadata was not changed" >&2
+        return 65
+      fi
+      "${kz_credentials[@]}" /bin/sh -c 'test -r "$1" && test -x "$1" && { test "$2" != write || test -w "$1"; }' sh "$path" "$mode" || {
+        msg_error "Runtime account $kz_account cannot access $path ($mode); provide ownership/access without changing existing data automatically" >&2
+        return 65
+      }
     }
 
     kz_path() {
@@ -102,7 +157,7 @@ function install_script() {
         names[$name]=1
         if [[ "$address" == folder:/* ]]; then
           path=${address#folder:}
-          [[ -d "$path" && -r "$path" && -x "$path" ]] || {
+          kz_access "$path" read || {
             msg_error "Folder seed is not an accessible directory inside the container: $path. Mount/provide it before first start, or use KOZMOZOO_HOSTS='' and add it after mounting." >&2
             return 65
           }
@@ -142,7 +197,9 @@ function install_script() {
       msg_error 'Debian dbus system bus is unavailable; check dbus.socket/dbus.service before installing Kosmozoo' >&2
       return "$status"
     }
-    mkdir -p /opt/kosmozoo /etc/kosmozoo /data || return $?
+    mkdir -m 0755 /opt/kosmozoo || return $?
+    mkdir -p /etc/kosmozoo || return $?
+    kz_access /opt/kosmozoo read || return 65
     stage=$(mktemp -d /opt/kosmozoo/.stage.XXXXXXXX) || return $?
     kz_install_recover() {
       local status=$? end active='' p='' group='' members='' result=''
@@ -221,13 +278,29 @@ function install_script() {
         select(.id | type == "number" and . > 0) |
         select(.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")) |
         select(.browser_download_url == ("https://github.com/alexindigo/kosmozoo/releases/download/" + $tag + "/kosmozoo-linux-x86_64")) |
-        {id, name, digest, size, browser_download_url})] | select(length == 3)' "$1"
+        {id, name, digest, size, browser_download_url}),
+        ([.assets[] | select(.name == "SHA256SUMS")] | select(length == 1) | .[0] |
+        select(.id | type == "number" and . > 0) |
+        select(.browser_download_url == ("https://github.com/alexindigo/kosmozoo/releases/download/" + $tag + "/SHA256SUMS")) |
+        {id,name,browser_download_url})] | select(length == 4)' "$1"
     }
     association=$(kz_metadata "$stage/selected.json") || return 65
     digest=$(jq -er '.[2].digest | ltrimstr("sha256:")' <<< "$association") || return $?
     fetch_and_deploy_gh_release kosmozoo alexindigo/kosmozoo singlefile "$tag" "$stage" kosmozoo-linux-x86_64 '' "$stage/deployed.json" || return $?
     actual=$(kz_metadata "$stage/deployed.json") || return 65
     [[ "$actual" == "$association" ]] || return 65
+    # The checksum list must belong to the very same selected release as the ELF.
+    curl_download "$stage/SHA256SUMS" "$(jq -er '.[3].browser_download_url' <<< "$association")" || return $?
+    LC_ALL=C tr -d '\000' < "$stage/SHA256SUMS" > "$stage/checksum-text" || return $?
+    cmp -s "$stage/SHA256SUMS" "$stage/checksum-text" || return 65
+    local line checksum_count=0 checksum_hash='' checksum_grammar='^([0-9a-f]{64}) [ *]([^[:cntrl:]]+)$'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ $checksum_grammar ]] || return 65
+      if [[ "${BASH_REMATCH[2]}" == kosmozoo-linux-x86_64 ]]; then
+        checksum_count=$((checksum_count + 1)) checksum_hash=${BASH_REMATCH[1]}
+      fi
+    done < "$stage/SHA256SUMS"
+    [[ "$checksum_count" == 1 && "$checksum_hash" == "$digest" ]] || return 65
     printf '%s  %s\n' "$digest" "$stage/kosmozoo" | sha256sum --check --strict || return 65
     [[ -f "$stage/kosmozoo" && ! -L "$stage/kosmozoo" ]] || return 65
     [[ "$(od -An -tx1 -N4 "$stage/kosmozoo" | tr -d ' \n')" == 7f454c46 ]] || return 65
@@ -237,8 +310,43 @@ function install_script() {
     local grammar='^kosmozoo v([0-9]+\.[0-9]+(\.[0-9]+)?)( \([0-9a-f]{7}\)|-dev) \(input ([0-9a-f]{64}|working-source); Deno [0-9]+\.[0-9]+\.[0-9]+; x86_64-unknown-linux-gnu\)$'
     [[ "$output" =~ $grammar && "${BASH_REMATCH[1]}" == "$version" ]] || return 65
     for path in /data "${paths[@]}"; do
-      [[ -d "$path" ]] || mkdir -p -- "$path" || return $?
+      # Create only missing components; never repair an existing directory.
+      local ancestor=$path component accumulated=''
+      local -a components=()
+      IFS=/ read -r -a components <<< "$ancestor"
+      for component in "${components[@]}"; do
+        [[ -n "$component" ]] || continue
+        accumulated+=/$component
+        [[ ! -L "$accumulated" ]] || return 65
+        if [[ ! -e "$accumulated" ]]; then
+          mkdir -m 0755 -- "$accumulated" && chown "$kz_uid:$kz_gid" "$accumulated" || return $?
+        fi
+      done
+      kz_access "$path" write || return 65
     done
+    for path in "$var_lxc_kosmozoo_state/engine.lock" "$var_lxc_kosmozoo_state/engine-instance.json"; do
+      if [[ -e "$path" || -L "$path" ]]; then
+        [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%a' "$path")" == "$kz_uid:600" ]] || {
+          msg_error "Existing runtime-private file $path has incompatible ownership/mode; preserve it and resolve the runtime identity before retrying" >&2
+          return 65
+        }
+      fi
+    done
+    case "$(findmnt -rn -T "$var_lxc_kosmozoo_state" -o FSTYPE)" in ext2 | ext3 | ext4 | xfs | btrfs | zfs | f2fs | bcachefs) : ;; *)
+      msg_error 'State needs a real local filesystem for SQLite WAL/locking (not NFS/SMB)' >&2
+      return 65
+      ;;
+    esac
+    case "$(findmnt -rn -T /data/tmp -o FSTYPE)" in '' | tmpfs | ramfs) return 65 ;; esac
+    [[ ",$(findmnt -rn -T /data/tmp -o OPTIONS)," != *,noexec,* ]] || return 65
+    # A runtime-owned projection, never traversable private administrative staging.
+    local projection
+    projection=$("${kz_credentials[@]}" mktemp -d /data/tmp/kosmozoo-probe.XXXXXXXX) || return $?
+    if install -o "$kz_uid" -g "$kz_gid" -m 0700 "$stage/kosmozoo" "$projection/kosmozoo" &&
+      timeout 15 "${kz_credentials[@]}" env -i PATH=/usr/bin:/bin HOME=/data TMPDIR=/data/tmp "$projection/kosmozoo" --version > "$stage/runtime-version.txt"; then rc=0; else rc=$?; fi
+    rm -r -- "$projection" || return $?
+    [[ "$rc" == 0 ]] || return "$rc"
+    [[ "$(cat "$stage/runtime-version.txt")" == "$output" ]] || return 65
     kz_assignment() {
       value=${2//\\/\\\\} value=${value//\"/\\\"}
       value=${value//\$/\\\$} value=${value//\`/\\\`}
@@ -269,7 +377,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=kosmozoo
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 WorkingDirectory=/opt/kosmozoo
 EnvironmentFile=/etc/kosmozoo/env
 ExecStart=/opt/kosmozoo/kosmozoo serve
@@ -301,14 +411,35 @@ EOF
         "${environment[KOZMOZOO_PLUGINS]-}" == /data/plugins &&
         "${environment[KOZMOZOO_BIND]-}" == 0.0.0.0 && "${environment[KOZMOZOO_PORT]-}" == 80 ]]
     }
+    kz_process_identity() {
+      local field a b c d groups='' saw_uid=0 saw_gid=0
+      local -a group_ids=()
+      while read -r field a b c d; do
+        case "$field" in
+          Uid:)
+            [[ "$a:$b:$c:$d" == "$kz_uid:$kz_uid:$kz_uid:$kz_uid" ]] || return 65
+            saw_uid=1
+            ;;
+          Gid:)
+            [[ "$a:$b:$c:$d" == "$kz_gid:$kz_gid:$kz_gid:$kz_gid" ]] || return 65
+            saw_gid=1
+            ;;
+          Groups:)
+            read -r -a group_ids <<< "$a $b $c $d"
+            groups=$(printf '%s\n' "${group_ids[@]}" | sort -nu | paste -sd,) || return $?
+            ;;
+        esac
+      done < "/proc/$1/status"
+      [[ "$saw_uid:$saw_gid" == 1:1 && "$groups" == "$kz_groups" ]]
+    }
     started=1
     if timeout --signal=TERM --kill-after=5 90 systemctl start kosmozoo; then
       while ((SECONDS < deadline)); do
         pid=$(systemctl show kosmozoo -p MainPID --value) || break
-        if [[ "$pid" =~ ^[1-9][0-9]*$ && "$(readlink "/proc/$pid/exe")" == /opt/kosmozoo/kosmozoo ]] && kz_install_environment "$pid" &&
+        if [[ "$pid" =~ ^[1-9][0-9]*$ && "$(readlink "/proc/$pid/exe")" == /opt/kosmozoo/kosmozoo ]] && kz_process_identity "$pid" && kz_install_environment "$pid" &&
           curl --noproxy '*' --fail --silent --max-time 2 http://127.0.0.1:80/api/runtime > "$stage/runtime.json" &&
           [[ -f "$var_lxc_kosmozoo_state/engine-instance.json" && ! -L "$var_lxc_kosmozoo_state/engine-instance.json" ]] &&
-          [[ "$(stat -c '%u:%a' "$var_lxc_kosmozoo_state/engine-instance.json")" == 0:600 ]] &&
+          [[ "$(stat -c '%u:%a' "$var_lxc_kosmozoo_state/engine-instance.json")" == "$kz_uid:600" ]] &&
           jq -e --arg v "$version" --argjson pid "$pid" --slurpfile private "$var_lxc_kosmozoo_state/engine-instance.json" '
           .protocol == "kosmozoo-runtime" and .version == 1 and .status == "ready" and .mode == "serve" and
           .configuredBind == "0.0.0.0" and .binding == {hostname:"0.0.0.0",port:80} and .app.version == $v and
@@ -360,6 +491,106 @@ function update_script() {
     local bus=/org/freedesktop/systemd1/unit/kosmozoo_2eservice
     local environment_files='' had_fact=0 fact_written=0 publication_attempted=0 stop_attempted=0
     local -A next=() process=()
+    local kz_user kz_uid kz_gid kz_groups kz_account kz_account_home kz_unit_identity
+    local -a kz_credentials=()
+    kz_identity_inputs() {
+      local field
+      for field in User Group SupplementaryGroups DynamicUser RootDirectory RootImage PrivateUsers; do
+        printf '%s=' "$field"
+        systemctl show kosmozoo -p "$field" --value || return $?
+        printf '\n'
+      done
+    }
+    kz_identity() {
+      local record group extra groups unit_group supplementary dynamic root_directory root_image private_users
+      kz_unit_identity=$(kz_identity_inputs) || return $?
+      kz_user=$(systemctl show kosmozoo -p User --value) || return $?
+      kz_user=${kz_user:-root}
+      unit_group=$(systemctl show kosmozoo -p Group --value) || return $?
+      supplementary=$(systemctl show kosmozoo -p SupplementaryGroups --value) || return $?
+      dynamic=$(systemctl show kosmozoo -p DynamicUser --value) || return $?
+      root_directory=$(systemctl show kosmozoo -p RootDirectory --value) || return $?
+      root_image=$(systemctl show kosmozoo -p RootImage --value) || return $?
+      private_users=$(systemctl show kosmozoo -p PrivateUsers --value) || return $?
+      [[ "$dynamic" == no && -z "$root_directory" && -z "$root_image" && "$private_users" == no ]] || return 65
+      record=$(getent passwd "$kz_user") || return 65
+      [[ "$record" != *$'\n'* ]] || return 65
+      IFS=: read -r kz_user _ kz_uid kz_gid _ kz_account_home _ <<< "$record"
+      [[ "$kz_uid" =~ ^[0-9]+$ && "$kz_gid" =~ ^[0-9]+$ ]] || return 65
+      kz_account=$kz_user
+      if [[ -n "$unit_group" ]]; then
+        record=$(getent group "$unit_group") || return 65
+        [[ "$record" != *$'\n'* ]] || return 65
+        IFS=: read -r _ _ kz_gid _ <<< "$record"
+        [[ "$kz_gid" =~ ^[0-9]+$ ]] || return 65
+      fi
+      # NSS supplementary membership excludes the passwd primary GID; the unit
+      # may select a different primary group. Do not re-add the old primary.
+      record=$(getent initgroups "$kz_user") || return 65
+      read -r group groups <<< "$record"
+      [[ "$group" == "$kz_user" ]] || return 65
+      # systemd does not initialize NSS supplementary groups for UID0. Only
+      # explicit SupplementaryGroups apply there; the effective GID is separate.
+      if [[ "$kz_uid" == 0 ]]; then
+        groups=''
+        extra=''
+      else extra=$kz_gid; fi
+      for group in $groups; do
+        [[ "$group" =~ ^[0-9]+$ ]] || return 65
+        extra+=" $group"
+      done
+      for group in $supplementary; do
+        record=$(getent group "$group") || return 65
+        [[ "$record" != *$'\n'* ]] || return 65
+        IFS=: read -r _ _ group _ <<< "$record"
+        [[ "$group" =~ ^[0-9]+$ ]] || return 65
+        extra+=" $group"
+      done
+      local -a group_ids=()
+      read -r -a group_ids <<< "$extra"
+      kz_groups=$(printf '%s\n' "${group_ids[@]}" | sort -nu | paste -sd,) || return $?
+      kz_credentials=(setpriv "--reuid=$kz_uid" "--regid=$kz_gid")
+      if [[ -n "$kz_groups" ]]; then kz_credentials+=("--groups=$kz_groups"); else kz_credentials+=(--clear-groups); fi
+      [[ "$(kz_identity_inputs)" == "$kz_unit_identity" ]]
+    }
+    kz_access() {
+      local path=$1 mode=$2 ancestor=$1
+      while [[ "$mode" == write && "$ancestor" != / ]]; do
+        [[ ! -L "$ancestor" ]] || return 65
+        ancestor=${ancestor%/*}
+        ancestor=${ancestor:-/}
+      done
+      [[ -d "$path" ]] || return 65
+      if [[ "$mode" == write && "$(stat -c %u "$path")" != "$kz_uid" ]]; then
+        msg_error "Existing runtime directory $path must be owned by UID $kz_uid; metadata was not changed" >&2
+        return 65
+      fi
+      "${kz_credentials[@]}" /bin/sh -c 'test -r "$1" && test -x "$1" && { test "$2" != write || test -w "$1"; }' sh "$path" "$mode" || {
+        msg_error "Runtime account $kz_account cannot access $path ($mode); provide ownership/access without changing existing data automatically" >&2
+        return 65
+      }
+    }
+    kz_process_identity() {
+      local field a b c d groups='' saw_uid=0 saw_gid=0
+      local -a group_ids=()
+      while read -r field a b c d; do
+        case "$field" in
+          Uid:)
+            [[ "$a:$b:$c:$d" == "$kz_uid:$kz_uid:$kz_uid:$kz_uid" ]] || return 65
+            saw_uid=1
+            ;;
+          Gid:)
+            [[ "$a:$b:$c:$d" == "$kz_gid:$kz_gid:$kz_gid:$kz_gid" ]] || return 65
+            saw_gid=1
+            ;;
+          Groups:)
+            read -r -a group_ids <<< "$a $b $c $d"
+            groups=$(printf '%s\n' "${group_ids[@]}" | sort -nu | paste -sd,) || return $?
+            ;;
+        esac
+      done < "/proc/$1/status"
+      [[ "$saw_uid:$saw_gid" == 1:1 && "$groups" == "$kz_groups" ]]
+    }
 
     kz_property() {
       local status=0
@@ -491,9 +722,16 @@ function update_script() {
     [[ "$(od -An -tx1 -N4 "$code" | tr -d ' \n')" == 7f454c46 ]] || return 65
     property=$(systemctl show kosmozoo -p ExecStart --value) || return $?
     [[ "$property" == *'path=/opt/kosmozoo/kosmozoo ; argv[]=/opt/kosmozoo/kosmozoo serve ;'* ]] || return 65
-    property=$(systemctl show kosmozoo -p User --value) || return $?
-    [[ -z "$property" || "$property" == root || "$property" == 0 ]] || return 65
+    kz_identity || {
+      msg_error 'Cannot resolve effective static User/Group/SupplementaryGroups: DynamicUser, private user namespaces and alternate roots are unsupported; retain the unit/data and configure a resolvable static identity before retrying' >&2
+      return 65
+    }
     [[ "$(get_system_arch)" == amd64 ]] || return 65
+    property=$(getconf GNU_LIBC_VERSION) || return 65
+    [[ "$property" =~ ^glibc\ ([0-9]+\.[0-9]+)$ && "$(printf '%s\n' 2.27 "${BASH_REMATCH[1]}" | sort -V | tail -n 1)" == "${BASH_REMATCH[1]}" ]] || {
+      msg_error 'Native Kosmozoo requires glibc >=2.27 (not musl/Alpine)' >&2
+      return 65
+    }
     if [[ -e "$fact" || -L "$fact" ]]; then
       [[ -f "$fact" && ! -L "$fact" && "$(stat -c '%u:%a' "$fact")" == 0:600 ]] || return 65
       jq -e 'type == "object" and (keys | sort) == ["digest","enabled","recovery","release","version"] and
@@ -556,13 +794,28 @@ function update_script() {
           select(length == 1) | .[0] | select(.id | type == "number" and . > 0) |
           select(.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")) |
           select(.browser_download_url == ("https://github.com/alexindigo/kosmozoo/releases/download/" + $tag + "/kosmozoo-linux-x86_64")) |
-          {id, name, digest, size, browser_download_url})] | select(length == 3)' "$1"
+          {id, name, digest, size, browser_download_url}),
+          ([.assets[] | select(.name == "SHA256SUMS")] | select(length == 1) | .[0] |
+          select(.id | type == "number" and . > 0) |
+          select(.browser_download_url == ("https://github.com/alexindigo/kosmozoo/releases/download/" + $tag + "/SHA256SUMS")) |
+          {id,name,browser_download_url})] | select(length == 4)' "$1"
     }
     association=$(kz_metadata "$stage/selected.json") || return 65
     digest=$(jq -er '.[2].digest | ltrimstr("sha256:")' <<< "$association") || return $?
     HOME="$stage/home" fetch_and_deploy_gh_release kosmozoo alexindigo/kosmozoo singlefile "$tag" "$stage" kosmozoo-linux-x86_64 '' "$stage/deployed.json" || return $?
     actual=$(kz_metadata "$stage/deployed.json") || return 65
     [[ "$actual" == "$association" ]] || return 65
+    curl_download "$stage/SHA256SUMS" "$(jq -er '.[3].browser_download_url' <<< "$association")" || return $?
+    LC_ALL=C tr -d '\000' < "$stage/SHA256SUMS" > "$stage/checksum-text" || return $?
+    cmp -s "$stage/SHA256SUMS" "$stage/checksum-text" || return 65
+    local line checksum_count=0 checksum_hash='' checksum_grammar='^([0-9a-f]{64}) [ *]([^[:cntrl:]]+)$'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ $checksum_grammar ]] || return 65
+      if [[ "${BASH_REMATCH[2]}" == kosmozoo-linux-x86_64 ]]; then
+        checksum_count=$((checksum_count + 1)) checksum_hash=${BASH_REMATCH[1]}
+      fi
+    done < "$stage/SHA256SUMS"
+    [[ "$checksum_count" == 1 && "$checksum_hash" == "$digest" ]] || return 65
     printf '%s  %s\n' "$digest" "$stage/kosmozoo" | sha256sum --check --strict || return 65
     [[ -f "$stage/kosmozoo" && ! -L "$stage/kosmozoo" && "$(od -An -tx1 -N4 "$stage/kosmozoo" | tr -d ' \n')" == 7f454c46 ]] || return 65
     chmod 0755 "$stage/kosmozoo" || return $?
@@ -572,7 +825,7 @@ function update_script() {
     # Ask the real systemd EnvironmentFile parser, never shell-source/eval an
     # administrator's file. Copy environment properties into a bounded transient
     # env-only unit; it neither starts Kosmozoo nor opens its state.
-    local -a probe=(systemd-run --quiet --wait --pipe --collect --service-type=exec "--unit=kosmozoo-env-$$-$RANDOM" --property=User=root)
+    local -a probe=(systemd-run --quiet --wait --pipe --collect --service-type=exec "--unit=kosmozoo-env-$$-$RANDOM" "--property=User=$kz_uid" "--property=Group=$kz_gid" "--property=SupplementaryGroups=${kz_groups//,/ }")
     for property in Environment PassEnvironment UnsetEnvironment; do
       data=$(systemctl show kosmozoo -p "$property" --value) || return $?
       probe+=("--property=$property=$data")
@@ -582,9 +835,9 @@ function update_script() {
     while IFS= read -r -d '' item; do probe+=("--property=EnvironmentFile=$item"); done < "$stage/env-files"
     timeout 15 "${probe[@]}" /usr/bin/env -0 > "$stage/next-env" || return $?
     while IFS= read -r -d '' item; do
-      case "${item%%=*}" in HOME | TMPDIR | TMP | TEMP | XDG_STATE_HOME | KOZMOZOO_STATE | KOZMOZOO_CACHE | KOZMOZOO_PLUGINS | KOZMOZOO_BIND | KOZMOZOO_PORT) next[${item%%=*}]=${item#*=} ;; esac
+      case "${item%%=*}" in HOME | TMPDIR | TMP | TEMP | XDG_STATE_HOME | KOZMOZOO_STATE | KOZMOZOO_CACHE | KOZMOZOO_PLUGINS | KOZMOZOO_HOSTS | KOZMOZOO_BIND | KOZMOZOO_PORT) next[${item%%=*}]=${item#*=} ;; esac
     done < "$stage/next-env"
-    home=${next[HOME]-${next[TMPDIR]:-${next[TMP]:-${next[TEMP]:-/tmp}}}}
+    home=${next[HOME]-$kz_account_home}
     bind=${next[KOZMOZOO_BIND]-0.0.0.0} port=${next[KOZMOZOO_PORT]-2084}
     if [[ -n "${next[KOZMOZOO_STATE]-}" ]]; then
       state=${next[KOZMOZOO_STATE]}
@@ -593,7 +846,7 @@ function update_script() {
     else
       state=${home:+$home/}.local/state/kosmozoo
     fi
-    home=${next[HOME]-/tmp}
+    home=${next[HOME]-$kz_account_home}
     cache=${next[KOZMOZOO_CACHE]-${home:+$home/}.local/share/kosmozoo/cache}
     local cwd path other
     cwd=$(systemctl show kosmozoo -p WorkingDirectory --value) || return $?
@@ -628,6 +881,54 @@ function update_script() {
     [[ ${#port} -le 5 ]] || return 65
     ((10#$port >= 1 && 10#$port <= 65535)) || return 65
     port=$((10#$port))
+    # Validate actual runtime credentials before drain/publication. Existing paths
+    # and stable lock metadata are refused, never repaired or removed.
+    local runtime_tmp=${next[TMPDIR]-} plugins=${next[KOZMOZOO_PLUGINS]-} projection
+    [[ "$home" == /* && "$runtime_tmp" == /* ]] || {
+      msg_error 'Set absolute HOME and writable disk-backed TMPDIR in the effective unit environment' >&2
+      return 65
+    }
+    for path in "$home" "$state" "$cache" "$runtime_tmp"; do kz_access "$path" write || return 65; done
+    [[ -z "$plugins" ]] || kz_access "$plugins" read || return 65
+    local seed_address
+    local -a seed_pairs=()
+    IFS=, read -r -a seed_pairs <<< "${next[KOZMOZOO_HOSTS]-}"
+    for item in "${seed_pairs[@]}"; do
+      seed_address=${item#*=}
+      seed_address=${seed_address#"${seed_address%%[! ]*}"} seed_address=${seed_address%"${seed_address##*[! ]}"}
+      if [[ "$seed_address" == folder:/* ]]; then
+        kz_access "${seed_address#folder:}" read || {
+          msg_error 'Folder seed must be accessible by the effective runtime account before restart' >&2
+          return 65
+        }
+      fi
+    done
+    for item in engine.lock engine-instance.json; do
+      path=$state/$item
+      if [[ -e "$path" || -L "$path" ]]; then
+        [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%a' "$path")" == "$kz_uid:600" ]] || {
+          msg_error "Runtime-private file $path must be owned by UID $kz_uid with mode0600; preserve and resolve the existing identity, never delete the stable lock" >&2
+          return 65
+        }
+      fi
+    done
+    case "$(findmnt -rn -T "$state" -o FSTYPE)" in ext2 | ext3 | ext4 | xfs | btrfs | zfs | f2fs | bcachefs) : ;; *)
+      msg_error 'State needs a real local filesystem for SQLite WAL/locking (not NFS/SMB)' >&2
+      return 65
+      ;;
+    esac
+    case "$(findmnt -rn -T "$runtime_tmp" -o FSTYPE)" in '' | tmpfs | ramfs) return 65 ;; esac
+    [[ ",$(findmnt -rn -T "$runtime_tmp" -o OPTIONS)," != *,noexec,* ]] || return 65
+    projection=$("${kz_credentials[@]}" mktemp -d "$runtime_tmp/kosmozoo-probe.XXXXXXXX") || return $?
+    if install -o "$kz_uid" -g "$kz_gid" -m 0700 "$stage/kosmozoo" "$projection/kosmozoo" &&
+      timeout 15 "${kz_credentials[@]}" env -i PATH=/usr/bin:/bin HOME="$home" TMPDIR="$runtime_tmp" "$projection/kosmozoo" --version > "$stage/runtime-version.txt"; then rc=0; else rc=$?; fi
+    rm -r -- "$projection" || return $?
+    [[ "$rc" == 0 ]] || return "$rc"
+    [[ "$(cat "$stage/runtime-version.txt")" == "$(timeout 15 env -i PATH=/usr/bin:/bin HOME="$stage/home" TMPDIR="$stage/tmp" "$stage/kosmozoo" --version)" ]] || return 65
+    [[ "$(kz_identity_inputs)" == "$kz_unit_identity" ]] || {
+      msg_error 'Effective unit identity changed during preflight; retry without changing the unit' >&2
+      return 65
+    }
     property=$(systemctl show kosmozoo -p ActiveState --value) || return $?
     if [[ "$property" == active ]]; then running=1; else kz_empty || return 65; fi
     cp -- "$code" "$stage/previous" || return $?
@@ -650,19 +951,19 @@ function update_script() {
     case "$bind" in 0.0.0.0) destination=127.0.0.1 ;; ::) destination='[::1]' ;; *:*) destination="[$bind]" ;; esac
     while ((SECONDS < deadline)); do
       pid=$(systemctl show kosmozoo -p MainPID --value) || return $?
-      if [[ "$pid" =~ ^[1-9][0-9]*$ && "$(readlink "/proc/$pid/exe")" == "$code" ]]; then
+      if [[ "$pid" =~ ^[1-9][0-9]*$ && "$(readlink "/proc/$pid/exe")" == "$code" ]] && kz_process_identity "$pid"; then
         process=()
         while IFS= read -r -d '' item; do
-          case "${item%%=*}" in HOME | TMPDIR | TMP | TEMP | XDG_STATE_HOME | KOZMOZOO_STATE | KOZMOZOO_CACHE | KOZMOZOO_PLUGINS | KOZMOZOO_BIND | KOZMOZOO_PORT) process[${item%%=*}]=${item#*=} ;; esac
+          case "${item%%=*}" in HOME | TMPDIR | TMP | TEMP | XDG_STATE_HOME | KOZMOZOO_STATE | KOZMOZOO_CACHE | KOZMOZOO_PLUGINS | KOZMOZOO_HOSTS | KOZMOZOO_BIND | KOZMOZOO_PORT) process[${item%%=*}]=${item#*=} ;; esac
         done < "/proc/$pid/environ"
-        for item in HOME TMPDIR TMP TEMP XDG_STATE_HOME KOZMOZOO_STATE KOZMOZOO_CACHE KOZMOZOO_PLUGINS KOZMOZOO_BIND KOZMOZOO_PORT; do
+        for item in HOME TMPDIR TMP TEMP XDG_STATE_HOME KOZMOZOO_STATE KOZMOZOO_CACHE KOZMOZOO_PLUGINS KOZMOZOO_HOSTS KOZMOZOO_BIND KOZMOZOO_PORT; do
           if [[ "${process[$item]+present}" != "${next[$item]+present}" || "${process[$item]-}" != "${next[$item]-}" ]]; then
             msg_error 'Started process environment differs from parsed next-start configuration'
             return 65
           fi
         done
         if curl --noproxy '*' --fail --silent --max-time 2 "http://$destination:$port/api/runtime" > "$stage/runtime.json" &&
-          [[ -f "$state/engine-instance.json" && ! -L "$state/engine-instance.json" && "$(stat -c '%u:%a' "$state/engine-instance.json")" == 0:600 ]] &&
+          [[ -f "$state/engine-instance.json" && ! -L "$state/engine-instance.json" && "$(stat -c '%u:%a' "$state/engine-instance.json")" == "$kz_uid:600" ]] &&
           jq -e --arg v "$version" --arg bind "$bind" --argjson port "$port" --argjson pid "$pid" \
             --slurpfile private "$state/engine-instance.json" '
             .protocol == "kosmozoo-runtime" and .version == 1 and .status == "ready" and .mode == "serve" and

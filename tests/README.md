@@ -143,7 +143,12 @@ ownership. Release transport/version text, apt and service control are explicitl
 modeled. It checks normalized bare hosts, bounded decimal ports (including extreme
 lengths), duplicate/control refusal, folder-before-start admission, protected
 operator/state/cache/mount metadata, activation recovery and six concurrent-owner
-schedules. It does not execute the historical fixed-ID Kosmozoo campaign.
+schedules. Root administrative files and non-root runtime credentials are distinct:
+real UID/GID/group processes and filesystem access cover runtime-private ownership,
+denied ancestry and stable-lock refusal. Same-selected-release SHA256SUMS controls
+cover missing, malformed, duplicate, wrong-filename, mismatched and substituted
+metadata. The existing 24 seed, 18 lifecycle and 89 ownership assertions remain. It does
+not execute the historical fixed-ID Kosmozoo campaign.
 
 `maintenance-kosmozoo-native/live-runtime` uses the existing generic runtime CT
 owner, candidate publisher and sealed direct delegation. It creates no outer
@@ -151,6 +156,10 @@ network or lifecycle owner. Its cold-generated native install/update bundles run
 the actual published ELF/service. The consumer checks local image bytes/SHA256,
 saved judgment/settings in HTTP and SQLite/files/cache, runtime/private identity,
 operator overrides, restart and an explicit same-version no-op update. Native
+v0.3.0 acceptance also requires the selected executable SHA256, real non-root
+port80 binding with only the systemd bind capability, disk TMPDIR SQLite executable
+mapping, matching-Origin saves, foreign-Origin403 without mutation and origin-less
+API saves. These assertions are not established by the modeled fixture. Native
 logs/records are included in the owner-recorded stdout for external preservation.
 Guard-only or syntax evidence proves admission/load only; the full native consumer
 must succeed on the final combined source before native acceptance is claimed.

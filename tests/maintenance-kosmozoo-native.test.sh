@@ -40,6 +40,7 @@ unset -f curl
 source "$ROOT/misc/bundle.func"
 export APP=Kosmozoo NSAPP=kosmozoo REPO_BASE="$publisher"
 export var_lxc_tmpdir="$TMPDIR" var_lxc_kosmozoo_hosts='local=folder:/sources/images'
+export var_lxc_kosmozoo_initial_release=v0.3.0
 _write_bundle install install_script "$ROOT/misc" 'install_script' > "$work/install.sh"
 _write_bundle update update_script "$ROOT/misc" 'run_update_script "$@"' > "$work/update.sh"
 timeout --signal=TERM --kill-after=30 1200 bash "$work/install.sh" > "$work/install.log" 2>&1
@@ -49,6 +50,7 @@ ln -s /usr/local/sbin/update /usr/bin/update
 # Prove effective operator overrides and a truly cold native process without any
 # external application runtime in PATH. The updater must preserve these bytes.
 mkdir -p /data/operator-tmp /etc/systemd/system/kosmozoo.service.d
+chown "$(id -u kosmozoo):$(id -g kosmozoo)" /data/operator-tmp
 cat > /etc/kosmozoo/operator.env << 'ENV'
 TMPDIR="/data/operator-tmp"
 PATH="/nonexistent"
@@ -63,13 +65,18 @@ UNIT
 systemctl daemon-reload
 timeout 60 systemctl restart kosmozoo
 python3 - "$work" << 'CONSUMER'
-import base64,hashlib,json,os,pathlib,sqlite3,subprocess,sys,time,urllib.request
+import base64,hashlib,json,os,pathlib,pwd,sqlite3,subprocess,sys,time,urllib.request,urllib.error
 w=pathlib.Path(sys.argv[1]); origin='http://127.0.0.1'
+account=pwd.getpwnam('kosmozoo');uid=account.pw_uid;gid=account.pw_gid
+assert uid!=0 and gid!=0
+assert hashlib.sha256(pathlib.Path('/opt/kosmozoo/kosmozoo').read_bytes()).hexdigest()=='ff2486bfd42f0c50c0e48eb08a52ac9ec8eee826f873629e6e4cad90d0179d34'
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 def command(*args):return subprocess.run(args,check=True,capture_output=True,text=True,timeout=90).stdout.strip()
-def api(path,method='GET',body=None,raw=False):
+def api(path,method='GET',body=None,raw=False,request_origin=None):
  data=None if body is None else json.dumps(body).encode()
- req=urllib.request.Request(origin+path,data=data,method=method,headers={'Content-Type':'application/json'})
+ headers={'Content-Type':'application/json'}
+ if request_origin is not None:headers['Origin']=request_origin
+ req=urllib.request.Request(origin+path,data=data,method=method,headers=headers)
  with urllib.request.urlopen(req,timeout=15) as response:
   content=response.read()
  return content if raw else json.loads(content)
@@ -83,12 +90,19 @@ def ready():
    pid=int(command('systemctl','show','kosmozoo','-p','MainPID','--value'))
    assert pathlib.Path('/proc/'+str(pid)+'/exe').resolve()==pathlib.Path('/opt/kosmozoo/kosmozoo')
    private=pathlib.Path('/data/state/engine-instance.json');s=private.stat();p=json.loads(private.read_bytes())
-   assert s.st_uid==0 and s.st_mode&0o777==0o600 and not private.is_symlink()
+   assert s.st_uid==uid and s.st_mode&0o777==0o600 and not private.is_symlink()
+   status=dict(line.split(':',1) for line in pathlib.Path('/proc/'+str(pid)+'/status').read_text().splitlines() if ':' in line)
+   assert list(map(int,status['Uid'].split()))==[uid]*4 and list(map(int,status['Gid'].split()))==[gid]*4
+   assert set(map(int,status['Groups'].split()))==set(os.getgrouplist('kosmozoo',gid))
+   assert all(int(status[k].strip(),16)==1<<10 for k in ('CapEff','CapPrm','CapBnd','CapAmb'))
+   assert r['app']['version']=='0.3.0'
    assert p['ownerPid']==pid and all(p[k]==r[k] for k in ('instance','sourceVersion','binding'))
    env=dict(v.split(b'=',1) for v in pathlib.Path('/proc/'+str(pid)+'/environ').read_bytes().split(b'\0') if v)
    assert env[b'PATH']==b'/nonexistent' and env[b'TMPDIR']==b'/data/operator-tmp' and env[b'KOZMOZOO_PORT']==b'080'
    assert env[b'KZ_ACCEPTANCE_LITERAL']==b'operator $ ` % " \\ roundtrip'
    assert 'pid='+str(pid)+',' in command('ss','-H','-lntp','sport = :80')
+   mappings=pathlib.Path('/proc/'+str(pid)+'/maps').read_text()
+   assert any('/data/operator-tmp/' in line and 'sqlite' in line.lower() and 'x' in line.split()[1] for line in mappings.splitlines())
    return r,pid
   except (OSError,ValueError,AssertionError):
    if time.monotonic()>=end:raise
@@ -115,8 +129,14 @@ def observe(label):
  (w/(label+'.json')).write_text(json.dumps(result,sort_keys=True,indent=2));return result
 ready()
 api(entry_path+'/bytes',raw=True)
-api(entry_path+'/judgment','PATCH',judgment)
+api(entry_path+'/judgment','PATCH',judgment,request_origin=origin)
 api('/api/settings/core.judgment','PATCH',setting)
+try:
+ api(entry_path+'/judgment','PATCH',{'vote':'down'},request_origin='http://foreign.invalid')
+ raise AssertionError('Foreign Origin mutation was accepted')
+except urllib.error.HTTPError as error:
+ assert error.code==403
+assert api(entry_path)['judgment']==judgment
 first=observe('before-restart')
 protected=[pathlib.Path(p) for p in ('/opt/kosmozoo/kosmozoo','/root/.kosmozoo','/etc/kosmozoo/env','/etc/kosmozoo/operator.env','/etc/systemd/system/kosmozoo.service','/etc/systemd/system/kosmozoo.service.d/operator.conf','/data/state/settings.json','/sources/images/pixel.png')]
 def hashes():return {str(p):dict(sha256=sha(p.read_bytes()),mode=p.stat().st_mode&0o777,uid=p.stat().st_uid,gid=p.stat().st_gid) for p in protected}
@@ -142,6 +162,7 @@ command('systemctl','stop','kosmozoo')
 assert sha(pathlib.Path('/data/state/metadata.db').read_bytes())==dbhash
 assert hashes()==before
 summary=dict(status='consumer-pass',proof='actual native ELF/service/local-media/API/SQLite/settings/restart/same-version-no-op',version=version,protected=before,state_db_sha256=dbhash,image_sha256=digest,outcomes=[first,second,third,fourth])
+summary.update(runtime_uid=uid,runtime_gid=gid,bind_capability_only=True,matching_origin_saved=True,foreign_origin_refused=403,originless_api_saved=True,sqlite_disk_executable_mapping=True)
 (w/'accepted.json').write_text(json.dumps(summary,sort_keys=True,indent=2))
 print('KOSMOZOO_NATIVE_PASS '+json.dumps(summary,sort_keys=True),flush=True)
 CONSUMER
