@@ -23,7 +23,7 @@ function install_script() {
   ARCH=$(uname -m)
   [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
 
-  fetch_and_deploy_gh_release "qui" "autobrr/qui" "prebuild" "latest" "/usr/local/bin" "qui_*_linux_${ARCH}.tar.gz"
+  _gh_deploy_archive_binary qui autobrr/qui latest /usr/local/bin/qui "qui_*_linux_${ARCH}.tar.gz" qui
 
   msg_info "Creating Qui Service"
   cat << EOF > /etc/systemd/system/qui.service
@@ -69,12 +69,8 @@ function update_script() {
 
     ARCH=$(uname -m)
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
-    fetch_and_deploy_gh_release "qui" "autobrr/qui" "prebuild" "latest" "/tmp/qui" "qui_*_linux_${ARCH}.tar.gz"
-
     msg_info "Updating qui"
-    mv /tmp/qui/qui /usr/local/bin/qui
-    chmod +x /usr/local/bin/qui
-    rm -rf /tmp/qui
+    _gh_deploy_archive_binary qui autobrr/qui latest /usr/local/bin/qui "qui_*_linux_${ARCH}.tar.gz" qui
     msg_ok "Updated qui"
 
     msg_info "Starting Service"

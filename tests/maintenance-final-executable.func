@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Sourced by the registered Filebrowser consumer. Real generated commands,
+# release provider, archives, files, modes and pending owner; network/services model.
+systemd-detect-virt --vm --quiet || exit 65
+: "${TMPDIR:?disk-backed TMPDIR required}"
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 65 ;; esac
+publication_work=$(mktemp -d "$TMPDIR/final-executable.XXXXXXXX")
+printf 'Publication evidence: %s\n' "$publication_work"
+publication_failures=0
+publication_checks=0
+publication_check() {
+  publication_checks=$((publication_checks + 1))
+  if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
+    printf 'FAIL %s: expected <%s>, got <%s>\n' "$3" "$2" "$1" >&2
+    publication_failures=$((publication_failures + 1))
+  fi
+}
+for app in filebrowser qui; do
+  for mode in no yes; do
+    for fault in install publish marker; do
+      c="$publication_work/$app-$mode-$fault"
+      mkdir -p "$c/"{home,bin,stage,tmp,state,archive,sbin}
+      printf '#!/usr/bin/env bash\nprintf old\n' > "$c/bin/$app"
+      chmod 0711 "$c/bin/$app"
+      printf '1.0\n' > "$c/home/.$app"
+      printf '#!/usr/bin/env bash\nprintf new\n' > "$c/archive/$app"
+      chmod 0755 "$c/archive/$app"
+      tar -czf "$c/release.tar.gz" -C "$c/archive" "$app"
+      printf 'running\n' > "$c/service-state"
+      printf 'operator config\n' > "$c/config"
+      sed -e "s|/var/lib/scripts-underground/update-pending|$c/state|g" \
+        -e "s|/var/lib/scripts-underground/maintenance-locks|$c/maintenance-locks|g" \
+        "$ROOT/misc/core.func" > "$c/stage/core.func"
+      cp "$ROOT/misc/error_handler.func" "$ROOT/misc/tools.func" "$c/stage/"
+      printf 'pkg_install() { :; }\nsetup_lxc() { :; }\n' > "$c/stage/install.func"
+      cat > "$c/models.sh" << 'MODELS'
+header_info() { :; }
+check_container_storage() { :; }
+check_container_resources() { :; }
+cleanup_lxc() { :; }
+stop_spinner() { :; }
+msg_info() { :; }
+msg_ok() { printf 'OK %s\n' "$*"; }
+msg_error() { printf 'ERROR %s\n' "$*" >&2; }
+addon_baseline() { :; }
+ensure_dependencies() { :; }
+getent() { return 0; }
+get_system_arch() { printf amd64; }
+curl() {
+  local out='' format=''
+  while (($#)); do
+    case "$1" in -o) out="$2"; shift ;; -w) format="$2"; shift ;; esac
+    shift
+  done
+  printf '{"tag_name":"v2.0","assets":[{"browser_download_url":"https://fixture.invalid/linux-amd64-filebrowser.tar.gz"},{"browser_download_url":"https://fixture.invalid/qui_2_linux_x86_64.tar.gz"}]}' > "$out"
+  [[ -z "$format" ]] || printf 200
+}
+curl_download() { command cp "$CASE_ROOT/release.tar.gz" "$1"; }
+systemctl() {
+  printf '%s\n' "$*" >> "$CASE_ROOT/services"
+  case "$1" in
+    stop) printf stopped > "$CASE_ROOT/service-state" ;;
+    start) "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/service-consumer"; printf running > "$CASE_ROOT/service-state" ;;
+  esac
+}
+install() {
+  if [[ "$FAULT" == install ]]; then
+    printf partial > "${!#}"
+    return 41
+  fi
+  command install "$@"
+}
+mv() {
+  if [[ "$FAULT" == publish && "${!#}" == "$CASE_ROOT/bin/$TEST_APP" ]]; then return 42; fi
+  if [[ "$FAULT" == marker && "${!#}" == "$CASE_ROOT/home/.$TEST_APP" ]]; then return 43; fi
+  command mv "$@"
+}
+MODELS
+      printf 'clone_and_deploy_gh_commit() { :; }\nsource %q\n' "$c/models.sh" > "$c/stage/github.func"
+      printf 'source %q\n' "$c/models.sh" > "$c/stage/addon.func"
+      (
+        unset -f install fetch_and_deploy_gh_release check_for_gh_release
+        source "$ROOT/misc/bundle.func"
+        source "$ROOT/misc/addon_lxc.func"
+        APP="$app" NSAPP="$app" APP_SLUG="$app" REPO_BASE=https://fixture.invalid
+        var_lxc_tmpdir="$c/tmp"
+        export var_addon_bin_path="$c/bin/$app" var_addon_dist_path="$c/dist"
+        export var_addon_db_dir="$c/db" var_addon_db_path="$c/db/app.db"
+        if [[ "$app" == filebrowser ]]; then
+          # shellcheck source=/dev/null
+          source <(sed -n '/^function update_script() {/,/^}/p' "$ROOT/scripts/addon/filebrowser.sh")
+          _addon_bundle_contents update update_script "$c/stage" > "$c/sbin/update"
+        else
+          # shellcheck source=/dev/null
+          source <(sed -n '/^function update_script() {/,/^}/p' "$ROOT/scripts/lxc/qui.sh" |
+            sed -e "s|/usr/local/bin/qui|$c/bin/qui|g" -e "s|/tmp/qui|$c/legacy-dist|g")
+          _write_bundle update update_script "$c/stage" 'run_update_script "$@"' > "$c/sbin/update"
+        fi
+      )
+      digest=$(sha256sum "$c/sbin/update")
+      rc=0
+      env -i PATH="$PATH" HOME="$c/home" TMPDIR="$c/tmp" CASE_ROOT="$c" TEST_APP="$app" FAULT="$fault" VERBOSE="$mode" \
+        BUILD_LOG="$c/active.log" DEBUG_LOGFILE="$c/error.log" timeout 45s bash "$c/sbin/update" > "$c/output" 2>&1 || rc=$?
+      expected=41
+      [[ "$fault" != publish ]] || expected=42
+      [[ "$fault" != marker ]] || expected=43
+      publication_check "$rc" "$expected" "$app/$mode/$fault original status"
+      publication_check "$(cat "$c/bin/$app")" $'#!/usr/bin/env bash\nprintf old' "$app/$mode/$fault old final bytes"
+      publication_check "$(stat -c %a "$c/bin/$app")" 711 "$app/$mode/$fault old final mode"
+      publication_check "$(cat "$c/home/.$app" 2> /dev/null || true)" 1.0 "$app/$mode/$fault old marker"
+      publication_check "$(test -f "$c/state/$app" && printf pending || printf absent)" pending "$app/$mode/$fault pending retained"
+      retry=0
+      env -i PATH="$PATH" HOME="$c/home" TMPDIR="$c/tmp" CASE_ROOT="$c" TEST_APP="$app" FAULT=none VERBOSE="$mode" \
+        BUILD_LOG="$c/retry.log" DEBUG_LOGFILE="$c/retry-error.log" timeout 45s bash "$c/sbin/update" > "$c/retry-output" 2>&1 || retry=$?
+      publication_check "$retry" 0 "$app/$mode/$fault ordinary retry status"
+      publication_check "$("$c/bin/$app")" new "$app/$mode/$fault final executable consumer"
+      publication_check "$(stat -c %a "$c/bin/$app")" 755 "$app/$mode/$fault final mode"
+      publication_check "$(cat "$c/home/.$app" 2> /dev/null || true)" 2.0 "$app/$mode/$fault final marker"
+      publication_check "$(test -f "$c/state/$app" && printf pending || printf absent)" absent "$app/$mode/$fault pending retired"
+      publication_check "$(cat "$c/service-state")" running "$app/$mode/$fault final service"
+      if [[ "$app" == qui ]]; then publication_check "$(cat "$c/service-consumer")" new "$app/$mode/$fault started service consumes new bytes"; fi
+      publication_check "$(cat "$c/config")" 'operator config' "$app/$mode/$fault protected config"
+      publication_check "$(sha256sum "$c/sbin/update")" "$digest" "$app/$mode/$fault frozen command unchanged"
+    done
+  done
+done
+printf '%s publication checks; %s failure(s); cold generated updaters; native files/provider; network/services modeled\n' "$publication_checks" "$publication_failures"
+[[ "$publication_failures" == 0 ]]

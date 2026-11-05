@@ -4351,6 +4351,56 @@ _gh_scan_older_releases() {
   return 250
 }
 
+# Archive binaries have a final path distinct from the provider's extracted tree.
+# Keep selection/extraction with the provider; publish the executable and its
+# marker here, retaining the previous final on a handled publication failure.
+_gh_deploy_archive_binary() {
+  local app="$1" repo="$2" version="$3" destination="$4" pattern="$5" member="$6"
+  local app_lc="${app,,}" stage marker marker_stage='' rc=0 had_final=0
+  app_lc="${app_lc// /}"
+  marker="$HOME/.$app_lc"
+  case "$member" in '' | */* | . | ..) return 65 ;; esac
+  if [[ -L "$destination" || (-e "$destination" && ! -f "$destination") ||
+    -L "$marker" || (-e "$marker" && ! -f "$marker") ]]; then
+    msg_error "Expected regular executable and release marker for $app"
+    return 65
+  fi
+  stage=$(mktemp -d "${destination%/*}/.gh-binary.XXXXXX") || return $?
+  # A private HOME keeps the provider's marker with its intermediate payload.
+  HOME="$stage" fetch_and_deploy_gh_release "$app" "$repo" prebuild "$version" "$stage/payload" "$pattern" || rc=$?
+  if [[ $rc -eq 0 && (! -s "$stage/payload/$member" || -L "$stage/payload/$member" || ! -f "$stage/payload/$member") ]]; then rc=252; fi
+  if [[ $rc -eq 0 ]]; then install -m 755 -- "$stage/payload/$member" "$stage/new" || rc=$?; fi
+  if [[ $rc -eq 0 && -e "$destination" ]]; then
+    cp -p -- "$destination" "$stage/previous" || rc=$?
+    had_final=1
+  fi
+  if [[ $rc -eq 0 ]]; then marker_stage=$(mktemp "$HOME/.gh-marker.XXXXXX") || rc=$?; fi
+  if [[ $rc -eq 0 ]]; then cp -- "$stage/.$app_lc" "$marker_stage" || rc=$?; fi
+  if [[ $rc -eq 0 ]]; then
+    mv -T -- "$stage/new" "$destination" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      mv -T -- "$marker_stage" "$marker" || rc=$?
+      if [[ $rc -ne 0 ]]; then
+        if [[ $had_final == 1 ]]; then
+          if ! mv -T -- "$stage/previous" "$destination"; then
+            msg_error "Executable recovery retained at $stage (publication status $rc)"
+            rm -f -- "$marker_stage" || true
+            return "$rc"
+          fi
+        else
+          rm -f -- "$destination" || {
+            msg_error "Failed new executable retained at $destination (publication status $rc)"
+            return "$rc"
+          }
+        fi
+      fi
+    fi
+  fi
+  [[ -z "$marker_stage" ]] || rm -f -- "$marker_stage" || true
+  rm -rf -- "$stage" || true
+  return "$rc"
+}
+
 fetch_and_deploy_gh_release() {
   local app="$1"
   local repo="$2"

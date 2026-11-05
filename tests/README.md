@@ -137,6 +137,14 @@ The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
 
+`filebrowser-retry-install/fixture` also exercises Filebrowser and Qui through
+their actual cold-generated update commands and current pending/maintenance
+owner. Native archive extraction and executable/marker publication cover partial
+install, final rename and marker rename failures, followed by ordinary retry in
+quiet and verbose modes. Checks read final executable bytes/mode, marker, pending
+state and modeled service outcome; Qui's start model executes the new file.
+Release transport and service control are models, not native app acceptance.
+
 `maintenance-kosmozoo-current/fixture` executes cold install/update bundles with
 real files, ELF processes, private root/mount/PID fixtures and kernel maintenance
 ownership. Release transport/version text, apt and service control are explicitly

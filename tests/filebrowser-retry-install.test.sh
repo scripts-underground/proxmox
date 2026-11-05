@@ -25,7 +25,8 @@ filebrowser() { :; }
 systemctl() { :; }
 get_system_arch() { echo amd64; }
 check_for_gh_release() { return 0; }
-# The framework writes the version marker before the binary is installed.
+# Initial failure control: no successful final publication means no marker.
+_gh_deploy_archive_binary() { return 1; }
 fetch_and_deploy_gh_release() {
   mkdir -p "$var_addon_dist_path"
   printf 'bin' > "$var_addon_dist_path/filebrowser"
@@ -44,3 +45,6 @@ rc=0
 [[ "$rc" != 0 ]]
 [[ ! -e "$HOME/.filebrowser" ]]
 printf 'PASS failed update removes the marker and exits non-zero\n'
+
+# Final consumer and ordinary pending retry across both archive-binary callers.
+source "$ROOT/tests/maintenance-final-executable.func"
