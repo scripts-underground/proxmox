@@ -151,8 +151,8 @@ descriptors, initialization or traps. Offline consumers do not select or name it
 private dependencies. The cron updater's manager uses this public emitter when
 publishing its self-contained worker. Both scheduled and manual execution acquire
 the literal `cron-update-lxcs` key before config parsing or PVE effects, keeping the
-FD through metadata, upgrades and graceful restoration. A busy worker returns75;
-unsafe or unavailable locking returns69 before target effects. Refresh existing
+FD through metadata, upgrades and graceful restoration. A busy worker returns 75;
+unsafe or unavailable locking returns 69 before target effects. Refresh existing
 workers and drain unguarded generations before relying on this serialization.
 
 Addon update bundles pass their literal `addon_baseline` preparation to internal
