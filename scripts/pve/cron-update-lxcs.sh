@@ -81,18 +81,77 @@ cron_worker_exclusions() {
 }
 
 cron_worker_packages() {
-  local id="$1" os="$2"
-  case "$os" in
-    alpine) pct exec "$id" -- ash -c 'apk -U upgrade' ;;
-    archlinux) pct exec "$id" -- sh -c 'pacman -Syu --noconfirm' ;;
-    fedora | rocky | centos | alma) pct exec "$id" -- sh -c 'dnf -y upgrade' ;;
-    debian | ubuntu | devuan) pct exec "$id" -- sh -c 'apt update && DEBIAN_FRONTEND=noninteractive apt -o Dpkg::Options::=--force-confold dist-upgrade -y' ;;
-    opensuse) pct exec "$id" -- sh -c 'zypper --non-interactive refresh && zypper --non-interactive dup' ;;
+  local id="$1" os="$2" phase="${3:-update}"
+  if [[ "$phase" == update ]]; then
+    # Already-running CTs retain their normal update without a new boot wait.
+    case "$os" in
+      alpine) pct exec "$id" -- ash -c 'apk -U upgrade' ;;
+      archlinux) pct exec "$id" -- sh -c 'pacman -Syu --noconfirm' ;;
+      fedora | rocky | centos | alma) pct exec "$id" -- sh -c 'dnf -y upgrade' ;;
+      debian | ubuntu | devuan) pct exec "$id" -- sh -c 'apt update && DEBIAN_FRONTEND=noninteractive apt -o Dpkg::Options::=--force-confold dist-upgrade -y' ;;
+      opensuse) pct exec "$id" -- sh -c 'zypper --non-interactive refresh && zypper --non-interactive dup' ;;
+    esac
+    return $?
+  fi
+  case "$os:$phase" in
+    alpine:metadata) set -- apk update ;;
+    alpine:upgrade) set -- apk upgrade ;;
+    archlinux:metadata) set -- pacman -Sy --noconfirm ;;
+    archlinux:upgrade) set -- pacman -Su --noconfirm ;;
+    fedora:metadata | rocky:metadata | centos:metadata | alma:metadata)
+      set -- dnf -y --refresh '--setopt=*.skip_if_unavailable=False' makecache
+      ;;
+    fedora:upgrade | rocky:upgrade | centos:upgrade | alma:upgrade)
+      set -- dnf -y '--setopt=*.metadata_expire=-1' --setopt=check_config_file_age=False upgrade
+      ;;
+    debian:metadata | ubuntu:metadata | devuan:metadata)
+      set -- apt -o APT::Update::Error-Mode=any update
+      ;;
+    debian:upgrade | ubuntu:upgrade | devuan:upgrade)
+      set -- env DEBIAN_FRONTEND=noninteractive apt -o Dpkg::Options::=--force-confold dist-upgrade -y
+      ;;
+    opensuse:metadata) set -- zypper --non-interactive refresh --force ;;
+    opensuse:upgrade) set -- zypper --non-interactive --no-refresh dup ;;
+    *) return 65 ;;
   esac
+  if [[ "$phase" == metadata ]]; then
+    # The deadline belongs inside the CT: timing out pct alone could leave its
+    # package child running. GNU's default group also bounds ordinary descendants.
+    pct exec "$id" -- sh -c '
+      version=$(LC_ALL=C timeout --version 2>/dev/null) || {
+        printf "Metadata readiness requires GNU coreutils timeout (69)\n" >&2
+        exit 69
+      }
+      case "$version" in
+        "timeout (GNU coreutils) "*) ;;
+        *) printf "Metadata readiness requires GNU coreutils timeout (69)\n" >&2; exit 69 ;;
+      esac
+      # Keep this shell outside the timed group so a group KILL returns137.
+      timeout --kill-after=5 20 "$@"
+    ' cron-metadata "$@"
+  else
+    pct exec "$id" -- "$@"
+  fi
+}
+
+cron_worker_ready() {
+  local id="$1" os="$2" attempt rc=1
+  # At most3 metadata-only attempts:20s each +5s KILL grace,5s between attempts.
+  for attempt in 1 2 3; do
+    printf 'CT %s metadata readiness attempt %s/3\n' "$id" "$attempt"
+    rc=0
+    cron_worker_packages "$id" "$os" metadata || rc=$?
+    ((rc)) || return 0
+    printf 'CT %s metadata attempt %s failed (%s)\n' "$id" "$attempt" "$rc" >&2
+    # A missing safe deadline mechanism cannot be retried as an unbounded probe.
+    if ((rc == 69 || attempt == 3)); then break; fi
+    sleep 5 || return "$rc"
+  done
+  return "$rc"
 }
 
 cron_worker_container() {
-  local id="$1" config key value os='' template=0 state rc=0 result=0 started=0
+  local id="$1" config key value os='' template=0 state rc=0 result=0 started=0 phase=update operation='package update'
   config=$(pct config "$id") || {
     rc=$?
     printf 'CT %s config failed (%s)\n' "$id" "$rc" >&2
@@ -148,9 +207,17 @@ cron_worker_container() {
       return 1
       ;;
   esac
-  cron_worker_packages "$id" "$os" || result=$?
+  if ((started)); then
+    phase=upgrade
+    operation='metadata readiness'
+    cron_worker_ready "$id" "$os" || result=$?
+  fi
+  if ((result == 0)); then
+    operation='package update'
+    cron_worker_packages "$id" "$os" "$phase" || result=$?
+  fi
   if ((result)); then
-    printf 'CT %s package update failed (%s)\n' "$id" "$result" >&2
+    printf 'CT %s %s failed (%s)\n' "$id" "$operation" "$result" >&2
   else printf 'CT %s packages updated\n' "$id"; fi
   if ((started)); then
     # Synchronous bounded graceful restoration only for a checked successful start.
@@ -199,7 +266,7 @@ cron_worker_main() {
 
 worker_contents() {
   printf '#!/usr/bin/env bash\n# Generated from the executing cron-update-lxcs.sh manager.\nset -uo pipefail\n' || return $?
-  declare -f cron_worker_id cron_worker_exclusions cron_worker_packages cron_worker_container cron_worker_main || return $?
+  declare -f cron_worker_id cron_worker_exclusions cron_worker_packages cron_worker_ready cron_worker_container cron_worker_main || return $?
   printf '\ncron_worker_main "$@"\n' || return $?
 }
 

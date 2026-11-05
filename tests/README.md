@@ -146,6 +146,10 @@ Assertions observe package outcomes, exclusions/templates, distro dispatch,
 exact statuses, continuation, checked start/graceful restoration and preserved
 operator state on refusal/publication failure. No real CT or OS package upgrade
 is performed, and this does not establish whole-container production upgrades.
+Newly started-target cases observe configured metadata retries before a single
+upgrade, exhaustion/restoration/continuation and missing safe-timeout refusal.
+Real GNU timeout process groups exercise 20-second probes, 5-second KILL grace
+and TERM-resistant descendants; package/repository and PVE boundaries stay models.
 
 `filebrowser-retry-install/fixture` also exercises Filebrowser and Qui through
 their actual cold-generated update commands and current pending/maintenance
