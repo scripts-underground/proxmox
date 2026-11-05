@@ -35,9 +35,12 @@ check_for_gh_release() {
 fetch_and_deploy_gh_release() {
   printf '%s clean=%s force=%s\n' "$1" "${CLEAN_INSTALL:-}" "${FORCE_DEPLOY:-}" >> "$work/fetch.log"
 }
+_gh_deploy_archive_binary() {
+  CLEAN_INSTALL=1 fetch_and_deploy_gh_release "$1" "$2" prebuild "$3" "${4%/*}" "$5"
+}
 export -f msg_info msg_ok msg_warn msg_error header_info check_container_storage \
   check_container_resources uname systemctl create_backup restore_backup make \
-  check_for_gh_release fetch_and_deploy_gh_release
+  check_for_gh_release fetch_and_deploy_gh_release _gh_deploy_archive_binary
 
 run_update() {
   bash -c 'set -Eeuo pipefail; source "$1"; update_script' _ "$work/update.sh" > /dev/null

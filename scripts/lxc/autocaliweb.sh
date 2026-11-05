@@ -329,7 +329,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb"; then
+  if check_for_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "${var_appversion:-}"; then
     setup_uv
     msg_info "Stopping Services"
     systemctl stop autocaliweb metadata-change-detector acw-ingest-service acw-auto-zipper
@@ -337,8 +337,8 @@ function update_script() {
 
     INSTALL_DIR="/opt/autocaliweb"
     export VIRTUAL_ENV="${INSTALL_DIR}/venv"
-    $STD tar -cf ~/autocaliweb_bkp.tar "$INSTALL_DIR"/{metadata_change_logs,dirs.json,.env,scripts/ingest_watcher.sh,scripts/auto_zipper_wrapper.sh,scripts/metadata_change_detector_wrapper.sh}
-    fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "tarball" "latest" "/opt/autocaliweb"
+    create_backup "$INSTALL_DIR"/{metadata_change_logs,dirs.json,.env,scripts/ingest_watcher.sh,scripts/auto_zipper_wrapper.sh,scripts/metadata_change_detector_wrapper.sh}
+    fetch_and_deploy_codeberg_release "autocaliweb" "gelbphoenix/autocaliweb" "tarball" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/autocaliweb"
 
     msg_info "Updating Autocaliweb"
     cd "$INSTALL_DIR" || exit
@@ -354,14 +354,13 @@ function update_script() {
     $STD zip -r koplugin.zip acwsync.koplugin/
     cp -r koplugin.zip "$INSTALL_DIR"/cps/static
     mkdir -p "$INSTALL_DIR"/metadata_temp
-    $STD tar -xf ~/autocaliweb_bkp.tar --directory /
+    restore_backup
     KEPUB_VERSION="$(/usr/bin/kepubify --version)"
     CALIBRE_RELEASE="$(curl -s https://api.github.com/repos/kovidgoyal/calibre/releases/latest | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4)"
     echo "${KEPUB_VERSION#v}" > "$INSTALL_DIR"/KEPUBIFY_RELEASE
     echo "${CALIBRE_RELEASE#v}" > /"$INSTALL_DIR"/CALIBRE_RELEASE
     sed 's/^/v/' ~/.autocaliweb > "$INSTALL_DIR"/ACW_RELEASE
     chown -R acw:acw "$INSTALL_DIR"
-    rm ~/autocaliweb_bkp.tar
     sqlite3 /etc/autocaliweb/app.db "UPDATE settings SET config_port='80'"
     if ! grep -q "AmbientCapabilities" /etc/systemd/system/autocaliweb.service 2> /dev/null; then
       sed -i '/^ExecStart=/i AmbientCapabilities=CAP_NET_BIND_SERVICE' /etc/systemd/system/autocaliweb.service
@@ -378,6 +377,9 @@ function update_script() {
     msg_ok "Started Services"
 
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

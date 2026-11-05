@@ -83,7 +83,7 @@ function update_script() {
     msg_error "No ${APP} Installation Found!"
     exit
   fi
-  if check_for_gh_release "keycloak_app" "keycloak/keycloak"; then
+  if check_for_gh_release "keycloak_app" "keycloak/keycloak" "${var_appversion:-}"; then
     msg_info "Stopping Service"
     systemctl stop keycloak
     msg_ok "Stopped Service"
@@ -98,19 +98,19 @@ function update_script() {
       rm -rf /opt/keycloak.old.partial
       mkdir -p /opt/keycloak.old.partial
       cp -a /opt/keycloak/conf /opt/keycloak.old.partial/
-      cp -a /opt/keycloak/providers /opt/keycloak.old.partial/ 2> /dev/null || true
-      cp -a /opt/keycloak/themes /opt/keycloak.old.partial/ 2> /dev/null || true
+      if [[ -e /opt/keycloak/providers ]]; then cp -a /opt/keycloak/providers /opt/keycloak.old.partial/; fi
+      if [[ -e /opt/keycloak/themes ]]; then cp -a /opt/keycloak/themes /opt/keycloak.old.partial/; fi
       mv /opt/keycloak.old.partial /opt/keycloak.old
     fi
     msg_ok "Backup done"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "keycloak_app" "keycloak/keycloak" "prebuild" "latest" "/opt/keycloak" "keycloak-*.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "keycloak_app" "keycloak/keycloak" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/keycloak" "keycloak-*.tar.gz"
 
     msg_info "Updating Keycloak"
     cd /opt || exit
     cp -a keycloak.old/conf/. keycloak/conf/
-    cp -a keycloak.old/providers/. keycloak/providers/ 2> /dev/null || true
-    cp -a keycloak.old/themes/. keycloak/themes/ 2> /dev/null || true
+    if [[ -e keycloak.old/providers ]]; then cp -a keycloak.old/providers/. keycloak/providers/; fi
+    if [[ -e keycloak.old/themes ]]; then cp -a keycloak.old/themes/. keycloak/themes/; fi
     rm -rf keycloak.old
     msg_ok "Updated Keycloak"
 
@@ -118,6 +118,9 @@ function update_script() {
     systemctl restart keycloak
     msg_ok "Restarted Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

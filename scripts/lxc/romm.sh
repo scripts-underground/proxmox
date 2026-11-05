@@ -215,8 +215,8 @@ EOF
   msg_ok "Set up RomM Frontend"
 
   # Vite clears dist during builds; deploy player payloads only afterwards.
-  fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
-  fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+  var_appversion='' fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+  var_appversion='' fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
   if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
     msg_error "Player payloads are missing from the built frontend"
     exit 1
@@ -427,7 +427,7 @@ function update_script() {
     services+=(romm-scan-worker)
   fi
 
-  if check_for_gh_release "romm" "rommapp/romm"; then
+  if check_for_gh_release "romm" "rommapp/romm" "${var_appversion:-}"; then
     msg_info "Stopping Services"
     systemctl stop "${services[@]}"
     msg_ok "Stopped Services"
@@ -437,7 +437,7 @@ function update_script() {
       /opt/romm/frontend/dist/assets/emulatorjs \
       /opt/romm/frontend/dist/assets/ruffle
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball" "latest" "/opt/romm"
+    var_appversion="$CHECK_UPDATE_RELEASE" CLEAN_INSTALL=1 fetch_and_deploy_gh_release "romm" "rommapp/romm" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/romm"
     PYTHON_VERSION="3.13" UV_PROJECT_DIR="/opt/romm" setup_uv
 
     restore_backup
@@ -476,6 +476,9 @@ function update_script() {
     fi
     msg_ok "Updated ROMM"
     restart_services=true
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
   # Repair already-current 5.3 installations as well as actual release upgrades.
@@ -505,12 +508,20 @@ function update_script() {
 
   # A version marker alone does not prove the built frontend still has its files.
   if [[ ! -s /opt/romm/frontend/dist/assets/ruffle/ruffle.js ]]; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
+    var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "ruffle" "ruffle-rs/ruffle" "prebuild" "latest" "/opt/romm/frontend/dist/assets/ruffle" "ruffle-*-web-selfhosted.zip"
     restart_services=true
   fi
-  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores ]] ||
-    check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
-    FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
+  local emulator_update=false
+  if [[ ! -s /opt/romm/frontend/dist/assets/emulatorjs/data/loader.js || ! -d /opt/romm/frontend/dist/assets/emulatorjs/data/cores ]]; then
+    emulator_update=true
+  elif check_for_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "v4.2.3"; then
+    emulator_update=true
+  else
+    local emulator_status=$?
+    [[ "$emulator_status" == 1 ]] || return "$emulator_status"
+  fi
+  if [[ "$emulator_update" == true ]]; then
+    var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release "EmulatorJS" "EmulatorJS/EmulatorJS" "prebuild" "v4.2.3" "/opt/romm/frontend/dist/assets/emulatorjs" "4.2.3.7z"
     restart_services=true
     msg_ok "Updated EmulatorJS successfully"
   fi

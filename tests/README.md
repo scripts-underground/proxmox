@@ -32,9 +32,10 @@ revisions instead of silently refreshing admission.
 | 5 | Installed probe/browser | Trusted creation/transition lineage and actual current namespace/root/source; stronger application protection remains required. |
 | 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
 
-The catalogue covers all69 original shell suites, two Kosmozoo consumers, two
-workflow regressions, browser and contribution surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 94 public suite/mode combinations. The
+The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
+current-hardening fixture, two workflow regressions, browser and contribution
+surfaces. Listing a row is not runtime proof. Unknown
+suite/mode/options refuse. There are 95 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -153,6 +154,16 @@ plugin selection after a main update, optional warnings and ordinary retry.
 Protected configuration and unaffected sibling publication identity are read
 back. Network, application builds and services are models; final modeled app
 service state is checked, but WASM execution and full Wanderer operation are not.
+
+`maintenance-current-hardening/fixture` runs Endurain, Invidious, Keycloak,
+CronMaster and Autocaliweb through their actual frozen generated update commands.
+Native release archives, checked replacement, backup files, configuration modes,
+markers and SQLite settings are observed after failure and ordinary pending retry.
+It covers checker failures, selected-release races/substitution, build/download
+failures, Keycloak provider copies, invalid companion payloads and nondefault
+baked addon configuration. Both modeled Invidious services must finish running,
+and its start model executes the final companion fixture. Network, package/build
+tools and service control are models, not full application acceptance.
 
 `maintenance-kosmozoo-current/fixture` executes cold install/update bundles with
 real files, ELF processes, private root/mount/PID fixtures and kernel maintenance

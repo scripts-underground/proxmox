@@ -51,7 +51,8 @@ function install_script() {
   PG_DB_NAME="invidious" PG_DB_USER="invidious" setup_postgresql_db
   fetch_and_deploy_gh_release "Invidious" "iv-org/invidious" "tarball" "latest" "/opt/invidious"
   COMPANION_ARCH="$(uname -m)"
-  fetch_and_deploy_gh_release "Invidious Companion" "iv-org/invidious-companion" "prebuild" "latest" "/opt/invidious-companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz"
+  mkdir -p /opt/invidious-companion
+  var_appversion='' _gh_deploy_archive_binary "Invidious Companion" "iv-org/invidious-companion" "latest" "/opt/invidious-companion/invidious_companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz" "invidious_companion"
 
   msg_info "Building Invidious"
   cd /opt/invidious || exit
@@ -142,14 +143,16 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "Invidious" "iv-org/invidious"; then
+  local main_updated=0
+  if check_for_gh_release "Invidious" "iv-org/invidious" "${var_appversion:-}"; then
     msg_info "Stopping services"
     $STD systemctl stop invidious-companion invidious
+    main_updated=1
     msg_ok "Stopped services"
 
     create_backup /opt/invidious/config/config.yml
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious" "iv-org/invidious" "tarball" "latest" "/opt/invidious"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Invidious" "iv-org/invidious" "tarball" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/invidious"
 
     msg_info "Rebuilding Invidious"
     cd /opt/invidious || exit
@@ -167,10 +170,9 @@ function update_script() {
 
     restore_backup
 
-    msg_info "Starting services"
-    $STD systemctl start invidious invidious-companion
-    msg_ok "Started services"
-    msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
   local companion_force="${UPDATE_FORCE:-0}"
@@ -181,11 +183,23 @@ function update_script() {
     $STD systemctl stop invidious-companion
     msg_ok "Stopped companion"
 
-    CLEAN_INSTALL=1 FORCE_DEPLOY="$((companion_force || ${FORCE_DEPLOY:-0}))" fetch_and_deploy_gh_release "Invidious Companion" "iv-org/invidious-companion" "prebuild" "latest" "/opt/invidious-companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz"
+    mkdir -p /opt/invidious-companion
+    var_appversion='' FORCE_DEPLOY="$((companion_force || ${FORCE_DEPLOY:-0}))" _gh_deploy_archive_binary "Invidious Companion" "iv-org/invidious-companion" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/invidious-companion/invidious_companion" "invidious_companion-${COMPANION_ARCH}-unknown-linux-gnu.tar.gz" "invidious_companion"
 
-    msg_info "Starting companion"
-    $STD systemctl start invidious-companion
-    msg_ok "Started companion"
+    if [[ "$main_updated" == 0 ]]; then
+      msg_info "Starting companion"
+      $STD systemctl start invidious-companion
+      msg_ok "Started companion"
+    fi
+  else
+    local companion_status=$?
+    [[ "$companion_status" == 1 ]] || return "$companion_status"
+  fi
+  if [[ "$main_updated" == 1 ]]; then
+    msg_info "Starting services"
+    $STD systemctl start invidious invidious-companion
+    msg_ok "Started services"
+    msg_ok "Updated successfully!"
   fi
   exit
 }

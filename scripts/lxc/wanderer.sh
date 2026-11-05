@@ -139,13 +139,13 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "wanderer" "open-wanderer/wanderer"; then
+  if check_for_gh_release "wanderer" "open-wanderer/wanderer" "${var_appversion:-}"; then
     msg_info "Stopping service"
     systemctl stop wanderer-web
     msg_ok "Stopped service"
 
     create_backup /opt/wanderer/source/search
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "wanderer" "open-wanderer/wanderer" "tarball" "latest" "/opt/wanderer/source"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "wanderer" "open-wanderer/wanderer" "tarball" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/source"
     restore_backup
 
     msg_info "Updating wanderer"
@@ -163,6 +163,9 @@ function update_script() {
     systemctl start wanderer-web
     msg_ok "Started service"
     msg_ok "Update Successful"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
   msg_info "Installing wanderer plugins"
@@ -184,13 +187,16 @@ function update_script() {
     systemctl stop wanderer-web
     msg_ok "Stopped service"
 
-    fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" "latest" "/opt/wanderer/source/search"
+    var_appversion='' fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/source/search"
     grep -q -- '--experimental-dumpless-upgrade' /opt/wanderer/start.sh || sed -i 's|meilisearch --master-key|meilisearch --experimental-dumpless-upgrade --master-key|' /opt/wanderer/start.sh
 
     msg_info "Starting service"
     systemctl start wanderer-web
     msg_ok "Started service"
     msg_ok "Update Successful"
+  else
+    local search_status=$?
+    [[ "$search_status" == 1 ]] || return "$search_status"
   fi
   exit
 }

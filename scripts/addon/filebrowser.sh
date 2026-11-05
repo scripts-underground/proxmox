@@ -125,10 +125,13 @@ function post_install_script() {
 }
 
 function update_script() {
-  if check_for_gh_release "filebrowser" "filebrowser/filebrowser"; then
+  if check_for_gh_release "filebrowser" "filebrowser/filebrowser" "${var_appversion:-}"; then
     msg_info "Updating ${APP}"
-    _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" latest "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" filebrowser || return $?
+    _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" filebrowser || return $?
     msg_ok "Updated ${APP}"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

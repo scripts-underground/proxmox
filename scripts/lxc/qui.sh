@@ -62,7 +62,7 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "Qui" "autobrr/qui"; then
+  if check_for_gh_release "Qui" "autobrr/qui" "${var_appversion:-}"; then
     msg_info "Stopping Service"
     systemctl stop qui
     msg_ok "Stopped Service"
@@ -70,13 +70,16 @@ function update_script() {
     ARCH=$(uname -m)
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
     msg_info "Updating qui"
-    _gh_deploy_archive_binary qui autobrr/qui latest /usr/local/bin/qui "qui_*_linux_${ARCH}.tar.gz" qui
+    _gh_deploy_archive_binary qui autobrr/qui "${CHECK_UPDATE_RELEASE:-latest}" /usr/local/bin/qui "qui_*_linux_${ARCH}.tar.gz" qui
     msg_ok "Updated qui"
 
     msg_info "Starting Service"
     systemctl start qui
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

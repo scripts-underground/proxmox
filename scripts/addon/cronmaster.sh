@@ -103,14 +103,14 @@ function post_install_script() {
 }
 
 function update_script() {
-  if check_for_gh_release "cronmaster" "$var_addon_repo"; then
+  if check_for_gh_release "cronmaster" "$var_addon_repo" "${var_appversion:-}"; then
     msg_info "Stopping service"
     systemctl stop "$var_addon_service" &> /dev/null || true
     msg_ok "Stopped service"
 
     BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "latest" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
 
     BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
@@ -118,6 +118,9 @@ function update_script() {
     systemctl start "$var_addon_service"
     msg_ok "Started service"
     msg_ok "Updated successfully"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

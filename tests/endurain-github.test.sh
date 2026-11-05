@@ -54,7 +54,8 @@ calls=$(< "$work/calls.log")
 printf 'PASS a due update checks and deploys the GitHub repo\n'
 
 DUE=0 run_hook update_script
-[[ "$rc" == 0 && "$(< "$work/calls.log")" == "check endurain endurain-project/endurain" ]]
+# The third checker argument is the existing request, empty in this control.
+[[ "$rc" == 0 && "$(< "$work/calls.log")" == "check endurain endurain-project/endurain " ]]
 printf 'PASS a current update checks the GitHub repo and deploys nothing\n'
 
 run_hook install_script

@@ -15,7 +15,7 @@ FIXTURES = '''autocaliweb-update container-install-failure deploy-replace-conten
 endurain-github filebrowser-retry-install gpu-passthrough gpu-userspace
 invidious-companion-update jellyfin-ffmpeg keycloak-keep-install legacy-version-marker
 llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preservation
-maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap
+maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap maintenance-current-hardening
 maintenance-bundle-writer maintenance-consumers maintenance-go-minimum
 maintenance-gpg-key maintenance-immich maintenance-keep maintenance-kosmozoo-current maintenance-merge-inplace
 maintenance-node24-vite maintenance-nodejs maintenance-paperless-format-source

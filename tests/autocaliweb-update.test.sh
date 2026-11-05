@@ -37,11 +37,13 @@ tar() {
 }
 cp() { log_call cp "$@"; }
 chown() { :; }
+create_backup() { log_call create_backup "$@"; }
+restore_backup() { log_call restore_backup; }
 zip() { :; }
 curl() { log_call curl; }
 export -f log_call msg_info msg_ok msg_error header_info check_container_storage \
   check_container_resources systemctl setup_uv get_latest_codeberg_release \
-  check_for_codeberg_release fetch_and_deploy_codeberg_release uv sqlite3 tar cp chown zip curl
+  check_for_codeberg_release fetch_and_deploy_codeberg_release uv sqlite3 tar cp chown zip curl create_backup restore_backup
 
 run_update() {
   rm -f "$work/calls.log"
@@ -50,7 +52,8 @@ run_update() {
 }
 
 DUE=0 run_update
-[[ "$rc" == 0 && "$(< "$work/calls.log")" == "check autocaliweb gelbphoenix/autocaliweb" ]]
+# The third checker argument is the existing request, empty in this control.
+[[ "$rc" == 0 && "$(< "$work/calls.log")" == "check autocaliweb gelbphoenix/autocaliweb " ]]
 printf 'PASS an update with no new release sets up nothing\n'
 
 DUE=1 run_update

@@ -130,13 +130,13 @@ function update_script() {
     msg_error "No ${APP} installation found!"
     exit
   fi
-  if check_for_gh_release "endurain" "endurain-project/endurain"; then
+  if check_for_gh_release "endurain" "endurain-project/endurain" "${var_appversion:-}"; then
     msg_info "Stopping Service"
     systemctl stop endurain
     msg_ok "Stopped Service"
 
     create_backup /opt/endurain/.env /opt/endurain/frontend/dist/env.js
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "endurain" "endurain-project/endurain" "tarball" "latest" "/opt/endurain"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "endurain" "endurain-project/endurain" "tarball" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/endurain"
 
     msg_info "Preparing Update"
     cd /opt/endurain || exit
@@ -162,6 +162,9 @@ function update_script() {
     systemctl start endurain
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

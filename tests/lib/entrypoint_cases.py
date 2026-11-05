@@ -18,6 +18,7 @@ from test_registry import REGISTRY, policy
 
 
 DIRECT = {
+    'maintenance-current-hardening': [[]],
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
@@ -49,7 +50,8 @@ class Entrypoints(unittest.TestCase):
         actual = {p.relative_to(self.source).as_posix() for p in (self.source / 'tests').glob('*.test.sh')}
         declared = {r.path for r in REGISTRY.values() if r.path.endswith('.test.sh')}
         self.assertEqual(actual, declared)
-        additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh'}
+        additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh',
+                     'tests/maintenance-current-hardening.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -61,7 +63,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=2 shell=73 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=3 shell=74 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -102,6 +104,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
+        self.assertEqual(cases,95)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):
@@ -159,6 +162,13 @@ class Entrypoints(unittest.TestCase):
             with self.assertRaises(AdmissionError):
                 dispatch(d, self.context.path, 'workflow-entrypoints', 'fixture', lambda *a: calls.append(a))
             self.assertEqual(calls, [])
+
+    def test_current_hardening_direct_guard_only(self):
+        result, effects = self.direct('maintenance-current-hardening', [], self.context.path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(effects, '')
+        self.assertIn('ENTRYPOINT_ADMITTED maintenance-current-hardening fixture', result.stdout)
+        print('CURRENT_HARDENING_DIRECT_GUARD admitted=1 consumer_body=0 effects=0', flush=True)
 
     def test_valid_fixed_dispatch(self):
         from entrypoint import dispatch
