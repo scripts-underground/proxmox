@@ -17,15 +17,17 @@ Globnotes is a self-hosted Markdown note-taking app where a note's title is its
 path. Browse, search, and edit Obsidian vaults and nested Markdown trees in a
 browser, using either Source or WYSIWYG editing. Notes are ordinary files;
 application settings and the SQLite search index live separately in persistent
-application state.
+application state. Since v2.6.0, AI agents can search, read, and edit notes through
+the built-in MCP server.
 
 ### Getting started
 
 The script installs the released application natively with its source-pinned
 Deno runtime on Debian 13. Open `http://<LXC-IP>/` on port **80** and complete the
 first-run setup wizard to choose authentication. No default application password
-is provisioned. Plain HTTP works directly; a reverse proxy or TLS certificate is
-not an installation prerequisite.
+is provisioned. On a shared network, choose password or TOTP authentication in the
+wizard. Plain HTTP works directly; a reverse proxy or TLS certificate is not an
+installation prerequisite.
 
 The service runs as the dedicated `globnotes` account. Its source and runtime are
 in `/opt/globnotes`, while the notes vault is `/var/lib/globnotes/notes`.
@@ -42,6 +44,23 @@ making the application root writable. Each release seeds its own runtime lock
 from its released dependency metadata; plugin integrity entries are not merged
 between release generations. Code rollback restores that generation's runtime
 lock along with its executable and source.
+
+### AI agents (MCP)
+
+Connect AI agents to `http://<LXC-IP>/_/mcp` to search, read, and edit notes over
+plain HTTP. See globnotes' [docs/mcp.md](https://github.com/alexindigo/globnotes/blob/v2.6.0/docs/mcp.md)
+for per-agent setup. MCP uses the same authentication and permissions as the web
+app; `read_only` authentication offers only read tools.
+
+MCP is on by default. Set `GLOBNOTES_MCP_ENABLED=false` in `/etc/globnotes/env` to
+turn it off. `GLOBNOTES_MCP_RATE_LIMIT` sets tool calls per minute per client
+(default **600**; `0` disables the rate limit). Restart the service after changing
+these settings.
+
+On a LAN, setting `GLOBNOTES_ALLOWED_HOSTS` in `/etc/globnotes/env` is recommended
+against DNS rebinding, especially with `none` or `read_only` authentication. List
+the host names or IP addresses used to reach the server, separated by commas, for
+example `GLOBNOTES_ALLOWED_HOSTS=globnotes.home,192.168.1.20`.
 
 ### Choosing a persistent application-state directory
 
