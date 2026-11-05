@@ -42,6 +42,15 @@ check_for_gh_release() {
   return 1
 }
 fetch_and_deploy_gh_release() { echo "$1 force=${FORCE_DEPLOY:-unset} dir=$5" >> "$calls"; }
+_gh_deploy_wanderer_plugin() {
+  local force="${FORCE_DEPLOY:-0}"
+  [[ -f "$2/plugin.wasm" ]] || force=1
+  if [[ "${INSTALL_CONTROL:-0}" == 1 ]]; then
+    fetch_and_deploy_gh_release "wanderer-plugin-$1" open-wanderer/wanderer prebuild latest "$2"
+  else
+    FORCE_DEPLOY="$force" fetch_and_deploy_gh_release "wanderer-plugin-$1" open-wanderer/wanderer prebuild latest "$2"
+  fi
+}
 expect() {
   grep -qxF "$1" "$calls" || {
     echo "FAIL $2: missing '$1'"
@@ -52,7 +61,7 @@ expect() {
 }
 
 : > "$calls"
-(install_script)
+(INSTALL_CONTROL=1 install_script)
 for p in hammerhead komoot strava; do
   expect "wanderer-plugin-$p force=unset dir=$plugins/$p" "install deploys $p to its own directory"
 done
@@ -74,3 +83,7 @@ expect "wanderer-plugin-hammerhead force=0 dir=$plugins/hammerhead" "present plu
 : > "$calls"
 (APP_UPDATE=0 update_script)
 expect "wanderer-plugin-strava force=0 dir=$plugins/strava" "app updated: plugin loop still runs"
+
+# Keep the original directory/repair controls above and exercise the ordinary
+# generated caller with the real provider and protected filesystem outcomes.
+source "$ROOT/tests/maintenance-wanderer-plugins.func"

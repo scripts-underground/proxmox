@@ -4401,6 +4401,45 @@ _gh_deploy_archive_binary() {
   return "$rc"
 }
 
+# Wanderer's released bundles identify plugins by ID, not their display name.
+_wanderer_plugin_valid() {
+  local target="$1" plugin="$2"
+  [[ -d "$target" && ! -L "$target" &&
+    -f "$target/plugin.json" && -s "$target/plugin.json" && ! -L "$target/plugin.json" &&
+    -f "$target/plugin.wasm" && -s "$target/plugin.wasm" && ! -L "$target/plugin.wasm" ]] || return 1
+  jq -e --arg id "$plugin" '.id == $id and .runtime.type == "wasm" and .runtime.entrypoint == "plugin.wasm"' "$target/plugin.json" > /dev/null
+}
+
+# Keep optional plugin policy at the caller. The provider owns release selection
+# and extraction; only a validated private payload can reach the live plugin.
+_gh_deploy_wanderer_plugin() {
+  local plugin="$1" target="$2" app="wanderer-plugin-$1" selected=latest rc=0 stage marker_stage=''
+  local marker="$HOME/.$app"
+  if [[ -L "$target" || -L "$marker" || (-e "$marker" && ! -f "$marker") ]]; then return 65; fi
+  if check_for_gh_release "$app" open-wanderer/wanderer; then
+    selected="$CHECK_UPDATE_RELEASE"
+  else
+    rc=$?
+    [[ $rc == 1 ]] || return "$rc"
+    if [[ "${FORCE_DEPLOY:-0}" != 1 ]] && _wanderer_plugin_valid "$target" "$plugin"; then return 0; fi
+  fi
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/wanderer-plugin.XXXXXX") || return $?
+  rc=0
+  # A main-app pin and marker must not select or certify an independent plugin.
+  HOME="$stage" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "$app" open-wanderer/wanderer prebuild "$selected" "$stage/payload" "$app.tar.gz" || rc=$?
+  if [[ $rc == 0 ]] && ! _wanderer_plugin_valid "$stage/payload" "$plugin"; then
+    msg_error "Invalid wanderer plugin payload: $plugin"
+    rc=252
+  fi
+  if [[ $rc == 0 ]]; then marker_stage=$(mktemp "$HOME/.wanderer-marker.XXXXXX") || rc=$?; fi
+  if [[ $rc == 0 ]]; then cp -- "$stage/.$app" "$marker_stage" || rc=$?; fi
+  if [[ $rc == 0 ]]; then _deploy_replace_contents "$stage/payload" "$target" 0 || rc=$?; fi
+  if [[ $rc == 0 ]]; then mv -T -- "$marker_stage" "$marker" || rc=$?; fi
+  [[ -z "$marker_stage" ]] || rm -f -- "$marker_stage" || true
+  rm -rf -- "$stage" || true
+  return "$rc"
+}
+
 fetch_and_deploy_gh_release() {
   local app="$1"
   local repo="$2"

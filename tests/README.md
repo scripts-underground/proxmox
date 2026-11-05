@@ -145,6 +145,15 @@ quiet and verbose modes. Checks read final executable bytes/mode, marker, pendin
 state and modeled service outcome; Qui's start model executes the new file.
 Release transport and service control are models, not native app acceptance.
 
+`wanderer-plugin-dirs/fixture` retains the original directory controls and runs
+the actual cold-generated updater with native plugin archives, manifests, files,
+modes and markers. It checks stable plugin ID rather than display name, the
+released WASM entrypoint, nonempty regular payloads, link refusal, independent
+plugin selection after a main update, optional warnings and ordinary retry.
+Protected configuration and unaffected sibling publication identity are read
+back. Network, application builds and services are models; final modeled app
+service state is checked, but WASM execution and full Wanderer operation are not.
+
 `maintenance-kosmozoo-current/fixture` executes cold install/update bundles with
 real files, ELF processes, private root/mount/PID fixtures and kernel maintenance
 ownership. Release transport/version text, apt and service control are explicitly

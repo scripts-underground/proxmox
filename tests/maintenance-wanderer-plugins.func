@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Existing registry consumer: real cold updater/provider/tar/files; network,
+# application builds and service control are models. No WASM execution claim.
+systemd-detect-virt --vm --quiet || exit 65
+: "${TMPDIR:?disk TMPDIR required}"
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 65 ;; esac
+plugin_work=$(mktemp -d "$TMPDIR/wanderer-plugins.XXXXXXXX")
+printf 'Plugin evidence: %s\n' "$plugin_work"
+plugin_checks=0 plugin_failures=0
+plugin_check() {
+  plugin_checks=$((plugin_checks + 1))
+  if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
+    printf 'FAIL %s: expected <%s>, got <%s>\n' "$3" "$2" "$1" >&2
+    plugin_failures=$((plugin_failures + 1))
+  fi
+}
+for mode in no yes; do
+  for fault in valid wrong-id wrong-entry empty-wasm missing-wasm dir-wasm link-wasm link-manifest bad-json independent main-update check-error repair; do
+    c="$plugin_work/$mode-$fault"
+    mkdir -p "$c/"{home,tmp,stage,sbin,archives,app/source/db,app/source/web,app/source/search,app/data/plugins,external}
+    printf 'meilisearch --experimental-dumpless-upgrade\n' > "$c/app/start.sh"
+    printf 'protected environment\n' > "$c/app/.env"
+    printf 'running\n' > "$c/service-state"
+    printf '2.0\n' > "$c/home/.wanderer"
+    printf '1.0\n' > "$c/home/.meilisearch"
+    for p in hammerhead komoot strava; do
+      mkdir -p "$c/app/data/plugins/$p" "$c/archives/$p"
+      printf '{"id":"%s","name":"Display %s","runtime":{"type":"wasm","entrypoint":"plugin.wasm"}}\n' "$p" "$p" > "$c/app/data/plugins/$p/plugin.json"
+      printf 'old %s\n' "$p" > "$c/app/data/plugins/$p/plugin.wasm"
+      chmod 0640 "$c/app/data/plugins/$p/plugin.wasm"
+      printf 'operator %s\n' "$p" > "$c/app/data/plugins/$p/config"
+      cp "$c/app/data/plugins/$p/plugin.json" "$c/archives/$p/plugin.json"
+      printf 'new %s\n' "$p" > "$c/archives/$p/plugin.wasm"
+      printf '1.0\n' > "$c/home/.wanderer-plugin-$p"
+    done
+    # Main can be current at a different release than independently selected plugins.
+    [[ "$fault" != independent ]] || printf '3.0\n' > "$c/home/.wanderer"
+    if [[ "$fault" == repair ]]; then
+      printf '2.0\n' > "$c/home/.wanderer-plugin-hammerhead"
+      : > "$c/app/data/plugins/hammerhead/plugin.wasm"
+    fi
+    printf 'outside untouched\n' > "$c/external/sentinel"
+    mkdir -p "$c/archives/source/db" "$c/archives/source/web"
+    printf 'new app source\n' > "$c/archives/source/db/new-source"
+    tar -czf "$c/source.tar.gz" -C "$c/archives" source
+    case "$fault" in
+      wrong-id) printf '{"id":"strava","runtime":{"type":"wasm","entrypoint":"plugin.wasm"}}\n' > "$c/archives/hammerhead/plugin.json" ;;
+      wrong-entry) printf '{"id":"hammerhead","runtime":{"type":"wasm","entrypoint":"other.wasm"}}\n' > "$c/archives/hammerhead/plugin.json" ;;
+      empty-wasm) : > "$c/archives/hammerhead/plugin.wasm" ;;
+      missing-wasm) rm "$c/archives/hammerhead/plugin.wasm" ;;
+      dir-wasm)
+        rm "$c/archives/hammerhead/plugin.wasm"
+        mkdir "$c/archives/hammerhead/plugin.wasm"
+        ;;
+      link-wasm)
+        rm "$c/archives/hammerhead/plugin.wasm"
+        ln -s "$c/external/sentinel" "$c/archives/hammerhead/plugin.wasm"
+        ;;
+      link-manifest)
+        rm "$c/archives/hammerhead/plugin.json"
+        ln -s "$c/app/data/plugins/strava/plugin.json" "$c/archives/hammerhead/plugin.json"
+        ;;
+      bad-json) printf '{broken\n' > "$c/archives/hammerhead/plugin.json" ;;
+    esac
+    for p in hammerhead komoot strava; do tar -czf "$c/$p.tar.gz" -C "$c/archives/$p" .; done
+    cp "$c/app/data/plugins/hammerhead/plugin.json" "$c/old-manifest"
+    cp -p "$c/app/data/plugins/hammerhead/plugin.wasm" "$c/old-wasm"
+    sed -e "s|/var/lib/scripts-underground/update-pending|$c/state|g" \
+      -e "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
+    cp "$ROOT/misc/tools.func" "$ROOT/misc/error_handler.func" "$c/stage/"
+    printf 'pkg_install() { :; }\nsetup_lxc() { :; }\n' > "$c/stage/install.func"
+    cat > "$c/models.sh" << 'MODELS'
+header_info() { :; }
+check_container_storage() { :; }
+check_container_resources() { :; }
+cleanup_lxc() { :; }
+stop_spinner() { :; }
+msg_info() { :; }
+msg_ok() { printf 'OK %s\n' "$*"; }
+msg_warn() { printf 'WARN %s\n' "$*" >&2; }
+msg_error() { printf 'ERROR %s\n' "$*" >&2; }
+ensure_dependencies() { :; }
+getent() { return 0; }
+go() { :; }
+npm() { :; }
+systemctl() {
+  printf '%s\n' "$*" >> "$CASE_ROOT/services"
+  case "$1" in stop) printf stopped > "$CASE_ROOT/service-state" ;; start) printf running > "$CASE_ROOT/service-state" ;; esac
+}
+curl() {
+  local out='' format='' url='' tag=v2.0
+  while (($#)); do
+    case "$1" in -o) out="$2"; shift ;; -w) format="$2"; shift ;; https://*) url="$1" ;; esac
+    shift
+  done
+  printf '%s app=%s\n' "$url" "${app:-}" >> "$CASE_ROOT/requests"
+  if [[ "$FAULT" == check-error && "${app:-}" == wanderer-plugin-hammerhead ]]; then return 17; fi
+  [[ "$url" != *meilisearch* ]] || tag=v1.0
+  [[ "$FAULT" != independent && "$FAULT" != main-update || "${app:-}" != wanderer ]] || tag=v3.0
+  # A requested tag returns only that tag. Never silently redirect fixture identity.
+  [[ "$url" != */tags/* ]] || tag="${url##*/}"
+  printf '{"tag_name":"%s","assets":[{"browser_download_url":"https://fixture.invalid/wanderer-plugin-hammerhead.tar.gz"},{"browser_download_url":"https://fixture.invalid/wanderer-plugin-komoot.tar.gz"},{"browser_download_url":"https://fixture.invalid/wanderer-plugin-strava.tar.gz"}]}\n' "$tag" > "$out"
+  [[ -z "$format" ]] || printf 200
+}
+curl_download() {
+  if [[ "$2" == */archive/refs/tags/* ]]; then command cp "$CASE_ROOT/source.tar.gz" "$1"; return; fi
+  local p="${2##*/wanderer-plugin-}"
+  p="${p%.tar.gz}"
+  printf '%s\n' "$2" >> "$CASE_ROOT/downloads"
+  command cp "$CASE_ROOT/$p.tar.gz" "$1"
+}
+MODELS
+    printf 'clone_and_deploy_gh_commit() { :; }\nsource %q\n' "$c/models.sh" > "$c/stage/github.func"
+    (
+      source "$ROOT/misc/bundle.func"
+      export APP=Wanderer NSAPP=wanderer REPO_BASE=https://fixture.invalid
+      export var_lxc_tmpdir="$c/tmp"
+      # shellcheck source=/dev/null
+      source <(sed -n '/^function update_script() {/,/^}/p' "$ROOT/scripts/lxc/wanderer.sh" | sed "s|/opt/wanderer|$c/app|g")
+      _write_bundle update update_script "$c/stage" 'run_update_script "$@"' > "$c/sbin/update"
+    )
+    digest=$(sha256sum "$c/sbin/update")
+    rc=0
+    env -i PATH="$PATH" HOME="$c/home" TMPDIR="$c/tmp" CASE_ROOT="$c" FAULT="$fault" VERBOSE="$mode" \
+      BACKUP_DIR="$c/backup" BUILD_LOG="$c/active.log" DEBUG_LOGFILE="$c/error.log" timeout 45s bash "$c/sbin/update" > "$c/output" 2>&1 || rc=$?
+    plugin_check "$rc" 0 "$mode/$fault optional plugin status"
+    invalid=yes
+    case "$fault" in valid | independent | main-update | repair) invalid=no ;; esac
+    if [[ "$invalid" == yes ]]; then
+      plugin_check "$(cmp -s "$c/old-manifest" "$c/app/data/plugins/hammerhead/plugin.json" && printf same || printf changed)" same "$mode/$fault old manifest retained"
+      plugin_check "$(cmp -s "$c/old-wasm" "$c/app/data/plugins/hammerhead/plugin.wasm" && printf same || printf changed)" same "$mode/$fault old WASM retained"
+      plugin_check "$(stat -c %a "$c/app/data/plugins/hammerhead/plugin.wasm")" 640 "$mode/$fault old mode retained"
+      plugin_check "$(cat "$c/home/.wanderer-plugin-hammerhead")" 1.0 "$mode/$fault old marker retained"
+      plugin_check "$(grep -c 'WARN .*hammerhead' "$c/output" || true)" 1 "$mode/$fault optional warning"
+      plugin_check "$(grep -c 'OK Installed wanderer plugins' "$c/output" || true)" 0 "$mode/$fault honest summary"
+      for p in komoot strava; do stat -c '%a %Y %i' "$c/app/data/plugins/$p/plugin.wasm" > "$c/$p-before-retry"; done
+      printf '{"id":"hammerhead","name":"Hammerhead","runtime":{"type":"wasm","entrypoint":"plugin.wasm"}}\n' > "$c/retry-manifest"
+      # Restore only the fixture's incoming archive; no live files are repaired.
+      mkdir "$c/retry-input"
+      cp "$c/retry-manifest" "$c/retry-input/plugin.json"
+      printf 'new hammerhead\n' > "$c/retry-input/plugin.wasm"
+      tar -czf "$c/hammerhead.tar.gz" -C "$c/retry-input" .
+      retry=0
+      env -i PATH="$PATH" HOME="$c/home" TMPDIR="$c/tmp" CASE_ROOT="$c" FAULT=valid VERBOSE="$mode" \
+        BACKUP_DIR="$c/backup" BUILD_LOG="$c/retry.log" DEBUG_LOGFILE="$c/retry-error.log" timeout 45s bash "$c/sbin/update" > "$c/retry-output" 2>&1 || retry=$?
+      plugin_check "$retry" 0 "$mode/$fault ordinary optional retry"
+      plugin_check "$(cat "$c/app/data/plugins/hammerhead/plugin.wasm")" 'new hammerhead' "$mode/$fault retry final WASM"
+      plugin_check "$(cat "$c/home/.wanderer-plugin-hammerhead")" 2.0 "$mode/$fault retry marker"
+      for p in komoot strava; do
+        plugin_check "$(stat -c '%a %Y %i' "$c/app/data/plugins/$p/plugin.wasm")" "$(cat "$c/$p-before-retry")" "$mode/$fault unaffected $p bytes not republished"
+      done
+    else
+      plugin_check "$(cat "$c/app/data/plugins/hammerhead/plugin.wasm")" 'new hammerhead' "$mode/$fault final WASM"
+      plugin_check "$(jq -r .id "$c/app/data/plugins/hammerhead/plugin.json")" hammerhead "$mode/$fault stable identity"
+      plugin_check "$(cat "$c/home/.wanderer-plugin-hammerhead")" 2.0 "$mode/$fault independent marker"
+    fi
+    for p in komoot strava; do
+      plugin_check "$(cat "$c/app/data/plugins/$p/plugin.wasm")" "new $p" "$mode/$fault sibling $p payload"
+      plugin_check "$(cat "$c/home/.wanderer-plugin-$p")" 2.0 "$mode/$fault sibling $p marker"
+    done
+    for p in hammerhead komoot strava; do plugin_check "$(cat "$c/app/data/plugins/$p/config")" "operator $p" "$mode/$fault protected $p config"; done
+    plugin_check "$(cat "$c/external/sentinel")" 'outside untouched' "$mode/$fault external target unchanged"
+    plugin_check "$(cat "$c/app/.env")" 'protected environment' "$mode/$fault protected environment"
+    plugin_check "$(cat "$c/service-state")" running "$mode/$fault final app service"
+    plugin_check "$(test -e "$c/state/wanderer" && printf pending || printf absent)" absent "$mode/$fault successful optional run retires pending"
+    plugin_check "$(sha256sum "$c/sbin/update")" "$digest" "$mode/$fault frozen caller unchanged"
+  done
+done
+printf '%s plugin checks; %s failure(s); cold generated updater; native files/tar; network/build/services modeled\n' "$plugin_checks" "$plugin_failures"
+[[ "$plugin_failures" == 0 ]]

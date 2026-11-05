@@ -46,10 +46,18 @@ function install_script() {
   msg_ok "Installed wanderer"
 
   msg_info "Installing wanderer plugins"
+  local plugin plugins_failed=0
   for plugin in hammerhead komoot strava; do
-    fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "latest" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
+    if ! _gh_deploy_wanderer_plugin "$plugin" "/opt/wanderer/data/plugins/${plugin}"; then
+      plugins_failed=1
+      msg_warn "Failed to install wanderer plugin: ${plugin}; run update to retry"
+    fi
   done
-  msg_ok "Installed wanderer plugins"
+  if [[ "$plugins_failed" == 1 ]]; then
+    msg_warn "Some wanderer plugins were not installed; the application can run without them"
+  else
+    msg_ok "Installed wanderer plugins"
+  fi
 
   msg_info "Creating Service"
   MEILI_KEY=$(openssl rand -hex 32)
@@ -158,12 +166,18 @@ function update_script() {
   fi
 
   msg_info "Installing wanderer plugins"
+  local plugin plugins_failed=0
   for plugin in hammerhead komoot strava; do
-    local force="${FORCE_DEPLOY:-0}"
-    [[ -f "/opt/wanderer/data/plugins/${plugin}/plugin.wasm" ]] || force=1
-    FORCE_DEPLOY="$force" fetch_and_deploy_gh_release "wanderer-plugin-${plugin}" "open-wanderer/wanderer" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "/opt/wanderer/data/plugins/${plugin}" "wanderer-plugin-${plugin}.tar.gz" || msg_warn "Failed to install wanderer plugin: ${plugin}"
+    if ! _gh_deploy_wanderer_plugin "$plugin" "/opt/wanderer/data/plugins/${plugin}"; then
+      plugins_failed=1
+      msg_warn "Failed to install wanderer plugin: ${plugin}; run update to retry"
+    fi
   done
-  msg_ok "Installed wanderer plugins"
+  if [[ "$plugins_failed" == 1 ]]; then
+    msg_warn "Some wanderer plugins were not installed; the application can run without them"
+  else
+    msg_ok "Installed wanderer plugins"
+  fi
 
   if check_for_gh_release "meilisearch" "meilisearch/meilisearch"; then
     msg_info "Stopping service"
