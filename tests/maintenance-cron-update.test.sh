@@ -79,11 +79,18 @@ if action=='config':
  if t.get('config_rc'):sys.exit(t['config_rc'])
  print('ostype: '+t['os']);print('template: '+str(t.get('template',0)));sys.exit(0)
 if action=='status':
- if t.get('status_rc'):sys.exit(t['status_rc'])
+ phase='initial' if not t.get('start_seen') else 'post-start' if not t.get('post_start_status_seen') else 'later';rc=t.get('status_rc',0)
+ if not rc and phase=='post-start':
+  t['post_start_status_seen']=True;db.write_text(json.dumps(targets));rc=t.get('post_start_status_rc',0)
+ with (c/'status-results').open('a') as f:f.write(json.dumps(dict(id=id,phase=phase,status=rc,state=t['state']))+'\n')
+ if rc:sys.exit(rc)
  print('status: '+t['state']);sys.exit(0)
 if action in ('start','shutdown'):
  rc=t.get(action+'_rc',0)
- if not rc and not t.get(action+'_unchanged'):t['state']='running' if action=='start' else 'stopped';db.write_text(json.dumps(targets))
+ if not rc:
+  if action=='start':t['start_seen']=True
+  if not t.get(action+'_unchanged'):t['state']='running' if action=='start' else 'stopped'
+  db.write_text(json.dumps(targets))
  sys.exit(rc)
 if action=='exec':
  if t['state']!='running':sys.exit(87)
@@ -200,6 +207,23 @@ r=invoke(c,manager,menu='Run');check('manager Run consumes installed worker',0,r
 conf=read(c/'root/etc/update-lxcs.conf');cron=read(c/'crontab');r=invoke(c,manager,menu='Remove');check('Remove status',0,r.returncode);check('Remove executable absent',False,(c/'bin/update-lxcs.sh').exists());check('Remove config preserved',conf,read(c/'root/etc/update-lxcs.conf'));check('Remove unrelated cron preserved',cron,read(c/'crontab'))
 def events(c,id):return [json.loads(v) for v in (c/'events').read_text().splitlines() if json.loads(v)['id']==id] if (c/'events').is_file() else []
 def upgrades(c,id):return [v for v in events(c,id) if v['phase']=='upgrade']
+begin=len(checks)
+for name,shutdown_rc in [('post-start-query-error',0),('post-start-query-and-restore-error',32)]:
+ c,r=worker_case(name,{'100':dict(os='debian',state='stopped',post_start_status_rc=29,shutdown_rc=shutdown_rc),'101':dict(os='alpine',state='running')},expected=29)
+ status=[json.loads(v) for v in (c/'status-results').read_text().splitlines() if json.loads(v)['id']=='100']
+ check(name+' fault is first POST-start query only',[('initial',0),('post-start',29)],[(v['phase'],v['status']) for v in status[:2]])
+ check(name+' owned start reaches shared restoration',['start','shutdown'],[v[1][0] for v in effects(c) if v[1][1]=='100'])
+ check(name+' no package or metadata effects',[],[v for v in effects(c) if v[1][1]=='100' and v[1][0]=='exec'])
+ check(name+' metadata never attempted',0,json.loads(read(c/'targets.json'))['100'].get('metadata_count',0))
+ check(name+' final state','running' if shutdown_rc else 'stopped',json.loads(read(c/'targets.json'))['100']['state'])
+ check(name+' next independent target updated',True,(c/'updated-101').exists())
+ check(name+' observation operation reported',True,'start observation failed (29)' in r.stdout+r.stderr)
+ if shutdown_rc:check(name+' restoration failure separately reported',True,'restoration failed (32)' in r.stdout+r.stderr)
+ else:check(name+' actual stopped restoration observed',True,len(status)==3 and status[-1]['status']==0 and status[-1]['state']=='stopped')
+ for v in effects(c):
+  if v[1][0]=='shutdown':check(name+' bounded graceful owned restore',['shutdown','100','--timeout','60','--forceStop','0'],v[1])
+if any(not x['passed'] for x in checks[begin:]):
+ write(W/'checks.json',json.dumps(checks,indent=2,default=lambda v:dict(bytes_sha256=hashlib.sha256(v).hexdigest())));print('RED successful owned start followed by query failure bypasses restoration',flush=True);sys.exit(1)
 print('Deadline fixtures: requested production120s/5s; only hanging cases explicitly use real GNU1s/1s. Slow metadata is unscaled23s.',flush=True)
 start=time.monotonic();c,r=worker_case('slow-metadata',{'100':dict(os='debian',state='stopped',metadata_seconds=23,require_ready=True)},expected=0);elapsed=time.monotonic()-start
 check('slow metadata unscaled elapsed above old20s and below120s',True,22<elapsed<120)

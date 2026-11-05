@@ -28,6 +28,9 @@ This script will add/remove a crontab schedule that updates the operating system
   stop. A failed start never reaches package work. Failures are reported, later
   independent containers continue, and the worker exits nonzero. A failed
   shutdown can leave a container running and requires operator attention.
+- A failed status query after a successful start skips all package work and
+  still attempts graceful restoration, preserving the query failure if shutdown
+  also fails. An observed non-running state remains a no-shutdown refusal.
 - Newly started containers first refresh their configured package metadata:
   at most three attempts, each limited to 120 seconds plus a 5-second kill grace,
   with 5 seconds between attempts: a 385-second metadata/retry budget, excluding

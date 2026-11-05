@@ -191,23 +191,23 @@ cron_worker_container() {
         printf 'CT %s start failed (%s)\n' "$id" "$rc" >&2
         return "$rc"
       }
-      state=$(pct status "$id") || {
-        rc=$?
-        printf 'CT %s start observation failed (%s)\n' "$id" "$rc" >&2
-        return "$rc"
-      }
-      [[ "$state" == 'status: running' ]] || {
-        printf 'CT %s refused: start did not reach running (1)\n' "$id" >&2
-        return 1
-      }
+      # Own the successful start before any fallible observation. Only a proven
+      # non-running result cancels restoration eligibility; query errors do not.
       started=1
+      operation='start observation'
+      state=$(pct status "$id") || result=$?
+      if ((result == 0)) && [[ "$state" != 'status: running' ]]; then
+        started=0
+        result=1
+        printf 'CT %s refused: start did not reach running (1)\n' "$id" >&2
+      fi
       ;;
     *)
       printf 'CT %s refused: unknown state %s (1)\n' "$id" "$state" >&2
       return 1
       ;;
   esac
-  if ((started)); then
+  if ((started && result == 0)); then
     phase=upgrade
     operation='metadata readiness'
     cron_worker_ready "$id" "$os" || result=$?
@@ -221,6 +221,7 @@ cron_worker_container() {
   else printf 'CT %s packages updated\n' "$id"; fi
   if ((started)); then
     # Synchronous bounded graceful restoration only for a checked successful start.
+    rc=0
     pct shutdown "$id" --timeout 60 --forceStop 0 || rc=$?
     if ((rc == 0)); then
       state=$(pct status "$id") || rc=$?

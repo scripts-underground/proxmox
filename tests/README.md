@@ -148,6 +148,8 @@ operator state on refusal/publication failure. No real CT or OS package upgrade
 is performed, and this does not establish whole-container production upgrades.
 Newly started-target cases observe configured metadata retries before a single
 upgrade, exhaustion/restoration/continuation and missing safe-timeout refusal.
+Post-start-only status-query errors also reach the shared restoration path,
+with no metadata/upgrade effects and original-error retention if shutdown fails.
 The actual generated worker requests 120-second metadata attempts and a 5-second
 KILL grace (three attempts plus retry waits: 385 seconds, excluding transport
 startup). Only the named hanging deadline fixtures explicitly substitute native
