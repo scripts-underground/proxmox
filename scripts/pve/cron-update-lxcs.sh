@@ -267,8 +267,9 @@ cron_worker_main() {
 
 worker_contents() {
   printf '#!/usr/bin/env bash\n# Generated from the executing cron-update-lxcs.sh manager.\nset -uo pipefail\n' || return $?
+  app_maintenance_contents || return $?
   declare -f cron_worker_id cron_worker_exclusions cron_worker_packages cron_worker_ready cron_worker_container cron_worker_main || return $?
-  printf '\ncron_worker_main "$@"\n' || return $?
+  printf '\napp_maintenance_acquire cron-update-lxcs || exit $?\ncron_worker_main "$@"\n' || return $?
 }
 
 prepare_script() {
