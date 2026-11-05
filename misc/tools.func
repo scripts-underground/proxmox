@@ -196,6 +196,17 @@ curl_api_with_retry() {
 }
 
 # ------------------------------------------------------------------------------
+# Capture only bounded stderr for the GPG-key owner. Drain the rest so a noisy
+# command cannot receive SIGPIPE and replace its real failure status. Stdout may
+# contain key data/identities and is never part of a diagnostic.
+_gpg_key_diagnostic() {
+  LC_ALL=C "$@" 2>&1 > /dev/null | {
+    head -c 4096
+    cat > /dev/null
+  }
+  return "${PIPESTATUS[0]}"
+}
+
 # Download and install GPG key with retry logic and validation
 #
 # Usage:
@@ -221,16 +232,25 @@ download_gpg_key() {
   local retries="${CURL_RETRIES:-3}"
   local timeout="${CURL_TIMEOUT:-30}"
   local temp_key staged_key output_dir metadata output_mode=644 output_uid output_gid resolved_mode
+  local diagnostic='' step='download' status=0 cause
   output_dir=$(dirname "$output") || return 7
-  mkdir -p "$output_dir" || return 7
-  temp_key=$(mktemp) || return 7
-  staged_key=$(mktemp "$output_dir/.gpg-key.XXXXXX") || {
+  if ! mkdir -p "$output_dir" 2> /dev/null; then
+    msg_warn 'GPG key not installed: cannot create keyring directory'
+    return 7
+  fi
+  temp_key=$(mktemp 2> /dev/null) || {
+    msg_warn 'GPG key not installed: cannot allocate download stage'
+    return 7
+  }
+  staged_key=$(mktemp "$output_dir/.gpg-key.XXXXXX" 2> /dev/null) || {
     rm -f -- "$temp_key"
+    msg_warn 'GPG key not installed: cannot allocate publication stage'
     return 7
   }
   if [[ -e "$output" ]]; then
-    metadata=$(stat -c '%a %u %g' "$output") || {
+    metadata=$(stat -c '%a %u %g' "$output" 2> /dev/null) || {
       rm -f -- "$temp_key" "$staged_key"
+      msg_warn 'GPG key not installed: cannot read existing key metadata'
       return 7
     }
     read -r output_mode output_uid output_gid <<< "$metadata"
@@ -238,10 +258,14 @@ download_gpg_key() {
 
   local attempt=1
   while [[ $attempt -le $retries ]]; do
-    debug_log "GPG key download attempt $attempt/$retries: $url"
+    debug_log "GPG key download attempt $attempt/$retries"
 
     # Download to temp file first
-    if ! curl -fsSL --connect-timeout 10 --max-time "$timeout" -o "$temp_key" "$url" 2> /dev/null; then
+    step=download
+    if diagnostic=$(_gpg_key_diagnostic curl -fsSL --connect-timeout 10 --max-time "$timeout" -o "$temp_key" "$url"); then
+      status=0
+    else
+      status=$?
       debug_log "GPG key download attempt $attempt failed, waiting ${attempt}s..."
       sleep "$attempt"
       ((attempt++))
@@ -257,16 +281,37 @@ download_gpg_key() {
     # prepare/validate a private same-filesystem stage, never the live keyring.
     local processed=0
     if [[ "$resolved_mode" == dearmor ]]; then
-      gpg --batch --dearmor --yes -o "$staged_key" < "$temp_key" 2> /dev/null && processed=1
+      step=dearmor
+      if diagnostic=$(_gpg_key_diagnostic gpg --batch --dearmor --yes -o "$staged_key" < "$temp_key"); then processed=1; else status=$?; fi
     else
-      cp -- "$temp_key" "$staged_key" 2> /dev/null && processed=1
+      step=copy
+      if diagnostic=$(_gpg_key_diagnostic cp -- "$temp_key" "$staged_key"); then processed=1; else status=$?; fi
     fi
-    if [[ "$processed" == 1 && -s "$staged_key" ]] && gpg --batch --show-keys "$staged_key" > /dev/null 2>&1; then
-      if { [[ -z "${output_uid:-}" ]] || chown "$output_uid:$output_gid" "$staged_key"; } &&
-        chmod "$output_mode" "$staged_key" && mv -fT -- "$staged_key" "$output"; then
-        rm -f -- "$temp_key"
-        debug_log "GPG key installed ($resolved_mode): $output"
-        return 0
+    if [[ "$processed" == 1 ]]; then
+      step=validation
+      if [[ ! -s "$staged_key" ]]; then
+        diagnostic='empty keyring'
+        status=0
+      elif diagnostic=$(_gpg_key_diagnostic gpg --batch --show-keys "$staged_key"); then
+        step=ownership
+        if [[ -n "${output_uid:-}" ]]; then
+          if diagnostic=$(_gpg_key_diagnostic chown "$output_uid:$output_gid" "$staged_key"); then status=0; else status=$?; fi
+        else
+          status=0
+        fi
+        if [[ "$status" == 0 ]]; then
+          step=permissions
+          if diagnostic=$(_gpg_key_diagnostic chmod "$output_mode" "$staged_key"); then
+            step=publication
+            if diagnostic=$(_gpg_key_diagnostic mv -fT -- "$staged_key" "$output"); then
+              rm -f -- "$temp_key"
+              debug_log "GPG key installed ($resolved_mode)"
+              return 0
+            else status=$?; fi
+          else status=$?; fi
+        fi
+      else
+        status=$?
       fi
     fi
 
@@ -276,7 +321,31 @@ download_gpg_key() {
   done
 
   rm -f -- "$temp_key" "$staged_key"
-  debug_log "GPG key download FAILED after $retries attempts: $url"
+  # Only fixed cause text is published: arbitrary stderr can contain URLs,
+  # credentials, key identities or terminal escapes. Never echo it verbatim.
+  cause="command exited $status"
+  case "$diagnostic" in
+    *'No space left on device'*) cause='No space left on device' ;;
+    *'Permission denied'*) cause='Permission denied' ;;
+    *'Operation not permitted'*) cause='Operation not permitted' ;;
+    *'Read-only file system'*) cause='Read-only file system' ;;
+    *'no valid OpenPGP data found'*) cause='no valid OpenPGP data found' ;;
+    *'invalid packet'* | *'invalid radix64'* | *'CRC error'* | *'premature eof'*) cause='invalid or truncated OpenPGP data' ;;
+    *'empty keyring'*) cause='empty keyring' ;;
+    *)
+      if [[ "$step" == download ]]; then
+        case "$status" in
+          6) cause='could not resolve host' ;;
+          7) cause='could not connect to server' ;;
+          18) cause='incomplete download' ;;
+          22) cause='HTTP request failed' ;;
+          28) cause='connection timed out' ;;
+          60) cause='TLS certificate verification failed' ;;
+        esac
+      fi
+      ;;
+  esac
+  msg_warn "GPG key not installed after $retries attempts: $step: $cause (exit $status)"
   return 7
 }
 
