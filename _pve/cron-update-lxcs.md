@@ -29,8 +29,9 @@ This script will add/remove a crontab schedule that updates the operating system
   independent containers continue, and the worker exits nonzero. A failed
   shutdown can leave a container running and requires operator attention.
 - Newly started containers first refresh their configured package metadata:
-  at most three attempts, each limited to 20 seconds plus a 5-second kill grace,
-  with 5 seconds between attempts. Only a successful metadata refresh permits
+  at most three attempts, each limited to 120 seconds plus a 5-second kill grace,
+  with 5 seconds between attempts: a 385-second metadata/retry budget, excluding
+  transport startup. Only a successful metadata refresh permits
   the single upgrade; it is reused without a redundant refresh. This requires
   GNU coreutils `timeout` inside that container. A missing/unsupported timeout
   returns 69; failed readiness skips upgrades and still attempts graceful

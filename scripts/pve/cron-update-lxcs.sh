@@ -127,7 +127,7 @@ cron_worker_packages() {
         *) printf "Metadata readiness requires GNU coreutils timeout (69)\n" >&2; exit 69 ;;
       esac
       # Keep this shell outside the timed group so a group KILL returns137.
-      timeout --kill-after=5 20 "$@"
+      timeout --kill-after=5 120 "$@"
     ' cron-metadata "$@"
   else
     pct exec "$id" -- "$@"
@@ -136,7 +136,7 @@ cron_worker_packages() {
 
 cron_worker_ready() {
   local id="$1" os="$2" attempt rc=1
-  # At most3 metadata-only attempts:20s each +5s KILL grace,5s between attempts.
+  # At most3 full-metadata attempts:120s +5s KILL grace,5s between;385s budget.
   for attempt in 1 2 3; do
     printf 'CT %s metadata readiness attempt %s/3\n' "$id" "$attempt"
     rc=0

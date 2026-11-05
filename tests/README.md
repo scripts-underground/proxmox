@@ -148,8 +148,13 @@ operator state on refusal/publication failure. No real CT or OS package upgrade
 is performed, and this does not establish whole-container production upgrades.
 Newly started-target cases observe configured metadata retries before a single
 upgrade, exhaustion/restoration/continuation and missing safe-timeout refusal.
-Real GNU timeout process groups exercise 20-second probes, 5-second KILL grace
-and TERM-resistant descendants; package/repository and PVE boundaries stay models.
+The actual generated worker requests 120-second metadata attempts and a 5-second
+KILL grace (three attempts plus retry waits: 385 seconds, excluding transport
+startup). Only the named hanging deadline fixtures explicitly substitute native
+1-second TERM/1-second KILL arguments, retaining real GNU group/status/descendant
+checks without claiming a measured 120-second wait. A separate unscaled real
+23-second metadata case completes in one attempt followed by one upgrade; the
+old 20-second budget fails it. Package/repository and PVE boundaries stay models.
 
 `filebrowser-retry-install/fixture` also exercises Filebrowser and Qui through
 their actual cold-generated update commands and current pending/maintenance

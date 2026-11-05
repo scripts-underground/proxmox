@@ -39,15 +39,21 @@ if name in ('chmod','mv','mktemp'):
   p=subprocess.run(['/usr/bin/mktemp',*a],capture_output=True,text=True,check=True,timeout=5).stdout.strip();pathlib.Path(p).unlink();pathlib.Path(p).symlink_to('/dev/full');print(p);sys.exit(0)
  os.execv('/usr/bin/'+name,[name,*a])
 if name=='timeout':
- kind=targets.get(os.environ.get('CTID',''),{}).get('timeout_kind','gnu')
+ t=targets.get(os.environ.get('CTID',''),{});kind=t.get('timeout_kind','gnu')
  if kind=='missing':sys.exit(127)
  if kind=='busybox':print('BusyBox timeout');sys.exit(0)
+ if a!=['--version'] and t.get('fixture_deadline'):
+  # Explicit fixture boundary: retain the generated request, shorten only the
+  # hanging GNU semantics cases, then run the real utility/process group.
+  requested=list(a);a=['--kill-after=1','1',*a[2:]]
+  with (c/'deadline-substitutions').open('a') as f:f.write(json.dumps(dict(requested=requested,effective=a))+'\n')
  os.execv('/usr/bin/timeout',['timeout',*a])
 if name in ('apt','apt-get','apk','pacman','dnf','zypper'):
  t=targets[os.environ['CTID']];rc=t.get('package_rc',0)
  id=os.environ['CTID'];metadata=any(v in a for v in ('update','-Sy','makecache','refresh'));upgrade=any(v in a for v in ('dist-upgrade','upgrade','-Syu','-Su','dup'))
  if metadata:
   t['metadata_count']=t.get('metadata_count',0)+1;db.write_text(json.dumps(targets))
+  if t.get('metadata_seconds'):time.sleep(t['metadata_seconds'])
   if t['metadata_count']<=t.get('metadata_failures',0):rc=t.get('metadata_rc',28)
   if t.get('metadata_hang') and t['metadata_count']<=t.get('hang_attempts',3):
    mode=t['metadata_hang'];signal.signal(signal.SIGTERM,signal.SIG_IGN if mode=='kill' else signal.SIG_DFL)
@@ -192,8 +198,18 @@ c=case('run-failure',{'100':dict(os='debian',state='running',package_rc=23),'101
 c=case('run-remove',{'100':dict(os='debian',state='running')});write(c/'bin/update-lxcs.sh',payload.decode(),0o755)
 r=invoke(c,manager,menu='Run');check('manager Run consumes installed worker',0,r.returncode);check('manager Run actual package outcome',True,(c/'updated-100').exists());check('manager Run log consumer',True,'100' in read(c/'root/var/log/update-lxcs-cron.log'))
 conf=read(c/'root/etc/update-lxcs.conf');cron=read(c/'crontab');r=invoke(c,manager,menu='Remove');check('Remove status',0,r.returncode);check('Remove executable absent',False,(c/'bin/update-lxcs.sh').exists());check('Remove config preserved',conf,read(c/'root/etc/update-lxcs.conf'));check('Remove unrelated cron preserved',cron,read(c/'crontab'))
-def events(c,id):return [json.loads(v) for v in read(c/'events').splitlines() if json.loads(v)['id']==id]
+def events(c,id):return [json.loads(v) for v in (c/'events').read_text().splitlines() if json.loads(v)['id']==id] if (c/'events').is_file() else []
 def upgrades(c,id):return [v for v in events(c,id) if v['phase']=='upgrade']
+print('Deadline fixtures: requested production120s/5s; only hanging cases explicitly use real GNU1s/1s. Slow metadata is unscaled23s.',flush=True)
+start=time.monotonic();c,r=worker_case('slow-metadata',{'100':dict(os='debian',state='stopped',metadata_seconds=23,require_ready=True)},expected=0);elapsed=time.monotonic()-start
+check('slow metadata unscaled elapsed above old20s and below120s',True,22<elapsed<120)
+check('slow metadata completes in one attempt',1,json.loads(read(c/'targets.json'))['100']['metadata_count'])
+check('slow metadata gets exactly one upgrade',1,len(upgrades(c,'100')))
+check('slow metadata is not a shortened deadline fixture',False,(c/'deadline-substitutions').exists())
+check('slow metadata actual generated timeout is120/5',[['--kill-after=5','120']], [v[1][:2] for v in calls(c) if v[0]=='timeout' and v[1]!=['--version']])
+check('slow metadata restores stopped state','stopped',json.loads(read(c/'targets.json'))['100']['state'])
+if r.returncode:
+ write(W/'checks.json',json.dumps(checks,indent=2,default=lambda v:dict(bytes_sha256=hashlib.sha256(v).hexdigest())));print('RED actual23-second metadata exceeds original20-second budget; no upgrade',flush=True);sys.exit(1)
 for osname in ('debian','ubuntu','devuan','alpine','archlinux','fedora','rocky','centos','alma','opensuse'):
  c,r=worker_case('delayed-'+osname,{'100':dict(os=osname,state='stopped',metadata_failures=1,require_ready=True)},expected=0)
  e=events(c,'100');m=[v for v in e if v['phase']=='metadata'];u=upgrades(c,'100')
@@ -208,22 +224,25 @@ for name,t,expected in [
  ('readiness-restore-failed',dict(metadata_failures=99,shutdown_rc=32),28),
  ('timeout-missing',dict(timeout_kind='missing'),69),
  ('timeout-unsafe',dict(timeout_kind='busybox'),69),
- ('readiness-timeout',dict(metadata_hang='term'),124),
- ('readiness-kill-group',dict(metadata_hang='kill',hang_attempts=1,metadata_failures=99),28)]:
+ ('readiness-timeout',dict(metadata_hang='term',fixture_deadline=True),124),
+ ('readiness-kill-group',dict(metadata_hang='kill',hang_attempts=1,metadata_failures=99,fixture_deadline=True),28)]:
  t=dict(os='debian',state='stopped',require_ready=True,**t);start=time.monotonic();c,r=worker_case(name,{'100':t,'101':dict(os='alpine',state='running')},expected=expected);elapsed=time.monotonic()-start
  check(name+' no upgrade on failed readiness',0,len(upgrades(c,'100')) if (c/'events').exists() else 0)
  check(name+' no premature upgrade',False,(c/'premature-upgrade').exists());check(name+' later target still updates',True,(c/'updated-101').exists())
  check(name+' restoration only checked started target',['100'],[v[1][1] for v in effects(c) if v[1][0]=='shutdown'])
  check(name+' final state retained','running' if t.get('shutdown_rc') else 'stopped',json.loads(read(c/'targets.json'))['100']['state'])
  check(name+' finite attempts',0 if name.startswith('timeout-') else 3,json.loads(read(c/'targets.json'))['100'].get('metadata_count',0))
- check(name+' finite total wall time',True,elapsed<110)
+ check(name+' finite fixture wall time (<110s)',True,elapsed<110)
  children=[int(p.read_text()) for p in c.glob('child-*')]
  for pid in children:
   p=pathlib.Path('/proc')/str(pid)/'stat';check(name+' timed metadata descendant no longer running',True,not p.exists() or p.read_text().split(') ',1)[1].split()[0]=='Z')
  if name in ('readiness-timeout','readiness-kill-group'):
   results=[json.loads(v) for v in read(c/'exec-results').splitlines() if json.loads(v)['id']=='100'];timeouts=[v for v in results if v['status'] in (124,137)]
-  check(name+' real native timeout observed',3 if name=='readiness-timeout' else 1,len(timeouts))
-  check(name+' TERM/KILL bound is real',True,all((18<=v['seconds']<30) for v in timeouts))
+  check(name+' real native explicitly scaled timeout observed',3 if name=='readiness-timeout' else 1,len(timeouts))
+  check(name+' explicit1s/1s TERM/KILL bound is real',True,all((0.8<=v['seconds']<6) for v in timeouts))
+  substitutions=[json.loads(v) for v in (c/'deadline-substitutions').read_text().splitlines()]
+  check(name+' every actual generated request is120/5',True,len(substitutions)==3 and all(v['requested'][:2]==['--kill-after=5','120'] for v in substitutions))
+  check(name+' only native fixture deadlines substituted',True,all(v['effective'][:2]==['--kill-after=1','1'] and v['effective'][2:]==v['requested'][2:] for v in substitutions))
   if name=='readiness-kill-group':check('KILL deadline status survives inner shell',137,timeouts[0]['status'] if timeouts else None)
 c,r=worker_case('running-no-boot-wait',{'100':dict(os='debian',state='running',metadata_failures=1,timeout_kind='missing')},expected=28)
 check('already running has no new timeout/readiness path',[],[v for v in calls(c) if v[0]=='timeout']);check('already running retains one normal metadata attempt',1,json.loads(read(c/'targets.json'))['100']['metadata_count'])
