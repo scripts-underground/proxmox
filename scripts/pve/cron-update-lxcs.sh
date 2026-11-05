@@ -5,13 +5,13 @@
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 #
 # This script manages a local cron job for automatic LXC container OS updates.
-# The update script is downloaded once, displayed for review, and installed
-# locally. Cron runs the local copy — no remote code execution at runtime.
+# The executing manager renders its worker for review and local installation.
+# Cron runs that self-contained copy without downloading code.
 
 set -euo pipefail
 
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
-SCRIPT_URL="${REPO_BASE}/tools/pve/update-lxcs-cron.sh"
+MANAGER_SOURCE="${REPO_BASE}/scripts/pve/cron-update-lxcs.sh"
 LOCAL_SCRIPT="/usr/local/bin/update-lxcs.sh"
 CONF_FILE="/etc/update-lxcs.conf"
 LOG_FILE="/var/log/update-lxcs-cron.log"
@@ -34,7 +34,7 @@ err() { echo -e " \e[31m[Error]\e[0m $1" >&2; }
 confirm() {
   local prompt="${1:-Proceed?}"
   while true; do
-    read -rp " ${prompt} (y/n): " yn
+    read -rp " ${prompt} (y/n): " yn || return 1
     case $yn in
       [Yy]*) return 0 ;;
       [Nn]*) return 1 ;;
@@ -43,15 +43,185 @@ confirm() {
   done
 }
 
-download_script() {
-  local tmp
-  tmp=$(mktemp)
-  if ! curl -fsSL -o "$tmp" "$SCRIPT_URL"; then
-    err "Failed to download script from:\n  ${SCRIPT_URL}"
-    rm -f "$tmp"
-    return 1
+# Worker declarations are the sole source for both Add and Update. Nothing from
+# the manager UI or its network bootstrap is needed by the installed executable.
+cron_worker_id() {
+  local id="$1"
+  [[ "$id" =~ ^[0-9]+$ ]] || {
+    printf 'Invalid excluded CT ID: %s\n' "$id" >&2
+    return 65
+  }
+  while [[ ${#id} -gt 1 && "$id" == 0* ]]; do id="${id#0}"; done
+  printf '%s\n' "$id"
+}
+
+cron_worker_exclusions() {
+  local id line value
+  for id in "$@"; do cron_worker_id "$id" || return $?; done
+  [[ -e /etc/update-lxcs.conf ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    if [[ ! "$line" =~ ^[[:space:]]*EXCLUDE[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      printf 'Invalid /etc/update-lxcs.conf: expected literal EXCLUDE=IDs\n' >&2
+      return 65
+    fi
+    value="${BASH_REMATCH[1]}"
+    [[ "$value" =~ ^[[:space:]]*$ ]] && continue
+    # Do not silently accept an empty component or shell syntax.
+    while :; do
+      id="${value%%,*}"
+      id="${id#"${id%%[![:space:]]*}"}"
+      id="${id%"${id##*[![:space:]]}"}"
+      cron_worker_id "$id" || return $?
+      [[ "$value" == *,* ]] || break
+      value="${value#*,}"
+    done
+  done < /etc/update-lxcs.conf
+}
+
+cron_worker_packages() {
+  local id="$1" os="$2"
+  case "$os" in
+    alpine) pct exec "$id" -- ash -c 'apk -U upgrade' ;;
+    archlinux) pct exec "$id" -- sh -c 'pacman -Syu --noconfirm' ;;
+    fedora | rocky | centos | alma) pct exec "$id" -- sh -c 'dnf -y upgrade' ;;
+    debian | ubuntu | devuan) pct exec "$id" -- sh -c 'apt update && DEBIAN_FRONTEND=noninteractive apt -o Dpkg::Options::=--force-confold dist-upgrade -y' ;;
+    opensuse) pct exec "$id" -- sh -c 'zypper --non-interactive refresh && zypper --non-interactive dup' ;;
+  esac
+}
+
+cron_worker_container() {
+  local id="$1" config key value os='' template=0 state rc=0 result=0 started=0
+  config=$(pct config "$id") || {
+    rc=$?
+    printf 'CT %s config failed (%s)\n' "$id" "$rc" >&2
+    return "$rc"
+  }
+  while read -r key value; do
+    case "$key" in ostype:) os="$value" ;; template:) template="$value" ;; esac
+  done <<< "$config"
+  case "$template" in
+    1)
+      printf 'CT %s skipped: template\n' "$id"
+      return 0
+      ;;
+    0) ;;
+    *)
+      printf 'CT %s refused: unknown template flag (1)\n' "$id" >&2
+      return 1
+      ;;
+  esac
+  case "$os" in
+    alpine | archlinux | fedora | rocky | centos | alma | debian | ubuntu | devuan | opensuse) ;;
+    *)
+      printf 'CT %s skipped: unsupported OS %s\n' "$id" "$os"
+      return 0
+      ;;
+  esac
+  state=$(pct status "$id") || {
+    rc=$?
+    printf 'CT %s status failed (%s)\n' "$id" "$rc" >&2
+    return "$rc"
+  }
+  case "$state" in
+    'status: running') ;;
+    'status: stopped')
+      pct start "$id" || {
+        rc=$?
+        printf 'CT %s start failed (%s)\n' "$id" "$rc" >&2
+        return "$rc"
+      }
+      state=$(pct status "$id") || {
+        rc=$?
+        printf 'CT %s start observation failed (%s)\n' "$id" "$rc" >&2
+        return "$rc"
+      }
+      [[ "$state" == 'status: running' ]] || {
+        printf 'CT %s refused: start did not reach running (1)\n' "$id" >&2
+        return 1
+      }
+      started=1
+      ;;
+    *)
+      printf 'CT %s refused: unknown state %s (1)\n' "$id" "$state" >&2
+      return 1
+      ;;
+  esac
+  cron_worker_packages "$id" "$os" || result=$?
+  if ((result)); then
+    printf 'CT %s package update failed (%s)\n' "$id" "$result" >&2
+  else printf 'CT %s packages updated\n' "$id"; fi
+  if ((started)); then
+    # Synchronous bounded graceful restoration only for a checked successful start.
+    pct shutdown "$id" --timeout 60 --forceStop 0 || rc=$?
+    if ((rc == 0)); then
+      state=$(pct status "$id") || rc=$?
+      if ((rc == 0)) && [[ "$state" != 'status: stopped' ]]; then rc=1; fi
+    fi
+    if ((rc)); then
+      printf 'CT %s shutdown/restoration failed (%s); no forced stop\n' "$id" "$rc" >&2
+    else printf 'CT %s restored to stopped\n' "$id"; fi
+    ((result)) || result=$rc
   fi
-  echo "$tmp"
+  return "$result"
+}
+
+cron_worker_main() {
+  local exclusions listing id rest rc first=1 result=0
+  local -A excluded=() seen=()
+  exclusions=$(cron_worker_exclusions "$@") || return $?
+  while IFS= read -r id; do [[ -z "$id" ]] || excluded["$id"]=1; done <<< "$exclusions"
+  listing=$(pct list) || return $?
+  # pct list's header is not a target. Every remaining ID is validated before use.
+  while read -r id rest; do
+    if ((first)); then
+      first=0
+      continue
+    fi
+    [[ -n "$id" ]] || continue
+    if [[ ! "$id" =~ ^[0-9]+$ || -n "${seen[$id]:-}" ]]; then
+      printf 'Refused malformed/duplicate CT list entry (1)\n' >&2
+      ((result)) || result=1
+      continue
+    fi
+    seen["$id"]=1
+    if [[ -n "${excluded[$id]:-}" ]]; then
+      printf 'CT %s skipped: excluded\n' "$id"
+      continue
+    fi
+    rc=0
+    cron_worker_container "$id" || rc=$?
+    if ((rc && result == 0)); then result=$rc; fi
+  done <<< "$listing"
+  return "$result"
+}
+
+worker_contents() {
+  printf '#!/usr/bin/env bash\n# Generated from the executing cron-update-lxcs.sh manager.\nset -uo pipefail\n' || return $?
+  declare -f cron_worker_id cron_worker_exclusions cron_worker_packages cron_worker_container cron_worker_main || return $?
+  printf '\ncron_worker_main "$@"\n' || return $?
+}
+
+prepare_script() {
+  local tmp rc=0
+  tmp=$(mktemp "${LOCAL_SCRIPT%/*}/.update-lxcs.XXXXXX") || return $?
+  worker_contents > "$tmp" || rc=$?
+  if ((rc)); then
+    rm -f -- "$tmp"
+    return "$rc"
+  fi
+  printf '%s\n' "$tmp"
+}
+
+publish_script() {
+  local tmp="$1" rc=0
+  chmod 0755 "$tmp" || rc=$?
+  if ((rc == 0)); then mv -fT -- "$tmp" "$LOCAL_SCRIPT" || rc=$?; fi
+  if ((rc)); then
+    rm -f -- "$tmp"
+    return "$rc"
+  fi
 }
 
 review_script() {
@@ -63,7 +233,7 @@ review_script() {
   cat "$file"
   echo -e " \e[1;33m──────────────────────────────────────────────────────────────\e[0m"
   echo -e " \e[36mSHA256:\e[0m ${hash}"
-  echo -e " \e[36mSource:\e[0m ${SCRIPT_URL}"
+  echo -e " \e[36mGenerated by executing manager:\e[0m ${MANAGER_SOURCE}"
   echo ""
 }
 
@@ -75,15 +245,15 @@ remove_legacy_cron() {
 }
 
 add() {
-  info "Downloading update script..."
+  info "Preparing self-contained update script..."
   local tmp
-  tmp=$(download_script) || exit 1
+  tmp=$(prepare_script) || return $?
 
   local hash
   hash=$(sha256sum "$tmp" | awk '{print $1}')
   echo ""
   echo -e " \e[1;33m─── Installation Summary ─────────────────────────────────────\e[0m"
-  echo -e " \e[36mSource:\e[0m       ${SCRIPT_URL}"
+  echo -e " \e[36mManager source:\e[0m ${MANAGER_SOURCE}"
   echo -e " \e[36mSHA256:\e[0m       ${hash}"
   echo -e " \e[36mInstall to:\e[0m   ${LOCAL_SCRIPT}"
   echo -e " \e[36mConfig:\e[0m       ${CONF_FILE}"
@@ -102,11 +272,10 @@ add() {
     exit 0
   fi
 
-  remove_legacy_cron
-
-  install -m 0755 "$tmp" "$LOCAL_SCRIPT"
-  rm -f "$tmp"
+  publish_script "$tmp" || return $?
   ok "Installed script to ${LOCAL_SCRIPT}"
+
+  remove_legacy_cron
 
   if [[ ! -f "$CONF_FILE" ]]; then
     cat > "$CONF_FILE" << 'CONF'
@@ -148,9 +317,9 @@ update_script() {
     exit 1
   fi
 
-  info "Downloading latest version..."
+  info "Preparing worker from this manager revision..."
   local tmp
-  tmp=$(download_script) || exit 1
+  tmp=$(prepare_script) || return $?
 
   if command -v diff &> /dev/null; then
     local changes
@@ -181,8 +350,7 @@ update_script() {
     return
   fi
 
-  install -m 0755 "$tmp" "$LOCAL_SCRIPT"
-  rm -f "$tmp"
+  publish_script "$tmp" || return $?
   ok "Updated ${LOCAL_SCRIPT}"
 }
 
@@ -305,7 +473,7 @@ run_now() {
     exit 1
   fi
   info "Running update script now..."
-  bash "$LOCAL_SCRIPT" | tee -a "$LOG_FILE"
+  bash "$LOCAL_SCRIPT" 2>&1 | tee -a "$LOG_FILE"
   ok "Run completed. Log appended to ${LOG_FILE}"
 }
 
@@ -330,9 +498,9 @@ rotate_log() {
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 OPTIONS=(
-  Add "Download, review & install cron schedule"
+  Add "Prepare, review & install cron schedule"
   Remove "Remove cron schedule & local script"
-  Update "Update local script from repository"
+  Update "Update local worker from this manager"
   Status "Show installation status & last run"
   Run "Run update script now (manual trigger)"
   View "View cron config & installed script"

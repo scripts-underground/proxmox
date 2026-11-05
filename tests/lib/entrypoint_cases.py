@@ -18,6 +18,7 @@ from test_registry import REGISTRY, policy
 
 
 DIRECT = {
+    'maintenance-cron-update': [[]],
     'maintenance-current-hardening': [[]],
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
@@ -51,7 +52,7 @@ class Entrypoints(unittest.TestCase):
         declared = {r.path for r in REGISTRY.values() if r.path.endswith('.test.sh')}
         self.assertEqual(actual, declared)
         additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh',
-                     'tests/maintenance-current-hardening.test.sh'}
+                     'tests/maintenance-current-hardening.test.sh', 'tests/maintenance-cron-update.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -63,7 +64,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=3 shell=74 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=4 shell=75 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -104,7 +105,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
-        self.assertEqual(cases,95)
+        self.assertEqual(cases,96)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):
