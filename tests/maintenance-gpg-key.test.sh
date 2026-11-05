@@ -83,6 +83,19 @@ check() {
     failures=$((failures + 1))
   fi
 }
+# The external writer uses native SIGPIPE behavior: a short-reading capture
+# without draining cannot hide the producer's death behind a later return.
+expected_capture=$(printf '%04096d' 0)
+capture_rc=0
+captured=$(_gpg_key_diagnostic python3 -c '
+import signal, sys
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+sys.stderr.buffer.write(b"0" * 4096 + b"1" * 131072)
+sys.stderr.buffer.flush()
+sys.exit(23)
+') || capture_rc=$?
+check "$captured" "$expected_capture" 'diagnostic captures exactly the first 4096 stderr bytes'
+check "$capture_rc" 23 'diagnostic drains remaining stderr and preserves producer status'
 for caller in quiet verbose; do
   for mode in dearmor binary auto; do
     for fault in none network invalid truncated write mode owner publish retry secret; do
