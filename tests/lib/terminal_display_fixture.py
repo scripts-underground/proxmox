@@ -262,6 +262,57 @@ check('all executable clear callers adopted', [],
       [str(p.relative_to(SOURCE)) for p in [SOURCE / 'misc/core.func', SOURCE / 'misc/build.func',
        *sorted((SOURCE / 'scripts').rglob('*.sh'))]
        if re.search(r'(?m)^\s*clear\s*$', p.read_text())])
+
+# Entrypoints own their repository default. Do not seed it in these cases: the
+# earlier early-PVE fixture's explicit offline value hid missing initialization.
+default_repo = 'https://raw.githubusercontent.com/scripts-underground/proxmox/main'
+for slug in ('clean-lxcs', 'fstrim', 'host-backup', 'hw-acceleration', 'kernel-clean',
+             'lxc-delete', 'post-pve-install', 'pve-privilege-converter'):
+    text = (SOURCE / ('scripts/pve/' + slug + '.sh')).read_text()
+    if slug == 'clean-lxcs':
+        entry = text.partition('whiptail --backtitle')[0]
+    elif slug == 'fstrim':
+        entry = text.partition('LOGFILE=')[0]
+    else:
+        # Exact entrypoint declaration plus real custom header and bootstrap
+        # statement. Other top-level setup/admin/network bodies stay unexecuted.
+        preamble = []
+        for line in text.splitlines():
+            preamble.append(line)
+            if line.strip() and not line.startswith('#'):
+                break
+        declaration = '\n'.join(preamble)
+        header = re.search(r'(?ms)^(?:function )?header_info(?:\(\))?\s*\{\n.*?^\}', text)
+        bootstrap = next(line for line in text.splitlines() if line.startswith('source <(curl') and '/misc/bootstrap/pve' in line)
+        entry = declaration + '\n' + (header.group() if header else '') + '\n' + bootstrap
+    for kind, value in [('unset', None), ('empty', ''), ('custom', 'https://fixture.invalid/custom/ref')]:
+        expected = value or default_repo
+        requested = WORK / ('repository-' + slug + '-' + kind)
+        setup = 'unset REPO_BASE; ' if value is None else 'export REPO_BASE=' + quote(value) + '; '
+        code = 'set -euo pipefail; APP=PrefixProbe; ' + setup + f'''
+curl() {{
+ printf '%s\\n' "${{!#}}" >> {quote(requested)}
+ case "${{!#}}" in
+ {quote(expected + '/misc/bootstrap/pve')}) /bin/cat {quote(SOURCE / 'misc/bootstrap/pve')} ;;
+ {quote(expected + '/misc/core.func')}) /bin/cat {quote(SOURCE / 'misc/core.func')} ;;
+ {quote(expected + '/misc/error_handler.func')}) /bin/cat {quote(SOURCE / 'misc/error_handler.func')} ;;
+ *) return 89 ;; esac
+}}
+pveversion() {{ :; }}
+{entry}
+load_functions
+declare -F terminal_clear >/dev/null
+render_header
+printf 'entry-callback:%s' "$REPO_BASE"
+'''
+        rc, out, err = run('repository-' + slug + '-' + kind, code)
+        check(slug + '/' + kind + ' actual entrypoint status', 0, rc)
+        check(slug + '/' + kind + ' actual requested repository URLs',
+              [expected + '/misc/' + name for name in ('bootstrap/pve', 'core.func', 'error_handler.func')],
+              requested.read_text().splitlines() if requested.exists() else [])
+        check(slug + '/' + kind + ' loaded header/helper/callback', True,
+              ('entry-callback:' + expected).encode() in out and len(out) > 40)
+        check(slug + '/' + kind + ' no startup or terminal diagnostic', b'', err)
 (WORK / 'checks.json').write_text(json.dumps(CHECKS, indent=2, default=serialize))
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
 raise SystemExit(any(not v['passed'] for v in CHECKS))
