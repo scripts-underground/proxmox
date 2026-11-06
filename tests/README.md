@@ -33,9 +33,9 @@ revisions instead of silently refreshing admission.
 | 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
 
 The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
-current-hardening and cron-update fixtures, two workflow regressions, browser and contribution
+current-hardening, cron-update and package-force fixtures, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 96 public suite/mode combinations. The
+suite/mode/options refuse. There are 97 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -137,6 +137,18 @@ file path/hash, then use `--suite maintenance-template-lock --mode review-baseli
 The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
+
+`maintenance-package-force/fixture` executes actual GitHub, Codeberg, GitLab and
+URL `.deb` adapters with native APT/dpkg in private mount/PID/network namespaces
+and disk-backed chroots. Native dpkg-deb builds a dependency-free package with an
+executable, conffile and postinst counter. Checks observe actual unpack/repair,
+executable output, same-version unforced no-op, forced fresh installs, conffile/
+operator-data preservation, caller-specific options/environment, fallback and
+native maintainer-script failures, statuses and release-marker publication.
+Forge/DNS responses and UI are modeled; package commands normally exec the real
+installed tools. Explicit failure controls are labeled. Outer package/config/
+log/service/CT file bytes and metadata must be identical before/after. This is
+private package-root proof, not a deployed application or native CT acceptance.
 
 `maintenance-cron-update/fixture` runs the actual cron manager through its menu,
 review and Add/Update/Run/Remove paths, then cold-executes the installed generated

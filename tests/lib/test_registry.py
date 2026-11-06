@@ -18,7 +18,7 @@ llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preser
 maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap maintenance-current-hardening
 maintenance-bundle-writer maintenance-consumers maintenance-cron-update maintenance-go-minimum
 maintenance-gpg-key maintenance-immich maintenance-keep maintenance-kosmozoo-current maintenance-merge-inplace
-maintenance-node24-vite maintenance-nodejs maintenance-paperless-format-source
+maintenance-node24-vite maintenance-nodejs maintenance-package-force maintenance-paperless-format-source
 maintenance-prefix-arch maintenance-receiver-portability maintenance-receiving-context
 maintenance-release-boundaries maintenance-release-metadata maintenance-replacement-review
 maintenance-retry-callers maintenance-retry-preservation maintenance-runtime-hooks
