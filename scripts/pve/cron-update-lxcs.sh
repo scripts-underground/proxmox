@@ -17,8 +17,9 @@ CONF_FILE="/etc/update-lxcs.conf"
 LOG_FILE="/var/log/update-lxcs-cron.log"
 CRON_ENTRY="0 0 * * 0 ${LOCAL_SCRIPT} >>${LOG_FILE} 2>&1"
 
-clear
-cat << "EOF"
+function header_info() {
+  terminal_clear
+  cat << "EOF"
    ______                    __  __          __      __          __   _  ________
   / ____/________  ____     / / / /___  ____/ /___ _/ /____     / /  | |/ / ____/____
  / /   / ___/ __ \/ __ \   / / / / __ \/ __  / __ `/ __/ _ \   / /   |   / /   / ___/
@@ -26,6 +27,7 @@ cat << "EOF"
 \____/_/   \____/_/ /_/   \____/ .___/\__,_/\__,_/\__/\___/  /_____/_/|_\____/____/
                               /_/
 EOF
+}
 
 info() { echo -e "\n \e[36m[Info]\e[0m $1"; }
 ok() { echo -e " \e[32m[OK]\e[0m $1"; }
@@ -565,6 +567,8 @@ rotate_log() {
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
+
+header_info
 
 OPTIONS=(
   Add "Prepare, review & install cron schedule"

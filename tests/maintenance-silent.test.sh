@@ -229,3 +229,4 @@ for mode in no yes; do
 done
 printf '%s failure(s)\n' "$failures"
 [[ "$failures" == 0 ]]
+python3 -B "$ROOT/tests/lib/terminal_display_fixture.py" "$ROOT"

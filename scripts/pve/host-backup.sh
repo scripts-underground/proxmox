@@ -6,7 +6,7 @@
 # https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
    __ __         __    ___           __
   / // /__  ___ / /_  / _ )___ _____/ /____ _____

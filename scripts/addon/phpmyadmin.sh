@@ -18,7 +18,7 @@ var_addon_backup_dir="${var_addon_backup_dir:-/opt/phpmyadmin_backup}"
 var_addon_fallback_version="${var_addon_fallback_version:-5.2.2}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
         __                    ___  ____    ___
   ____ / /_  ____  ____ ___  /   |/ __ \  /   |

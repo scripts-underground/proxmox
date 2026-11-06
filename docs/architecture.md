@@ -244,6 +244,15 @@ before `catch_errors`). If the script defines `header_info()`, the
 framework's `render_header()` dispatches to it; otherwise a generic
 fallback (`header_info_fallback()`) displays the app name.
 
+Screen clearing belongs to core's `terminal_clear()`. It returns0 without output
+when stdout is not a TTY or TERM is unset, empty or `dumb`. For a usable stdout
+terminal it invokes the external `clear` command, treating missing executables,
+unsupported terminfo and other cosmetic failures as nonfatal and suppressing only
+that command's stderr. It does not set TERM, alter options/traps or mask productive
+command failures. Custom headers and menus use this same boundary after core is
+loaded. PVE scripts load their existing bootstrap before their first header;
+the cron manager declares its custom banner first and renders it after bootstrap.
+
 ### 3.2 Addon — `misc/bootstrap/addon_lxc`
 
 The addon shim runs INSIDE an existing LXC container. Every line is a source,

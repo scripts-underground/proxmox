@@ -19,7 +19,7 @@ VM_MACHINE="${VM_MACHINE:-q35}"
 VM_CPU="${VM_CPU:-host}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
      ____                   __
     / __ \____  ___________/ /_____  _____

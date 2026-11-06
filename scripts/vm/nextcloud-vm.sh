@@ -19,7 +19,7 @@ VM_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
 VM_DISK_FORMAT="${VM_DISK_FORMAT:-raw}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
  ______              __ __           _  __        __      __             __  _   ____  ___
 /_  __/_ _________  / //_/__ __ __  / |/ /____ __/ /_____/ /__  __ _____/ / | | / /  |/  /

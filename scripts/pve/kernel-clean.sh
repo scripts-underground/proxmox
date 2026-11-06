@@ -4,7 +4,7 @@
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     __ __                     __   ________
    / //_/__  _________  ___  / /  / ____/ /__  ____ _____

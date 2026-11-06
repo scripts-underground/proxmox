@@ -43,7 +43,7 @@ source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox
 source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-amd.func)
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
 
    __ ___      __  ___              __             __  _

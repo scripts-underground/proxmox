@@ -19,7 +19,7 @@ var_addon_dist_path="${var_addon_dist_path:-/opt/filebrowser-dist}"
 var_addon_default_port="${var_addon_default_port:-8080}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
     _______ __     ____
    / ____(_) /__  / __ )_________ _      __________  _____

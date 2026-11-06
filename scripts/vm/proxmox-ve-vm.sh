@@ -15,7 +15,7 @@ VM_CPU="${VM_CPU:-host}"
 VM_CLOUD_INIT="${VM_CLOUD_INIT:-yes}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     ____                      __                    _    ______    __  __
    / __ \_________  _  ______/ /___  ____     _   __| |  / / __ \  / / / /
@@ -163,7 +163,7 @@ function advanced_settings() {
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "ADVANCED SETTINGS COMPLETE" --yesno "Ready to create a Proxmox VE VM?" --no-button Do-Over 10 58); then
     echo -e "${CREATING}${BOLD}${DGN}Creating a Proxmox VE VM using the above advanced settings${CL}"
   else
-    clear
+    terminal_clear
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
     advanced_settings
   fi
@@ -171,11 +171,11 @@ function advanced_settings() {
 
 function start_script() {
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "Use Default Settings?" --no-button Advanced 10 58); then
-    clear
+    terminal_clear
     echo -e "${DEFAULT}${BOLD}${BL}Using Default Settings${CL}"
     default_settings
   else
-    clear
+    terminal_clear
     echo -e "${ADVANCED}${BOLD}${RD}Using Advanced Settings${CL}"
     advanced_settings
   fi

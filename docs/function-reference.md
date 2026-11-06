@@ -54,6 +54,7 @@ Each is called by `build.func` during `setup_script`:
 
 ### Utility
 
+- **`terminal_clear()`** - Best-effort external screen clearing. Returns0 and emits nothing when stdout is not a TTY or TERM is unset/empty/`dumb`. Otherwise invokes native `clear`, suppresses its cosmetic stderr and tolerates missing/failed executables or terminfo. No TERM, option, trap or dispatch changes. Call only after sourcing core; shared and custom headers/menus use this boundary.
 - **`exit_script()`** — Clears screen, prints "User exited script", exits.
 - **`get_header()`** — Fetches an ASCII-art banner from the repo (cached locally). Reads `APP`, `APP_TYPE`.
 - **`header_info()`** — Clears screen and prints the app banner. Reads `APP`. Called by `bootstrap/lxc`, all `scripts/` entry points.
