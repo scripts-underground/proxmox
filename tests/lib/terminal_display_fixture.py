@@ -386,4 +386,6 @@ printf 'resources:%s:%s:%s:%s' "$build_cpu" "$build_ram" "$run_cpu" "$run_ram"
         check(kind + '/' + str(failure) + ' no unexpected metadata stderr', b'', err)
 (WORK / 'checks.json').write_text(json.dumps(CHECKS, indent=2, default=serialize))
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
+if all(v['passed'] for v in CHECKS):
+    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/batch_metadata_fixture.py'), str(SOURCE)], check=True, timeout=120)
 raise SystemExit(any(not v['passed'] for v in CHECKS))

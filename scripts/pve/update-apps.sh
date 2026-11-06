@@ -123,10 +123,96 @@ EOF
 }
 
 function detect_service() {
-  pushd $$$$FAIL > /dev/null
-  pct pull "$1" /usr/bin/update update 2> /dev/null
-  service=$(cat update | sed 's|.*/ct/||g' | sed 's|\.sh).*||g')
-  popd > /dev/null
+  service=''
+  local LC_ALL=C _ds_stage _ds_text='' _ds_line='' _ds_result='' _ds_status=0 _ds_cleanup=0
+  local _ds_baked=0 _ds_bad=0 _ds_legacy=0 _ds_other=0 _ds_legacy_name=''
+  local _ds_baked_re='^declare -- NSAPP=([a-z0-9][a-z0-9._-]{0,63})$'
+  local _ds_ignore_re='^[[:space:]]*(#|$)'
+  local _ds_legacy_re='^[[:space:]]*bash[[:space:]]+-c[[:space:]]+"\$\(curl[[:space:]]+-fsSL[[:space:]]+https?://[A-Za-z0-9._~:/%+-]+/ct/([a-z0-9][a-z0-9._-]{0,63})\.sh\)"[[:space:]]*$'
+  _ds_stage=$(mktemp "${TMPDIR:-/tmp}/update-apps-service.XXXXXXXX") || return $?
+  if pct pull "$1" /usr/bin/update "$_ds_stage" 2> /dev/null; then
+    if [[ ! -f "$_ds_stage" || -L "$_ds_stage" ]]; then
+      _ds_status=65
+    elif IFS= read -r -d '' _ds_line < "$_ds_stage"; then
+      # Updaters are text. Do not silently discard NUL bytes during capture.
+      _ds_status=65
+    elif _ds_text=$(cat -- "$_ds_stage"); then
+      while IFS= read -r _ds_line || [[ -n "$_ds_line" ]]; do
+        [[ "$_ds_line" =~ $_ds_ignore_re ]] && continue
+        if [[ "$_ds_line" =~ ^[[:space:]]*(declare|export|readonly)[[:space:]] &&
+          "$_ds_line" =~ [[:space:]]NSAPP([[:space:]]|=|$) ]] || [[ "$_ds_line" =~ ^[[:space:]]*NSAPP[[:space:]]*= ]]; then
+          _ds_baked=$((_ds_baked + 1))
+          if [[ "$_ds_line" =~ $_ds_baked_re ]]; then
+            _ds_result=${BASH_REMATCH[1]}
+          else
+            _ds_bad=1
+          fi
+        elif [[ "$_ds_line" =~ $_ds_legacy_re ]]; then
+          _ds_legacy=$((_ds_legacy + 1))
+          _ds_legacy_name=${BASH_REMATCH[1]}
+        else
+          _ds_other=1
+        fi
+      done <<< "$_ds_text"
+      if [[ "$_ds_baked" -gt 0 ]]; then
+        [[ "$_ds_baked" == 1 && "$_ds_bad" == 0 ]] || _ds_status=65
+      elif [[ "$_ds_legacy" == 1 && "$_ds_other" == 0 ]]; then
+        _ds_result=$_ds_legacy_name
+      else
+        _ds_status=65
+      fi
+    else
+      _ds_status=$?
+    fi
+  else
+    _ds_status=$?
+  fi
+  rm -f -- "$_ds_stage" || _ds_cleanup=$?
+  [[ "$_ds_status" != 0 || "$_ds_cleanup" == 0 ]] || _ds_status=$_ds_cleanup
+  if [[ "$_ds_status" == 0 ]]; then
+    service=$_ds_result
+  else
+    printf 'Unable to identify updater for container %s (status %s).\n' "$1" "$_ds_status" >&2
+  fi
+  return "$_ds_status"
+}
+
+# Check literal decimal values before arithmetic. Invalid source hints retain the
+# existing current-value fallback; an unknown actual baseline cannot permit set.
+function prepare_batch_resources() {
+  local LC_ALL=C _br_name _br_value _br_valid
+  for _br_name in current_cpu current_ram build_cpu build_ram run_cpu run_ram; do
+    _br_value=${!_br_name}
+    _br_valid=1
+    if [[ -z "$_br_value" || "$_br_value" == *[!0123456789]* ]]; then
+      _br_valid=0
+    else
+      while [[ ${#_br_value} -gt 1 && "$_br_value" == 0* ]]; do _br_value=${_br_value#0}; done
+      if [[ "$_br_value" == 0 || ${#_br_value} -gt 19 ]]; then
+        _br_valid=0
+      elif [[ ${#_br_value} == 19 ]]; then
+        # Compare representable chunks before evaluating a signed integer.
+        if [[ "${_br_value:0:18}" -gt 922337203685477580 ||
+          (${_br_value:0:18} == 922337203685477580 && ${_br_value:18:1} -gt 7) ]]; then
+          _br_valid=0
+        fi
+      fi
+    fi
+    if [[ "$_br_valid" == 0 ]]; then
+      case "$_br_name" in
+        current_*)
+          printf 'Unable to establish safe current resources for container %s.\n' "$container" >&2
+          return 65
+          ;;
+        *_cpu) _br_value=$current_cpu ;;
+        *_ram) _br_value=$current_ram ;;
+      esac
+    fi
+    printf -v "$_br_name" '%s' "$_br_value"
+  done
+  [[ "$build_cpu" -ge "$current_cpu" ]] || build_cpu=$current_cpu
+  [[ "$build_ram" -ge "$current_ram" ]] || build_ram=$current_ram
+  return 0
 }
 
 function backup_container() {
@@ -331,13 +417,11 @@ for container in $CHOICE; do
     sleep 5
   fi
 
-  detect_service $container
-
-  if [ -z "${service}" ]; then
+  if detect_service "$container"; then
+    echo -e "${BL}[INFO]${CL} Detected service: ${GN}${service}${CL}"
+  else
     echo -e "${YW}[WARN]${CL} Update script not found. Skipping to next container"
     continue
-  else
-    echo -e "${BL}[INFO]${CL} Detected service: ${GN}${service}${CL}"
   fi
 
   script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${service}.sh")
@@ -347,7 +431,11 @@ for container in $CHOICE; do
     echo -e "${YW}[WARN]${CL} Unable to assess build resource requirements. Proceeding with current resources."
   fi
 
-  config=$(pct config "$container")
+  config=$(pct config "$container") || {
+    resource_status=$?
+    printf 'Unable to read current resources for container %s (status %s).\n' "$container" "$resource_status" >&2
+    exit "$resource_status"
+  }
   build_cpu=$(echo "$script" | { grep -m 1 "var_cpu" || test $? = 1; } | sed 's|.*=||g' | sed 's|"||g' | sed 's|.*var_cpu:-||g' | sed 's|}||g')
   build_ram=$(echo "$script" | { grep -m 1 "var_ram" || test $? = 1; } | sed 's|.*=||g' | sed 's|"||g' | sed 's|.*var_ram:-||g' | sed 's|}||g')
   run_cpu=$(echo "$script" | { grep -m 1 "pct set \$CTID -cores" || test $? = 1; } | sed 's|.*cores ||g')
@@ -372,6 +460,7 @@ for container in $CHOICE; do
   fi
 
   UPDATE_BUILD_RESOURCES=0
+  if prepare_batch_resources; then :; else exit $?; fi
   if [ "$build_cpu" -gt "$run_cpu" ] || [ "$build_ram" -gt "$run_ram" ]; then
     UPDATE_BUILD_RESOURCES=1
   fi
