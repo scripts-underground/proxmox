@@ -993,6 +993,16 @@ existing normalized uname/both modes. Explicit second/third arguments map releas
 asset aliases, e.g. `get_system_arch both x64 aarch64`; no global architecture
 rename or application default change is implied.
 
+GitHub, Codeberg and GitLab binary `.deb` deployment share the internal APT
+installation boundary. `FORCE_DEPLOY=1` requests `--reinstall`, so an installed
+same-version package is unpacked/configured again instead of a successful APT
+no-op. Unforced installation is unchanged. Each adapter retains its selected
+package, conffile options, `$STD` handling, dpkg fallback and failure status;
+failed required package work does not publish its release marker. The URL `.deb`
+route also supports this opt-in force behavior, without a version marker or any
+change to unforced URL installs. This contract does not change repository
+dependency installation or other package backends.
+
 ### Checked replacement and application persistence
 
 `_deploy_replace_contents` is the shared source/archive replacement owner for

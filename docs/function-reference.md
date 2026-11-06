@@ -296,6 +296,13 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`_resolve_igc_tag(outvar, selected_json_file)`** — Resolve the compiler tag from the explicitly supplied selected compute-runtime release, clearing output when absent/unusable. No shared-file lookup. Callers own/remove the metadata file; no hardware policy change.
 - **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and checked extraction, then the same replacement/persistence helper as release/source providers. Failed extraction never clears the target.
+
+For binary `.deb` assets, the GitHub/Codeberg/GitLab release adapters request an
+explicit APT reinstall when `FORCE_DEPLOY=1`, allowing same-version package repair.
+The URL `.deb` route now supports the same opt-in force behavior; it has no
+version marker and its unforced installs are unchanged. Existing conffile options,
+`$STD`, dpkg fallbacks and adapter failure statuses remain intact. Only successful
+required package work permits a release adapter to publish its marker.
 - **`_deploy_replace_contents(source, target, clean)`** — Checked shared source/archive replacement. Legacy `CLEAN_INSTALL_KEEP` stays a space-separated string; optional indexed Bash array `CLEAN_INSTALL_KEEP_PATHS=('database/custom name.sqlite' 'database/custom name.sqlite-wal')` adds lossless normalized relative paths. Existing keeps/links/mounts stay in place; missing keeps can receive defaults. Invalid paths fail65 before effects, deployment failures252 prevent marker advancement, and incompatible merge types fail before live effects. Source-only archive hardlink projection has independent directories and checked copy fallback. Existing merge/dot-merge directories retain identity/mode; only incoming replaced leaves/new directories move/copy in bounded batches with associative lookups. Old-only live subtrees are never projected/copied/moved/traversed. Failed publication removes only attempted planned leaves/empty new directories and preserves unrelated writers. Restore batches require absent destination names, use checked no-clobber moves and retain/report a conflicting aside. Fresh mountinfo containment checks before every owned recursive tree removal retain/report newly mounted stages/asides. Input bytes/mode/owner/mtime and target-root mode/owner remain preserved.
 - **`verify_gpg_fingerprint()`** — Compares keyring fingerprint against expected value.
 
