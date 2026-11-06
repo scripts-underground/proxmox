@@ -33,9 +33,10 @@ revisions instead of silently refreshing admission.
 | 6 | Contribution | Registered Go/catalogue/logo/contribution surfaces; generated changes need output projections and re-admission. |
 
 The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
-current-hardening, cron-update and package-force fixtures, two workflow regressions, browser and contribution
+current-hardening, cron-update and package-force fixtures, Dragonfly fixture/native
+consumers, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 97 public suite/mode combinations. The
+suite/mode/options refuse. There are 99 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -137,6 +138,30 @@ file path/hash, then use `--suite maintenance-template-lock --mode review-baseli
 The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
+
+`migration-dragonfly/fixture` executes actual cold-generated install/update bundles
+and the release helper with modeled package, HTTP and systemd boundaries. It
+observes the real runtime-file startup gate, partial preparation/retry, unchanged
+password/data/config/drop-ins, architecture-specific assets, confold and pending
+retry. Native OpenSSL generates successful credentials; failed, partial, empty,
+diagnostic and invalid-shaped producer outputs cannot enter configuration or
+release the runtime gate. Framework-function doubles must exist in the candidate
+framework; external command models are explicitly identified. The package CLI
+model uses the captured v2.1 amd64 ELF's 274-flag inventory, not unlinked source
+facilities. Bad static help and unsupported configured flags cannot release the
+runtime gate or expose configuration values in logs. ARM cases model the selector,
+not native ARM CLI execution. It does not prove native systemd isolation or
+Dragonfly operation.
+
+`migration-dragonfly-native/live-runtime` runs the published Debian package and
+vendor nonroot service inside the generic typed runtime CT owner. It observes
+authenticated binary RESP SET/GET, unauthenticated refusal, snapshots and cold
+restart, normal no-op update and forced same-version reinstall, retained private
+configuration and operator data/drop-in metadata. Runtime inspection checks dfly,
+disk-backed temporary paths and effective read-only disconnected temporary mounts
+without writing into them. It does not claim a release-version transition, native
+ARM execution or the queue prototype absent from the selected server. Native records/logs travel
+in the existing owner's evidence and require external preservation before retirement.
 
 `maintenance-package-force/fixture` executes actual GitHub, Codeberg, GitLab and
 URL `.deb` adapters with native APT/dpkg in private mount/PID/network namespaces
