@@ -313,6 +313,77 @@ printf 'entry-callback:%s' "$REPO_BASE"
         check(slug + '/' + kind + ' loaded header/helper/callback', True,
               ('entry-callback:' + expected).encode() in out and len(out) > 40)
         check(slug + '/' + kind + ' no startup or terminal diagnostic', b'', err)
+
+# Real bounded startup prefixes include every original early source request.
+# GPU helper files only set shell options and declare functions at source time.
+for slug in ('pve-privilege-converter', 'hw-acceleration'):
+    text = (SOURCE / ('scripts/pve/' + slug + '.sh')).read_text()
+    if slug == 'pve-privilege-converter':
+        startup = text[:text.index('check_root() {')]
+        paths = ['misc/core.func']
+        loaded = 'declare -F load_functions header_info terminal_clear >/dev/null'
+    else:
+        startup = text[:re.search(r'(?m)^main\s*$', text).start()]
+        paths = ['tools/pve/gpu-' + vendor + '.func' for vendor in ('nvidia', 'intel', 'amd')]
+        paths += ['misc/bootstrap/pve', 'misc/core.func', 'misc/error_handler.func']
+        loaded = 'declare -F nvidia_check_driver_installed intel_gpu_available amd_gpu_available terminal_clear >/dev/null'
+    for kind, value in [('unset', None), ('empty', ''), ('custom', 'https://fixture.invalid/owned/ref')]:
+        expected = value or default_repo
+        requested = WORK / ('startup-' + slug + '-' + kind + '.calls')
+        setup = 'unset REPO_BASE; ' if value is None else 'export REPO_BASE=' + quote(value) + '; '
+        arms = '\n'.join(quote(expected + '/' + name) + ') /bin/cat ' + quote(SOURCE / name) + ' ;;' for name in paths)
+        code = 'APP=StartupProbe; ' + setup + f'''
+curl() {{ printf 'curl %s\\n' "$*" >> {quote(requested)}; case "${{!#}}" in
+{arms}
+*) return 89 ;; esac; }}
+wget() {{ printf 'wget %s\\n' "$*" >> {quote(requested)}; case "${{!#}}" in
+{arms}
+*) return 89 ;; esac; }}
+pveversion() {{ :; }}
+{startup}
+{loaded}
+load_functions
+render_header
+printf startup-callback
+'''
+        rc, out, err = run('startup-' + slug + '-' + kind, code)
+        commands = [('wget -qO- ' if name.startswith('tools/') else 'curl -fsSL ') + expected + '/' + name for name in paths]
+        check(slug + '/' + kind + ' real startup status', 0, rc)
+        check(slug + '/' + kind + ' real startup requests/options', commands, requested.read_text().splitlines())
+        check(slug + '/' + kind + ' real loaded declarations/header consumer', True, b'startup-callback' in out)
+        check(slug + '/' + kind + ' real startup diagnostics', b'', err)
+
+# Execute the actual later fetch/parsing/fallback fragment, not a recreated parser.
+batch = (SOURCE / 'scripts/pve/update-apps.sh').read_text()
+batch_prefix = batch[:batch.index('# CONFIGURATION VARIABLES')]
+start = re.search(r'(?m)^  script=\$\(curl -fsSL ', batch).start()
+fragment = batch[start:batch.index('\n  UPDATE_BUILD_RESOURCES=0', start)]
+for kind, value in [('unset', None), ('empty', ''), ('custom', 'https://fixture.invalid/owned/ref')]:
+    for failure in (False, True):
+        expected = value or default_repo
+        requested = WORK / ('metadata-' + kind + '-' + str(failure) + '.calls')
+        setup = 'unset REPO_BASE; ' if value is None else 'export REPO_BASE=' + quote(value) + '; '
+        code = setup + f'''
+curl() {{ printf 'curl %s\\n' "$*" >> {quote(requested)}; case "${{!#}}" in
+{quote(expected + '/misc/core.func')}) /bin/cat {quote(SOURCE / 'misc/core.func')} ;;
+{quote(expected + '/scripts/lxc/aria2.sh')}) {'return 47' if failure else '/bin/cat ' + quote(SOURCE / 'scripts/lxc/aria2.sh')} ;;
+*) return 89 ;; esac; }}
+pct() {{ printf 'pct %s\\n' "$*" >> {quote(requested)}; [[ "$*" == 'config 500' ]] || return 98; printf 'cores: 3\\nmemory: 1536\\n'; }}
+{batch_prefix}
+load_functions
+container=500 service=aria2
+{fragment}
+printf 'resources:%s:%s:%s:%s' "$build_cpu" "$build_ram" "$run_cpu" "$run_ram"
+'''
+        rc, out, err = run('metadata-' + kind + '-' + str(failure), code)
+        check(kind + '/' + str(failure) + ' actual metadata fragment status', 0, rc)
+        check(kind + '/' + str(failure) + ' actual metadata URL/options/config request',
+              ['curl -fsSL ' + expected + '/misc/core.func', 'curl -fsSL ' + expected + '/scripts/lxc/aria2.sh', 'pct config 500'],
+              requested.read_text().splitlines())
+        check(kind + '/' + str(failure) + ' actual source resource consumer', True,
+              (b'resources:3:1536:3:1536' if failure else b'resources:2:1024:3:1536') in out)
+        check(kind + '/' + str(failure) + ' unchanged fetch-failure fallback diagnostic', failure, b'Proceeding with current resources' in out)
+        check(kind + '/' + str(failure) + ' no unexpected metadata stderr', b'', err)
 (WORK / 'checks.json').write_text(json.dumps(CHECKS, indent=2, default=serialize))
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
 raise SystemExit(any(not v['passed'] for v in CHECKS))

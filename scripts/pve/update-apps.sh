@@ -340,7 +340,7 @@ for container in $CHOICE; do
     echo -e "${BL}[INFO]${CL} Detected service: ${GN}${service}${CL}"
   fi
 
-  script=$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/ct/${service}.sh)
+  script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${service}.sh")
 
   if [ $? -ne 0 ]; then
     echo -e "${RD}[ERROR]${CL} Issue while downloading install script."
