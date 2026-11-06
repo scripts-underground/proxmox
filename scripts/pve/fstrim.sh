@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2046,SC2076,SC1090
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 set -eEuo pipefail
 

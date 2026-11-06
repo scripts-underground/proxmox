@@ -244,7 +244,7 @@ before `catch_errors`). If the script defines `header_info()`, the
 framework's `render_header()` dispatches to it; otherwise a generic
 fallback (`header_info_fallback()`) displays the app name.
 
-Screen clearing belongs to core's `terminal_clear()`. It returns0 without output
+Screen clearing belongs to core's `terminal_clear()`. It returns 0 without output
 when stdout is not a TTY or TERM is unset, empty or `dumb`. For a usable stdout
 terminal it invokes the external `clear` command, treating missing executables,
 unsupported terminfo and other cosmetic failures as nonfatal and suppressing only

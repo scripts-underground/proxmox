@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 #
 # Title: Proxmox LXC Hardware Passthrough & GPU Acceleration Setup
 # Description: Enables hardware passthrough for USB, Intel, NVIDIA, AMD GPUs inside privileged LXC containers.
@@ -8,7 +9,7 @@
 # Author: MickLesk (CanbiZ)
 # Repo: https://raw.githubusercontent.com/scripts-underground/proxmox
 #
-# Usage: bash -c "$(wget -qLO - https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/misc/hw-acceleration.sh)"
+# Usage: bash -c "$(wget -qLO - https://raw.githubusercontent.com/scripts-underground/proxmox/main/scripts/pve/hw-acceleration.sh)"
 #
 # Requires:
 #   - Proxmox VE 8.1+
@@ -34,13 +35,13 @@ trap 'rm -rf $TEMP_DIR' EXIT
 
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-nvidia.func)
+source <(wget -qO- "$REPO_BASE/tools/pve/gpu-nvidia.func")
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-intel.func)
+source <(wget -qO- "$REPO_BASE/tools/pve/gpu-intel.func")
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-amd.func)
+source <(wget -qO- "$REPO_BASE/tools/pve/gpu-amd.func")
 
 function header_info() {
   terminal_clear
