@@ -3782,6 +3782,19 @@ msg_menu() {
 # - In silent mode: runs update_script with automatic cleanup
 # - Otherwise: shows update/setting menu and runs update_script with cleanup
 # ------------------------------------------------------------------------------
+_lxc_bootstrap() {
+  local _lbs_script_id='' _lbs_prefix_count=0
+  _lxc_script_identity_args _lbs_script_id _lbs_prefix_count "$@" || return $?
+  shift "$_lbs_prefix_count"
+  variables
+  color
+  render_header
+  catch_errors
+  lxc_setup "$@"
+  build_container "$_lbs_script_id"
+  complete_install
+}
+
 lxc_setup() {
   # shellcheck source=/dev/null
   source <(curl -fsSL "$REPO_BASE/misc/tools.func")
@@ -3862,20 +3875,26 @@ _gpu_select_indices() {
 # inside the writer or entering the host's unrelated container-removal prompt.
 _prepare_container_bundles() {
   local install_bundle="$1" receiving_context
+  local _pcb_script_id=${2-}
+  local -a _pcb_identity=()
+  if [[ -n "$_pcb_script_id" ]]; then
+    _validate_lxc_script_id "$_pcb_script_id" || return $?
+    _pcb_identity=(--script-id "$_pcb_script_id" --)
+  fi
   _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
   if [[ -n "${var_lxc_tmpdir:-}" ]]; then
     receiving_context=$(declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir) || return $?
     pct exec "$CTID" -- bash -c "$receiving_context"$'\n''_prepare_lxc_tmpdir "$1"' -- "$var_lxc_tmpdir" || return $?
   fi
-  build_bundle install install_script "$install_bundle" 0700 \
+  build_bundle install install_script "$install_bundle" 0700 "${_pcb_identity[@]}" \
     setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc || return $?
   if declare -F update_script > /dev/null 2>&1; then
     pct exec "$CTID" -- ln -sf /usr/local/sbin/update /usr/bin/update || return $?
-    build_bundle update update_script /usr/local/sbin/update 0700 'run_update_script "$@"' || return $?
+    build_bundle update update_script /usr/local/sbin/update 0700 "${_pcb_identity[@]}" 'run_update_script "$@"' || return $?
   fi
   if declare -F uninstall_script > /dev/null 2>&1; then
     pct exec "$CTID" -- ln -sf /usr/local/sbin/uninstall /usr/bin/uninstall || return $?
-    build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0700 || return $?
+    build_bundle uninstall uninstall_script /usr/local/sbin/uninstall 0700 "${_pcb_identity[@]}" || return $?
   fi
 }
 
@@ -3893,6 +3912,8 @@ _prepare_container_bundles() {
 # - Posts installation status to API
 # ------------------------------------------------------------------------------
 build_container() {
+  local _bc_script_id=${1-}
+  [[ -z "$_bc_script_id" ]] || _validate_lxc_script_id "$_bc_script_id" || return $?
   _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
   execute_optional_hook pre_build_script
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
@@ -4650,7 +4671,7 @@ PROFILE
   # TMPDIR is never transported as an implicit container path.
   local install_tmpdir="${var_lxc_tmpdir:-/tmp}"
   local install_bundle="${install_tmpdir%/}/install-bundle.sh"
-  _prepare_container_bundles "$install_bundle"
+  _prepare_container_bundles "$install_bundle" "$_bc_script_id"
 
   msg_ok "Container installer ready"
 
@@ -4985,7 +5006,7 @@ PROFILE
             # Re-run install script in existing container (don't destroy/recreate)
             local _LXC_CAPTURE_LOG="${TMPDIR:-/tmp}/.install-capture-${SESSION_ID}.log"
 
-            if _prepare_container_bundles "$install_bundle"; then
+            if _prepare_container_bundles "$install_bundle" "$_bc_script_id"; then
               :
             else
               local preparation_exit=$?

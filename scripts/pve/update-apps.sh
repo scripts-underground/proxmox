@@ -123,9 +123,11 @@ EOF
 }
 
 function detect_service() {
-  service=''
+  service='' source_script_id=''
   local LC_ALL=C _ds_stage _ds_text='' _ds_line='' _ds_result='' _ds_status=0 _ds_cleanup=0
   local _ds_baked=0 _ds_bad=0 _ds_legacy=0 _ds_other=0 _ds_legacy_name=''
+  local _ds_identity='' _ds_identity_count=0 _ds_identity_bad=0
+  local _ds_identity_re='^declare -- LXC_SCRIPT_ID=([a-z0-9][a-z0-9._-]{0,63})$'
   local _ds_baked_re='^declare -- NSAPP=([a-z0-9][a-z0-9._-]{0,63})$'
   local _ds_ignore_re='^[[:space:]]*(#|$)'
   local _ds_legacy_re='^[[:space:]]*bash[[:space:]]+-c[[:space:]]+"\$\(curl[[:space:]]+-fsSL[[:space:]]+https?://[A-Za-z0-9._~:/%+-]+/ct/([a-z0-9][a-z0-9._-]{0,63})\.sh\)"[[:space:]]*$'
@@ -140,6 +142,15 @@ function detect_service() {
       while IFS= read -r _ds_line || [[ -n "$_ds_line" ]]; do
         [[ "$_ds_line" =~ $_ds_ignore_re ]] && continue
         if [[ "$_ds_line" =~ ^[[:space:]]*(declare|export|readonly)[[:space:]] &&
+          "$_ds_line" =~ [[:space:]]LXC_SCRIPT_ID([[:space:]]|\+?=|\[|$) ]] || [[ "$_ds_line" =~ ^[[:space:]]*LXC_SCRIPT_ID([[:space:]]*\+?=|\[) ]]; then
+          _ds_identity_count=$((_ds_identity_count + 1))
+          if [[ "$_ds_line" =~ $_ds_identity_re && "${BASH_REMATCH[1]}" != *.sh ]]; then
+            _ds_identity=${BASH_REMATCH[1]}
+          else
+            _ds_identity_bad=1
+          fi
+          _ds_other=1
+        elif [[ "$_ds_line" =~ ^[[:space:]]*(declare|export|readonly)[[:space:]] &&
           "$_ds_line" =~ [[:space:]]NSAPP([[:space:]]|=|$) ]] || [[ "$_ds_line" =~ ^[[:space:]]*NSAPP[[:space:]]*= ]]; then
           _ds_baked=$((_ds_baked + 1))
           if [[ "$_ds_line" =~ $_ds_baked_re ]]; then
@@ -156,8 +167,10 @@ function detect_service() {
       done <<< "$_ds_text"
       if [[ "$_ds_baked" -gt 0 ]]; then
         [[ "$_ds_baked" == 1 && "$_ds_bad" == 0 ]] || _ds_status=65
+        [[ "$_ds_identity_count" == 1 && "$_ds_identity_bad" == 0 ]] || _ds_identity=''
       elif [[ "$_ds_legacy" == 1 && "$_ds_other" == 0 ]]; then
         _ds_result=$_ds_legacy_name
+        _ds_identity=$_ds_legacy_name
       else
         _ds_status=65
       fi
@@ -171,6 +184,7 @@ function detect_service() {
   [[ "$_ds_status" != 0 || "$_ds_cleanup" == 0 ]] || _ds_status=$_ds_cleanup
   if [[ "$_ds_status" == 0 ]]; then
     service=$_ds_result
+    source_script_id=$_ds_identity
   else
     printf 'Unable to identify updater for container %s (status %s).\n' "$1" "$_ds_status" >&2
   fi
@@ -204,7 +218,9 @@ function read_batch_requirements() {
 function admit_batch_update() {
   local _ba_script _ba_free _ba_cpu _ba_ram _ba_status
   required_cpu='' required_ram=''
-  if _ba_script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${service}.sh"); then
+  if [[ -z "${source_script_id:-}" ]]; then
+    printf 'Warning: source-script identity is unknown for container %s; requirements are unknown.\n' "$container" >&2
+  elif _ba_script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${source_script_id}.sh"); then
     read_batch_requirements "$_ba_script"
   else
     _ba_status=$?

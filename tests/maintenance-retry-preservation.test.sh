@@ -29,7 +29,7 @@ for fault in receiver install update update-link uninstall uninstall-link; do
     export DEV_MODE_KEEP=false DEV_MODE_MOTD=false CTID=2110 SESSION_ID=retry APP=Probe
     export GN= CL= BL= TAB= YW= RD= YWB= HOLD= DGN= BFR= CM= REPO_BASE=offline
     BUILD_LOG=$CASE_ROOT/missing combined_log=$CASE_ROOT/combined.log lxc_exit=100 var_os=debian
-    RAM_SIZE=1024 CORE_COUNT=2 DISK_SIZE=8 install_bundle=$CASE_ROOT/install.sh
+    RAM_SIZE=1024 CORE_COUNT=2 DISK_SIZE=8 install_bundle=$CASE_ROOT/install.sh _bc_script_id=""
     msg_info() { printf "%s\n" "$*"; }; msg_error() { printf "%s\n" "$*"; }; msg_ok() { printf "%s\n" "$*"; }
     export CONTAINER_INSTALLING=true
     [[ "$FAULT" != receiver ]] || var_lxc_tmpdir=$CASE_ROOT/receiver

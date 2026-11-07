@@ -230,9 +230,21 @@ Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
 inside the admitted project workspace before launching a test. Use the registered
 fixture route described above.
 
+The maintenance-silent source-identity fixture executes actual literal LXC
+footers, the bootstrap entry, initial/repair preparation, checked bundle writer
+and data-only batch reader. It observes llama-cpp/netvisor/scanopy source lookups
+and 4/2/4 CPU requirements independently of their unchanged namespaces. Missing,
+duplicate and malformed modern identity uses unknown-requirements consent without
+guessed fetches; No/empty/EOF prevents software effects. Ambient/default identity
+cannot replace the producer tuple. Writer tests inject checked identity printf
+failure in plain and conditional callers and retain prior command bytes/modes.
+Go policy tests cover all maintained LXC producers, including absent footers and
+orphan-generator fixtures. PVE/network/app effects remain modeled; native locking
+uses the separate actual BusyBox/kernel gate.
+
 | # | Test | Actual outcome and modeled boundary |
 |---|---|---|
-| 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed. Cold generated update/header consumers and native clear use real PTY/non-TTY/TERM controls. Actual resource consent owner, fatal direct adapter, cold bundle and whole-batch paths cover sufficient/short/unknown requirements, yes/no/empty/EOF, failed probes, owned-start cleanup, remaining-target choice and updater75/0/failure. Whole-batch fatal backup/restore/update combinations observe prior75 and first-admission priority in both orders, exact abort frontier and no extra reboot/cleanup of protected targets. Exact persisted configuration and zero setters are checked, with software effects observed only after consent; real PTY prompts also pause before effects. Current/legacy detector data is never executed. PVE/network/package/lifecycle boundaries are modeled; this does not establish native app acceptance. |
+| 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed. Cold generated update/header consumers and native clear use real PTY/non-TTY/TERM controls. Actual resource consent owner, fatal direct adapter, cold bundle and whole-batch paths cover sufficient/short/unknown requirements, yes/no/empty/EOF, failed probes, owned-start cleanup, remaining-target choice and updater 75/0/failure. Whole-batch fatal backup/restore/update combinations observe prior 75 and first-admission priority in both orders, exact abort frontier and no extra reboot/cleanup of protected targets. Exact persisted configuration and zero setters are checked, with software effects observed only after consent; real PTY prompts also pause before effects. Current/legacy detector data is never executed. PVE/network/package/lifecycle boundaries are modeled; this does not establish native app acceptance. |
 | 2 | `maintenance-cleanup.test.sh` | Default filesystem-literal model supports safe RED; `--native` uses original cleanup helpers with private disk-backed root/cache/state binds and the maintenance namespace literal mapped to its owned fixture. Actual cache bytes/pending/exit outcomes; package/language executables are modeled, not real package removal |
 | 3 | `maintenance-temp-root.test.sh` | Default literal-path instrumentation supports safe RED; `--native` executes unmodified temp/cache/bundle/API helpers. Curl/pct and final addon-destination writing are modeled; fetched/delivered bytes and owned-stage cleanup are actual files |
 | 4 | `maintenance-build-temp.test.sh` | Actual normal/retry preparation fragments and bundle assembler, executed receiver environment/path/mode and failed-preparation boundary; pct/OS hooks are modeled. `--baseline` reads immutable5914963 history and instruments its old paths for the intended negative control |

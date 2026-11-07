@@ -11,8 +11,9 @@
 Each script in this repo is a single file. The user's CT script declares
 configuration variables (APP, resource defaults) and bash functions that
 serve as lifecycle hooks (install_script, update_script, etc.). The script
-ends with `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")`, which
-loads the framework and runs the install path.
+ends with `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "appname" -- "$@"`,
+where `appname` is the literal filename stem. This loads the framework and runs
+the install path while preserving caller arguments.
 
 The bootstrap shim is the orchestrator. It loads the framework files,
 guards preconditions, and invokes framework functions — it does not call
@@ -43,47 +44,39 @@ stages and invoke the appropriate user hooks as part of their work.
 
 ### 3.1 LXC — `misc/bootstrap/lxc`
 
-The spec'd shim (with migration applied):
+The shim loads the framework and invokes its checked entry:
 
 ```bash
 source <(curl -fsSL "${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/misc/build.func") 2>/dev/null
 
-declare -F install_script >/dev/null || {
-  echo "Error: install_script() not defined"
-  exit 1
-}
-
-variables
-color
-catch_errors
-
-start
-build_container
-complete_install
+declare -F _lxc_bootstrap >/dev/null || { printf 'FATAL: LXC bootstrap entry not loaded\n' >&2; exit 111; }
+_lxc_bootstrap "$@"
 ```
 
-Every line is `source`, a guard, or a framework function call. No user
-hooks invoked directly.
+Every line is `source`, a guard, or a framework function call. The shim invokes
+no user hook directly. `_lxc_bootstrap` captures the optional producer tuple
+`--script-id <id> --` into a local before defaults, then runs `variables`,
+`color`, `render_header`, `catch_errors`, `lxc_setup`, `build_container` and
+`complete_install` in order. Only remaining arguments reach `lxc_setup`.
 
 - Line 1 sources `build.func`, which as a side effect pulls in
   `core.func` and `error_handler.func` and runs setup
   code (`load_functions`, `catch_errors`).
 
-- Lines 3–6 assert the user defined `install_script`. Required; fail fast
-  if absent.
+- The guard refuses an unavailable framework entry with 111.
 
-- Lines 8–10 set up the framework's global state: normalized app
+- The entry sets up the framework's global state: normalized app
   identifiers, ANSI color vars, strict-mode error traps.
 
-- Line 12 — `start` dispatches by context. On the Proxmox host it runs
+- `lxc_setup` dispatches by context. On the Proxmox host it runs
   the whiptail menu (via `setup_script`) to collect container settings.
   Inside an existing container it runs the update flow instead.
   If `start` returns, the install path continues.
 
-- Line 13 — `build_container` creates the LXC, runs the app installer
+- `build_container` creates the LXC, runs the app installer
   inside it, checks the result, fires `post_build_script`.
 
-- Line 14 — `complete_install` queries the container for network info,
+- `complete_install` queries the container for network info,
   sets the PVE web-UI description, fires `post_install_script`, prints
   the final success message.
 
@@ -196,9 +189,14 @@ on refusal or query failure, including under conditional callers. No unattended
 or initial-confirm flag authorizes this consent. Frozen update bundles retain
 their existing generation and caller defaults; this adds no framework refresh.
 
-The PVE batch updater reads literal script requirements as data only, retaining
-current/legacy updater identity detection without executing either downloaded
-source. It measures the selected CT using `pct exec <CT> -- nproc` and
+The PVE batch updater reads literal script requirements as data only. Modern
+bundles keep their maintenance namespace separate from source identity: exactly
+one canonical `declare -- LXC_SCRIPT_ID=<slug>` selects that source script.
+Missing, duplicate or malformed identity means unknown requirements and explicit
+consent, with no guessed NSAPP filename request. Strict whole-file legacy thin
+wrappers retain their literal selected `/ct/<slug>.sh` target. Neither pulled
+updaters nor fetched requirement scripts are evaluated. The batch measures the
+selected CT using `pct exec <CT> -- nproc` and
 `pct exec <CT> -- free -m`, then calls the same core owner before software effects.
 Missing or malformed metadata is unknown, never a sizing instruction or a
 satisfied check. On pre-update refusal/error it gracefully shuts down only a CT
@@ -208,12 +206,12 @@ When targets remain, a separate explicit y/yes answer continues the batch; empty
 input or EOF stops it. Partial summaries distinguish declined, failed admission,
 failed updates, unattempted and temporary/busy targets.
 
-Raw updater status75 remains conservatively temporary/busy, not authenticated
-lock refusal: a hook can also return75. It skips automatic shutdown, backup
+Raw updater status 75 remains conservatively temporary/busy, not authenticated
+lock refusal: a hook can also return 75. It skips automatic shutdown, backup
 rollback and reboot eligibility, retaining any backup and a batch-owned start.
 It never enters pre-update refusal cleanup. Final status prioritizes observed
-updater75, then the first admission refusal/error, then the ordinary result.
-Successful-CT reboot handling and ordinary non75 backup recovery remain separate;
+updater 75, then the first admission refusal/error, then the ordinary result.
+Successful-CT reboot handling and ordinary non-75 backup recovery remain separate;
 a restored failed update is not reported as an all-updated success.
 One script-owned terminal selector applies that priority to every exit after batch
 work begins, including fatal backup, restoration and unrecoverable update failures.
@@ -239,6 +237,17 @@ Each bundle carries its own **runtime context**, baked at build time from the
 host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
+
+New update bundles also bake `LXC_SCRIPT_ID`, supplied explicitly from the literal
+source footer through `build_container` and both initial/repair
+`_prepare_container_bundles` calls. The bundle-owned validator accepts 1-64 ASCII
+lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric, without
+a `.sh` suffix; malformed explicit tuples return 65 before productive work.
+The ID is independent of APP/NSAPP and ambient/default `LXC_SCRIPT_ID` or
+`var_lxc_*` values. It never renames maintenance, pending or backup ownership.
+Old positional producers omit the field and remain unknown. This is declared
+provenance, not authentication of arbitrary root-written code. Frozen bundles
+are not automatically refreshed.
 
 GPU context is also baked into every LXC bundle: `ENABLE_GPU`, `GPU_TYPE`
 (a space-separated list of selected vendors), `INSTALL_NVIDIA_DRIVERS`, and

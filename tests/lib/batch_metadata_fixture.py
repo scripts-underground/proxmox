@@ -47,7 +47,7 @@ source {q(S / 'misc/bundle.func')}
 NSAPP=${{APP,,}}; NSAPP=${{NSAPP// /}}
 var_lxc_tmpdir={q(W)}
 update_script() {{ printf executed > {q(sentinel)}; }}
-_write_bundle update update_script {q(stage)} 'run_update_script "$@"' > {q(bundle)}
+_write_bundle update update_script {q(stage)} --script-id changedetection -- 'run_update_script "$@"' > {q(bundle)}
 '''
 r = run('producer', code)
 check('actual current producer succeeds', 0, r.returncode)

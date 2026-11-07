@@ -14,6 +14,7 @@ if [[ "${1:-}" == --child ]]; then
   msg_debug() { :; }
   msg_error() { printf '%s\n' "$*" >&2; }
   install_script() { :; }
+  update_script() { :; }
   _framework_cache_ensure() {
     [[ "$fault" != missing ]] || rm -- "$TMPDIR/framework-writer/install.func"
     [[ "$fault" != hook ]] || unset -f install_script
@@ -35,6 +36,7 @@ if [[ "${1:-}" == --child ]]; then
   }
   printf() {
     [[ "$fault" != printf || "$1" != 'declare -- APP=%q\n' ]] || return 48
+    [[ "$fault" != identity-printf || "$1" != 'declare -- LXC_SCRIPT_ID=%q\n' ]] || return 48
     builtin printf "$@"
   }
   pct() {
@@ -61,15 +63,20 @@ if [[ "${1:-}" == --child ]]; then
         ;;
     esac
   }
+  args=(install install_script "$c/destination" 0700 install_script)
+  case "$fault" in
+    identity | identity-printf) args=(update update_script "$c/destination" 0700 --script-id writer -- update_script) ;;
+    identity-invalid) args=(update update_script "$c/destination" 0700 --script-id ../wrong -- update_script) ;;
+  esac
   if [[ "$style" == conditional ]]; then
     # Every producer must check itself even when callers deliberately handle rc.
-    if build_bundle install install_script "$c/destination" 0700 install_script; then
+    if build_bundle "${args[@]}"; then
       exit 0
     else
       exit $?
     fi
   fi
-  build_bundle install install_script "$c/destination" 0700 install_script
+  build_bundle "${args[@]}"
   exit 0
 fi
 work=$(mktemp -d "$TMPDIR/maintenance-writer.XXXXXX")
@@ -82,7 +89,7 @@ check() {
   fi
 }
 for style in conditional plain; do
-  for fault in allocate cat missing printf hook write push chmod publish none; do
+  for fault in allocate cat missing printf hook write push chmod publish none identity identity-printf identity-invalid; do
     c="$work/$style-$fault"
     mkdir -p "$c/tmp/framework-writer"
     for lib in core error_handler install tools github; do printf '# fixture library\n' > "$c/tmp/framework-writer/$lib.func"; done
@@ -93,6 +100,8 @@ for style in conditional plain; do
     expected=0
     [[ "$fault" != cat ]] || expected=47
     [[ "$fault" != printf ]] || expected=48
+    [[ "$fault" != identity-printf ]] || expected=48
+    [[ "$fault" != identity-invalid ]] || expected=65
     [[ "$fault" != allocate ]] || expected=49
     [[ "$fault" != push ]] || expected=53
     [[ "$fault" != chmod ]] || expected=54
@@ -102,14 +111,17 @@ for style in conditional plain; do
     stage=''
     [[ ! -e "$c/stage-path" ]] || stage=$(cat "$c/stage-path")
     check "$(if [[ -e "$stage" || -L "$stage" ]]; then printf present; else printf absent; fi)" absent "$style/$fault owned private stage removed"
-    if [[ "$fault" != none && "$fault" != push && "$fault" != chmod && "$fault" != publish ]]; then
+    if [[ "$fault" != none && "$fault" != identity && "$fault" != push && "$fault" != chmod && "$fault" != publish ]]; then
       check "$(test -e "$c/published" && printf reached || printf absent)" absent "$fault never publishes a partial bundle"
     fi
-    if [[ "$fault" != none ]]; then
+    if [[ "$fault" != none && "$fault" != identity ]]; then
       check "$(cmp -s "$c/previous" "$c/destination" && printf same || printf changed)" same "$style/$fault receiving previous command preserved"
       check "$(stat -c %a "$c/destination")" "$(stat -c %a "$c/previous")" "$style/$fault receiving previous mode preserved"
     else
       check "$(wc -l < "$c/published")" 4 'success stages, transports, sets mode and publishes'
+      if [[ "$fault" == identity ]]; then
+        check "$(grep -c '^declare -- LXC_SCRIPT_ID=writer$' "$c/destination")" 1 "$style exact checked update identity"
+      fi
     fi
     if [[ -f "$c/receiver-stage" ]]; then
       check "$(test -e "$(cat "$c/receiver-stage")" && printf present || printf absent)" absent "$style/$fault owned receiving stage removed"

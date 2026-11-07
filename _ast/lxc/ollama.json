@@ -3,7 +3,7 @@
   "slug": "ollama",
   "type": "lxc",
   "total_lines": 235,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: havardthom\n# Co-Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://ollama.com/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Ollama\"\nvar_tags=\"${var_tags:-ai}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-40}\"\nvar_os=\"${var_os:-ubuntu}\"\nvar_version=\"${var_version:-24.04}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_gpu=\"${var_gpu:-yes}\"\nvar_lxc_release=\"${var_lxc_release:-${var_appversion:-latest}}\"\nvar_lxc_port=\"${var_lxc_port:-80}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y curl zstd\n  msg_ok \"Installed Dependencies\"\n\n  if ! id ollama \u003e /dev/null 2\u003e\u00261; then\n    useradd --system --user-group --create-home --home-dir /usr/share/ollama --shell /usr/sbin/nologin ollama\n  fi\n  install -d -m 750 -o ollama -g ollama /usr/share/ollama/.ollama\n  setup_hwaccel ollama\n\n  msg_info \"Installing Ollama\"\n  local arch release var_appversion rocm_dir has_rocm=0\n  arch=$(get_system_arch)\n  case \"$arch\" in\n    amd64 | arm64) ;;\n    *)\n      msg_error \"Unsupported Ollama architecture: $arch\"\n      exit 65\n      ;;\n  esac\n  var_appversion=\"$var_lxc_release\"\n  [[ \"$var_appversion\" == latest ]] || var_appversion=\"v${var_appversion#v}\"\n  fetch_and_deploy_gh_release \"ollama-com\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" /opt/ollama \"ollama-linux-${arch}.tar.zst\"\n  release=$(\u003c \"$HOME/.ollama-com\")\n  if [[ \"$var_appversion\" != latest \u0026\u0026 \"$release\" != \"${var_appversion#v}\" ]]; then\n    msg_error \"Requested Ollama release was not deployed\"\n    exit 250\n  fi\n  if [[ \" ${HWACCEL_VENDORS:-} \" == *' amd '* \u0026\u0026 -c /dev/kfd ]]; then\n    [[ \"$arch\" == amd64 ]] || {\n      msg_error \"Ollama ROCm requires amd64\"\n      exit 65\n    }\n    var_appversion=\"v$release\"\n    # The prebuild helper strips the ROCm archive's single top-level lib directory.\n    fetch_and_deploy_gh_release \"ollama-rocm\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" /opt/ollama/lib \"ollama-linux-amd64-rocm.tar.zst\"\n    [[ \"$(\u003c \"$HOME/.ollama-rocm\")\" == \"$release\" ]] || {\n      msg_error \"Ollama ROCm release mismatch\"\n      exit 250\n    }\n    for rocm_dir in /opt/ollama/lib/ollama/rocm /opt/ollama/lib/ollama/rocm_v*; do\n      [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n    done\n    [[ \"$has_rocm\" == 1 ]] || {\n      msg_error \"Ollama ROCm runtime missing\"\n      exit 250\n    }\n  fi\n  [[ \"$var_lxc_port\" =~ ^[0-9]+$ ]] || {\n    msg_error \"Invalid Ollama port\"\n    exit 65\n  }\n  cat \u003c\u003c EOF \u003e /etc/ollama.env\nHOME=/usr/share/ollama\nOLLAMA_HOST=0.0.0.0:$var_lxc_port\n# OLLAMA_MODELS defaults to HOME/.ollama/models; set an explicit path here if needed.\nEOF\n  chown root:ollama /etc/ollama.env\n  chmod 640 /etc/ollama.env\n  cat \u003c\u003c 'EOF' \u003e /etc/systemd/system/ollama.service\n[Unit]\nDescription=Ollama Service\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=exec\nUser=ollama\nGroup=ollama\nWorkingDirectory=/opt/ollama\nEnvironmentFile=/etc/ollama.env\nExecStart=/opt/ollama/bin/ollama serve\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=60\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  cat \u003c\u003c EOF \u003e /usr/local/bin/ollama\n#!/usr/bin/env sh\nexport OLLAMA_HOST=\"\\${OLLAMA_HOST:-127.0.0.1:$var_lxc_port}\"\nexec /opt/ollama/bin/ollama \"\\$@\"\nEOF\n  chmod 755 /usr/local/bin/ollama\n  systemctl daemon-reload\n  systemctl enable --now ollama\n  msg_ok \"Installed Ollama with an empty model store\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:${var_lxc_port}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  local exec_metadata executable resolved prefix arch stage release_status rocm_dir has_rocm=0 active=0\n  local -a payload=()\n  local pin=\"${var_appversion:-$var_lxc_release}\" var_appversion\n  local exec_pattern='path=([^[:space:];}]+)' magic\n  exec_metadata=$(systemctl show --property=ExecStart --value ollama)\n  [[ \"$exec_metadata\" =~ $exec_pattern ]] || {\n    msg_error \"No ${APP} Installation Found!\"\n    exit 250\n  }\n  executable=${BASH_REMATCH[1]}\n  resolved=$(realpath -e -- \"$executable\")\n  case \"$resolved\" in\n    /opt/ollama/bin/ollama) prefix=/opt/ollama ;;\n    /usr/local/lib/ollama/bin/ollama) prefix=/usr/local/lib/ollama ;;\n    /usr/local/bin/ollama) prefix=/usr/local ;;\n    *)\n      msg_error \"Custom Ollama executable layout left unchanged: $resolved\"\n      exit 250\n      ;;\n  esac\n  magic=$(od -An -tx1 -N4 -- \"$resolved\")\n  [[ \"${magic//[[:space:]]/}\" == 7f454c46 ]] || {\n    msg_error \"Ollama executable is not an ELF binary\"\n    exit 250\n  }\n\n  if check_for_gh_release \"ollama-com\" \"ollama/ollama\" \"$pin\"; then\n    ensure_dependencies zstd\n    arch=$(get_system_arch)\n    case \"$arch\" in\n      amd64 | arm64) ;;\n      *)\n        msg_error \"Unsupported Ollama architecture: $arch\"\n        exit 65\n        ;;\n    esac\n    stage=$(mktemp -d)\n    var_appversion=\"$CHECK_UPDATE_RELEASE\"\n    # Download all runtime layers before stopping the service or changing live files.\n    if ! HOME=\"$stage\" FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"ollama-com\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" \"$stage/payload\" \"ollama-linux-${arch}.tar.zst\"; then\n      rm -rf \"$stage\"\n      msg_error \"Download or deployment failed – check network connectivity and GitHub API availability\"\n      exit 250\n    fi\n    if [[ \"$(\u003c \"$stage/.ollama-com\")\" != \"${CHECK_UPDATE_RELEASE#v}\" || ! -x \"$stage/payload/bin/ollama\" ]]; then\n      rm -rf \"$stage\"\n      msg_error \"Requested Ollama release was not staged\"\n      exit 250\n    fi\n    # Existing installations select their actual runtime layer, without rewriting\n    # effective account/HOME/model configuration, units, bindings or launchers.\n    for rocm_dir in \"$prefix/lib/ollama/rocm\" \"$prefix\"/lib/ollama/rocm_v*; do\n      [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n    done\n    if [[ \"$has_rocm\" == 1 ]]; then\n      if [[ \"$arch\" != amd64 ]] || ! HOME=\"$stage\" FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release \"ollama-rocm\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" \"$stage/payload/lib\" \"ollama-linux-amd64-rocm.tar.zst\"; then\n        rm -rf \"$stage\"\n        msg_error \"Ollama ROCm download failed; installed runtime left unchanged\"\n        exit 250\n      fi\n      has_rocm=0\n      for rocm_dir in \"$stage/payload/lib/ollama/rocm\" \"$stage\"/payload/lib/ollama/rocm_v*; do\n        [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n      done\n      if [[ \"$(\u003c \"$stage/.ollama-rocm\")\" != \"${CHECK_UPDATE_RELEASE#v}\" || \"$has_rocm\" != 1 ]]; then\n        rm -rf \"$stage\"\n        msg_error \"Requested Ollama ROCm release was not staged\"\n        exit 250\n      fi\n    fi\n\n    systemctl is-active --quiet ollama \u0026\u0026 active=1\n    if [[ \"$active\" == 1 ]]; then\n      msg_info \"Stopping Services\"\n      systemctl stop ollama\n      msg_ok \"Services Stopped\"\n    fi\n    mapfile -d '' payload \u003c \u003c(find \"$stage/payload\" -mindepth 1 -maxdepth 1 -print0)\n    if ! cp -a --remove-destination -- \"${payload[@]}\" \"$prefix/\"; then\n      if [[ \"$active\" == 1 ]]; then\n        systemctl start ollama\n      fi\n      rm -rf \"$stage\"\n      msg_error \"Ollama runtime copy failed; retry the unfinished update\"\n      exit 250\n    fi\n    if [[ \"$active\" == 1 ]]; then\n      msg_info \"Starting Services\"\n      systemctl start ollama\n      msg_ok \"Started Services\"\n    fi\n    cp \"$stage/.ollama-com\" \"$HOME/.ollama-com\"\n    [[ ! -f \"$stage/.ollama-rocm\" ]] || cp \"$stage/.ollama-rocm\" \"$HOME/.ollama-rocm\"\n    rm -rf \"$stage\"\n    msg_ok \"Updated Ollama; account, models and service configuration preserved\"\n  else\n    release_status=$?\n    [[ \"$release_status\" == 1 ]] || exit \"$release_status\"\n  fi\n  exit 0\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: havardthom\n# Co-Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://ollama.com/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Ollama\"\nvar_tags=\"${var_tags:-ai}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-40}\"\nvar_os=\"${var_os:-ubuntu}\"\nvar_version=\"${var_version:-24.04}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_gpu=\"${var_gpu:-yes}\"\nvar_lxc_release=\"${var_lxc_release:-${var_appversion:-latest}}\"\nvar_lxc_port=\"${var_lxc_port:-80}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y curl zstd\n  msg_ok \"Installed Dependencies\"\n\n  if ! id ollama \u003e /dev/null 2\u003e\u00261; then\n    useradd --system --user-group --create-home --home-dir /usr/share/ollama --shell /usr/sbin/nologin ollama\n  fi\n  install -d -m 750 -o ollama -g ollama /usr/share/ollama/.ollama\n  setup_hwaccel ollama\n\n  msg_info \"Installing Ollama\"\n  local arch release var_appversion rocm_dir has_rocm=0\n  arch=$(get_system_arch)\n  case \"$arch\" in\n    amd64 | arm64) ;;\n    *)\n      msg_error \"Unsupported Ollama architecture: $arch\"\n      exit 65\n      ;;\n  esac\n  var_appversion=\"$var_lxc_release\"\n  [[ \"$var_appversion\" == latest ]] || var_appversion=\"v${var_appversion#v}\"\n  fetch_and_deploy_gh_release \"ollama-com\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" /opt/ollama \"ollama-linux-${arch}.tar.zst\"\n  release=$(\u003c \"$HOME/.ollama-com\")\n  if [[ \"$var_appversion\" != latest \u0026\u0026 \"$release\" != \"${var_appversion#v}\" ]]; then\n    msg_error \"Requested Ollama release was not deployed\"\n    exit 250\n  fi\n  if [[ \" ${HWACCEL_VENDORS:-} \" == *' amd '* \u0026\u0026 -c /dev/kfd ]]; then\n    [[ \"$arch\" == amd64 ]] || {\n      msg_error \"Ollama ROCm requires amd64\"\n      exit 65\n    }\n    var_appversion=\"v$release\"\n    # The prebuild helper strips the ROCm archive's single top-level lib directory.\n    fetch_and_deploy_gh_release \"ollama-rocm\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" /opt/ollama/lib \"ollama-linux-amd64-rocm.tar.zst\"\n    [[ \"$(\u003c \"$HOME/.ollama-rocm\")\" == \"$release\" ]] || {\n      msg_error \"Ollama ROCm release mismatch\"\n      exit 250\n    }\n    for rocm_dir in /opt/ollama/lib/ollama/rocm /opt/ollama/lib/ollama/rocm_v*; do\n      [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n    done\n    [[ \"$has_rocm\" == 1 ]] || {\n      msg_error \"Ollama ROCm runtime missing\"\n      exit 250\n    }\n  fi\n  [[ \"$var_lxc_port\" =~ ^[0-9]+$ ]] || {\n    msg_error \"Invalid Ollama port\"\n    exit 65\n  }\n  cat \u003c\u003c EOF \u003e /etc/ollama.env\nHOME=/usr/share/ollama\nOLLAMA_HOST=0.0.0.0:$var_lxc_port\n# OLLAMA_MODELS defaults to HOME/.ollama/models; set an explicit path here if needed.\nEOF\n  chown root:ollama /etc/ollama.env\n  chmod 640 /etc/ollama.env\n  cat \u003c\u003c 'EOF' \u003e /etc/systemd/system/ollama.service\n[Unit]\nDescription=Ollama Service\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=exec\nUser=ollama\nGroup=ollama\nWorkingDirectory=/opt/ollama\nEnvironmentFile=/etc/ollama.env\nExecStart=/opt/ollama/bin/ollama serve\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=60\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  cat \u003c\u003c EOF \u003e /usr/local/bin/ollama\n#!/usr/bin/env sh\nexport OLLAMA_HOST=\"\\${OLLAMA_HOST:-127.0.0.1:$var_lxc_port}\"\nexec /opt/ollama/bin/ollama \"\\$@\"\nEOF\n  chmod 755 /usr/local/bin/ollama\n  systemctl daemon-reload\n  systemctl enable --now ollama\n  msg_ok \"Installed Ollama with an empty model store\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:${var_lxc_port}${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  local exec_metadata executable resolved prefix arch stage release_status rocm_dir has_rocm=0 active=0\n  local -a payload=()\n  local pin=\"${var_appversion:-$var_lxc_release}\" var_appversion\n  local exec_pattern='path=([^[:space:];}]+)' magic\n  exec_metadata=$(systemctl show --property=ExecStart --value ollama)\n  [[ \"$exec_metadata\" =~ $exec_pattern ]] || {\n    msg_error \"No ${APP} Installation Found!\"\n    exit 250\n  }\n  executable=${BASH_REMATCH[1]}\n  resolved=$(realpath -e -- \"$executable\")\n  case \"$resolved\" in\n    /opt/ollama/bin/ollama) prefix=/opt/ollama ;;\n    /usr/local/lib/ollama/bin/ollama) prefix=/usr/local/lib/ollama ;;\n    /usr/local/bin/ollama) prefix=/usr/local ;;\n    *)\n      msg_error \"Custom Ollama executable layout left unchanged: $resolved\"\n      exit 250\n      ;;\n  esac\n  magic=$(od -An -tx1 -N4 -- \"$resolved\")\n  [[ \"${magic//[[:space:]]/}\" == 7f454c46 ]] || {\n    msg_error \"Ollama executable is not an ELF binary\"\n    exit 250\n  }\n\n  if check_for_gh_release \"ollama-com\" \"ollama/ollama\" \"$pin\"; then\n    ensure_dependencies zstd\n    arch=$(get_system_arch)\n    case \"$arch\" in\n      amd64 | arm64) ;;\n      *)\n        msg_error \"Unsupported Ollama architecture: $arch\"\n        exit 65\n        ;;\n    esac\n    stage=$(mktemp -d)\n    var_appversion=\"$CHECK_UPDATE_RELEASE\"\n    # Download all runtime layers before stopping the service or changing live files.\n    if ! HOME=\"$stage\" FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"ollama-com\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" \"$stage/payload\" \"ollama-linux-${arch}.tar.zst\"; then\n      rm -rf \"$stage\"\n      msg_error \"Download or deployment failed – check network connectivity and GitHub API availability\"\n      exit 250\n    fi\n    if [[ \"$(\u003c \"$stage/.ollama-com\")\" != \"${CHECK_UPDATE_RELEASE#v}\" || ! -x \"$stage/payload/bin/ollama\" ]]; then\n      rm -rf \"$stage\"\n      msg_error \"Requested Ollama release was not staged\"\n      exit 250\n    fi\n    # Existing installations select their actual runtime layer, without rewriting\n    # effective account/HOME/model configuration, units, bindings or launchers.\n    for rocm_dir in \"$prefix/lib/ollama/rocm\" \"$prefix\"/lib/ollama/rocm_v*; do\n      [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n    done\n    if [[ \"$has_rocm\" == 1 ]]; then\n      if [[ \"$arch\" != amd64 ]] || ! HOME=\"$stage\" FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release \"ollama-rocm\" \"ollama/ollama\" \"prebuild\" \"$var_appversion\" \"$stage/payload/lib\" \"ollama-linux-amd64-rocm.tar.zst\"; then\n        rm -rf \"$stage\"\n        msg_error \"Ollama ROCm download failed; installed runtime left unchanged\"\n        exit 250\n      fi\n      has_rocm=0\n      for rocm_dir in \"$stage/payload/lib/ollama/rocm\" \"$stage\"/payload/lib/ollama/rocm_v*; do\n        [[ ! -d \"$rocm_dir\" ]] || has_rocm=1\n      done\n      if [[ \"$(\u003c \"$stage/.ollama-rocm\")\" != \"${CHECK_UPDATE_RELEASE#v}\" || \"$has_rocm\" != 1 ]]; then\n        rm -rf \"$stage\"\n        msg_error \"Requested Ollama ROCm release was not staged\"\n        exit 250\n      fi\n    fi\n\n    systemctl is-active --quiet ollama \u0026\u0026 active=1\n    if [[ \"$active\" == 1 ]]; then\n      msg_info \"Stopping Services\"\n      systemctl stop ollama\n      msg_ok \"Services Stopped\"\n    fi\n    mapfile -d '' payload \u003c \u003c(find \"$stage/payload\" -mindepth 1 -maxdepth 1 -print0)\n    if ! cp -a --remove-destination -- \"${payload[@]}\" \"$prefix/\"; then\n      if [[ \"$active\" == 1 ]]; then\n        systemctl start ollama\n      fi\n      rm -rf \"$stage\"\n      msg_error \"Ollama runtime copy failed; retry the unfinished update\"\n      exit 250\n    fi\n    if [[ \"$active\" == 1 ]]; then\n      msg_info \"Starting Services\"\n      systemctl start ollama\n      msg_ok \"Started Services\"\n    fi\n    cp \"$stage/.ollama-com\" \"$HOME/.ollama-com\"\n    [[ ! -f \"$stage/.ollama-rocm\" ]] || cp \"$stage/.ollama-rocm\" \"$HOME/.ollama-rocm\"\n    rm -rf \"$stage\"\n    msg_ok \"Updated Ollama; account, models and service configuration preserved\"\n  else\n    release_status=$?\n    [[ \"$release_status\" == 1 ]] || exit \"$release_status\"\n  fi\n  exit 0\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"ollama\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -238,7 +238,7 @@
     "# framework bootstrap",
     "# shellcheck disable=SC1090",
     "# Dynamic URL resolved at runtime - shellcheck cannot follow",
-    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"ollama\" -- \"$@\"",
     ""
   ],
   "functions": [
@@ -1113,15 +1113,15 @@
       "end_col": 13
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 37,
       "start_col": 14,
       "end_line": 37,
       "end_col": 21
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 37,
       "start_col": 14,
       "end_line": 37,
@@ -1143,15 +1143,15 @@
       "end_col": 36
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 37,
       "start_col": 37,
       "end_line": 37,
       "end_col": 45
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 37,
       "start_col": 37,
       "end_line": 37,
@@ -2708,13 +2708,6 @@
       "end_col": 22
     },
     {
-      "kind": "var-name",
-      "start_line": 129,
-      "start_col": 23,
-      "end_line": 129,
-      "end_col": 33
-    },
-    {
       "kind": "var-assign",
       "op": "=",
       "start_line": 129,
@@ -2725,9 +2718,9 @@
     {
       "kind": "var-name",
       "start_line": 129,
-      "start_col": 34,
+      "start_col": 23,
       "end_line": 129,
-      "end_col": 42
+      "end_col": 33
     },
     {
       "kind": "var-assign",
@@ -2738,15 +2731,22 @@
       "end_col": 42
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
+      "start_line": 129,
+      "start_col": 34,
+      "end_line": 129,
+      "end_col": 42
+    },
+    {
+      "kind": "var-name",
       "start_line": 129,
       "start_col": 43,
       "end_line": 129,
       "end_col": 49
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 129,
       "start_col": 43,
       "end_line": 129,
@@ -2783,15 +2783,15 @@
       "end_col": 60
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 129,
       "start_col": 61,
       "end_line": 129,
       "end_col": 75
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 129,
       "start_col": 61,
       "end_line": 129,
@@ -2955,15 +2955,15 @@
       "end_col": 46
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 132,
       "start_col": 47,
       "end_line": 132,
       "end_col": 52
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 132,
       "start_col": 47,
       "end_line": 132,
@@ -5685,6 +5685,27 @@
       "start_col": 22,
       "end_line": 234,
       "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 234,
+      "start_col": 66,
+      "end_line": 234,
+      "end_col": 74
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 234,
+      "start_col": 78,
+      "end_line": 234,
+      "end_col": 82
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 234,
+      "start_col": 79,
+      "end_line": 234,
+      "end_col": 81
     }
   ],
   "bootstrap_line": 234,

@@ -463,7 +463,7 @@ source "$1/misc/bundle.func"
 '''+app_declarations+'''
 NSAPP=${APP,,}; NSAPP=${NSAPP// /}; var_lxc_tmpdir=$2
 update_script() { :; }
-_write_bundle update update_script "$3/stage" 'run_update_script "$@"' > "$4"
+_write_bundle update update_script "$3/stage" --script-id changedetection -- 'run_update_script "$@"' > "$4"
 '''
 p=command(['/bin/bash','-c',producer,'_',str(root),str(work),str(work/'cold-writers'),str(batch_bundle)])
 assert p.returncode==0,p.stderr

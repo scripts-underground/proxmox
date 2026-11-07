@@ -3,7 +3,7 @@
   "slug": "radicale",
   "type": "lxc",
   "total_lines": 207,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Slaviša Arežina (tremor021)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://radicale.org/ | Github: https://github.com/Kozea/Radicale\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Radicale\"\nvar_tags=\"${var_tags:-calendar}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-2}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y apache2-utils\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  fetch_and_deploy_gh_release \"Radicale\" \"Kozea/Radicale\" \"tarball\" \"latest\" \"/opt/radicale\"\n  local auth_extras\n  auth_extras=$(\n    uv run --no-project --python 3.13 python - /opt/radicale/pyproject.toml \u003c\u003c 'PY'\nimport pathlib,sys,tomllib\np=pathlib.Path(sys.argv[1]);meta=tomllib.loads(p.read_text()) if p.exists() else {}\nextras=meta.get('project',{}).get('optional-dependencies',{})\nif not isinstance(extras,dict):sys.exit(65)\nfor name in ('bcrypt','argon2'):\n if name in extras and (not isinstance(extras[name],list) or not all(isinstance(v,str) for v in extras[name])):sys.exit(65)\nprint(' '.join('--extra '+name for name in ('bcrypt','argon2') if extras.get(name)))\nPY\n  ) || exit 65\n\n  msg_info \"Setting up Radicale\"\n  cd /opt/radicale || exit\n  RNDPASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  $STD htpasswd -c -b -5 /opt/radicale/users admin \"$RNDPASS\"\n  cat \u003c\u003c EOF \u003e ~/radicale.creds\nRadicale Credentials\nAdmin User: admin\nAdmin Password: $RNDPASS\nEOF\n\n  mkdir -p /etc/radicale\n  cat \u003c\u003c EOF \u003e /etc/radicale/config\n[server]\nhosts = 0.0.0.0:5232\n\n[auth]\ntype = htpasswd\nhtpasswd_filename = /opt/radicale/users\nhtpasswd_encryption = sha512\n\n[storage]\ntype = multifilesystem\nfilesystem_folder = /var/lib/radicale/collections\n\n[web]\ntype = internal\nEOF\n  msg_ok \"Set up Radicale\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/radicale.service\n[Unit]\nDescription=A simple CalDAV (calendar) and CardDAV (contact) server\nAfter=network.target\nRequires=network.target\n\n[Service]\nWorkingDirectory=/opt/radicale\nExecStart=/usr/local/bin/uv run ${auth_extras:+$auth_extras }-m radicale --config /etc/radicale/config\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now radicale\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:5232${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/radicale ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  local keep_file auth_extras unit_changed updated=no\n  keep_file=$(mktemp) || exit $?\n  # Match Radicale's RawConfigParser/filepath semantics. Preserve configured\n  # credentials/storage/config inside the source root, including literal spaces.\n  uv run --no-project --python 3.13 python - /etc/systemd/system/radicale.service /etc/radicale/config /opt/radicale \u003e \"$keep_file\" \u003c\u003c 'PY' || {\nimport configparser,os,pathlib,shlex,sys\nunit,default,root=map(pathlib.Path,sys.argv[1:]);lines=unit.read_text().splitlines()\ncommands=[line.split('=',1)[1] for line in lines if line.startswith('ExecStart=')]\nif len(commands)!=1:sys.exit(65)\nargs=shlex.split(commands[0]);config=str(default)\nfor i,arg in enumerate(args):\n if arg=='--config':config=args[i+1]\n elif arg.startswith('--config='):config=arg.split('=',1)[1]\ncwd=next((line.split('=',1)[1] for line in lines if line.startswith('WorkingDirectory=')),str(root))\nos.chdir(cwd);p=pathlib.Path(os.path.abspath(os.path.expanduser(config)))\nparser=configparser.RawConfigParser()\nif not parser.read(p):sys.exit(65)\nvalues=[str(p),parser.get('auth','htpasswd_filename',fallback=''),parser.get('storage','filesystem_folder',fallback='')]\nfor value in values:\n if not value:continue\n path=pathlib.Path(os.path.abspath(os.path.expanduser(value)))\n if path==root:sys.exit(65)\n if root in path.parents:sys.stdout.buffer.write(os.fsencode(str(path.relative_to(root)))+b'\\0')\nPY\n    rm -f -- \"$keep_file\"\n    exit 65\n  }\n  local -a configured_paths=()\n  mapfile -d '' -t configured_paths \u003c \"$keep_file\"\n  rm -f -- \"$keep_file\"\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" users \"${configured_paths[@]}\")\n  if check_for_gh_release \"Radicale\" \"Kozea/Radicale\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop radicale\n    msg_ok \"Stopped Service\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Radicale\" \"Kozea/Radicale\" \"tarball\" \"latest\" \"/opt/radicale\"\n    updated=yes\n  fi\n  auth_extras=$(\n    uv run --no-project --python 3.13 python - /opt/radicale/pyproject.toml \u003c\u003c 'PY'\nimport pathlib,sys,tomllib\np=pathlib.Path(sys.argv[1]);meta=tomllib.loads(p.read_text()) if p.exists() else {}\nextras=meta.get('project',{}).get('optional-dependencies',{})\nif not isinstance(extras,dict):sys.exit(65)\nfor name in ('bcrypt','argon2'):\n if name in extras and (not isinstance(extras[name],list) or not all(isinstance(v,str) for v in extras[name])):sys.exit(65)\nprint(' '.join('--extra '+name for name in ('bcrypt','argon2') if extras.get(name)))\nPY\n  ) || exit 65\n  unit_changed=$(\n    uv run --no-project --python 3.13 python - /etc/systemd/system/radicale.service \"$auth_extras\" \u003c\u003c 'PY'\nimport os,pathlib,re,shlex,stat,sys,tempfile\np=pathlib.Path(sys.argv[1]).resolve(strict=True);text=p.read_text();lines=text.splitlines(True);found=0\nfor i,line in enumerate(lines):\n if not line.startswith('ExecStart='):continue\n found+=1;value=line.rstrip('\\r\\n')\n match=re.fullmatch(r'(ExecStart=/usr/local/bin/uv run)(.*?)( -m radicale(?:[ \\t].*)?)',value)\n if match:\n  args=shlex.split(match[2]);kept=[];n=0\n  while n\u003clen(args):\n   if args[n]=='--extra' and n+1\u003clen(args) and args[n+1] in ('bcrypt','argon2'):n+=2;continue\n   if args[n] in ('--extra=bcrypt','--extra=argon2'):n+=1;continue\n   kept.append(args[n]);n+=1\n  flags=shlex.join(kept+shlex.split(sys.argv[2]))\n  lines[i]=match[1]+(' '+flags if flags else '')+match[3]+'\\n'\n elif shlex.split(value.split('=',1)[1])==['/opt/radicale/start.sh']:\n  lines[i]='ExecStart=/usr/local/bin/uv run '+(sys.argv[2]+' ' if sys.argv[2] else '')+'-m radicale --config /etc/radicale/config\\n'\n else:sys.exit(65)\nif found!=1:sys.exit(65)\nnew=''.join(lines)\nif '[Unit]' not in new:new='[Unit]\\n'+new\nif not any(line.startswith('WorkingDirectory=') for line in lines):new=new.replace('[Service]\\n','[Service]\\nWorkingDirectory=/opt/radicale\\n',1)\nif new==text:print('no');sys.exit(0)\ns=p.stat();fd,name=tempfile.mkstemp(prefix='.radicale-unit.',dir=p.parent)\ntry:\n with os.fdopen(fd,'w') as f:f.write(new);f.flush();os.fchmod(f.fileno(),stat.S_IMODE(s.st_mode));os.fchown(f.fileno(),s.st_uid,s.st_gid)\n os.replace(name,p)\nfinally:\n if os.path.exists(name):os.unlink(name)\nprint('yes')\nPY\n  ) || exit 65\n  if [[ \"$unit_changed\" == yes ]]; then systemctl daemon-reload; fi\n  if [[ \"$updated\" == yes ]]; then\n    msg_info \"Starting Service\"\n    systemctl start radicale\n    msg_ok \"Started Service\"\n    msg_ok \"Updated Successfully!\"\n  elif [[ \"$unit_changed\" == yes ]]; then\n    systemctl restart radicale\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Slaviša Arežina (tremor021)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://radicale.org/ | Github: https://github.com/Kozea/Radicale\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Radicale\"\nvar_tags=\"${var_tags:-calendar}\"\nvar_cpu=\"${var_cpu:-1}\"\nvar_ram=\"${var_ram:-512}\"\nvar_disk=\"${var_disk:-2}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y apache2-utils\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  fetch_and_deploy_gh_release \"Radicale\" \"Kozea/Radicale\" \"tarball\" \"latest\" \"/opt/radicale\"\n  local auth_extras\n  auth_extras=$(\n    uv run --no-project --python 3.13 python - /opt/radicale/pyproject.toml \u003c\u003c 'PY'\nimport pathlib,sys,tomllib\np=pathlib.Path(sys.argv[1]);meta=tomllib.loads(p.read_text()) if p.exists() else {}\nextras=meta.get('project',{}).get('optional-dependencies',{})\nif not isinstance(extras,dict):sys.exit(65)\nfor name in ('bcrypt','argon2'):\n if name in extras and (not isinstance(extras[name],list) or not all(isinstance(v,str) for v in extras[name])):sys.exit(65)\nprint(' '.join('--extra '+name for name in ('bcrypt','argon2') if extras.get(name)))\nPY\n  ) || exit 65\n\n  msg_info \"Setting up Radicale\"\n  cd /opt/radicale || exit\n  RNDPASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)\n  $STD htpasswd -c -b -5 /opt/radicale/users admin \"$RNDPASS\"\n  cat \u003c\u003c EOF \u003e ~/radicale.creds\nRadicale Credentials\nAdmin User: admin\nAdmin Password: $RNDPASS\nEOF\n\n  mkdir -p /etc/radicale\n  cat \u003c\u003c EOF \u003e /etc/radicale/config\n[server]\nhosts = 0.0.0.0:5232\n\n[auth]\ntype = htpasswd\nhtpasswd_filename = /opt/radicale/users\nhtpasswd_encryption = sha512\n\n[storage]\ntype = multifilesystem\nfilesystem_folder = /var/lib/radicale/collections\n\n[web]\ntype = internal\nEOF\n  msg_ok \"Set up Radicale\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/radicale.service\n[Unit]\nDescription=A simple CalDAV (calendar) and CardDAV (contact) server\nAfter=network.target\nRequires=network.target\n\n[Service]\nWorkingDirectory=/opt/radicale\nExecStart=/usr/local/bin/uv run ${auth_extras:+$auth_extras }-m radicale --config /etc/radicale/config\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now radicale\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:5232${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/radicale ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  PYTHON_VERSION=\"3.13\" setup_uv\n  local keep_file auth_extras unit_changed updated=no\n  keep_file=$(mktemp) || exit $?\n  # Match Radicale's RawConfigParser/filepath semantics. Preserve configured\n  # credentials/storage/config inside the source root, including literal spaces.\n  uv run --no-project --python 3.13 python - /etc/systemd/system/radicale.service /etc/radicale/config /opt/radicale \u003e \"$keep_file\" \u003c\u003c 'PY' || {\nimport configparser,os,pathlib,shlex,sys\nunit,default,root=map(pathlib.Path,sys.argv[1:]);lines=unit.read_text().splitlines()\ncommands=[line.split('=',1)[1] for line in lines if line.startswith('ExecStart=')]\nif len(commands)!=1:sys.exit(65)\nargs=shlex.split(commands[0]);config=str(default)\nfor i,arg in enumerate(args):\n if arg=='--config':config=args[i+1]\n elif arg.startswith('--config='):config=arg.split('=',1)[1]\ncwd=next((line.split('=',1)[1] for line in lines if line.startswith('WorkingDirectory=')),str(root))\nos.chdir(cwd);p=pathlib.Path(os.path.abspath(os.path.expanduser(config)))\nparser=configparser.RawConfigParser()\nif not parser.read(p):sys.exit(65)\nvalues=[str(p),parser.get('auth','htpasswd_filename',fallback=''),parser.get('storage','filesystem_folder',fallback='')]\nfor value in values:\n if not value:continue\n path=pathlib.Path(os.path.abspath(os.path.expanduser(value)))\n if path==root:sys.exit(65)\n if root in path.parents:sys.stdout.buffer.write(os.fsencode(str(path.relative_to(root)))+b'\\0')\nPY\n    rm -f -- \"$keep_file\"\n    exit 65\n  }\n  local -a configured_paths=()\n  mapfile -d '' -t configured_paths \u003c \"$keep_file\"\n  rm -f -- \"$keep_file\"\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\" users \"${configured_paths[@]}\")\n  if check_for_gh_release \"Radicale\" \"Kozea/Radicale\"; then\n    msg_info \"Stopping Service\"\n    systemctl stop radicale\n    msg_ok \"Stopped Service\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"Radicale\" \"Kozea/Radicale\" \"tarball\" \"latest\" \"/opt/radicale\"\n    updated=yes\n  fi\n  auth_extras=$(\n    uv run --no-project --python 3.13 python - /opt/radicale/pyproject.toml \u003c\u003c 'PY'\nimport pathlib,sys,tomllib\np=pathlib.Path(sys.argv[1]);meta=tomllib.loads(p.read_text()) if p.exists() else {}\nextras=meta.get('project',{}).get('optional-dependencies',{})\nif not isinstance(extras,dict):sys.exit(65)\nfor name in ('bcrypt','argon2'):\n if name in extras and (not isinstance(extras[name],list) or not all(isinstance(v,str) for v in extras[name])):sys.exit(65)\nprint(' '.join('--extra '+name for name in ('bcrypt','argon2') if extras.get(name)))\nPY\n  ) || exit 65\n  unit_changed=$(\n    uv run --no-project --python 3.13 python - /etc/systemd/system/radicale.service \"$auth_extras\" \u003c\u003c 'PY'\nimport os,pathlib,re,shlex,stat,sys,tempfile\np=pathlib.Path(sys.argv[1]).resolve(strict=True);text=p.read_text();lines=text.splitlines(True);found=0\nfor i,line in enumerate(lines):\n if not line.startswith('ExecStart='):continue\n found+=1;value=line.rstrip('\\r\\n')\n match=re.fullmatch(r'(ExecStart=/usr/local/bin/uv run)(.*?)( -m radicale(?:[ \\t].*)?)',value)\n if match:\n  args=shlex.split(match[2]);kept=[];n=0\n  while n\u003clen(args):\n   if args[n]=='--extra' and n+1\u003clen(args) and args[n+1] in ('bcrypt','argon2'):n+=2;continue\n   if args[n] in ('--extra=bcrypt','--extra=argon2'):n+=1;continue\n   kept.append(args[n]);n+=1\n  flags=shlex.join(kept+shlex.split(sys.argv[2]))\n  lines[i]=match[1]+(' '+flags if flags else '')+match[3]+'\\n'\n elif shlex.split(value.split('=',1)[1])==['/opt/radicale/start.sh']:\n  lines[i]='ExecStart=/usr/local/bin/uv run '+(sys.argv[2]+' ' if sys.argv[2] else '')+'-m radicale --config /etc/radicale/config\\n'\n else:sys.exit(65)\nif found!=1:sys.exit(65)\nnew=''.join(lines)\nif '[Unit]' not in new:new='[Unit]\\n'+new\nif not any(line.startswith('WorkingDirectory=') for line in lines):new=new.replace('[Service]\\n','[Service]\\nWorkingDirectory=/opt/radicale\\n',1)\nif new==text:print('no');sys.exit(0)\ns=p.stat();fd,name=tempfile.mkstemp(prefix='.radicale-unit.',dir=p.parent)\ntry:\n with os.fdopen(fd,'w') as f:f.write(new);f.flush();os.fchmod(f.fileno(),stat.S_IMODE(s.st_mode));os.fchown(f.fileno(),s.st_uid,s.st_gid)\n os.replace(name,p)\nfinally:\n if os.path.exists(name):os.unlink(name)\nprint('yes')\nPY\n  ) || exit 65\n  if [[ \"$unit_changed\" == yes ]]; then systemctl daemon-reload; fi\n  if [[ \"$updated\" == yes ]]; then\n    msg_info \"Starting Service\"\n    systemctl start radicale\n    msg_ok \"Started Service\"\n    msg_ok \"Updated Successfully!\"\n  elif [[ \"$unit_changed\" == yes ]]; then\n    systemctl restart radicale\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"radicale\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034",
@@ -210,7 +210,7 @@
     "# framework bootstrap",
     "# shellcheck disable=SC1090",
     "# Dynamic URL resolved at runtime - shellcheck cannot follow",
-    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"radicale\" -- \"$@\"",
     ""
   ],
   "functions": [
@@ -1791,14 +1791,6 @@
       "end_col": 18
     },
     {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 108,
-      "start_col": 19,
-      "end_line": 108,
-      "end_col": 30
-    },
-    {
       "kind": "var-name",
       "start_line": 108,
       "start_col": 19,
@@ -1808,13 +1800,21 @@
     {
       "kind": "var-assign",
       "op": "=",
+      "start_line": 108,
+      "start_col": 19,
+      "end_line": 108,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
       "start_line": 108,
       "start_col": 31,
       "end_line": 108,
       "end_col": 43
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 108,
       "start_col": 31,
       "end_line": 108,
@@ -1938,14 +1938,14 @@
       "end_col": 135
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 112,
       "start_col": 136,
       "end_line": 112,
       "end_col": 140
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 112,
       "start_col": 136,
       "end_line": 112,
@@ -2339,14 +2339,14 @@
       "end_col": 79
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 148,
       "start_col": 80,
       "end_line": 148,
       "end_col": 84
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 148,
       "start_col": 80,
       "end_line": 148,
@@ -2426,14 +2426,14 @@
       "end_col": 102
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 159,
       "start_col": 103,
       "end_line": 159,
       "end_col": 107
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 159,
       "start_col": 103,
       "end_line": 159,
@@ -2804,6 +2804,27 @@
       "start_col": 22,
       "end_line": 206,
       "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 66,
+      "end_line": 206,
+      "end_col": 76
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 80,
+      "end_line": 206,
+      "end_col": 84
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 206,
+      "start_col": 81,
+      "end_line": 206,
+      "end_col": 83
     }
   ],
   "bootstrap_line": 206,

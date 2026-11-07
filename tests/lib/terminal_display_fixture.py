@@ -371,7 +371,7 @@ curl() {{ printf 'curl %s\\n' "$*" >> {quote(requested)}; case "${{!#}}" in
 pct() {{ printf 'pct %s\\n' "$*" >> {quote(requested)}; case "$*" in 'exec 500 -- nproc') printf '3\\n';; 'exec 500 -- free -m') printf 'total used free\\nMem: 1536 0 0\\n';; *) return 98;; esac; }}
 {batch_prefix}
 load_functions
-container=500 service=aria2
+container=500 service=aria2 source_script_id=aria2
 {fragment}
 admit_batch_update <<< yes
 printf 'requirements:%s:%s' "$required_cpu" "$required_ram"
@@ -390,4 +390,5 @@ print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in
 if all(v['passed'] for v in CHECKS):
     subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/batch_metadata_fixture.py'), str(SOURCE)], check=True, timeout=120)
     subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/resource_consent_fixture.py'), str(SOURCE)], check=True, timeout=240)
+    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/source_script_identity_fixture.py'), str(SOURCE)], check=True, timeout=240)
 raise SystemExit(any(not v['passed'] for v in CHECKS))

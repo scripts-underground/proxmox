@@ -219,7 +219,7 @@ source {q(S / 'misc/bundle.func')}
 {declarations}
 NSAPP=${{APP,,}}; NSAPP=${{NSAPP// /}}; var_lxc_tmpdir={q(W)}
 update_script() {{ :; }}
-_write_bundle update update_script {q(cache)} 'run_update_script "$@"' > {q(identity_bundle)}
+_write_bundle update update_script {q(cache)} --script-id changedetection -- 'run_update_script "$@"' > {q(identity_bundle)}
 ''')
 check('actual identity producer', 0, r.returncode)
 
