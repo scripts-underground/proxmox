@@ -185,16 +185,40 @@ their own exact stages at their lifecycle boundaries instead.
 An existing hook that calls this public helper explicitly acknowledges the same
 due cleanup, so its later successful exit does not repeat package/cache work.
 
-The PVE batch updater treats raw status 75 conservatively as temporary/busy, not
-as proof of a unique authenticated refusal: a hook can also return 75. Immediately
-after result capture it skips automatic shutdown, resource restore, backup
-rollback and reboot eligibility, preserving state at result capture and retaining
-any backup already taken. A CT successfully started by this
-batch remains running; any requested build-resource increase is not automatically
-restored. Messages identify successful starts and requested build/run values,
-without claiming a requested config change succeeded. Final output reports partial
-completion and skipped CTs, then exits 75 after ordinary successful-CT reboot
-handling. Ordinary successful and non-75 failure behavior is unchanged.
+Software upgrades do not resize container resources. Core owns the returning
+`confirm_container_resources(requiredCPU, requiredMiB, actualCPU, actualMiB, label)`
+admission boundary. Literal decimal values are checked before comparisons.
+Unknown requirements and insufficient CPU or RAM require explicit y/yes consent;
+No, empty input and EOF refuse. An unknown actual allocation is a checked error.
+The no-argument `check_container_resources` adapter measures nproc/free inside the
+container, uses the caller's existing var_cpu/var_ram defaults and explicitly exits
+on refusal or query failure, including under conditional callers. No unattended
+or initial-confirm flag authorizes this consent. Frozen update bundles retain
+their existing generation and caller defaults; this adds no framework refresh.
+
+The PVE batch updater reads literal script requirements as data only, retaining
+current/legacy updater identity detection without executing either downloaded
+source. It measures the selected CT using `pct exec <CT> -- nproc` and
+`pct exec <CT> -- free -m`, then calls the same core owner before software effects.
+Missing or malformed metadata is unknown, never a sizing instruction or a
+satisfied check. On pre-update refusal/error it gracefully shuts down only a CT
+successfully started by that batch, checks the resulting status and reports
+restoration failures. Pre-existing running state and backups remain intact.
+When targets remain, a separate explicit y/yes answer continues the batch; empty
+input or EOF stops it. Partial summaries distinguish declined, failed admission,
+failed updates, unattempted and temporary/busy targets.
+
+Raw updater status75 remains conservatively temporary/busy, not authenticated
+lock refusal: a hook can also return75. It skips automatic shutdown, backup
+rollback and reboot eligibility, retaining any backup and a batch-owned start.
+It never enters pre-update refusal cleanup. Final status prioritizes observed
+updater75, then the first admission refusal/error, then the ordinary result.
+Successful-CT reboot handling and ordinary non75 backup recovery remain separate;
+a restored failed update is not reported as an all-updated success.
+One script-owned terminal selector applies that priority to every exit after batch
+work begins, including fatal backup, restoration and unrecoverable update failures.
+Those failures still abort at their original point; they do not advance to later
+targets, automatic cleanup or reboot handling just to select the terminal result.
 
 `silent` is a returning same-shell command wrapper. Quiet command output goes to
 the active log, and its exact status is available to `if`/`||` retry branches.

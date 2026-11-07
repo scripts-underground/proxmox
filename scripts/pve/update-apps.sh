@@ -177,42 +177,84 @@ function detect_service() {
   return "$_ds_status"
 }
 
-# Check literal decimal values before arithmetic. Invalid source hints retain the
-# existing current-value fallback; an unknown actual baseline cannot permit set.
-function prepare_batch_resources() {
-  local LC_ALL=C _br_name _br_value _br_valid
-  for _br_name in current_cpu current_ram build_cpu build_ram run_cpu run_ram; do
-    _br_value=${!_br_name}
-    _br_valid=1
-    if [[ -z "$_br_value" || "$_br_value" == *[!0123456789]* ]]; then
-      _br_valid=0
-    else
-      while [[ ${#_br_value} -gt 1 && "$_br_value" == 0* ]]; do _br_value=${_br_value#0}; done
-      if [[ "$_br_value" == 0 || ${#_br_value} -gt 19 ]]; then
-        _br_valid=0
-      elif [[ ${#_br_value} == 19 ]]; then
-        # Compare representable chunks before evaluating a signed integer.
-        if [[ "${_br_value:0:18}" -gt 922337203685477580 ||
-          (${_br_value:0:18} == 922337203685477580 && ${_br_value:18:1} -gt 7) ]]; then
-          _br_valid=0
+# Script declarations are data only, never shell source or sizing instructions.
+# Accept one literal declaration per dimension; missing/ambiguous data is unknown.
+function read_batch_requirements() {
+  local _br_line _br_key _br_value _br_count _br_re _br_literal
+  required_cpu='' required_ram=''
+  for _br_key in cpu ram; do
+    _br_count=0 _br_value=''
+    _br_re='^[[:space:]]*var_'"$_br_key"'="\$\{var_'"$_br_key"':-([0-9]+)\}"[[:space:]]*(#.*)?$'
+    _br_literal='^[[:space:]]*var_'"$_br_key"'="([0-9]+)"[[:space:]]*(#.*)?$'
+    while IFS= read -r _br_line || [[ -n "$_br_line" ]]; do
+      if [[ "$_br_line" =~ ^[[:space:]]*var_${_br_key}= ]]; then
+        _br_count=$((_br_count + 1))
+        if [[ "$_br_line" =~ $_br_re || "$_br_line" =~ $_br_literal ]]; then
+          _br_value=${BASH_REMATCH[1]}
+        else
+          _br_count=$((_br_count + 2))
         fi
       fi
-    fi
-    if [[ "$_br_valid" == 0 ]]; then
-      case "$_br_name" in
-        current_*)
-          printf 'Unable to establish safe current resources for container %s.\n' "$container" >&2
-          return 65
-          ;;
-        *_cpu) _br_value=$current_cpu ;;
-        *_ram) _br_value=$current_ram ;;
-      esac
-    fi
-    printf -v "$_br_name" '%s' "$_br_value"
+    done <<< "$1"
+    [[ "$_br_count" == 1 ]] || _br_value=''
+    printf -v "required_$_br_key" '%s' "$_br_value"
   done
-  [[ "$build_cpu" -ge "$current_cpu" ]] || build_cpu=$current_cpu
-  [[ "$build_ram" -ge "$current_ram" ]] || build_ram=$current_ram
-  return 0
+}
+
+function admit_batch_update() {
+  local _ba_script _ba_free _ba_cpu _ba_ram _ba_status
+  required_cpu='' required_ram=''
+  if _ba_script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${service}.sh"); then
+    read_batch_requirements "$_ba_script"
+  else
+    _ba_status=$?
+    printf 'Warning: metadata download failed for container %s (status %s); requirements are unknown.\n' "$container" "$_ba_status" >&2
+  fi
+  _ba_cpu=$(pct exec "$container" -- nproc) || return $?
+  _ba_free=$(pct exec "$container" -- free -m) || return $?
+  _ba_ram=$(awk 'NR==2{print $2}' <<< "$_ba_free") || return $?
+  if confirm_container_resources "$required_cpu" "$required_ram" "$_ba_cpu" "$_ba_ram" "Container $container ($service)"; then
+    return 0
+  else
+    _ba_status=$?
+    [[ "$_ba_status" != 1 ]] || admission_declined=1
+    return "$_ba_status"
+  fi
+}
+
+# Only a successfully owned pre-update start may be restored on admission refusal.
+function restore_batch_start() {
+  local _bs_status
+  [[ "$batch_started" == 1 ]] || return 0
+  printf 'Restoring batch-started container %s to stopped state before update.\n' "$container" >&2
+  pct shutdown "$container" --timeout 60 || return $?
+  _bs_status=$(pct status "$container") || return $?
+  [[ "$_bs_status" == 'status: stopped' ]] || return 69
+}
+
+function continue_batch_updates() {
+  local _bc_prompt=''
+  [[ "$((batch_index + 1))" -lt "${#batch_targets[@]}" ]] || return 0
+  printf 'Continue with the remaining selected containers? <yes/No> ' >&2
+  if IFS= read -r _bc_prompt; then
+    case "${_bc_prompt,,}" in y | yes) return 0 ;; esac
+  fi
+  containers_not_attempted+=("${batch_targets[@]:batch_index+1}")
+  return 1
+}
+
+# Every terminal exit after work begins uses the same outcome priority. Fatal
+# callers still exit immediately: selection adds no PVE or reboot effects.
+function exit_batch_update() {
+  local _bx_fallback=$1
+  if [[ "${2:-}" == abort ]]; then
+    printf 'Batch partially complete; aborted at container %s. Later selected containers were not attempted.\n' "$container" >&2
+  fi
+  if [[ "${#containers_skipped_temporary[@]}" -gt 0 ]]; then
+    exit 75
+  fi
+  [[ "$first_admission_status" == 0 ]] || exit "$first_admission_status"
+  exit "$_bx_fallback"
 }
 
 function backup_container() {
@@ -224,7 +266,7 @@ function backup_container() {
     msg_ok "Backup created"
   else
     msg_error "Backup failed for container $1"
-    exit 1
+    exit_batch_update 1 abort
   fi
 }
 
@@ -398,75 +440,58 @@ fi
 
 containers_needing_reboot=()
 containers_skipped_temporary=()
-for container in $CHOICE; do
+containers_declined=()
+containers_admission_failed=()
+containers_update_failed=()
+containers_not_attempted=()
+first_admission_status=0 normal_result=0
+read -r -a batch_targets <<< "$CHOICE"
+for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
+  container=${batch_targets[$batch_index]}
   batch_started=0
+  admission_status=0
+  admission_declined=0
   echo -e "${BL}[INFO]${CL} Updating container $container"
 
   if [ "$BACKUP_CHOICE" == "yes" ]; then
     backup_container $container
   fi
 
-  os=$(pct config "$container" | awk '/^ostype/ {print $2}')
-  status=$(pct status $container)
-  template=$(pct config $container | grep -q "template:" && echo "true" || echo "false")
-  if [ "$template" == "false" ] && [ "$status" == "status: stopped" ]; then
+  config=$(pct config "$container") || admission_status=$?
+  os=$(awk '/^ostype/ {print $2}' <<< "$config")
+  status=$(pct status "$container") || admission_status=$?
+  template=false
+  [[ "$config" != *'template:'* ]] || template=true
+  if [[ "$admission_status" == 0 && "$template" == false && "$status" == 'status: stopped' ]]; then
     echo -e "${BL}[Info]${GN} Starting${BL} $container ${CL} \n"
-    pct start $container
-    if [ $? -eq 0 ]; then batch_started=1; fi
+    if pct start "$container"; then batch_started=1; else admission_status=$?; fi
     echo -e "${BL}[Info]${GN} Waiting For${BL} $container${CL}${GN} To Start ${CL} \n"
     sleep 5
   fi
 
-  if detect_service "$container"; then
+  if [[ "$admission_status" != 0 ]]; then
+    :
+  elif detect_service "$container"; then
     echo -e "${BL}[INFO]${CL} Detected service: ${GN}${service}${CL}"
+    if admit_batch_update; then :; else admission_status=$?; fi
   else
-    echo -e "${YW}[WARN]${CL} Update script not found. Skipping to next container"
-    continue
+    admission_status=$?
   fi
 
-  script=$(curl -fsSL "$REPO_BASE/scripts/lxc/${service}.sh")
-
-  if [ $? -ne 0 ]; then
-    echo -e "${RD}[ERROR]${CL} Issue while downloading install script."
-    echo -e "${YW}[WARN]${CL} Unable to assess build resource requirements. Proceeding with current resources."
-  fi
-
-  config=$(pct config "$container") || {
-    resource_status=$?
-    printf 'Unable to read current resources for container %s (status %s).\n' "$container" "$resource_status" >&2
-    exit "$resource_status"
-  }
-  build_cpu=$(echo "$script" | { grep -m 1 "var_cpu" || test $? = 1; } | sed 's|.*=||g' | sed 's|"||g' | sed 's|.*var_cpu:-||g' | sed 's|}||g')
-  build_ram=$(echo "$script" | { grep -m 1 "var_ram" || test $? = 1; } | sed 's|.*=||g' | sed 's|"||g' | sed 's|.*var_ram:-||g' | sed 's|}||g')
-  run_cpu=$(echo "$script" | { grep -m 1 "pct set \$CTID -cores" || test $? = 1; } | sed 's|.*cores ||g')
-  run_ram=$(echo "$script" | { grep -m 1 "pct set \$CTID -memory" || test $? = 1; } | sed 's|.*memory ||g')
-  current_cpu=$(echo "$config" | grep -m 1 "cores:" | sed 's|cores: ||g')
-  current_ram=$(echo "$config" | grep -m 1 "memory:" | sed 's|memory: ||g')
-
-  if [ -z "${run_cpu}" ] || [ "$run_cpu" -le 0 ]; then
-    run_cpu=$current_cpu
-  fi
-
-  if [ -z "${run_ram}" ] || [ "$run_ram" -le 0 ]; then
-    run_ram=$current_ram
-  fi
-
-  if [ -z "${build_cpu}" ] || [ "$build_cpu" -le 0 ]; then
-    build_cpu=$current_cpu
-  fi
-
-  if [ -z "${build_ram}" ] || [ "$build_ram" -le 0 ]; then
-    build_ram=$current_ram
-  fi
-
-  UPDATE_BUILD_RESOURCES=0
-  if prepare_batch_resources; then :; else exit $?; fi
-  if [ "$build_cpu" -gt "$run_cpu" ] || [ "$build_ram" -gt "$run_ram" ]; then
-    UPDATE_BUILD_RESOURCES=1
-  fi
-
-  if [ "$UPDATE_BUILD_RESOURCES" -eq "1" ]; then
-    pct set "$container" --cores "$build_cpu" --memory "$build_ram"
+  if [[ "$admission_status" != 0 ]]; then
+    [[ "$first_admission_status" != 0 ]] || first_admission_status=$admission_status
+    if [[ "$admission_declined" == 1 ]]; then
+      containers_declined+=("$container")
+      printf 'Container %s declined; no software update attempted.\n' "$container" >&2
+    else
+      containers_admission_failed+=("$container")
+      printf 'Container %s admission failed (status %s); no software update attempted.\n' "$container" "$admission_status" >&2
+    fi
+    if restore_batch_start; then :; else
+      cleanup_status=$?
+      printf 'Container %s: unable to restore batch-owned start (status %s); inspect its actual state.\n' "$container" "$cleanup_status" >&2
+    fi
+    if continue_batch_updates; then continue; else break; fi
   fi
 
   case "$os" in
@@ -475,18 +500,16 @@ for container in $CHOICE; do
     fedora | rocky | centos | alma) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
     ubuntu | debian | devuan) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
     opensuse) pct exec "$container" -- bash -c "$UPDATE_CMD" ;;
+    *) false ;;
   esac
   exit_code=$?
 
   # A competing maintenance owner may still be modifying this CT. Status75 can
   # also be an app's temporary failure: neither permits automatic rollback.
   if [ "$exit_code" -eq 75 ]; then
-    printf 'Container %s temporarily unavailable/busy (status75); skipped without automatic rollback, shutdown, resource restore or reboot. Any backup already taken is retained.\n' "$container" >&2
+    printf 'Container %s temporarily unavailable/busy (status75); skipped without automatic rollback, shutdown or reboot. Any backup already taken is retained.\n' "$container" >&2
     if [ "$batch_started" -eq 1 ]; then
       printf 'Container %s: this batch started it; it is left running.\n' "$container" >&2
-    fi
-    if [ "$UPDATE_BUILD_RESOURCES" -eq 1 ]; then
-      printf 'Container %s: requested build resources cores=%s memory=%s (run cores=%s memory=%s); no automatic restore was attempted. Check the actual configuration and restore intended settings after maintenance finishes.\n' "$container" "$build_cpu" "$build_ram" "$run_cpu" "$run_ram" >&2
     fi
     containers_skipped_temporary+=("$container")
     continue
@@ -497,10 +520,6 @@ for container in $CHOICE; do
     pct shutdown $container &
   fi
 
-  if [ "$UPDATE_BUILD_RESOURCES" -eq "1" ]; then
-    pct set "$container" --cores "$run_cpu" --memory "$run_ram"
-  fi
-
   if pct exec "$container" -- [ -e "/var/run/reboot-required" ]; then
     container_hostname=$(pct exec "$container" hostname)
     containers_needing_reboot+=("$container ($container_hostname)")
@@ -509,6 +528,8 @@ for container in $CHOICE; do
   if [ $exit_code -eq 0 ]; then
     msg_ok "Updated container $container"
   elif [ "$BACKUP_CHOICE" == "yes" ]; then
+    containers_update_failed+=("$container")
+    normal_result=1
     msg_info "Restoring LXC from backup"
     pct stop $container
     LXC_STORAGE=$(pct config $container | awk -F '[:,]' '/rootfs/ {print $2}')
@@ -519,18 +540,21 @@ for container in $CHOICE; do
       msg_ok "Restored LXC from backup"
     else
       msg_error "Restored LXC from backup failed"
-      exit 1
+      exit_batch_update 1 abort
     fi
   else
-    msg_error "Update failed for container $container. Exiting"
-    exit 1
+    containers_update_failed+=("$container")
+    normal_result=1
+    msg_error "Update failed for container $container. Stopping"
+    containers_not_attempted+=("${batch_targets[@]:batch_index+1}")
+    exit_batch_update 1 abort
   fi
 done
 
 wait
 header_info
-if [ "${#containers_skipped_temporary[@]}" -gt 0 ]; then
-  printf 'Batch partially complete; temporary/busy skips (not updated): %s. Batch-started skipped CTs remain running; requested build-resource changes were not automatically restored (see per-CT details).\n' "${containers_skipped_temporary[*]}"
+if [[ "${#containers_skipped_temporary[@]}" -gt 0 || "$first_admission_status" != 0 || "$normal_result" != 0 ]]; then
+  printf 'Batch partially complete; temporary/busy skips (not updated): %s; declined: %s; failed admission: %s; failed updates: %s; not attempted: %s.\n' "${containers_skipped_temporary[*]:-none}" "${containers_declined[*]:-none}" "${containers_admission_failed[*]:-none}" "${containers_update_failed[*]:-none}" "${containers_not_attempted[*]:-none}"
 else
   echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
 fi
@@ -559,6 +583,4 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
     done
   fi
 fi
-if [ "${#containers_skipped_temporary[@]}" -gt 0 ]; then
-  exit 75
-fi
+exit_batch_update "$normal_result"

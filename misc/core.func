@@ -1942,26 +1942,70 @@ on_hup_keepalive() {
 }
 
 # ------------------------------------------------------------------------------
-# check_container_resources()
-#
-# - Checks LXC CPU/RAM against app-required values
-# - Warns if under-provisioned and prompts to continue or abort
+# Literal decimal normalization shared by resource admission. Never evaluate input.
+# Values are bounded before any arithmetic comparison (including leading zeroes).
 # ------------------------------------------------------------------------------
-check_container_resources() {
-  current_ram=$(free -m | awk 'NR==2{print $2}')
-  current_cpu=$(nproc)
+_container_resource_decimal() {
+  local LC_ALL=C _crd_value=$1 _crd_output=$2
+  [[ -n "$_crd_value" && "$_crd_value" != *[!0123456789]* ]] || return 65
+  while [[ ${#_crd_value} -gt 1 && "$_crd_value" == 0* ]]; do _crd_value=${_crd_value#0}; done
+  # Equal-length decimal string comparison prevents overflow before arithmetic.
+  # shellcheck disable=SC2071
+  [[ ${#_crd_value} -lt 19 || (${#_crd_value} == 19 && ! "$_crd_value" > 9223372036854775807) ]] || return 65
+  printf -v "$_crd_output" '%s' "$_crd_value"
+}
 
-  if [[ "$current_ram" -lt "${var_ram:-0}" ]] || [[ "$current_cpu" -lt "${var_cpu:-0}" ]]; then
-    echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu:-0} CPU, ${var_ram:-0}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
-    echo -e "${YWB}Please ensure that the ${APP} LXC is configured with at least ${var_cpu:-0} vCPU and ${var_ram:-0} MB RAM for the build process.${CL}\n"
-    echo -ne "${INFO}${HOLD} May cause data loss! ${INFO} Continue update with under-provisioned LXC? <yes/No>  "
-    read -r prompt
-    if [[ ! ${prompt,,} =~ ^(yes)$ ]]; then
-      echo -e "${CROSS}${HOLD} ${YWB}Exiting based on user input.${CL}"
-      exit 1
-    fi
+# Returning admission owner. Unknown requirements require consent; unknown actual
+# allocation is an error. App unattended/initial-confirm flags are not consent.
+confirm_container_resources() {
+  local _cr_cpu='' _cr_ram='' _cr_actual_cpu='' _cr_actual_ram='' _cr_unknown=0 _cr_prompt=''
+  local _cr_label=${5:-Container}
+  if ! _container_resource_decimal "${3:-}" _cr_actual_cpu ||
+    ! _container_resource_decimal "${4:-}" _cr_actual_ram ||
+    [[ "$_cr_actual_cpu" == 0 || "$_cr_actual_ram" == 0 ]]; then
+    printf 'Unable to measure actual CPU/RAM for %s; update not admitted.\n' "$_cr_label" >&2
+    return 65
+  fi
+  _container_resource_decimal "${1:-}" _cr_cpu || _cr_unknown=1
+  _container_resource_decimal "${2:-}" _cr_ram || _cr_unknown=1
+  if [[ "$_cr_unknown" == 0 && "$_cr_actual_cpu" -ge "$_cr_cpu" && "$_cr_actual_ram" -ge "$_cr_ram" ]]; then
+    return 0
+  fi
+  if [[ "$_cr_unknown" == 1 ]]; then
+    printf 'Warning: %s declared resource requirements are unknown or invalid; the minimum check is unavailable.\n' "$_cr_label" >&2
   else
-    echo -e ""
+    printf 'Warning: %s is under-provisioned for the declared requirements.\n' "$_cr_label" >&2
+  fi
+  printf 'Required: %s CPU, %s MiB RAM | Current: %s CPU, %s MiB RAM\n' "${_cr_cpu:-unknown}" "${_cr_ram:-unknown}" "$_cr_actual_cpu" "$_cr_actual_ram" >&2
+  printf 'Container resource configuration will not be changed. Continue update for %s? <yes/No> ' "$_cr_label" >&2
+  IFS= read -r _cr_prompt || return 1
+  case "${_cr_prompt,,}" in y | yes) return 0 ;; *) return 1 ;; esac
+}
+
+# No-argument compatibility adapter: refusal/query failure explicitly aborts,
+# including when a conditional caller suppresses errexit inside this function.
+check_container_resources() {
+  local current_cpu current_ram _cr_free _cr_status
+  current_cpu=$(nproc) || {
+    _cr_status=$?
+    printf 'Unable to read container CPU allocation.\n' >&2
+    exit "$_cr_status"
+  }
+  _cr_free=$(free -m) || {
+    _cr_status=$?
+    printf 'Unable to read container RAM allocation.\n' >&2
+    exit "$_cr_status"
+  }
+  current_ram=$(awk 'NR==2{print $2}' <<< "$_cr_free") || {
+    _cr_status=$?
+    exit "$_cr_status"
+  }
+  if confirm_container_resources "${var_cpu:-0}" "${var_ram:-0}" "$current_cpu" "$current_ram" "${APP:-Container}"; then
+    return 0
+  else
+    _cr_status=$?
+    printf 'Update aborted before software changes.\n' >&2
+    exit "$_cr_status"
   fi
 }
 

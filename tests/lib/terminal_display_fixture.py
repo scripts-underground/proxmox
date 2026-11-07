@@ -353,11 +353,11 @@ printf startup-callback
         check(slug + '/' + kind + ' real loaded declarations/header consumer', True, b'startup-callback' in out)
         check(slug + '/' + kind + ' real startup diagnostics', b'', err)
 
-# Execute the actual later fetch/parsing/fallback fragment, not a recreated parser.
+# Execute the actual read-only metadata/admission owner with source defaults.
 batch = (SOURCE / 'scripts/pve/update-apps.sh').read_text()
 batch_prefix = batch[:batch.index('# CONFIGURATION VARIABLES')]
-start = re.search(r'(?m)^  script=\$\(curl -fsSL ', batch).start()
-fragment = batch[start:batch.index('\n  UPDATE_BUILD_RESOURCES=0', start)]
+fragment = '\n'.join(re.search(r'(?ms)^function ' + name + r'\(\) \{\n.*?^\}', batch).group()
+                     for name in ('read_batch_requirements', 'admit_batch_update'))
 for kind, value in [('unset', None), ('empty', ''), ('custom', 'https://fixture.invalid/owned/ref')]:
     for failure in (False, True):
         expected = value or default_repo
@@ -368,24 +368,26 @@ curl() {{ printf 'curl %s\\n' "$*" >> {quote(requested)}; case "${{!#}}" in
 {quote(expected + '/misc/core.func')}) /bin/cat {quote(SOURCE / 'misc/core.func')} ;;
 {quote(expected + '/scripts/lxc/aria2.sh')}) {'return 47' if failure else '/bin/cat ' + quote(SOURCE / 'scripts/lxc/aria2.sh')} ;;
 *) return 89 ;; esac; }}
-pct() {{ printf 'pct %s\\n' "$*" >> {quote(requested)}; [[ "$*" == 'config 500' ]] || return 98; printf 'cores: 3\\nmemory: 1536\\n'; }}
+pct() {{ printf 'pct %s\\n' "$*" >> {quote(requested)}; case "$*" in 'exec 500 -- nproc') printf '3\\n';; 'exec 500 -- free -m') printf 'total used free\\nMem: 1536 0 0\\n';; *) return 98;; esac; }}
 {batch_prefix}
 load_functions
 container=500 service=aria2
 {fragment}
-printf 'resources:%s:%s:%s:%s' "$build_cpu" "$build_ram" "$run_cpu" "$run_ram"
+admit_batch_update <<< yes
+printf 'requirements:%s:%s' "$required_cpu" "$required_ram"
 '''
         rc, out, err = run('metadata-' + kind + '-' + str(failure), code)
         check(kind + '/' + str(failure) + ' actual metadata fragment status', 0, rc)
         check(kind + '/' + str(failure) + ' actual metadata URL/options/config request',
-              ['curl -fsSL ' + expected + '/misc/core.func', 'curl -fsSL ' + expected + '/scripts/lxc/aria2.sh', 'pct config 500'],
+              ['curl -fsSL ' + expected + '/misc/core.func', 'curl -fsSL ' + expected + '/scripts/lxc/aria2.sh', 'pct exec 500 -- nproc', 'pct exec 500 -- free -m'],
               requested.read_text().splitlines())
         check(kind + '/' + str(failure) + ' actual source resource consumer', True,
-              (b'resources:3:1536:3:1536' if failure else b'resources:2:1024:3:1536') in out)
-        check(kind + '/' + str(failure) + ' unchanged fetch-failure fallback diagnostic', failure, b'Proceeding with current resources' in out)
-        check(kind + '/' + str(failure) + ' no unexpected metadata stderr', b'', err)
+              (b'requirements::' if failure else b'requirements:2:1024') in out)
+        check(kind + '/' + str(failure) + ' failed metadata requires affirmative consent', failure, b'Continue update' in err)
+        check(kind + '/' + str(failure) + ' explicit unknown diagnostic', failure, b'requirements are unknown' in err)
 (WORK / 'checks.json').write_text(json.dumps(CHECKS, indent=2, default=serialize))
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
 if all(v['passed'] for v in CHECKS):
     subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/batch_metadata_fixture.py'), str(SOURCE)], check=True, timeout=120)
+    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/resource_consent_fixture.py'), str(SOURCE)], check=True, timeout=240)
 raise SystemExit(any(not v['passed'] for v in CHECKS))
