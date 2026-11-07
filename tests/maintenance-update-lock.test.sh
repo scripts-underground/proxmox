@@ -395,15 +395,28 @@ printf '%s %s\\n' "$tool" "$*" >> "$CASE_ROOT/commands"
 case "$tool:${1:-}" in
  curl:*)
   case "${!#}" in
-   */core.func) printf '%s\\n' 'msg_info() { :; }; msg_ok() { printf "OK %s\\n" "$*"; }; msg_error() { printf "ERROR %s\\n" "$*"; }; header_info() { :; }; BL= GN= CL= RD= YW= INFO= CROSS= HOLD= YWB=' ;;
-   */bootstrap/pve) : ;;
-   *) printf 'var_cpu="4"\\nvar_ram="4096"\\n' ;;
+   */core.func) cat "$SUBJECT_CORE" ;;
+   */bootstrap/pve) printf '%s\\n' 'load_functions; color; msg_info() { :; }; msg_ok() { printf "OK %s\\n" "$*"; }; msg_error() { printf "ERROR %s\\n" "$*"; }' ;;
+    *) [[ "${METADATA_FAIL:-0}" != 1 ]] || exit 47; if [[ -f "$CASE_ROOT/resource-source" ]]; then cat "$CASE_ROOT/resource-source"; else printf 'var_cpu="4"\\nvar_ram="4096"\\n'; fi ;;
   esac ;;
  pct:list) printf 'VMID Status Lock Name\\n500 stopped fixture\\n' ;;
  pct:status) printf 'status: stopped\\n' ;;
- pct:config) printf 'ostype: debian\\ncores: 2\\nmemory: 1024\\ntags: community-script\\nrootfs: local:fixture\\n' ;;
- pct:pull) printf 'probe\\n' > "${!#}" ;;
+ pct:config)
+  fixture_cpu=2 fixture_ram=1024
+  [[ ! -f "$CASE_ROOT/resource-config" ]] || read -r fixture_cpu fixture_ram < "$CASE_ROOT/resource-config"
+  printf 'ostype: debian\\ncores: %s\\nmemory: %s\\ntags: community-script\\nrootfs: local:fixture\\n' "$fixture_cpu" "$fixture_ram" ;;
+ pct:pull)
+  if [[ -n "${BATCH_BUNDLE:-}" ]]; then cp "$BATCH_BUNDLE" "${!#}"; else printf '%s\\n' 'bash -c "$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/ct/probe.sh)"' > "${!#}"; fi ;;
  pct:exec)
+   if [[ "$*" == 'exec '*' -- nproc' ]]; then
+    fixture_cpu=8 fixture_ram=8192
+    [[ ! -f "$CASE_ROOT/resource-config" ]] || read -r fixture_cpu fixture_ram < "$CASE_ROOT/resource-config"
+    printf '%s\\n' "$fixture_cpu"; exit
+   elif [[ "$*" == 'exec '*' -- free -m' ]]; then
+    fixture_cpu=8 fixture_ram=8192
+    [[ ! -f "$CASE_ROOT/resource-config" ]] || read -r fixture_cpu fixture_ram < "$CASE_ROOT/resource-config"
+    printf 'total used free\\nMem: %s 0 0\\n' "$fixture_ram"; exit
+   fi
   if [[ "$*" == *'-c '* ]]; then
    if [[ "$BATCH_RESULT" == busy ]]; then
     ROLE=update ACTION=plain ACTOR=Batch /bin/bash "$TEST_SCRIPT" --worker
@@ -415,28 +428,69 @@ case "$tool:${1:-}" in
   [[ "${!#}" != hostname ]] || printf 'fixture\\n'
   ;;
  vzdump:*) printf 'backup retained\\n' > "$CASE_ROOT/backup" ;;
- pct:set) [[ "${FAIL_SET:-0}" != 1 ]] || exit 47 ;;
+ pct:set)
+  [[ "${FAIL_SET:-0}" != 1 ]] || exit 47
+  if [[ -f "$CASE_ROOT/resource-config" ]]; then printf '%s %s\\n' "$4" "$6" > "$CASE_ROOT/resource-config"; printf '%s %s\\n' "$4" "$6" >> "$CASE_ROOT/resource-sets"; fi ;;
  pct:start) [[ "${FAIL_START:-0}" != 1 ]] || exit 48 ;;
  pct:* | sleep:* | clear:*) : ;;
  *) exit 97 ;;
 esac
 '''
 for name in ('pct','vzdump','curl','sleep','clear'):(batch_bin/name).write_text(model);(batch_bin/name).chmod(0o700)
-for result in ('busy','75','75-no-backup','75-set-failed','75-start-failed','mixed','41','0'):
+for result in ('busy','75','75-no-backup','mixed','41','0'):
  c=case('batch-'+result);(c/'commands').touch();a=None
  if result=='busy':a=start(c,action='hold-return');line(a[1])
  env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT='75' if result.startswith('75') else result,TMPDIR=str(c),FAIL_SET='1' if result=='75-set-failed' else '0',FAIL_START='1' if result=='75-start-failed' else '0',var_backup='no' if result=='75-no-backup' else 'yes',var_backup_storage='local',var_container='500,501' if result=='mixed' else '500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
  p=command(['/bin/bash',os.environ.get('BATCH_SCRIPT',str(root/'scripts/pve/update-apps.sh'))],env=env,cwd=c)
  skipped=result=='busy' or result.startswith('75') or result=='mixed'
- (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();check(p.returncode==(75 if skipped else 0),'whole batch reports '+('partial75 ' if skipped else 'completion0 ')+result)
+ (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();check(p.returncode==(75 if skipped else 1 if result=='41' else 0),'whole batch reports exact outcome '+result)
  if result=='busy' or result.startswith('75'):
-  check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required')) and trace.count('pct set ')==1,'batch '+result+' leaves running resources/data alone after75')
+  check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required','pct set ')),'batch '+result+' leaves running resources/data alone after75')
   check('not updated' in p.stdout.decode() and 'temporarily unavailable/busy' in p.stderr.decode() and (c/'backup').exists()==(result!='75-no-backup'),'batch '+result+' reports honest skip and preserves actual backup presence')
-  check('partially complete' in p.stdout.decode() and ('this batch started it; it is left running' in p.stderr.decode())==(result!='75-start-failed') and 'requested build resources cores=4 memory=4096 (run cores=2 memory=1024)' in p.stderr.decode(),'batch '+result+' reports actual successful start and requested resources without claiming apply')
+  check('partially complete' in p.stdout.decode() and 'this batch started it; it is left running' in p.stderr.decode() and 'requested build resources' not in p.stderr.decode(),'batch '+result+' reports actual successful start without sizing instructions')
  elif result=='mixed':check('pct reboot 501' in trace and 'pct reboot 500' not in trace and 'pct shutdown 500' not in trace,'batch handles successful CT reboot before final partial75')
  elif result=='41':check('pct stop' in trace and 'pct restore' in trace,'ordinary non75 batch failure retains backup restore path')
- else:check('pct shutdown' in trace and trace.count('pct set ')==2 and 'pct reboot' in trace,'successful batch retains shutdown/resources/reboot path')
+ else:check('pct shutdown' in trace and 'pct set ' not in trace and 'pct reboot' in trace,'successful batch retains shutdown/reboot without resizing')
  if a:check(finish(a,True)==0,'batch never disturbed real concurrent owner')
+
+# Real producer identity and real metadata source, with configuration writes
+# recorded by pct. Observe the retained pair, not merely requested argv.
+batch_bundle=work/'batch-current-update'
+app_source=(root/'scripts/lxc/changedetection.sh').read_text()
+app_declarations=app_source[:app_source.index('function install_script() {')]
+producer='''set -euo pipefail
+source "$1/misc/bundle.func"
+'''+app_declarations+'''
+NSAPP=${APP,,}; NSAPP=${NSAPP// /}; var_lxc_tmpdir=$2
+update_script() { :; }
+_write_bundle update update_script "$3/stage" 'run_update_script "$@"' > "$4"
+'''
+p=command(['/bin/bash','-c',producer,'_',str(root),str(work),str(work/'cold-writers'),str(batch_bundle)])
+assert p.returncode==0,p.stderr
+for label,cpu,ram,metadata_fail in [
+ ('cpu-short',1,8192,False),('ram-short',8,1024,False),
+ ('enough',8,8192,False),('equal',4,4096,False),
+ ('both-short',1,1024,False),('metadata-failed',3,1536,True)]:
+ for result in ('75','0','41'):
+  c=case('resources-'+label+'-'+result);(c/'commands').touch();(c/'resource-config').write_text(f'{cpu} {ram}\n');(c/'resource-source').write_text(app_source)
+  env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT=result,BATCH_BUNDLE=str(batch_bundle),METADATA_FAIL=str(int(metadata_fail)),TMPDIR=str(c),REPO_BASE='https://fixture.invalid/batch',var_backup='yes',var_backup_storage='local',var_container='500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
+  p=command(['/bin/bash',str(root/'scripts/pve/update-apps.sh')],env=env,cwd=c,input=b'yes\n')
+  (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();pair=(c/'resource-config').read_text().strip()
+  sets=(c/'resource-sets').read_text().splitlines() if (c/'resource-sets').exists() else []
+  check(p.returncode==(75 if result=='75' else 1 if result=='41' else 0),label+'/'+result+' whole batch status')
+  check('curl -fsSL https://fixture.invalid/batch/scripts/lxc/changedetection.sh\n' in trace,label+'/'+result+' actual produced identity reaches metadata URL')
+  check(sets==[] and 'pct set ' not in trace,label+'/'+result+' zero resource setters')
+  check(pair==f'{cpu} {ram}',label+'/'+result+' exact unchanged configuration readback')
+  if result=='75':check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required')),label+' raw75 performs no automatic rollback/shutdown/restore/reboot')
+  elif result=='41':check('pct stop' in trace and 'pct restore' in trace,label+' ordinary failure retains backup restoration')
+  else:check('pct shutdown' in trace and 'pct reboot' in trace,label+' ordinary success retains lifecycle')
+  (c/'resource-outcome.json').write_text(json.dumps(dict(initial=[cpu,ram],result=result,final=pair,sets=sets,metadata_failure=metadata_fail),indent=2))
+c=case('resources-unknown');(c/'commands').touch();(c/'resource-config').write_text('1 unknown\n');(c/'resource-source').write_text(app_source)
+env=dict(env,CASE_ROOT=str(c),BATCH_RESULT='75',METADATA_FAIL='0',TMPDIR=str(c))
+p=command(['/bin/bash',str(root/'scripts/pve/update-apps.sh')],env=env,cwd=c);trace=(c/'commands').read_text();(c/'batch.log').write_bytes(p.stdout+p.stderr)
+check(p.returncode==65,'unknown actual baseline refuses preparation65')
+check('pct set' not in trace and 'bash -c' not in trace,'unknown baseline issues no resource set or updater')
+check((c/'resource-config').read_text()=='1 unknown\n','unknown baseline configuration retained')
 
 # Launcher death does not expose a productive child; pending survives until retry.
 c=case('death');a=start(c,action='productive');child=int(line(a[1]).split()[1]);os.kill(a[0].pid,signal.SIGKILL);check(a[0].wait(timeout=10)==-9,'positively owned launcher SIGKILL')

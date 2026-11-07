@@ -22,7 +22,7 @@ var_addon_db_user="${var_addon_db_user:-jellystat}"
 var_addon_default_port="${var_addon_default_port:-3000}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
        __     ____           __        __
       / /__  / / /_  _______/ /_____ _/ /_

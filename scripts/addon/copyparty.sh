@@ -22,7 +22,7 @@ var_addon_svc_group="${var_addon_svc_group:-copyparty}"
 var_addon_default_port="${var_addon_default_port:-3923}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
    ______                  ____             __
   / ____/___  ____  __  __/ __ \____ ______/ /___  __

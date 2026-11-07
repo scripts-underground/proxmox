@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2046,SC2076,SC1090
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 set -eEuo pipefail
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
     _______ __                     __                    ______     _
    / ____(_) /__  _______  _______/ /____  ____ ___     /_  __/____(_)___ ___
@@ -19,6 +20,11 @@ BL="\033[36m"
 RD="\033[01;31m"
 GN="\033[1;92m"
 CL="\033[m"
+
+# framework bootstrap
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 LOGFILE="/var/log/fstrim.log"
 touch "$LOGFILE"
@@ -136,11 +142,6 @@ function trim_container() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | CTID=$container | Name=$name | Before=${before_trim:-N/A}% | After=${after_trim:-N/A}% | fstrim: $fstrim_output" >> "$LOGFILE"
   sleep 0.5
 }
-
-# framework bootstrap
-# shellcheck disable=SC1090
-# Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 for LINE in "${CTLINES[@]}"; do
   CTID=$(awk '{print $1}' <<< "$LINE")

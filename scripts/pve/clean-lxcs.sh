@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2199,SC2076,SC1090
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: tteck (tteckster) | MickLesk (CanbiZ)
@@ -7,7 +8,7 @@
 # https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
    ________                    __   _  ________
   / ____/ /__  ____ _____     / /  | |/ / ____/
@@ -25,6 +26,11 @@ RD="\033[01;31m"
 CM='\xE2\x9C\x94\033'
 GN="\033[1;92m"
 CL="\033[m"
+
+# framework bootstrap
+# shellcheck disable=SC1090
+# Dynamic URL resolved at runtime - shellcheck cannot follow
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 header_info
 echo "Loading..."
@@ -74,11 +80,6 @@ function run_lxc_clean() {
     fi
   '
 }
-
-# framework bootstrap
-# shellcheck disable=SC1090
-# Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/pve") 2> /dev/null
 
 for container in $(pct list | awk '{if(NR>1) print $1}'); do
   if [[ " ${excluded_containers[@]} " =~ " $container " ]]; then

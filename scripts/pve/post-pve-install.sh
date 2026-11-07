@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 tteck
 # Author: tteckster | MickLesk (CanbiZ)
@@ -6,7 +7,7 @@
 # https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
     ____ _    ________   ____             __     ____           __        ____
    / __ \ |  / / ____/  / __ \____  _____/ /_   /  _/___  _____/ /_____ _/ / /
@@ -72,7 +73,7 @@ main() {
     case $yn in
       [Yy]*) break ;;
       [Nn]*)
-        clear
+        terminal_clear
         exit
         ;;
       *) echo "Please answer yes or no." ;;

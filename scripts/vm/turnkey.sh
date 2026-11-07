@@ -18,7 +18,7 @@ VM_BIOS="${VM_BIOS:-seabios}"
 VM_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
  ______              __ __           __   _  _______
 /_  __/_ _________  / //_/__ __ __  / /  | |/_/ ___/

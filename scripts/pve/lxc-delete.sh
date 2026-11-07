@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     ____                                          __   _  ________   ____       __     __
    / __ \_________  _  ______ ___  ____  _  __   / /  | |/ / ____/  / __ \___  / /__  / /____

@@ -16,7 +16,7 @@ var_addon_app_dir="${var_addon_app_dir:-/opt/glances}"
 var_addon_service="${var_addon_service:-glances}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
    ________
   / ____/ /___ _____  ________  _____

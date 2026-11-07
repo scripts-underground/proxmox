@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
@@ -12,7 +13,7 @@ if ! command -v curl > /dev/null 2>&1; then
 fi
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/misc/core.func)
+source <(curl -fsSL "$REPO_BASE/misc/core.func")
 load_functions
 
 set -euo pipefail

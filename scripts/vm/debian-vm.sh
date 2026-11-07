@@ -17,7 +17,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     ____       __    _                ______
    / __ \___  / /_  (_)___ _____     <  /__ \

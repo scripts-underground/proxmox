@@ -22,7 +22,7 @@ var_addon_creds_path="${var_addon_creds_path:-/root/cronmaster.creds}"
 var_addon_default_port="${var_addon_default_port:-3000}"
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
    ______                __  ___           __
   / ____/________  ____ /  |/  /___ ______/ /____  _____

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 tteck
 # Author: tteck (tteckster)
@@ -6,7 +7,7 @@
 # https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
    __ __         __    ___           __
   / // /__  ___ / /_  / _ )___ _____/ /____ _____
