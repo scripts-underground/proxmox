@@ -269,6 +269,14 @@ Real-provider main cases verify retained config plus partial/no-reboot reporting
 and common-owner load failures stop selected GPUs without blocking USB.
 Pending lxc/devN changes and native deletion forms refuse before publication;
 unrelated pending and proven logical/default no-ops are preserved.
+Intel source cases execute the actual provider and native APT parser, index-target
+and simulated resolver against tiny file-backed archives. The archive catalogues
+and package effects are explicit models, not a claim of native Debian/Ubuntu tool
+installation. Deb822-only and legacy Debian/Ubuntu cases observe required component
+requests at native consumers, including disabled/folded entries, source options,
+operator-owned fragments, uid/gid/mode/xattr preservation and sufficient-source
+no-ops. Missing legacy files are valid; unreadable/malformed/concurrently edited
+sources and unavailable unchanged package requirements remain real error paths.
 Activation cases distinguish an empty native list (no attached device program)
 from nonempty ineffectual entries and compare directory orders across that
 boundary. Source references are LXC 5/6/7 `cgfsng_devices_activate`, `parse.c`

@@ -23,7 +23,18 @@ def exercise_gpu_contract(source, work, run, check, base, sections):
     programs = {
         'apt-get': r'''#!/bin/bash
 printf 'apt-get %s\n' "$*" >> "$GPU_TEST_ROOT/effects"
-case "$1" in update) exit "${GPU_TEST_UPDATE_RC:-0}";; install) exit "${GPU_TEST_INSTALL_RC:-0}";; *) exit 89;; esac
+case "$1" in
+ update)
+  [[ "${GPU_TEST_UPDATE_RC:-0}" == 0 ]] || exit "$GPU_TEST_UPDATE_RC"
+  if [[ -n "${GPU_TEST_SOURCE_EDIT:-}" ]]; then printf '# concurrent operator edit\n' >> "$GPU_TEST_SOURCE_EDIT"; fi
+  if [[ "${GPU_TEST_REFRESH_INDEX:-0}" == 1 ]]; then exec /usr/bin/apt-get "$@"; fi
+  exit 0;;
+ install)
+  [[ "${GPU_TEST_INSTALL_RC:-0}" == 0 ]] || exit "$GPU_TEST_INSTALL_RC"
+  if [[ "${GPU_TEST_INSTALL_SIMULATE:-0}" == 1 ]]; then exec /usr/bin/apt-get --simulate "$@"; fi
+  exit 0;;
+ *) exec /usr/bin/apt-get "$@";;
+esac
 ''',
         'adduser': r'''#!/bin/bash
 printf 'adduser %s\n' "$*" >> "$GPU_TEST_ROOT/effects"
@@ -55,12 +66,14 @@ gpu_test_pct() {
   *'/etc/os-release'*)
    [[ -z "${GPU_TEST_OS_RC:-}" ]] || return "$GPU_TEST_OS_RC"
    if [[ -n "${GPU_TEST_OS_RAW:-}" ]]; then printf '%s' "$GPU_TEST_OS_RAW"; return 0; fi;;
-  *'non-free.list'*) [[ -z "${GPU_TEST_SETUP_RC:-}" ]] || return "$GPU_TEST_SETUP_RC";;
+   *'non-free.list'*|*'INTEL_APT_COMPONENTS'*) [[ -z "${GPU_TEST_SETUP_RC:-}" ]] || return "$GPU_TEST_SETUP_RC";;
  esac
  "$@"
 }
 pct() { gpu_test_pct "$@"; }
 ''')
+    from intel_sources_fixture import prepare_intel_apt
+    prepare_intel_apt(work, apt)
 
     def provider(vendor, action, env=None):
         settings = {'ROOT': str(models), **(env or {})}

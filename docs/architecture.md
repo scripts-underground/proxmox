@@ -427,7 +427,21 @@ framebuffer-minor and DRM major-wide shape. Their actual providers explicitly
 return config, transport and required child package failures even under conditional
 callers. A typed OS-probe value is separate from pct status: transport/grep errors
 are not non-Alpine. Intel's intentionally optional group failures warn; AMD's
-required group failures return nonzero. Package/repository contents are unchanged.
+required group failures return nonzero. Package names remain unchanged.
+Intel repository enablement uses native APT source identities and verified archive
+metadata, not a legacy-file assumption or a fixed-release repository template.
+Only missing supported components are appended to active configured Debian/Ubuntu
+entries; URIs, suites, source options, disabled entries and operator fragments are
+preserved. Native APT validates the complete projection before publication, and
+each regular single-link source retains ownership/mode/xattrs through checked
+native metadata copying, concurrent-change checks and atomic file publication.
+Sufficient configured repository versions are a no-op; an installed-only package
+does not count as configured source support. Unknown/custom archives are
+not replaced with foreign repositories; real read/parse/update/package failures
+remain failures. Debian requires non-free for the media package; Ubuntu uses
+universe/multiverse. Repository component enablement does not manufacture an
+unavailable package: the unchanged intel-opencl-icd requirement has no candidate
+in current trixie metadata and must retain its genuine APT failure there.
 
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,

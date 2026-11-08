@@ -79,10 +79,220 @@ function passthrough_intel_to_lxc() {
   return 0
 }
 
+function _intel_enable_sources() {
+  local ctid="$1" script
+  shift
+  if script=$(
+    cat << 'PERL'
+# INTEL_APT_COMPONENTS: native APT owns parsing, origins and source identities.
+use strict;
+use warnings;
+use Fcntl qw(:DEFAULT :mode);
+use File::Temp qw(tempdir tempfile);
+use File::Basename qw(dirname basename);
+use File::Spec;
+use Text::ParseWords qw(shellwords);
+$ENV{LC_ALL} = 'C';
+sub status { return $? == -1 ? 127 : ($? & 127) ? 128 + ($? & 127) : $? >> 8; }
+sub capture {
+    my (@args) = @_;
+    open(my $fh, '-|', @args) or die "Cannot run $args[0]: $!\n";
+    binmode($fh);
+    local $/; my $raw = <$fh> // '';
+    close($fh) or exit(status());
+    return $raw;
+}
+sub command { system(@_); exit(status()) if $?; }
+sub identity { return join(':', @_[0,1,2,3,4,5,7,9,10]); }
+sub read_file {
+    my ($path) = @_;
+    sysopen(my $fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or die "Cannot read APT source $path: $!\n";
+    binmode($fh);
+    my @before = stat($fh); die "Not a regular APT source: $path\n" if !S_ISREG($before[2]);
+    local $/; my $raw = <$fh> // '';
+    my @after = stat($fh); close($fh) or die "Cannot close APT source $path: $!\n";
+    my @now = lstat($path);
+    die "APT source changed while reading $path\n" if !@now || identity(@before) ne identity(@after) || identity(@before) ne identity(@now);
+    return { raw => $raw, stat => \@before, identity => identity(@before) };
+}
+sub paths {
+    my %out;
+    for my $word (shellwords(capture('apt-config', 'shell', 'MAIN', 'Dir::Etc::sourcelist/f', 'PARTS', 'Dir::Etc::sourceparts/d', 'ETC', 'Dir::Etc/d', 'LISTS', 'Dir::State::lists/d'))) {
+        die "Invalid native APT path output\n" if $word !~ /^(MAIN|PARTS|ETC|LISTS)=(\/[^\0\r\n\t]*)$/;
+        $out{$1} = File::Spec->canonpath($2);
+    }
+    die "Incomplete native APT path output\n" if keys(%out) != 4;
+    return \%out;
+}
+my $paths = paths();
+sub source_files {
+    my @files;
+    my @main = lstat($paths->{MAIN});
+    if (@main) { push @files, $paths->{MAIN}; } elsif (!$!{ENOENT}) { die "Cannot inspect APT source $paths->{MAIN}: $!\n"; }
+    if (opendir(my $dir, $paths->{PARTS})) {
+        push @files, map { File::Spec->canonpath("$paths->{PARTS}/$_") }
+            grep { !/^\./ && /^[A-Za-z0-9_.-]+\.(?:list|sources)$/ } readdir($dir);
+        closedir($dir) or die "Cannot close APT source directory: $!\n";
+    } elsif (!$!{ENOENT}) { die "Cannot read APT source directory $paths->{PARTS}: $!\n"; }
+    my %seen; return sort grep { !$seen{$_}++ } @files;
+}
+my @files = source_files();
+my %sources = map { $_ => read_file($_) } @files;
+sub recheck {
+    my $now = paths();
+    die "APT source paths changed\n" if grep { $now->{$_} ne $paths->{$_} } keys %$paths;
+    die "APT source membership changed\n" if join("\0", source_files()) ne join("\0", @files);
+    for my $path (@files) {
+        my $current = read_file($path);
+        die "APT source changed: $path\n" if $current->{raw} ne $sources{$path}{raw} || $current->{identity} ne $sources{$path}{identity};
+    }
+}
+my $uris = capture('apt-get', '--print-uris', 'update');
+command('apt-get', 'update', '-qq', '-o', 'APT::Update::Error-Mode=any');
+my $available = 1;
+for my $package (@ARGV) {
+    # Madison lists repository versions, not an installed-only status candidate.
+    my $versions = capture('apt-cache', 'madison', $package);
+    $available = 0 if $versions !~ /\S/;
+}
+if ($available) { recheck(); exit 0; }
+my %metadata;
+for my $line (split /\n/, $uris) {
+    my @words = shellwords($line); next if @words < 2 || $words[0] !~ m{/InRelease$};
+    die "Invalid native APT metadata filename\n" if $words[1] =~ m{[/\0\r\n]};
+    my $name = "$paths->{LISTS}/$words[1]";
+    $name =~ s/InRelease$/Release/ if !-f $name;
+    next if !-f $name;
+    my $raw = read_file($name)->{raw};
+    my %tags; my $field = '';
+    for my $line (split /\n/, $raw) {
+        $line =~ s/\r$//;
+        if ($line =~ /^(Origin|Components):[ \t]*(.*)$/i) { $field = lc($1); $tags{$field} = $2; }
+        elsif ($line =~ /^[ \t]+(.*)$/ && length($field)) { $tags{$field} .= ' ' . $1; }
+        else { $field = ''; }
+    }
+    my ($origin, $components) = @tags{qw(origin components)};
+    $origin =~ s/^[ \t]+|[ \t]+$//g if defined($origin);
+    $metadata{$words[0]} = { origin => $origin // '', components => { map { $_ => 1 } split /\s+/, $components // '' } };
+}
+my $format = '$(SOURCESENTRY)' . "\t" . '$(CREATED_BY)' . "\t" . '$(COMPONENT)' . "\t" . '$(REPO_URI)' . "\t" . '$(RELEASE)';
+my %entries;
+for my $line (split /\n/, capture('apt-get', 'indextargets', '--no-release-info', '--format', $format)) {
+    my ($entry, $created, $component, $repo, $suite) = split /\t/, $line, -1;
+    next if !defined($suite) || $created ne 'Packages' || !length($component) || $component eq '$(COMPONENT)';
+    die "Uncharacterized native APT source identity\n" if $entry !~ /^(.*):([1-9][0-9]*)$/;
+    my ($path, $index) = (File::Spec->canonpath($1), $2);
+    die "APT source was not captured: $path\n" if !exists($sources{$path});
+    my $meta = $metadata{"${repo}dists/$suite/InRelease"};
+    my $origin = $meta ? $meta->{origin} : '';
+    my $kind = $origin =~ /^Debian(?: |$)/ ? 'debian' : $origin eq 'Ubuntu' ? 'ubuntu' : 'other';
+    my $row = $entries{$path}{$index} //= { kinds => {}, components => {}, supported => {} };
+    $row->{kinds}{$kind} = 1; $row->{components}{$component} = 1;
+    my @wanted = $kind eq 'debian' ? ('non-free') : $kind eq 'ubuntu' ? ('universe', 'multiverse') : ();
+    for my $want (@wanted) { $row->{supported}{$want} = 0 if !$meta->{components}{$want}; }
+}
+my %proposed;
+for my $path (sort keys %entries) {
+    my $raw = $sources{$path}{raw}; my @lines = split /(?<=\n)/, $raw; my %ranges;
+    if ($path =~ /\.sources$/) {
+        my (@record, $number); $number = 0;
+        for my $i (0 .. scalar(@lines)) {
+            if ($i == @lines || $lines[$i] =~ /^\r?\n$/) {
+                if (grep { /^[^# \t\r\n][^:]*:/ } @lines[@record]) { $ranges{++$number} = [@record]; }
+                @record = ();
+            } else { push @record, $i; }
+        }
+    } else { $ranges{$_ + 1} = [$_] for 0 .. $#lines; }
+    for my $index (sort { $a <=> $b } keys %{$entries{$path}}) {
+        my $row = $entries{$path}{$index};
+        my @kinds = keys %{$row->{kinds}}; next if @kinds == 1 && $kinds[0] eq 'other';
+        die "Mixed archive origins in APT source $path:$index\n" if @kinds != 1;
+        my @wanted = $kinds[0] eq 'debian' ? ('non-free') : ('universe', 'multiverse');
+        next if grep { exists($row->{supported}{$_}) && !$row->{supported}{$_} } @wanted;
+        my @missing = grep { !$row->{components}{$_} } @wanted; next if !@missing;
+        my $range = $ranges{$index} // die "Cannot locate native APT entry $path:$index\n";
+        my $position;
+        if ($path =~ /\.sources$/) {
+            my $in_components = 0;
+            for my $i (@$range) {
+                next if $lines[$i] =~ /^#/;
+                if ($lines[$i] =~ /^Components[ \t]*:/i) { $in_components = 1; $position = $i; }
+                elsif ($lines[$i] =~ /^[ \t]/) { $position = $i if $in_components; }
+                else { $in_components = 0; }
+            }
+            die "Cannot project Components at $path:$index\n" if !defined($position);
+        } else { $position = $range->[0]; }
+        my $line = $lines[$position]; my $end = length($line);
+        if ($path !~ /\.sources$/) {
+            my $depth = 0;
+            for my $i (0 .. length($line) - 1) {
+                my $c = substr($line, $i, 1); ++$depth if $c eq '['; --$depth if $c eq ']';
+                if ($c eq '#' && $depth <= 0) { $end = $i; last; }
+            }
+        }
+        my $body = substr($line, 0, $end); my $tail = substr($line, $end);
+        $body =~ s/([ \t\r\n]*)$/' ' . join(' ', @missing) . $1/e;
+        $lines[$position] = $body . $tail;
+    }
+    my $new = join('', @lines); $proposed{$path} = $new if $new ne $raw;
+}
+if (!%proposed) { recheck(); exit 0; }
+my $stage = tempdir('.gpu-intel-sources.XXXXXXXX', DIR => $paths->{ETC}, CLEANUP => 1);
+mkdir "$stage/parts" or die "Cannot create private APT source projection: $!\n";
+my %inverse; my $main = "$stage/main" . ($paths->{MAIN} =~ /\.sources$/ ? '.sources' : '.list');
+for my $path (@files) {
+    my @destinations;
+    push @destinations, $main if $path eq $paths->{MAIN};
+    push @destinations, "$stage/parts/" . basename($path) if dirname($path) eq $paths->{PARTS};
+    for my $target (@destinations) {
+        open(my $fh, '>:raw', $target) or die "Cannot write APT projection: $!\n";
+        print {$fh} $proposed{$path} // $sources{$path}{raw} or die "Cannot write APT projection: $!\n";
+        close($fh) or die "Cannot close APT projection: $!\n"; $inverse{$target} = $path;
+    }
+}
+my @project = ('-o', "Dir::Etc::sourcelist=$main", '-o', "Dir::Etc::sourceparts=$stage/parts");
+capture('apt-get', @project, '--print-uris', 'update');
+my %observed;
+for my $line (split /\n/, capture('apt-get', @project, 'indextargets', '--no-release-info', '--format', $format)) {
+    my ($entry, $created, $component) = split /\t/, $line;
+    next if !defined($created) || $created ne 'Packages' || $entry !~ /^(.*):([1-9][0-9]*)$/;
+    my ($target, $index) = ($1, $2); my $original = $inverse{$target} // die "Unknown projected APT source\n";
+    $observed{$original}{$index}{$component} = 1;
+}
+for my $path (keys %proposed) {
+    for my $index (keys %{$entries{$path}}) {
+        my $row = $entries{$path}{$index}; my @kinds = keys %{$row->{kinds}}; next if @kinds != 1 || $kinds[0] eq 'other';
+        my @wanted = $kinds[0] eq 'debian' ? ('non-free') : ('universe', 'multiverse');
+        next if grep { exists($row->{supported}{$_}) && !$row->{supported}{$_} } @wanted;
+        die "Native APT projection lost a component at $path:$index\n"
+            if grep { !$observed{$path}{$index}{$_} } (keys %{$row->{components}}, @wanted);
+    }
+}
+for my $path (sort keys %proposed) {
+    recheck(); my $before = $sources{$path};
+    die "Cannot preserve hardlinked APT source $path\n" if $before->{stat}[3] != 1;
+    my ($fh, $temporary) = tempfile('.gpu-intel-edit.XXXXXXXX', DIR => dirname($path), UNLINK => 1);
+    close($fh) or die "Cannot close APT stage: $!\n";
+    command('cp', '--preserve=mode,ownership,timestamps,xattr', '--', $path, $temporary);
+    open($fh, '>:raw', $temporary) or die "Cannot write APT stage: $!\n";
+    print {$fh} $proposed{$path} or die "Cannot write APT stage: $!\n";
+    close($fh) or die "Cannot close APT stage: $!\n";
+    recheck(); rename($temporary, $path) or die "Cannot publish APT source $path: $!\n";
+    my $after = read_file($path);
+    die "APT source publication/readback uncertainty: $path\n" if $after->{raw} ne $proposed{$path}
+        || join(':', @{$after->{stat}}[2,4,5]) ne join(':', @{$before->{stat}}[2,4,5]);
+    $sources{$path} = $after;
+}
+capture('apt-get', '--print-uris', 'update'); recheck();
+PERL
+  ); then :; else return $?; fi
+  if pct exec "$ctid" -- /usr/bin/perl -e "$script" -- "$@"; then :; else return $?; fi
+}
+
 function install_intel_tools_in_ct() {
   local ctid="$1"
-  local install_nonfree="yes"
   local kind
+  local packages=(va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free)
   [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
 
   if kind=$(_intel_ct_os "$ctid"); then :; else return $?; fi
@@ -91,35 +301,21 @@ function install_intel_tools_in_ct() {
     return 0
   fi
 
-  if [[ "$install_nonfree" == "yes" ]]; then
-    msg info "Enabling non-free sources in $ctid..."
-
-    if pct exec "$ctid" -- bash -c '
-      if grep -q "non-free" /etc/apt/sources.list; then exit 0; else
-        rc=$?; [[ "$rc" == 1 ]] || exit "$rc"
-      fi
-
-      cat <<EOF > /etc/apt/sources.list.d/non-free.list
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-EOF
-    '; then :; else return $?; fi
-  fi
+  msg info "Checking required components in configured APT sources in $ctid..."
+  if _intel_enable_sources "$ctid" "${packages[@]}"; then :; else return $?; fi
 
   msg info "Installing Intel tools in CT $ctid..."
 
   if pct exec "$ctid" -- bash -c '
       apt-get update -qq || exit $?
-      DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free >/dev/null 2>&1 || exit $?
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 || exit $?
       for group in video render; do
         if adduser root "$group" >/dev/null 2>&1; then :; else
           rc=$?; printf "Optional Intel membership failed for %s (status %s)\n" "$group" "$rc" >&2
         fi
       done
       exit 0
-    '; then :; else return $?; fi
+    ' gpu-intel-tools "${packages[@]}"; then :; else return $?; fi
 
   msg ok "Installed Intel VAAPI tools in $ctid"
 }

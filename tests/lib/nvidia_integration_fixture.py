@@ -360,6 +360,8 @@ from nvidia_policy_cases import exercise_policy
 exercise_policy(WORK, run, check, base, sections)
 from gpu_contract_fixture import exercise_gpu_contract
 exercise_gpu_contract(SOURCE, WORK, run, check, base, sections)
+from intel_sources_fixture import exercise_intel_sources
+exercise_intel_sources(SOURCE, WORK, run, check, base, sections)
 
 # The full real startup/dispatch remains the consumer; only operator inputs and
 # external hardware/service tools are replaced. Real helper bodies stay loaded.
