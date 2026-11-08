@@ -27,64 +27,431 @@ function intel_gpu_available() {
 }
 
 function is_alpine_ct() {
-  local ctid="$1"
-  pct exec "$ctid" -- sh -c 'grep -qi alpine /etc/os-release' > /dev/null 2>&1
+  local kind
+  if kind=$(_intel_ct_os "$1"); then :; else return $?; fi
+  [[ "$kind" == alpine ]]
+}
+
+function _intel_ct_os() {
+  local kind
+  if kind=$(pct exec "$1" -- sh -c '
+    if grep -qi alpine /etc/os-release; then printf alpine; else
+      rc=$?; [ "$rc" -eq 1 ] || exit "$rc"; printf other
+    fi
+  '); then :; else return $?; fi
+  case "$kind" in alpine | other) printf '%s' "$kind" ;; *)
+    msg err "Invalid container OS probe output"
+    return 65
+    ;;
+  esac
 }
 
 function passthrough_intel_to_lxc() {
   local ctid="$1"
-  local conf="/etc/pve/lxc/${ctid}.conf"
+  local dev numbers major minor
+  local required=() entries=()
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
+  if ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable"
+    return 127
+  fi
 
   if ! intel_gpu_available; then
     msg warn "No Intel iGPU detected on host"
     return 1
   fi
 
-  {
-    echo "# Intel iGPU (VAAPI)"
-    echo "lxc.cgroup2.devices.allow: c 226:* rwm"
-    echo "lxc.cgroup2.devices.allow: c 29:0 rwm"
-    echo "lxc.mount.entry: /dev/fb0 dev/fb0 none bind,optional,create=file"
-    echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir"
-    echo "lxc.mount.entry: /dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file"
-  } >> "$conf"
+  for dev in /dev/dri/renderD128 /dev/fb0; do
+    if [[ "$dev" == /dev/fb0 && ! -e "$dev" && ! -L "$dev" ]]; then continue; fi
+    if numbers=$(gpu_config_node "$dev"); then :; else return $?; fi
+    major=${numbers%%:*} minor=${numbers#*:}
+    required+=("$dev:$major:$minor")
+    if [[ "$dev" == /dev/fb0 ]]; then
+      entries+=("lxc.cgroup2.devices.allow" "c $major:$minor rwm")
+    else entries+=("lxc.cgroup2.devices.allow" "c $major:* rwm"); fi
+  done
+  entries+=("lxc.mount.entry" "/dev/fb0 dev/fb0 none bind,optional,create=file"
+    "lxc.mount.entry" "/dev/dri dev/dri none bind,optional,create=dir"
+    "lxc.mount.entry" "/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file")
+  if gpu_write_lxc_config "$ctid" "${#required[@]}" "${required[@]}" "${entries[@]}"; then :; else return $?; fi
 
   msg ok "Intel VAAPI passthrough applied to CT $ctid"
   return 0
 }
 
+function _intel_enable_sources() {
+  local ctid="$1" script
+  shift
+  if script=$(
+    cat << 'PERL'
+# INTEL_APT_COMPONENTS: native APT owns parsing, origins and source identities.
+use strict;
+use warnings;
+use Fcntl qw(:DEFAULT :mode);
+use Config;
+use File::Temp qw(tempdir);
+use File::Basename qw(dirname basename);
+use File::Spec;
+use Text::ParseWords qw(shellwords);
+$ENV{LC_ALL} = 'C';
+sub status { return $? == -1 ? 127 : ($? & 127) ? 128 + ($? & 127) : $? >> 8; }
+sub capture {
+    my (@args) = @_;
+    open(my $fh, '-|', @args) or die "Cannot run $args[0]: $!\n";
+    binmode($fh);
+    local $/; my $raw = <$fh> // '';
+    close($fh) or exit(status());
+    return $raw;
+}
+sub command { system(@_); exit(status()) if $?; }
+sub identity { return join(':', @_[0,1,2,3,4,5,7,9,10]); }
+sub binding {
+    my ($path) = @_;
+    my (@pending, @parts, @links, @dirs); @pending = split m{/}, $path;
+    my $hops = 0;
+    while (@pending) {
+        my $part = shift @pending;
+        next if $part eq '' || $part eq '.';
+        if ($part eq '..') { pop @parts; next; }
+        my $name = '/' . join('/', @parts, $part);
+        my @s = lstat($name); die "Cannot inspect APT source $path at $name: $!\n" if !@s;
+        if (S_ISLNK($s[2])) {
+            die "APT source alias cycle/depth: $path\n" if ++$hops > 40;
+            my $link = readlink($name); die "Cannot read APT source alias $name: $!\n" if !defined($link);
+            push @links, [$name, identity(@s), $link];
+            @parts = () if $link =~ m{^/};
+            unshift @pending, split m{/}, $link;
+        } else {
+            push @parts, $part;
+            if (@pending) {
+                die "Not an APT source directory: $name\n" if !S_ISDIR($s[2]);
+                push @dirs, [$name, join(':', @s[0,1,2,4,5])];
+            } else { die "Not a regular APT source: $path ($name)\n" if !S_ISREG($s[2]); }
+        }
+    }
+    return { target => '/' . join('/', @parts), links => \@links, dirs => \@dirs };
+}
+sub check_binding {
+    my ($path, $before) = @_;
+    for my $row (@{$before->{links}}) {
+        my ($name, $id, $link) = @$row; my @s = lstat($name);
+        die "APT source alias changed: $path ($name)\n" if !@s || !S_ISLNK($s[2])
+            || identity(@s) ne $id || readlink($name) ne $link;
+    }
+    for my $row (@{$before->{dirs}}) {
+        my ($name, $id) = @$row; my @s = lstat($name);
+        die "APT source directory changed: $path ($name)\n" if !@s || !S_ISDIR($s[2]) || join(':', @s[0,1,2,4,5]) ne $id;
+    }
+}
+sub read_regular {
+    my ($path) = @_;
+    my @named = lstat($path);
+    die "Not a regular APT source: $path\n" if !@named || !S_ISREG($named[2]);
+    # Linux O_PATH (asm-generic/fcntl.h) pins metadata without opening a device
+    # or FIFO for I/O if the pathname changes after lstat. Fcntl lacks O_PATH.
+    sysopen(my $pin, $path, 010000000 | O_NOFOLLOW) or die "Cannot pin APT source $path: $!\n";
+    my @pinned = stat($pin);
+    die "APT source changed before pinning $path\n" if !S_ISREG($pinned[2]) || identity(@pinned) ne identity(@named);
+    sysopen(my $fh, '/proc/' . $$ . '/fd/' . fileno($pin), O_RDONLY | O_NONBLOCK)
+        or die "Cannot read pinned APT source $path: $!\n";
+    binmode($fh);
+    my @before = stat($fh);
+    local $/; local $! = 0; my $raw = <$fh>;
+    die "Cannot read APT source $path: $!\n" if !defined($raw) && $!;
+    $raw //= '';
+    my @after = stat($fh); close($fh) or die "Cannot close APT source $path: $!\n";
+    my @now = lstat($path);
+    die "APT source changed while reading $path\n" if !@now || identity(@pinned) ne identity(@before)
+        || identity(@before) ne identity(@after) || identity(@before) ne identity(@now);
+    return { raw => $raw, stat => \@before, identity => identity(@before), pin => $pin };
+}
+sub read_file {
+    my ($path) = @_;
+    my $bound = binding($path); my $read = read_regular($bound->{target});
+    check_binding($path, $bound);
+    die "APT source resolution changed: $path\n" if binding($path)->{target} ne $bound->{target};
+    return { %$read, %$bound };
+}
+sub exchange_number {
+    # Linux UAPI: unistd_64.h, unistd_32.h and AArch64 asm-generic/unistd.h.
+    # syscall.ph is not perl-base; select only explicitly characterized ABIs.
+    my ($arch, $pointer, $long) = @Config{qw(archname ptrsize longsize)};
+    if ($^O eq 'linux') {
+        return 316 if $arch =~ /^x86_64-linux(?:-|$)/ && $pointer == 8 && $long == 8;
+        return 353 if $arch =~ /^i[3-6]86-linux(?:-|$)/ && $pointer == 4 && $long == 4;
+        return 276 if $arch =~ /^aarch64-linux(?:-|$)/ && $pointer == 8 && $long == 8;
+    }
+    die "Atomic APT source exchange unsupported ABI: $arch (pointer=$pointer, long=$long)\n";
+}
+sub exchange {
+    my ($number, $from, $to) = @_;
+    # AT_FDCWD=-100, RENAME_EXCHANGE=2; absolute names, no libc/mv fallback.
+    die "Atomic APT exchange requires absolute paths\n" if $from !~ m{^/} || $to !~ m{^/};
+    syscall($number, -100, $from, -100, $to, 2) == 0
+        or die "Atomic APT source exchange failed for $from and $to: $!\n";
+}
+sub probe_exchange {
+    my ($number, $directory) = @_;
+    my @probe = map { "$directory/probe-$_" } qw(left right);
+    my @inodes;
+    for my $path (@probe) {
+        sysopen(my $fh, $path, O_WRONLY | O_CREAT | O_EXCL, 0600) or die "Cannot prepare APT exchange probe: $!\n";
+        push @inodes, [stat($fh)]; close($fh) or die "Cannot close APT exchange probe: $!\n";
+    }
+    exchange($number, @probe);
+    for my $i (0, 1) {
+        my @now = lstat($probe[$i]); my $expected = $inodes[1 - $i];
+        die "Atomic APT exchange probe readback differs\n" if !@now || join(':', @now[0,1]) ne join(':', @$expected[0,1]);
+        unlink($probe[$i]) or die "Cannot release owned APT exchange probe: $!\n";
+    }
+}
+sub publication_intent {
+    my ($text) = @_;
+    my $offset = 0;
+    while ($offset < length($text)) {
+        my $written = syswrite(STDERR, $text, length($text) - $offset, $offset);
+        next if !defined($written) && $!{EINTR};
+        die "Cannot emit APT recovery intent: $!\n" if !defined($written) || !$written;
+        $offset += $written;
+    }
+}
+sub paths {
+    my %out;
+    for my $word (shellwords(capture('apt-config', 'shell', 'MAIN', 'Dir::Etc::sourcelist/f', 'PARTS', 'Dir::Etc::sourceparts/d', 'ETC', 'Dir::Etc/d', 'LISTS', 'Dir::State::lists/d'))) {
+        die "Invalid native APT path output\n" if $word !~ /^(MAIN|PARTS|ETC|LISTS)=(\/[^\0\r\n\t]*)$/;
+        $out{$1} = File::Spec->canonpath($2);
+    }
+    die "Incomplete native APT path output\n" if keys(%out) != 4;
+    return \%out;
+}
+my $paths = paths();
+sub source_files {
+    my @files;
+    my @main = lstat($paths->{MAIN});
+    if (@main) { push @files, $paths->{MAIN}; } elsif (!$!{ENOENT}) { die "Cannot inspect APT source $paths->{MAIN}: $!\n"; }
+    if (opendir(my $dir, $paths->{PARTS})) {
+        push @files, map { File::Spec->canonpath("$paths->{PARTS}/$_") }
+            grep { !/^\./ && /^[A-Za-z0-9_.-]+\.(?:list|sources)$/ } readdir($dir);
+        closedir($dir) or die "Cannot close APT source directory: $!\n";
+    } elsif (!$!{ENOENT}) { die "Cannot read APT source directory $paths->{PARTS}: $!\n"; }
+    my %seen; return sort grep { !$seen{$_}++ } @files;
+}
+my @files = source_files();
+my %sources = map { $_ => read_file($_) } @files;
+sub recheck {
+    my $now = paths();
+    die "APT source paths changed\n" if grep { $now->{$_} ne $paths->{$_} } keys %$paths;
+    die "APT source membership changed\n" if join("\0", source_files()) ne join("\0", @files);
+    for my $path (@files) {
+        my $current = read_file($path);
+        check_binding($path, $sources{$path});
+        die "APT source changed: $path\n" if $current->{raw} ne $sources{$path}{raw}
+            || $current->{identity} ne $sources{$path}{identity} || $current->{target} ne $sources{$path}{target};
+    }
+}
+my $uris = capture('apt-get', '--print-uris', 'update');
+command('apt-get', 'update', '-qq', '-o', 'APT::Update::Error-Mode=any');
+my $available = 1;
+for my $package (@ARGV) {
+    # Madison lists repository versions, not an installed-only status candidate.
+    my $versions = capture('apt-cache', 'madison', $package);
+    $available = 0 if $versions !~ /\S/;
+}
+if ($available) { recheck(); exit 0; }
+my %metadata;
+for my $line (split /\n/, $uris) {
+    my @words = shellwords($line); next if @words < 2 || $words[0] !~ m{/InRelease$};
+    die "Invalid native APT metadata filename\n" if $words[1] =~ m{[/\0\r\n]};
+    my $name = "$paths->{LISTS}/$words[1]";
+    $name =~ s/InRelease$/Release/ if !-f $name;
+    next if !-f $name;
+    my $raw = read_file($name)->{raw};
+    my %tags; my $field = '';
+    for my $line (split /\n/, $raw) {
+        $line =~ s/\r$//;
+        if ($line =~ /^(Origin|Components):[ \t]*(.*)$/i) { $field = lc($1); $tags{$field} = $2; }
+        elsif ($line =~ /^[ \t]+(.*)$/ && length($field)) { $tags{$field} .= ' ' . $1; }
+        else { $field = ''; }
+    }
+    my ($origin, $components) = @tags{qw(origin components)};
+    $origin =~ s/^[ \t]+|[ \t]+$//g if defined($origin);
+    $metadata{$words[0]} = { origin => $origin // '', components => { map { $_ => 1 } split /\s+/, $components // '' } };
+}
+my $format = '$(SOURCESENTRY)' . "\t" . '$(CREATED_BY)' . "\t" . '$(COMPONENT)' . "\t" . '$(REPO_URI)' . "\t" . '$(RELEASE)';
+my %entries;
+for my $line (split /\n/, capture('apt-get', 'indextargets', '--no-release-info', '--format', $format)) {
+    my ($entry, $created, $component, $repo, $suite) = split /\t/, $line, -1;
+    next if !defined($suite) || $created ne 'Packages' || !length($component) || $component eq '$(COMPONENT)';
+    die "Uncharacterized native APT source identity\n" if $entry !~ /^(.*):([1-9][0-9]*)$/;
+    my ($path, $index) = (File::Spec->canonpath($1), $2);
+    die "APT source was not captured: $path\n" if !exists($sources{$path});
+    my $meta = $metadata{"${repo}dists/$suite/InRelease"};
+    my $origin = $meta ? $meta->{origin} : '';
+    my $kind = $origin =~ /^Debian(?: |$)/ ? 'debian' : $origin eq 'Ubuntu' ? 'ubuntu' : 'other';
+    my $row = $entries{$path}{$index} //= { kinds => {}, components => {}, supported => {} };
+    $row->{kinds}{$kind} = 1; $row->{components}{$component} = 1;
+    my @wanted = $kind eq 'debian' ? ('non-free') : $kind eq 'ubuntu' ? ('universe', 'multiverse') : ();
+    for my $want (@wanted) { $row->{supported}{$want} = 0 if !$meta->{components}{$want}; }
+}
+my %proposed;
+for my $path (sort keys %entries) {
+    my $raw = $sources{$path}{raw}; my @lines = split /(?<=\n)/, $raw; my %ranges;
+    if ($path =~ /\.sources$/) {
+        my (@record, $number); $number = 0;
+        for my $i (0 .. scalar(@lines)) {
+            if ($i == @lines || $lines[$i] =~ /^\r?\n$/) {
+                if (grep { /^[^# \t\r\n][^:]*:/ } @lines[@record]) { $ranges{++$number} = [@record]; }
+                @record = ();
+            } else { push @record, $i; }
+        }
+    } else { $ranges{$_ + 1} = [$_] for 0 .. $#lines; }
+    for my $index (sort { $a <=> $b } keys %{$entries{$path}}) {
+        my $row = $entries{$path}{$index};
+        my @kinds = keys %{$row->{kinds}}; next if @kinds == 1 && $kinds[0] eq 'other';
+        die "Mixed archive origins in APT source $path:$index\n" if @kinds != 1;
+        my @wanted = $kinds[0] eq 'debian' ? ('non-free') : ('universe', 'multiverse');
+        next if grep { exists($row->{supported}{$_}) && !$row->{supported}{$_} } @wanted;
+        my @missing = grep { !$row->{components}{$_} } @wanted; next if !@missing;
+        my $range = $ranges{$index} // die "Cannot locate native APT entry $path:$index\n";
+        my $position;
+        if ($path =~ /\.sources$/) {
+            my $in_components = 0;
+            for my $i (@$range) {
+                next if $lines[$i] =~ /^#/;
+                if ($lines[$i] =~ /^Components[ \t]*:/i) { $in_components = 1; $position = $i; }
+                elsif ($lines[$i] =~ /^[ \t]/) { $position = $i if $in_components; }
+                else { $in_components = 0; }
+            }
+            die "Cannot project Components at $path:$index\n" if !defined($position);
+        } else { $position = $range->[0]; }
+        my $line = $lines[$position]; my $end = length($line);
+        if ($path !~ /\.sources$/) {
+            my $depth = 0;
+            for my $i (0 .. length($line) - 1) {
+                my $c = substr($line, $i, 1); ++$depth if $c eq '['; --$depth if $c eq ']';
+                if ($c eq '#' && $depth <= 0) { $end = $i; last; }
+            }
+        }
+        my $body = substr($line, 0, $end); my $tail = substr($line, $end);
+        $body =~ s/([ \t\r\n]*)$/' ' . join(' ', @missing) . $1/e;
+        $lines[$position] = $body . $tail;
+    }
+    my $new = join('', @lines); $proposed{$path} = $new if $new ne $raw;
+}
+if (!%proposed) { recheck(); exit 0; }
+my $exchange = exchange_number();
+my $stage = tempdir('.gpu-intel-sources.XXXXXXXX', DIR => $paths->{ETC}, CLEANUP => 1);
+mkdir "$stage/parts" or die "Cannot create private APT source projection: $!\n";
+my %inverse; my $main = "$stage/main" . ($paths->{MAIN} =~ /\.sources$/ ? '.sources' : '.list');
+for my $path (@files) {
+    my @destinations;
+    push @destinations, $main if $path eq $paths->{MAIN};
+    push @destinations, "$stage/parts/" . basename($path) if dirname($path) eq $paths->{PARTS};
+    for my $target (@destinations) {
+        open(my $fh, '>:raw', $target) or die "Cannot write APT projection: $!\n";
+        print {$fh} $proposed{$path} // $sources{$path}{raw} or die "Cannot write APT projection: $!\n";
+        close($fh) or die "Cannot close APT projection: $!\n"; $inverse{$target} = $path;
+    }
+}
+my @project = ('-o', "Dir::Etc::sourcelist=$main", '-o', "Dir::Etc::sourceparts=$stage/parts");
+capture('apt-get', @project, '--print-uris', 'update');
+my %observed;
+for my $line (split /\n/, capture('apt-get', @project, 'indextargets', '--no-release-info', '--format', $format)) {
+    my ($entry, $created, $component) = split /\t/, $line;
+    next if !defined($created) || $created ne 'Packages' || $entry !~ /^(.*):([1-9][0-9]*)$/;
+    my ($target, $index) = ($1, $2); my $original = $inverse{$target} // die "Unknown projected APT source\n";
+    $observed{$original}{$index}{$component} = 1;
+}
+for my $path (keys %proposed) {
+    for my $index (keys %{$entries{$path}}) {
+        my $row = $entries{$path}{$index}; my @kinds = keys %{$row->{kinds}}; next if @kinds != 1 || $kinds[0] eq 'other';
+        my @wanted = $kinds[0] eq 'debian' ? ('non-free') : ('universe', 'multiverse');
+        next if grep { exists($row->{supported}{$_}) && !$row->{supported}{$_} } @wanted;
+        die "Native APT projection lost a component at $path:$index\n"
+            if grep { !$observed{$path}{$index}{$_} } (keys %{$row->{components}}, @wanted);
+    }
+}
+for my $path (sort keys %proposed) {
+    recheck(); my $before = $sources{$path};
+    die "Cannot preserve hardlinked APT source $path\n" if $before->{stat}[3] != 1;
+    my $target = $before->{target};
+    die "Cannot publish multiply aliased APT source target $target (via $path)\n"
+        if grep { $_ ne $path && $sources{$_}{target} eq $target } @files;
+    # The exchange operand becomes the actual displaced inode. Neither it nor
+    # its directory may be registered for automatic cleanup, including normal
+    # exit after the syscall but before readback. The live path is never removed.
+    my $recovery = tempdir('.gpu-intel-recovery.XXXXXXXX', DIR => dirname($target), CLEANUP => 0);
+    my $saved = "$recovery/source";
+    probe_exchange($exchange, $recovery);
+    sysopen(my $fh, $saved, O_WRONLY | O_CREAT | O_EXCL, 0600) or die "Cannot prepare APT exchange candidate: $!\n";
+    close($fh) or die "Cannot close APT stage: $!\n";
+    command('cp', '--preserve=mode,ownership,timestamps,xattr', '--', '/proc/' . $$ . '/fd/' . fileno($before->{pin}), $saved);
+    open($fh, '>:raw', $saved) or die "Cannot write APT stage: $!\n";
+    print {$fh} $proposed{$path} or die "Cannot write APT stage: $!\n";
+    close($fh) or die "Cannot close APT stage: $!\n";
+    my $candidate = read_regular($saved);
+    recheck();
+    publication_intent("APT source publication intent: $path; atomic exchange recovery path $saved; completion unconfirmed\n");
+    my $exchanged = 0;
+    eval {
+        exchange($exchange, $target, $saved); $exchanged = 1;
+        my $original = read_regular($saved);
+        # Exchange changes ctime; every other captured identity field and the
+        # actual displaced bytes must still agree with the pinned original.
+        my $same = sub {
+            my ($current) = @_;
+            return $current->{raw} eq $before->{raw}
+                && join(':', @{$current->{stat}}[0,1,2,3,4,5,7,9]) eq join(':', @{$before->{stat}}[0,1,2,3,4,5,7,9]);
+        };
+        die "Concurrent displaced APT source edit\n" if !$same->($original);
+        check_binding($path, $before);
+        my $after = read_file($path);
+        die "APT source publication/readback differs\n" if $after->{raw} ne $proposed{$path}
+            || join(':', @{$after->{stat}}[0,1]) ne join(':', @{$candidate->{stat}}[0,1])
+            || join(':', @{$after->{stat}}[2,4,5]) ne join(':', @{$before->{stat}}[2,4,5]);
+        die "Concurrent original-inode APT source edit\n" if !$same->(read_regular($saved));
+        $sources{$path} = $after;
+        1;
+    } or do {
+        my $error = $@ || "Unknown publication error\n";
+        die "APT source publication uncertainty: $path; possible partial change; "
+            . ($exchanged ? "actual displaced inode retained for recovery at $saved; no automatic restore: " : "exchange unconfirmed; candidate/displaced inode retained at recovery path $saved: ") . $error;
+    };
+    warn "APT source updated: $path; original inode retained for recovery at $saved (operator-owned metadata, private directory; not automatically removed)\n";
+}
+capture('apt-get', '--print-uris', 'update'); recheck();
+PERL
+  ); then :; else return $?; fi
+  if pct exec "$ctid" -- /usr/bin/perl -e "$script" -- "$@"; then :; else return $?; fi
+}
+
 function install_intel_tools_in_ct() {
   local ctid="$1"
-  local install_nonfree="yes"
+  local kind
+  local packages=(va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free)
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
 
-  if is_alpine_ct "$ctid"; then
+  if kind=$(_intel_ct_os "$ctid"); then :; else return $?; fi
+  if [[ "$kind" == alpine ]]; then
     msg warn "Skipping Intel tool install for Alpine CT $ctid"
     return 0
   fi
 
-  if [[ "$install_nonfree" == "yes" ]]; then
-    msg info "Enabling non-free sources in $ctid..."
-
-    pct exec "$ctid" -- bash -c '
-      grep -q "non-free" /etc/apt/sources.list && exit 0
-
-      cat <<EOF > /etc/apt/sources.list.d/non-free.list
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-EOF
-    '
-  fi
+  msg info "Checking required components in configured APT sources in $ctid..."
+  if _intel_enable_sources "$ctid" "${packages[@]}"; then :; else return $?; fi
 
   msg info "Installing Intel tools in CT $ctid..."
 
-  pct exec "$ctid" -- bash -c "
-      apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free >/dev/null 2>&1
-      adduser root video >/dev/null 2>&1 || true
-      adduser root render >/dev/null 2>&1 || true
-    "
+  if pct exec "$ctid" -- bash -c '
+      apt-get update -qq -o APT::Update::Error-Mode=any || exit $?
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 || exit $?
+      for group in video render; do
+        if adduser root "$group" >/dev/null 2>&1; then :; else
+          rc=$?; printf "Optional Intel membership failed for %s (status %s)\n" "$group" "$rc" >&2
+        fi
+      done
+      exit 0
+    ' gpu-intel-tools "${packages[@]}"; then :; else return $?; fi
 
   msg ok "Installed Intel VAAPI tools in $ctid"
 }

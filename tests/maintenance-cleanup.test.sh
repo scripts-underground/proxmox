@@ -81,6 +81,8 @@ if [[ "${1:-}" == --child ]]; then
     esac
     return 0
   }
+  # Known unit requirements; retain the real public admission/cleanup owner.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   run_update_script
 fi
 

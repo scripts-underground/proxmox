@@ -224,6 +224,14 @@ after_restart = observe('after-snapshot-restart')
 assert after_restart['pid'] != before['pid']
 assert {str(p): digest(p) for p in protected} == saved
 version = Path('/root/.dragonfly').read_text().strip()
+updater = Path('/usr/local/sbin/update')
+updater_lines = updater.read_text().splitlines()
+baked = {}
+for field, value in [('LXC_SCRIPT_ID', 'dragonfly'), ('LXC_REQUIRED_CPU', '2'), ('LXC_REQUIRED_RAM', '1024')]:
+    lines = [line for line in updater_lines if line.startswith('declare -- ' + field + '=')]
+    assert lines == ['declare -- ' + field + '=' + value], (field, lines)
+    baked[field] = value
+record('installed-updater-provenance', dict(file=digest(updater), fields=baked))
 assert command('dpkg-query', '-W', '-f=${Version} ${Architecture}', 'dragonfly') == '2.1 amd64'
 assert version == '2.1'
 outcomes = [before, after_restart]

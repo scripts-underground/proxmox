@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -25,6 +26,133 @@ var hookNames = []string{
 	"install_script", "update_script", "uninstall_script",
 	"pre_build_script", "post_build_script", "post_install_script",
 	"header_info",
+}
+
+var lxcScriptIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// Literal identity data is never expanded using an interpreter or environment.
+func sourceIdentityLiteral(word *syntax.Word) (string, bool) {
+	if word == nil || len(word.Parts) != 1 {
+		return "", false
+	}
+	switch part := word.Parts[0].(type) {
+	case *syntax.Lit:
+		return part.Value, true
+	case *syntax.SglQuoted:
+		return part.Value, !part.Dollar
+	case *syntax.DblQuoted:
+		if part.Dollar {
+			return "", false
+		}
+		var value strings.Builder
+		for _, item := range part.Parts {
+			lit, ok := item.(*syntax.Lit)
+			if !ok {
+				return "", false
+			}
+			value.WriteString(lit.Value)
+		}
+		return value.String(), true
+	}
+	return "", false
+}
+
+func sourceIdentityParameter(word *syntax.Word, name string) bool {
+	if word == nil || len(word.Parts) != 1 {
+		return false
+	}
+	quoted, ok := word.Parts[0].(*syntax.DblQuoted)
+	if !ok || quoted.Dollar || len(quoted.Parts) != 1 {
+		return false
+	}
+	part, ok := quoted.Parts[0].(*syntax.ParamExp)
+	return ok && part.Param != nil && part.Param.Value == name && part.Short &&
+		!part.Excl && !part.Length && !part.Width && part.Index == nil && part.Exp == nil &&
+		part.Slice == nil && part.Repl == nil && part.Names == 0
+}
+
+func lxcBootstrapCall(call *syntax.CallExpr) bool {
+	if len(call.Assigns) != 0 || len(call.Args) < 2 {
+		return false
+	}
+	name, ok := sourceIdentityLiteral(call.Args[0])
+	if !ok || name != "source" {
+		return false
+	}
+	if len(call.Args[1].Parts) != 1 {
+		return false
+	}
+	proc, ok := call.Args[1].Parts[0].(*syntax.ProcSubst)
+	if !ok || proc.Op.String() != "<(" || len(proc.Stmts) != 1 {
+		return false
+	}
+	stmt := proc.Stmts[0]
+	if stmt.Negated || stmt.Background || len(stmt.Redirs) != 0 {
+		return false
+	}
+	fetch, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(fetch.Assigns) != 0 || len(fetch.Args) != 3 {
+		return false
+	}
+	name, ok = sourceIdentityLiteral(fetch.Args[0])
+	if !ok || name != "curl" {
+		return false
+	}
+	flags, ok := sourceIdentityLiteral(fetch.Args[1])
+	if !ok || flags != "-fsSL" {
+		return false
+	}
+	url := fetch.Args[2]
+	if len(url.Parts) != 1 {
+		return false
+	}
+	quoted, ok := url.Parts[0].(*syntax.DblQuoted)
+	if !ok || quoted.Dollar || len(quoted.Parts) != 2 {
+		return false
+	}
+	base, ok := quoted.Parts[0].(*syntax.ParamExp)
+	if !ok || base.Param == nil || base.Param.Value != "REPO_BASE" || base.Exp != nil ||
+		base.Excl || base.Length || base.Index != nil || base.Slice != nil || base.Repl != nil {
+		return false
+	}
+	path, ok := quoted.Parts[1].(*syntax.Lit)
+	return ok && path.Value == "/misc/bootstrap/lxc"
+}
+
+func validateLXCSourceIdentity(file *syntax.File, slug string, violations *[]string) {
+	var calls []*syntax.CallExpr
+	for _, stmt := range file.Stmts {
+		call, ok := stmt.Cmd.(*syntax.CallExpr)
+		if ok && !stmt.Negated && !stmt.Background && len(stmt.Redirs) == 0 && lxcBootstrapCall(call) {
+			calls = append(calls, call)
+		}
+	}
+	bad := func(reason string) {
+		*violations = append(*violations, fmt.Sprintf("  scripts/lxc/%s.sh: source identity: %s", slug, reason))
+	}
+	if len(calls) != 1 {
+		bad("require exactly one top-level LXC bootstrap call")
+		return
+	}
+	args := calls[0].Args
+	if len(args) != 6 {
+		bad("require --script-id <literal-slug> -- followed by quoted $@")
+		return
+	}
+	flag, ok := sourceIdentityLiteral(args[2])
+	if !ok || flag != "--script-id" {
+		bad("missing literal --script-id")
+		return
+	}
+	id, ok := sourceIdentityLiteral(args[3])
+	if !ok || id != slug || !lxcScriptIDPattern.MatchString(id) || strings.HasSuffix(id, ".sh") {
+		bad("identity must be the literal canonical filename stem")
+		return
+	}
+	separator, ok := sourceIdentityLiteral(args[4])
+	if !ok || separator != "--" || !sourceIdentityParameter(args[5], "@") {
+		bad("require literal separator and quoted argument forwarding")
+	}
 }
 
 // ---  Schema types (shared) ---
@@ -1186,6 +1314,9 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 		heredocOutputs:     map[int]string{},
 	}
 
+	if scriptType == TypeLXC {
+		validateLXCSourceIdentity(astFile, slug, violations)
+	}
 	// Bootstrap detection via source text scan
 	for li, l := range lines {
 		if strings.Contains(l, "source") && strings.Contains(l, "bootstrap/") && strings.Contains(l, "curl") {
@@ -1554,7 +1685,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Generated AST files for %d scripts\n", total)
 
 	if len(allViolations) > 0 {
-		fmt.Fprintf(os.Stderr, "\n=== REPO_BASE Violations ===\n")
+		fmt.Fprintf(os.Stderr, "\n=== Script Policy Violations ===\n")
 		for _, v := range allViolations {
 			fmt.Fprintln(os.Stderr, v)
 		}

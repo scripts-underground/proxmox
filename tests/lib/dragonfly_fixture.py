@@ -178,8 +178,12 @@ for arch in ('amd64', 'arm64'):
     compose = 'source ' + shlex.quote(str(ROOT / 'misc/bundle.func')) + '\nsource ' + shlex.quote(str(c / 'hooks.sh')) + '\n'
     compose += 'export APP=Dragonfly NSAPP=dragonfly REPO_BASE=https://fixture.invalid var_lxc_tmpdir=' + shlex.quote(str(c / 'tmp')) + '\n'
     for role, pipeline in (('install', 'install_script'), ('update', 'run_update_script "$@"')):
-        compose += '_write_bundle ' + role + ' ' + role + '_script ' + shlex.quote(str(c / 'stage')) + ' ' + shlex.quote(pipeline) + ' > ' + shlex.quote(str(c / (role + '-master.sh'))) + '\n'
+        prefix = ' --script-id dragonfly -- --requirements 2 1024 --' if role == 'update' else ''
+        compose += '_write_bundle ' + role + ' ' + role + '_script ' + shlex.quote(str(c / 'stage')) + prefix + ' ' + shlex.quote(pipeline) + ' > ' + shlex.quote(str(c / (role + '-master.sh'))) + '\n'
     subprocess.run(['/bin/bash', '-ceu', compose], check=True, timeout=30, capture_output=True)
+    bundle = (c / 'update-master.sh').read_text().splitlines()
+    for field, value in [('LXC_SCRIPT_ID', 'dragonfly'), ('LXC_REQUIRED_CPU', '2'), ('LXC_REQUIRED_RAM', '1024')]:
+        check(arch + ' cold update bakes ' + field, ['declare -- ' + field + '=' + value], [line for line in bundle if line.startswith('declare -- ' + field + '=')])
     env = dict(os.environ, CASE_ROOT=str(c), TEST_ARCH=arch, STD='', HOME=str(c / 'home'), FAULT='', SYSTEMD_VERSION='257')
 
     def run(label, role='install', args=(), **overrides):

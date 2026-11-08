@@ -36,6 +36,7 @@ if [[ "${1:-}" == --child ]]; then
   gem() { :; }
   composer() { :; }
   update_script() { exit 0; }
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   run_update_script
 fi
 work=$(mktemp -d "$TMPDIR/maintenance-bundle-bootstrap.XXXXXX")

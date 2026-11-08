@@ -28,41 +28,65 @@ function amd_gpu_available() {
 
 function passthrough_amd_to_lxc() {
   local ctid="$1"
-  local conf="/etc/pve/lxc/${ctid}.conf"
+  local dev numbers major minor
+  local required=() entries=()
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
+  if ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable"
+    return 127
+  fi
 
   if ! amd_gpu_available; then
     msg warn "No AMD GPU with ROCm support detected"
     return 1
   fi
 
-  grep -q "/dev/kfd" "$conf" 2> /dev/null && return 0
-
-  {
-    echo "# AMD ROCm GPU"
-    echo "lxc.cgroup2.devices.allow: c 226:* rwm"
-    echo "lxc.cgroup2.devices.allow: c 238:* rwm"
-    echo "lxc.mount.entry: /dev/kfd dev/kfd none bind,optional,create=file"
-    echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir"
-  } >> "$conf"
+  for dev in /dev/kfd /dev/dri/card* /dev/dri/renderD*; do
+    if [[ "$dev" != /dev/kfd && ! -e "$dev" && ! -L "$dev" ]]; then continue; fi
+    if numbers=$(gpu_config_node "$dev"); then :; else return $?; fi
+    major=${numbers%%:*} minor=${numbers#*:}
+    required+=("$dev:$major:$minor")
+    entries+=("lxc.cgroup2.devices.allow" "c $major:* rwm")
+  done
+  entries+=("lxc.mount.entry" "/dev/kfd dev/kfd none bind,optional,create=file"
+    "lxc.mount.entry" "/dev/dri dev/dri none bind,optional,create=dir")
+  if gpu_write_lxc_config "$ctid" "${#required[@]}" "${required[@]}" "${entries[@]}"; then :; else return $?; fi
 
   msg ok "AMD ROCm passthrough applied to CT $ctid"
   return 0
 }
 
-function install_amd_tools_in_ct() {
-  local ctid="$1"
+function _amd_ct_os() {
+  local kind
+  if kind=$(pct exec "$1" -- sh -c '
+    if grep -qi alpine /etc/os-release; then printf alpine; else
+      rc=$?; [ "$rc" -eq 1 ] || exit "$rc"; printf other
+    fi
+  '); then :; else return $?; fi
+  case "$kind" in alpine | other) printf '%s' "$kind" ;; *)
+    msg err "Invalid container OS probe output"
+    return 65
+    ;;
+  esac
+}
 
-  if pct exec "$ctid" -- grep -qi alpine /etc/os-release; then
+function install_amd_tools_in_ct() {
+  local ctid="$1" kind
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
+  if kind=$(_amd_ct_os "$ctid"); then :; else return $?; fi
+  if [[ "$kind" == alpine ]]; then
     msg warn "Skipping tool installation: Alpine container detected"
     return 0
   fi
 
   msg info "Installing AMD GPU tools in CT $ctid..."
-  pct exec "$ctid" -- bash -c "
-        apt-get update &&
-        DEBIAN_FRONTEND=noninteractive apt-get install -y rocm-smi rocm-utils &&
-        adduser \$(id -un 0) video &&
-        adduser \$(id -un 0) render" > /dev/null 2>&1 || true
+  if pct exec "$ctid" -- bash -c '
+         apt-get update || exit $?
+         DEBIAN_FRONTEND=noninteractive apt-get install -y rocm-smi rocm-utils || exit $?
+         user=$(id -un 0) || exit $?
+         adduser "$user" video || exit $?
+         adduser "$user" render || exit $?
+       ' > /dev/null 2>&1; then :; else return $?; fi
 
   msg ok "Installed ROCm tools inside CT $ctid"
 }

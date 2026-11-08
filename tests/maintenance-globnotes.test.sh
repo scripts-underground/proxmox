@@ -134,7 +134,6 @@ msg_error() { printf '%s\n' "$*" >&2; }
 render_header() { :; }
 header_info() { :; }
 check_container_storage() { :; }
-check_container_resources() { :; }
 stop_spinner() { :; }
 cleanup_lxc() { :; }
 getent() { if [[ "$1" == hosts ]]; then return 0; fi; command getent "$@"; }
@@ -301,10 +300,10 @@ else
   pipeline='source /fixture/models; install_script'
   [[ ! -e /fixture/conditional ]] || pipeline='source /fixture/models; if install_script; then exit 0; else exit $?; fi'
 fi
-_write_bundle "$role" "${role}_script" /fixture/libs "$pipeline" > /fixture/bundle
+_write_bundle "$role" "${role}_script" /fixture/libs --requirements "${var_cpu-}" "${var_ram-}" -- "$pipeline" > /fixture/bundle
 cp /fixture/bundle /fixture/baked-bundle
 if [[ -e /fixture/persist-update ]]; then
-  _write_bundle update update_script /fixture/libs 'source /fixture/models; source /fixture/start-running; run_update_script' > /fixture/persistent-update
+  _write_bundle update update_script /fixture/libs --requirements "${var_cpu-}" "${var_ram-}" -- 'source /fixture/models; source /fixture/start-running; run_update_script' > /fixture/persistent-update
 fi
 # Inputs are baked, not inherited through the execution environment.
 run_cold_bundle /fixture/bundle

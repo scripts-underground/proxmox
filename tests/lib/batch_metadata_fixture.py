@@ -47,7 +47,7 @@ source {q(S / 'misc/bundle.func')}
 NSAPP=${{APP,,}}; NSAPP=${{NSAPP// /}}
 var_lxc_tmpdir={q(W)}
 update_script() {{ printf executed > {q(sentinel)}; }}
-_write_bundle update update_script {q(stage)} 'run_update_script "$@"' > {q(bundle)}
+_write_bundle update update_script {q(stage)} --script-id changedetection -- 'run_update_script "$@"' > {q(bundle)}
 '''
 r = run('producer', code)
 check('actual current producer succeeds', 0, r.returncode)
@@ -59,8 +59,8 @@ r = run('legacy-producer', 'update_script_name=changedetection\n' + producer.rep
 check('actual historical thin-wrapper producer succeeds', 0, r.returncode)
 text = (S / 'scripts/pve/update-apps.sh').read_text()
 detector = re.search(r'(?ms)^function detect_service\(\) \{\n.*?^\}', text).group()
-resource = re.search(r'(?ms)^function prepare_batch_resources\(\) \{\n.*?^\}', text)
-resource = resource.group() if resource else ''
+resource = '\n'.join(re.search(r'(?ms)^function ' + name + r'\(\) \{\n.*?^\}', text).group()
+                     for name in ('read_batch_requirements', 'admit_batch_update'))
 original = bundle.read_text()
 baked = 'declare -- NSAPP=changedetection\n'
 assert original.count(baked) == 1
@@ -108,9 +108,8 @@ if detect_service 501; then exit 91; else rc=$?; fi
 ''')
 check('failed pull after actual success clears stale identity', 0, r.returncode)
 
-# Actual producer -> detector -> URL -> real source parser -> recorded pct set.
-start = re.search(r'(?m)^  (?:if )?detect_service ', text).start()
-fragment = text[start:text.index('  case "$os" in', start)]
+# Actual producer -> detector -> URL -> core confirmation -> preserved allocation.
+fragment = 'detect_service "$container" || exit $?; admit_batch_update <<< yes || exit $?'
 prefix = text[:text.index('# CONFIGURATION VARIABLES')]
 for name, data, base in [('current-chain', bundle, 'https://fixture.invalid/batch'),
                          ('legacy-chain', legacy, 'https://fixture.invalid/batch'),
@@ -127,7 +126,7 @@ curl() {{ printf 'curl %s\\n' "${{!#}}" >> {q(calls)}; case "${{!#}}" in
 cpu=1 ram=8192
 pct() {{ printf 'pct %s\\n' "$*" >> {q(calls)}; case "$1" in
  pull) /bin/cp {q(data)} "$4" ;;
- config) printf 'cores: %s\\nmemory: %s\\n' "$cpu" "$ram" ;;
+ exec) case "$*" in 'exec 500 -- nproc') printf '%s\\n' "$cpu";; 'exec 500 -- free -m') printf 'total used free\\nMem: %s 0 0\\n' "$ram";; *) return 98;; esac ;;
  set) cpu=$4; ram=$6 ;; *) return 98 ;; esac; }}
 {prefix}
 load_functions
@@ -140,28 +139,15 @@ done
 '''
     r = run(name, code, c)
     check(name + ' productive chain status', 0, r.returncode)
-    check(name + ' exact final prepared pair', 'changedetection:4:8192',
+    check(name + ' exact unchanged final pair', 'changedetection:1:8192',
           (c / 'consumer').read_text() if (c / 'consumer').exists() else '')
     trace = calls.read_text()
     check(name + ' exact metadata service URL', True,
           'curl ' + expected_base + '/scripts/lxc/changedetection.sh\n' in trace)
-    check(name + ' no lowered current dimension', True, 'pct set 500 --cores 4 --memory 8192\n' in trace)
+    check(name + ' zero resource setters', False, 'pct set ' in trace)
 
-if resource:
-    for label, value, status, pair in [
-        ('max', '9223372036854775807', 0, '4:9223372036854775807'),
-        ('overflow', '9223372036854775808', 65, '4:4096'),
-        ('long-overflow', '18446744073709551616', 65, '4:4096'),
-        ('leading-zero', '0008192', 0, '4:8192')]:
-        target = W / ('range-' + label)
-        r = run('range-' + label, resource + f'''
-container=500 current_cpu=1 current_ram={q(value)} build_cpu=4 build_ram=4096 run_cpu=1 run_ram={q(value)}
-if prepare_batch_resources; then rc=0; else rc=$?; fi
-printf '%s:%s' "$build_cpu" "$build_ram" > {q(target)}
-exit "$rc"
-''')
-        check(label + ' literal range status without arithmetic overflow', status, r.returncode)
-        check(label + ' literal range/floor consumer', pair, target.read_text())
+# Range/overflow cases now exercise the shared admission owner in the consent
+# fixture, including invalid actual vs unknown requirement data.
 (W / 'checks.json').write_text(json.dumps(checks, sort_keys=True, indent=2))
 failures = sum(not v['passed'] for v in checks)
 print(str(len(checks)) + ' batch metadata checks; ' + str(failures) + ' failure(s)', flush=True)

@@ -255,9 +255,109 @@ Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
 inside the admitted project workspace before launching a test. Use the registered
 fixture route described above.
 
+The maintenance-silent NVIDIA child fixture executes the manual
+hardware tool's real startup, dispatch and helper bodies. It covers checked
+versions/consent, sparse device minors, selection refusal, device metadata,
+idempotent active config and truthful partial/reboot reporting. Installed native
+PVE parsing/serialization and config locking execute only after private binds
+cover `/etc/pve` and `/run/lock/lxc`. NVIDIA CLI/dialog outputs, CFS version/IPC and
+publication faults are models; private character nodes are never opened. Native
+roundtrips retain foreign pairs, pending and snapshots, and refuse parser-discarded
+or serializer-lost data before publication. This proves private config consumers,
+not physical GPU operation, real pmxcfs writes or PVE 8 runtime compatibility.
+One real operator-input path runs the actual feature/container prompts with sparse
+NVIDIA nodes and modeled pct list. Stateful reboot controls preserve stopped CTs,
+require positively running status, and observe the modeled reboot effect rather
+than only its request. A private space/glob TMPDIR canary preserves existing
+lookalikes, checks that startup adds no scratch artifacts, and traces the actual
+framework spinner EXIT cleanup without replacing it.
+Independent device-policy cases cover the identical source-characterized LXC
+5/6/7 core model, global resets, effective grant reuse, already-permitted denylist,
+opposite-key/access-order and combined-mask denials, other-minor preservation,
+nested/repeated includes, include/controller clears, commuting and conflicting
+directory orders, nonregular/unreadable/changing dependencies and readback races.
+They distinguish controller clears from later program resets, cover native octal
+and whitespace parsing, optional absent directories, symlink includes and invalid
+directory members, and retain explicit source-version/model boundaries.
+Explicit expected outcomes and resulting active configuration are checked; the
+production validator is not its own oracle. Version/controller and CFS boundaries
+are models around installed native PVE parsing/serialization, not PVE 8 runtime or
+kernel BPF execution. Optional NVIDIA load/API/probe failures and successful
+Intel/AMD passthrough followed by returned tool failure exercise real caller paths.
+The shared GPU-contract child additionally executes actual Intel/AMD provider
+bodies and the common native config owner. Only hardware availability and lower
+pct/package effects are modeled; child shell payloads run with private /etc/apt
+and fake package/group executables. Native active readback, snapshot placement,
+idempotency, actual KFD metadata, config publication failures, typed OS errors,
+setup/update/install and required/optional group outcomes reach the consumer.
+Real-provider main cases verify retained config plus partial/no-reboot reporting,
+and common-owner load failures stop selected GPUs without blocking USB.
+Pending lxc/devN changes and native deletion forms refuse before publication;
+unrelated pending and proven logical/default no-ops are preserved.
+Intel source cases execute the actual provider and native APT parser, index-target
+and simulated resolver against tiny file-backed archives. The archive catalogues
+and package effects are explicit models, not a claim of native Debian/Ubuntu tool
+installation. Deb822-only and legacy Debian/Ubuntu cases observe required component
+requests at native consumers, including disabled/folded entries, source options,
+operator-owned fragments, uid/gid/mode/xattr preservation and sufficient-source
+no-ops. Missing legacy files are valid; unreadable/malformed/concurrently edited
+sources and unavailable unchanged package requirements remain real error paths.
+Publication cases execute the same provider with native symlink/chain and
+hardlink no-op/edit inputs. Only native publication boundaries are modeled for late
+in-place, replacement, new-path and already-open-original-inode edits. Consumers
+observe retained operator bytes/recovery inodes and no install after uncertainty;
+special/missing targets refuse without content I/O. A first-success/second-transient
+refresh model verifies both strict update options and no stale-index install.
+Atomic publication cases use the real renameat2 exchange on private files, with
+boundary scheduling for an independent file/native-APT reader, SIGKILL and normal
+publisher exit. Ordinary and alias consumers see complete old/new live paths and
+retained displaced inodes, with an intent locator before abrupt death. Native
+unsupported-syscall/flags refusals and modeled unknown ABI leave the live original
+unchanged; no unlink/rename-gap fallback is admitted.
+Activation cases distinguish an empty native list (no attached device program)
+from nonempty ineffectual entries and compare directory orders across that
+boundary. Source references are LXC 5/6/7 `cgfsng_devices_activate`, `parse.c`
+CR/LF/first-NUL iteration and `confile.c`/`string_utils.c` space/tab trimming.
+Byte-preserving controls cover included lexer payloads and rendered active-pair
+injection, plus structured devN deny-write on selected/other minors versus
+already-configured write. Reset/clear cases assert unchanged device directives
+while still observing the native mount consumer.
+The denylist counterpart admits empty/ineffectual directory orders with mounts
+only. A separate fake component emits non-prefix private code plus owned data;
+the real caller consumes it through `nvidia_helper_contents`. Missing/failed/
+early-exit/empty/partial emission controls retain stale-public protection and
+selected-API refusals while unrelated features continue.
+
+The maintenance-silent source-identity fixture executes actual literal LXC
+footers, the bootstrap entry, initial/repair preparation, checked bundle writer
+and data-only batch reader. It observes llama-cpp/netvisor/scanopy source lookups
+and 4/2/4 CPU requirements independently of their unchanged namespaces. Missing,
+duplicate and malformed modern identity uses unknown-requirements consent without
+guessed fetches; No/empty/EOF prevents software effects. Ambient/default identity
+cannot replace the producer tuple. Writer tests inject checked identity printf
+failure in plain and conditional callers and retain prior command bytes/modes.
+Go policy tests cover all maintained LXC producers, including absent footers and
+orphan-generator fixtures. PVE/network/app effects remain modeled; native locking
+uses the separate actual BusyBox/kernel gate.
+
+The maintained Actual Budget hook is also generated through its actual footer,
+initial/repair preparation and cold update runner. Real requirement fields and
+consent gate modeled package/release/service effects; equal/enough, short CPU/RAM,
+missing/invalid/zero values, explicit input, mutated defaults/menus and poisoned
+ambient fields are observed with unchanged app configuration. Writer CPU/RAM printf
+faults preserve prior command bytes/mode. Whole-batch recovery controls fail each
+stop/config/storage/restore/start stage under ordinary, prior-75 and prior-admission
+outcomes and assert the exact effect frontier. These remain labeled models for
+PVE/package/service operations; they do not claim a native app installation.
+The actual Alpine-Grafana hook, which has no resource-helper call, exercises the
+same central admission before package/service effects. Actual Budget's repeated
+helper call observes exactly one unchanged-input prompt. Native owner controls
+cover busy75 before probes, exact tuple changes, failed queries, set-a/import
+poison, independent invocations and refusal before pending/FORCE/cleanup.
+
 | # | Test | Actual outcome and modeled boundary |
 |---|---|---|
-| 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed. Also runs the cold generated update/header consumer, actual native clear in real PTY/non-TTY/unset/empty/dumb/invalid TERM cases, missing/failed executable and productive status/trap controls. Custom script headers, VM menu callbacks, addon init and early PVE/cron bootstrap order use bounded declaration/menu consumers with administration/dialog/transport modeled. No application or native PVE lifecycle is executed. |
+| 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed. Cold generated update/header consumers and native clear use real PTY/non-TTY/TERM controls. Actual resource consent owner, fatal direct adapter, cold bundle and whole-batch paths cover sufficient/short/unknown requirements, yes/no/empty/EOF, failed probes, owned-start cleanup, remaining-target choice and updater 75/0/failure. Whole-batch fatal backup/restore/update combinations observe prior 75 and first-admission priority in both orders, exact abort frontier and no extra reboot/cleanup of protected targets. Exact persisted configuration and zero setters are checked, with software effects observed only after consent; real PTY prompts also pause before effects. Current/legacy detector data is never executed. PVE/network/package/lifecycle boundaries are modeled; this does not establish native app acceptance. |
 | 2 | `maintenance-cleanup.test.sh` | Default filesystem-literal model supports safe RED; `--native` uses original cleanup helpers with private disk-backed root/cache/state binds and the maintenance namespace literal mapped to its owned fixture. Actual cache bytes/pending/exit outcomes; package/language executables are modeled, not real package removal |
 | 3 | `maintenance-temp-root.test.sh` | Default literal-path instrumentation supports safe RED; `--native` executes unmodified temp/cache/bundle/API helpers. Curl/pct and final addon-destination writing are modeled; fetched/delivered bytes and owned-stage cleanup are actual files |
 | 4 | `maintenance-build-temp.test.sh` | Actual normal/retry preparation fragments and bundle assembler, executed receiver environment/path/mode and failed-preparation boundary; pct/OS hooks are modeled. `--baseline` reads immutable5914963 history and instruments its old paths for the intended negative control |

@@ -35,7 +35,10 @@ unset -f curl
 source "$ROOT/misc/bundle.func"
 export APP=Dragonfly NSAPP=dragonfly REPO_BASE="$publisher" var_lxc_tmpdir="$TMPDIR" var_appversion=v2.1
 _write_bundle install install_script "$ROOT/misc" 'install_script' > "$work/install.sh"
-_write_bundle update update_script "$ROOT/misc" 'run_update_script "$@"' > "$work/update.sh"
+_write_bundle update update_script "$ROOT/misc" --script-id dragonfly -- --requirements "$var_cpu" "$var_ram" -- 'run_update_script "$@"' > "$work/update.sh"
+grep -Fx 'declare -- LXC_SCRIPT_ID=dragonfly' "$work/update.sh"
+grep -Fx 'declare -- LXC_REQUIRED_CPU=2' "$work/update.sh"
+grep -Fx 'declare -- LXC_REQUIRED_RAM=1024' "$work/update.sh"
 timeout --signal=TERM --kill-after=30 600 bash "$work/install.sh" > "$work/install.log" 2>&1
 install -m 0755 "$work/update.sh" /usr/local/sbin/update
 ln -s /usr/local/sbin/update /usr/bin/update

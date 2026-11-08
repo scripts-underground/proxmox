@@ -76,8 +76,23 @@ function update_script() {
 }
 
 # framework bootstrap
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "appname" -- "$@"
 ```
+
+The literal `appname` must equal the script's filename stem, including for OS
+templates and scripts without catalogue metadata. Never derive it from APP,
+NSAPP, user defaults or the environment. The extractor rejects missing, wrong,
+dynamic and duplicate identity tuples or missing quoted argument forwarding.
+New update bundles carry this explicit source identity; old unproven bundles
+require unknown-requirements consent during batch updates. Identity is not an
+operator override and does not change the application's maintenance namespace.
+
+The framework captures resolved var_cpu/var_ram alongside that identity before
+defaults/menus and bakes them into new direct-update bundles. Resource overrides
+already resolved by the app declaration keep their existing meaning. Later menu
+allocation changes do not rewrite the captured pair. Missing/invalid requirements
+require explicit update consent; they are not zero minima. Do not set the reserved
+LXC_REQUIRED_CPU/RAM fields as app options. Older frozen bundles are not refreshed.
 
 ## File structure (required order)
 
@@ -93,7 +108,7 @@ source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
 9.  post_install_script() ← optional host hook, success messages with URLs
 10. update_script()       ← optional in-container update
 11. uninstall_script()    ← optional in-container removal
-12. source <(curl ... bootstrap/lxc)   ← last line
+12. source <(curl ... bootstrap/lxc) --script-id "appname" -- "$@" (last line)
 ```
 
 ## What the bootstrap provides
@@ -266,7 +281,7 @@ If you are porting a script from `scripts-underground/ProxmoxVED/ct/<app>.sh`:
    `motd_ssh`, `cleanup_lxc`, `setup_lxc` (the wrapper postamble handles
    these).
 7. Remove any `export` of `$FUNCTIONS_FILE_PATH` or curl of `install.func`.
-8. Add `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")` at the bottom.
+8. Add `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "appname" -- "$@"` at the bottom, using the literal canonical filename stem.
 9. Ensure the file ends with no trailing characters after the bootstrap line.
 
 ## Metadata (`_lxc/<slug>.md`)
@@ -409,8 +424,8 @@ failures and logs; do not refresh a guard to bless drift.
 
 - [ ] `shfmt -i 2 -ci -sr -w scripts/lxc/<slug>.sh`
 - [ ] `shellcheck --severity=warning scripts/lxc/<slug>.sh`
-- [ ] `go run ./tools/ast/.` — regenerate AST files (REPO_BASE check runs here)
-- [ ] Verify no REPO_BASE violations reported
+- [ ] `go run ./tools/ast/.` - regenerate AST files (REPO_BASE and LXC source-identity checks run here)
+- [ ] Verify no script policy violations reported
 - [ ] Check that `install_script()` is defined (bootstrap will exit without it)
 - [ ] Check all `var_*` use `${VAR:-default}` pattern
 - [ ] Check no calls to `start`/`build_container`/`complete_install`
