@@ -215,6 +215,20 @@ function read_batch_state() {
   esac
 }
 
+# Eligibility belongs to the completed outcome, after any owned-start cleanup.
+function queue_container_reboot() {
+  local _qr_ct=$1 _qr_state _qr_hostname _qr_status
+  _qr_state=$(read_batch_state "$_qr_ct") || return $?
+  [[ "$_qr_state" == running ]] || return 0
+  if pct exec "$_qr_ct" -- [ -e /var/run/reboot-required ]; then
+    _qr_hostname=$(pct exec "$_qr_ct" hostname) || return $?
+    containers_needing_reboot+=("$_qr_ct ($_qr_hostname)")
+  else
+    _qr_status=$?
+    [[ "$_qr_status" == 1 ]] || return "$_qr_status"
+  fi
+}
+
 # Recovery consumes only this run's receipt, with checked ordered power effects.
 function restore_container_backup() {
   local _rb_ct=$1 _rb_config _rb_storage _rb_status _rb_state
@@ -694,11 +708,6 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
     continue
   fi
 
-  if pct exec "$container" -- [ -e "/var/run/reboot-required" ]; then
-    container_hostname=$(pct exec "$container" hostname)
-    containers_needing_reboot+=("$container ($container_hostname)")
-  fi
-
   if [ $exit_code -eq 0 ]; then
     msg_ok "Updated container $container"
   elif [ "$BACKUP_CHOICE" == "yes" ]; then
@@ -724,13 +733,13 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
     exit_batch_update 1 abort
   fi
   [[ "$abort_after_cleanup" != 1 ]] || exit_batch_update 1 abort
+  if queue_container_reboot "$container"; then :; else
+    reboot_status=$?
+    printf 'Container %s reboot eligibility failed (status %s); no reboot queued.\n' "$container" "$reboot_status" >&2
+    normal_result=1
+  fi
 done
 header_info
-if [[ "${#containers_skipped_temporary[@]}" -gt 0 || "$first_admission_status" != 0 || "$normal_result" != 0 ]]; then
-  printf 'Batch partially complete; temporary/busy skips (not updated): %s; declined: %s; failed admission: %s; failed updates: %s; not attempted: %s.\n' "${containers_skipped_temporary[*]:-none}" "${containers_declined[*]:-none}" "${containers_admission_failed[*]:-none}" "${containers_update_failed[*]:-none}" "${containers_not_attempted[*]:-none}"
-else
-  echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
-fi
 if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
   echo -e "${RD}The following containers require a reboot:${CL}"
   for container_name in "${containers_needing_reboot[@]}"; do
@@ -751,9 +760,28 @@ if [ "${#containers_needing_reboot[@]}" -gt 0 ]; then
   if [[ "$REBOOT_CHOICE" == "yes" ]]; then
     echo -e "${CROSS}${HOLD} ${YWB}Rebooting containers.${CL}"
     for container_name in "${containers_needing_reboot[@]}"; do
-      container=$(echo $container_name | cut -d " " -f 1)
-      pct reboot ${container}
+      container=${container_name%% *}
+      if reboot_state=$(read_batch_state "$container"); then
+        if [[ "$reboot_state" == running ]]; then
+          if pct reboot "$container"; then :; else
+            reboot_status=$?
+            printf 'Container %s requested reboot failed (status %s).\n' "$container" "$reboot_status" >&2
+            normal_result=1
+          fi
+        else
+          printf 'Container %s is stopped; skipping its requested reboot.\n' "$container" >&2
+        fi
+      else
+        reboot_status=$?
+        printf 'Container %s requested reboot state query failed (status %s); no reboot attempted.\n' "$container" "$reboot_status" >&2
+        normal_result=1
+      fi
     done
   fi
+fi
+if [[ "${#containers_skipped_temporary[@]}" -gt 0 || "$first_admission_status" != 0 || "$normal_result" != 0 ]]; then
+  printf 'Batch partially complete; temporary/busy skips (not updated): %s; declined: %s; failed admission: %s; failed updates: %s; not attempted: %s.\n' "${containers_skipped_temporary[*]:-none}" "${containers_declined[*]:-none}" "${containers_admission_failed[*]:-none}" "${containers_update_failed[*]:-none}" "${containers_not_attempted[*]:-none}"
+else
+  echo -e "${GN}The process is complete, and the containers have been successfully updated.${CL}\n"
 fi
 exit_batch_update "$normal_result"

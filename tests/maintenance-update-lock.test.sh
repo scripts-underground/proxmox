@@ -503,15 +503,20 @@ INVENTORY
   if [[ -f "$CASE_ROOT/resource-config" ]]; then printf '%s %s\\n' "$4" "$6" > "$CASE_ROOT/resource-config"; printf '%s %s\\n' "$4" "$6" >> "$CASE_ROOT/resource-sets"; fi ;;
  pct:start) [[ "${FAIL_START:-0}" != 1 ]] || exit 48; printf running > "$CASE_ROOT/power-$2" ;;
  pct:stop | pct:shutdown) printf stopped > "$CASE_ROOT/power-$2" ;;
+ pct:reboot)
+   [[ "$(cat "$CASE_ROOT/power-$2" 2>/dev/null || printf stopped)" == running ]] || exit 60
+   printf rebooted > "$CASE_ROOT/rebooted-$2"
+   ;;
  pct:* | sleep:* | clear:*) : ;;
  *) exit 97 ;;
 esac
 '''
 for name in ('pct','vzdump','pvesh','curl','sleep','clear'):(batch_bin/name).write_text(model);(batch_bin/name).chmod(0o700)
-for result in ('busy','75','75-no-backup','mixed','41','0'):
+for result in ('busy','75','75-no-backup','mixed','41','0','running'):
  c=case('batch-'+result);(c/'commands').touch();a=None
+ if result=='running':(c/'power-500').write_text('running')
  if result=='busy':a=start(c,action='hold-return');line(a[1])
- env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT='75' if result.startswith('75') else result,TMPDIR=str(c),FAIL_SET='1' if result=='75-set-failed' else '0',FAIL_START='1' if result=='75-start-failed' else '0',var_backup='no' if result=='75-no-backup' else 'yes',var_backup_storage='local',var_container='500,501' if result=='mixed' else '500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
+ env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT='75' if result.startswith('75') else '0' if result=='running' else result,TMPDIR=str(c),FAIL_SET='1' if result=='75-set-failed' else '0',FAIL_START='1' if result=='75-start-failed' else '0',var_backup='no' if result=='75-no-backup' else 'yes',var_backup_storage='local',var_container='500,501' if result=='mixed' else '500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
  p=command(['/bin/bash',os.environ.get('BATCH_SCRIPT',str(root/'scripts/pve/update-apps.sh'))],env=env,cwd=c)
  skipped=result=='busy' or result.startswith('75') or result=='mixed'
  (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();check(p.returncode==(75 if skipped else 1 if result=='41' else 0),'whole batch reports exact outcome '+result)
@@ -519,9 +524,10 @@ for result in ('busy','75','75-no-backup','mixed','41','0'):
   check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required','pct set ')),'batch '+result+' leaves running resources/data alone after75')
   check('not updated' in p.stdout.decode() and 'temporarily unavailable/busy' in p.stderr.decode() and (c/'backup').exists()==(result!='75-no-backup'),'batch '+result+' reports honest skip and preserves actual backup presence')
   check('partially complete' in p.stdout.decode() and 'this batch started it; it is left running' in p.stderr.decode() and 'requested build resources' not in p.stderr.decode(),'batch '+result+' reports actual successful start without sizing instructions')
- elif result=='mixed':check('pct reboot 501' in trace and 'pct reboot 500' not in trace and 'pct shutdown 500' not in trace,'batch handles successful CT reboot before final partial75')
+ elif result=='mixed':check('pct reboot' not in trace and 'pct shutdown 500' not in trace and (c/'power-501').read_text()=='stopped','batch keeps owned-start CT stopped before final partial75')
  elif result=='41':check('pct stop' in trace and 'pct restore' in trace,'ordinary non75 batch failure retains backup restore path')
- else:check('pct shutdown' in trace and 'pct set ' not in trace and 'pct reboot' in trace,'successful batch retains shutdown/reboot without resizing')
+ elif result=='running':check((c/'rebooted-500').read_text()=='rebooted' and 'pct shutdown' not in trace,'running requested reboot reaches stateful consumer')
+ else:check('pct shutdown' in trace and 'pct set ' not in trace and 'pct reboot' not in trace and (c/'power-500').read_text()=='stopped','successful owned start stays stopped without resizing or invalid reboot')
  if a:check(finish(a,True)==0,'batch never disturbed real concurrent owner')
 
 # Real producer identity and real metadata source, with configuration writes
@@ -554,7 +560,7 @@ for label,cpu,ram,metadata_fail in [
   check(pair==f'{cpu} {ram}',label+'/'+result+' exact unchanged configuration readback')
   if result=='75':check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required')),label+' raw75 performs no automatic rollback/shutdown/restore/reboot')
   elif result=='41':check('pct stop' in trace and 'pct restore' in trace,label+' ordinary failure retains backup restoration')
-  else:check('pct shutdown' in trace and 'pct reboot' in trace,label+' ordinary success retains lifecycle')
+  else:check('pct shutdown' in trace and 'pct reboot' not in trace and (c/'power-500').read_text()=='stopped',label+' ordinary success retains stopped lifecycle')
   (c/'resource-outcome.json').write_text(json.dumps(dict(initial=[cpu,ram],result=result,final=pair,sets=sets,metadata_failure=metadata_fail),indent=2))
 c=case('resources-unknown');(c/'commands').touch();(c/'resource-config').write_text('1 unknown\n');(c/'resource-source').write_text(app_source)
 env=dict(env,CASE_ROOT=str(c),BATCH_RESULT='75',METADATA_FAIL='0',TMPDIR=str(c))

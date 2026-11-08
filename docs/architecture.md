@@ -255,8 +255,14 @@ failure status; start is reached only after restore succeeds. Failed recovery
 stops the batch immediately and identifies the failed step/status without guessing
 resulting state. Owned-start cleanup runs synchronously after the selected outcome,
 never as a background shutdown competing with restore. It also verifies state
-before skipping or completing shutdown. Existing selected reboot handling and
-the final updater-75/first-admission/ordinary-failure priority are retained.
+before skipping or completing shutdown. Reboot eligibility is collected only
+after the completed outcome and owned-start cleanup, on a positively running CT
+with the existing marker. An initially stopped CT stays stopped; it is never
+started merely for reboot. Requested reboots revalidate running state immediately
+before the command. A target stopped since collection is skipped; failed/unknown
+queries and reboot-command failures report their status and set ordinary failure.
+The final summary follows those outcomes, and the updater-75/first-admission/
+ordinary-failure priority is retained.
 One script-owned terminal selector applies that priority to every exit after batch
 work begins, including fatal backup, restoration and unrecoverable update failures.
 Those failures still abort at their original point; they do not advance to later

@@ -101,6 +101,12 @@ elif tool=='pct':
   if ct.get('status_fail'): sys.exit(49)
   if ct.get('update_done') and ct.get('recovery_state_fail'): sys.exit(56)
   if ct.get('update_done') and ct.get('recovery_state_unknown'): print('status: unknown');sys.exit(0)
+  if ct.get('update_done') and not ct.get('queued'):
+   if ct.get('eligibility_fail'):sys.exit(58)
+   if ct.get('eligibility_unknown'):print('status: unknown');sys.exit(0)
+  if ct.get('queued'):
+   if ct.get('final_query_fail'):sys.exit(59)
+   if ct.get('final_query_unknown'):print('status: unknown');sys.exit(0)
   print('status: '+ct['status'])
  elif op=='start':
   if ct.get('restoring') and ct.get('restore_start_fail'): sys.exit(51)
@@ -129,8 +135,14 @@ elif tool=='pct':
    if ct.get('update_stops'):ct['status']='stopped'
    save()
    sys.exit(ct.get('result',0))
-  elif cmd and cmd[0]=='[': sys.exit(0 if ct.get('reboot_required') else 1)
-  elif cmd==['hostname']: print('fixture')
+  elif cmd and cmd[0]=='[':
+   if ct.get('marker_fail'):sys.exit(64)
+   sys.exit(0 if ct.get('reboot_required') else 1)
+  elif cmd==['hostname']:
+   if ct.get('hostname_fail'):sys.exit(63)
+   ct['queued']=True
+   if ct.get('stop_after_queue'):ct['status']='stopped'
+   save();print('fixture')
   else: sys.exit(98)
  elif op=='stop':
   ct['recovery']=True; save()
@@ -146,7 +158,11 @@ elif tool=='pct':
   path=c/('created-'+cid if row else 'old-local-data')
   if path.exists():(c/'restored-data').write_bytes(path.read_bytes())
   ct['restoring']=True; save()
- elif op=='reboot': pass
+ elif op=='reboot':
+  if ct['status']!='running':sys.exit(60)
+  if ct.get('reboot_fail'):sys.exit(61)
+  ct['reboots']=ct.get('reboots',0)+1;save()
+  with (c/'rebooted').open('a') as f:f.write(cid+'\\n')
  else: sys.exit(98)
 elif tool=='vzdump':
  cid=a[0];ct=s[cid]
@@ -548,6 +564,67 @@ for index, args in enumerate([[], ['inventory-only', c / 'current', 'remote', '5
              ['verify-exact', c / 'current', 'remote', '500', 'token', volid, 'extra']]):
     r = run(case('parser-invalid-' + str(index)), prefix + recovery_helpers + '\nbackup_inventory_volid ' + ' '.join(q(v) for v in args))
     check('closed parser mode/arity refusal ' + repr(args), 65, r.returncode)
+
+def reboot_case(label, overrides, expected_status, expected_reboots, expected_commands,
+                targets='500', answer=b'', expected_updates=None, automatic='yes', diagnostic=None):
+    c = case('reboot-' + label)
+    state = {str(cid): dict(cpu=8, ram=8192, status='running', reboot_required=True,
+                            config='operator-config: ' + str(cid) + '\n') for cid in (500, 501)}
+    for cid, values in overrides.items():
+        state[cid].update(values)
+    (c / 'state').write_text(json.dumps(state))
+    (c / 'metadata').write_text(metadata)
+    (c / 'bundle').write_bytes(identity_bundle.read_bytes())
+    r = run(c, f'exec /bin/bash {q(S / "scripts/pve/update-apps.sh")}', answer,
+            dict(var_backup='no', var_container=targets, var_unattended='yes',
+                 var_skip_confirm='yes', var_auto_reboot=automatic, REPO_BASE='https://fixture.invalid/batch'))
+    calls = [json.loads(v) for v in (c / 'calls').read_text().splitlines()]
+    final = json.loads((c / 'state').read_text())
+    completed = (c / 'rebooted').read_text().splitlines() if (c / 'rebooted').exists() else []
+    check(label + ' exact final reboot result priority', expected_status, r.returncode)
+    check(label + ' actual modeled reboot consumer readback', expected_reboots, completed)
+    check(label + ' exact requested reboot command frontier', expected_commands,
+          [v[2] for v in calls if v[:2] == ['pct', 'reboot']])
+    check(label + ' selected-container configuration retained',
+          {k: v['config'] for k, v in state.items()}, {k: v['config'] for k, v in final.items()})
+    if expected_updates is not None:
+        check(label + ' update frontier retained', expected_updates,
+              (c / 'software').read_text().splitlines() if (c / 'software').exists() else [])
+    if diagnostic:
+        check(label + ' native reboot diagnostic status', True,
+              diagnostic.encode() in r.stdout + r.stderr)
+    if label == 'initially-stopped':
+        check('initially stopped marked CT stays stopped', 'stopped', final['500']['status'])
+        check('initially stopped CT is not started merely for reboot', 1,
+              sum(v[:3] == ['pct', 'start', '500'] for v in calls))
+        check('stopped CT is not probed for reboot marker after cleanup', False,
+              any(v[:3] == ['pct', 'exec', '500'] and 'reboot-required' in ' '.join(v) for v in calls))
+    if label == 'stopped-since-queue':
+        check('stopped-since-queue remains stopped', 'stopped', final['500']['status'])
+    if '500' in targets and overrides.get('500', {}).get('result') == 75:
+        check(label + ' protected75 receives no power/marker effects', [],
+              [v for v in calls if len(v)>2 and v[0]=='pct' and v[2]=='500' and
+               (v[1] in ('stop','shutdown','restore','reboot') or 'reboot-required' in ' '.join(v))])
+    (c / 'outcome.json').write_text(json.dumps(dict(status=r.returncode, state=final,
+         reboots=completed, expected_reboots=expected_reboots, expected_commands=expected_commands)))
+
+reboot_case('initially-stopped', {'500': dict(status='stopped')}, 0, [], [])
+reboot_case('running-requested', {}, 0, ['500'], ['500'])
+reboot_case('request-declined', {}, 0, [], [], automatic='no')
+reboot_case('no-marker', {'500': dict(reboot_required=False)}, 0, [], [])
+reboot_case('stopped-since-queue', {'500': dict(stop_after_queue=True)}, 0, [], [])
+for label, fields, native in [('final-query-fail', dict(final_query_fail=True), 59),
+                              ('final-query-unknown', dict(final_query_unknown=True), 69),
+                              ('eligibility-fail', dict(eligibility_fail=True), 58),
+                              ('eligibility-unknown', dict(eligibility_unknown=True), 69),
+                              ('marker-fail', dict(marker_fail=True), 64),
+                              ('hostname-fail', dict(hostname_fail=True), 63)]:
+    reboot_case(label, {'500': fields}, 1, [], [], diagnostic='status ' + str(native))
+reboot_case('reboot-command-fail', {'500': dict(reboot_fail=True)}, 1, [], ['500'], diagnostic='status 61')
+reboot_case('prior75-reboot-fail', {'500': dict(result=75), '501': dict(reboot_fail=True)},
+            75, [], ['501'], targets='500,501', expected_updates=['500','501'], diagnostic='status 61')
+reboot_case('prior65-reboot-fail', {'500': dict(cpu='unknown'), '501': dict(reboot_fail=True)},
+            65, [], ['501'], targets='500,501', answer=b'yes\n', expected_updates=['501'], diagnostic='status 61')
 
 (W / 'checks.json').write_text(json.dumps(checks, indent=2))
 failures = sum(not v['passed'] for v in checks)
