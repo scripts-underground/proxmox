@@ -62,6 +62,19 @@ if [[ "${1:-}" == --worker ]]; then
   fi
   source "$ROOT/misc/error_handler.func"
   load_functions
+  # Unrelated lock/lifecycle subjects explicitly have known zero requirements.
+  LXC_REQUIRED_CPU=${LXC_REQUIRED_CPU-0} LXC_REQUIRED_RAM=${LXC_REQUIRED_RAM-0}
+  nproc() {
+    printf 'cpu %s\n' "$ACTOR" >> "$CASE_ROOT/probes"
+    [[ "${RESOURCE_QUERY_FAIL:-}" != cpu ]] || return 46
+    printf '%s\n' "${RESOURCE_CPU:-8}"
+  }
+  free() {
+    printf 'ram %s\n' "$ACTOR" >> "$CASE_ROOT/probes"
+    [[ "${RESOURCE_QUERY_FAIL:-}" != ram ]] || return 45
+    printf 'total used free\nMem: %s 0 0\n' "${RESOURCE_RAM:-8192}"
+  }
+  [[ -z "${RESOURCE_INPUT_FILE:-}" ]] || exec < "$RESOURCE_INPUT_FILE"
   export BUILD_LOG="$CASE_ROOT/$ACTOR-build.log" DEBUG_LOGFILE="$CASE_ROOT/$ACTOR-error.log" VERBOSE=no
   if [[ "$ACTION" != ui && "$ACTION" != ui-leak && "$ACTION" != ui-held ]]; then
     msg_info() { :; }
@@ -124,6 +137,19 @@ if [[ "${1:-}" == --worker ]]; then
         )
         ;;
       inspect-child) env > "$CASE_ROOT/child-environment" ;;
+      resource-repeat | resource-required | resource-actual | resource-query)
+        case "$ACTION" in
+          resource-required) LXC_REQUIRED_RAM=16384 ;;
+          resource-actual) RESOURCE_CPU=1 ;;
+          resource-query) RESOURCE_QUERY_FAIL=cpu ;;
+        esac
+        check_container_resources
+        env > "$CASE_ROOT/resource-environment"
+        # The sourced public runner owns this local; the fixture must not seed it.
+        # shellcheck disable=SC2154
+        declare -p _lxc_resource_admission > "$CASE_ROOT/resource-cache"
+        printf 'resource admitted\n' >> "$CASE_ROOT/events"
+        ;;
       ui-held)
         msg_info 'Live owner spinner'
         printf 'spinner %s\n' "$SPINNER_PID" >&"$READY_FD"
@@ -247,6 +273,8 @@ for action in ('hold-fail',) if baseline else ('hold-fail','hold-return','hold-e
  check(status==75,action+' second owner refuses75')
  check(snapshot(pending/'lock-probe')==before and snapshot(locks/'lock-probe.lock')==inode,action+' contender leaves owner pending/inode intact')
  check('hook B' not in events(c) and 'cleanup B' not in events(c),action+' refusal runs no hook/cleanup')
+ probes=(c/'probes').read_text() if (c/'probes').exists() else ''
+ check('cpu B' not in probes and 'ram B' not in probes,action+' busy75 precedes every resource measurement')
  status_a=finish(a,True);expected=41 if action in ('hold-fail','recovery') else 0
  check(status_a==expected,action+' original owner terminal status')
  if expected:
@@ -257,6 +285,28 @@ if baseline:
  (work/'results.json').write_text(json.dumps(results,indent=2));print('BASELINE_INTENDED_FAILURES',sum(not r['ok'] for r in results));sys.exit(1 if any(not r['ok'] for r in results) else 0)
 
 # Preparation is owned but precedes pending and FORCE admission.
+for action,expected in [('resource-repeat',0),('resource-required',1),('resource-actual',1),('resource-query',46)]:
+ c=case(action);answer=c/'answer';answer.write_text('yes\nno\n' if action=='resource-repeat' else 'no\n')
+ extra={'LXC_REQUIRED_CPU':'2','LXC_REQUIRED_RAM':'1024','RESOURCE_CPU':'1' if action=='resource-repeat' else '8','RESOURCE_INPUT_FILE':str(answer),'TRANSIENT_SET_A':'1','_lxc_resource_admission':'2 1024 1 8192'}
+ status=run(c,action=action,extra=extra)
+ out=(c/'B.log').read_text()
+ check(status==expected,action+' exact resource/cache result')
+ check(out.count('Continue update')==(1 if action!='resource-query' else 0),action+' prompts once only when inputs require consent')
+ if action=='resource-repeat':
+  child=(c/'resource-environment').read_text();cache=(c/'resource-cache').read_text()
+  check('_lxc_resource_admission=' not in child and not cache.startswith('declare -ax'), 'set-a resource cache is local nonexported data')
+  answer.write_text('no\n')
+  check(run(c,'Next',action=action,extra=extra)==1 and 'hook Next' not in events(c),'fresh independent invocation cannot inherit prior matching consent')
+ else:check('resource admitted' not in events(c),action+' changed tuple or failed probe cannot reuse consent')
+for prior in (False,True):
+ c=case('resource-prior-'+str(prior));pending.mkdir(exist_ok=True);flag=pending/'lock-probe';flag.unlink(missing_ok=True)
+ if prior:flag.write_text('original pending bytes')
+ before=snapshot(flag);answer=c/'answer';answer.write_text('no\n')
+ status=run(c,extra={'LXC_REQUIRED_CPU':'99','LXC_REQUIRED_RAM':'99999','RESOURCE_INPUT_FILE':str(answer),'_lxc_resource_admission':'99 99999 8 8192'},args=('--clean',))
+ check(status==1 and snapshot(flag)==before,'central resource refusal preserves prior pending '+str(prior))
+ check('hook ' not in events(c) and 'cleanup ' not in events(c),'central resource refusal has no hook/new pending/cleanup '+str(prior))
+flag.unlink(missing_ok=True)
+
 c=case('preparation');pending.mkdir(exist_ok=True);(pending/'lock-probe').write_text('retained')
 before=snapshot(pending/'lock-probe')
 check(run(c,role='prepare',action='prepare-fail')==43 and snapshot(pending/'lock-probe')==before and 'hook ' not in events(c) and 'cleanup ' not in events(c),'prepare failure preserves exact prior pending/status without app cleanup')
@@ -373,7 +423,7 @@ update_script() {
   printf 'hook %s force=%s\\n' "$ACTOR" "${UPDATE_FORCE:-0}" >> "$CASE_ROOT/events"
   if [[ "$ACTION" == hold ]]; then printf 'bundle-held\\n' >& "$READY_FD"; read -r -t 20 -u "$GATE_FD" token; fi
 }
-_write_bundle update update_script "$2/stage" 'source "$CASE_ROOT/bundle-models.sh"' 'run_update_script "$@"' > "$2/update-bundle"
+_write_bundle update update_script "$2/stage" --requirements 0 0 -- 'source "$CASE_ROOT/bundle-models.sh"' 'run_update_script "$@"' > "$2/update-bundle"
 _addon_bundle_contents update update_script "$2/stage" > /usr/local/sbin/update_lock-probe
 chmod 0700 /usr/local/sbin/update_lock-probe
 '''

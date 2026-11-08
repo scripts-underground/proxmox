@@ -122,6 +122,41 @@ function header_info {
 EOF
 }
 
+# Recovery is one checked sequence. A later successful command cannot hide an
+# earlier failure; backup selection remains the existing literal glob policy.
+function restore_container_backup() {
+  local _rb_ct=$1 _rb_config _rb_storage _rb_status
+  if pct stop "$_rb_ct"; then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at stop (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+  if _rb_config=$(pct config "$_rb_ct"); then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at config (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+  if _rb_storage=$(awk -F '[:,]' '/^rootfs:/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; found++} END {if (found != 1) exit 65}' <<< "$_rb_config"); then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at storage (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+  if [[ -z "$_rb_storage" ]]; then
+    printf 'Container %s backup recovery failed at storage (status 65); inspect actual state.\n' "$_rb_ct" >&2
+    return 65
+  fi
+  if pct restore "$_rb_ct" /var/lib/vz/dump/vzdump-lxc-"${_rb_ct}"-*.tar.zst --storage "$_rb_storage" --force > /dev/null 2>&1; then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at restore (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+  if pct start "$_rb_ct"; then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at start (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+}
+
 function detect_service() {
   service='' source_script_id=''
   local LC_ALL=C _ds_stage _ds_text='' _ds_line='' _ds_result='' _ds_status=0 _ds_cleanup=0
@@ -547,12 +582,7 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
     containers_update_failed+=("$container")
     normal_result=1
     msg_info "Restoring LXC from backup"
-    pct stop $container
-    LXC_STORAGE=$(pct config $container | awk -F '[:,]' '/rootfs/ {print $2}')
-    pct restore $container /var/lib/vz/dump/vzdump-lxc-${container}-*.tar.zst --storage $LXC_STORAGE --force > /dev/null 2>&1
-    pct start $container
-    restorestatus=$?
-    if [ $restorestatus -eq 0 ]; then
+    if restore_container_backup "$container"; then
       msg_ok "Restored LXC from backup"
     else
       msg_error "Restored LXC from backup failed"

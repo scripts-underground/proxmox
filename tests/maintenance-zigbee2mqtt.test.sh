@@ -17,7 +17,8 @@ if [[ "${1:-}" == --child ]]; then
   source "$c/hook"
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Archive/preservation unit inputs; keep shared resource admission real.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   ensure_dependencies() { :; }
   setup_nodejs() { :; }

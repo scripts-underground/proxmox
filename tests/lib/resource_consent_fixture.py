@@ -93,7 +93,9 @@ if tool=='curl':
 elif tool=='pct':
  op=a[0]; cid=a[1] if len(a)>1 else ''; ct=s.get(cid,{})
  if op=='list': print('VMID Status Lock Name\\n500 stopped fixture\\n501 running other')
- elif op=='config': print('ostype: debian\\ntags: community-script\\nrootfs: local:fixture\\n'+ct.get('config','cores: 1\\nmemory: 1024\\n'))
+ elif op=='config':
+  if ct.get('recovery') and ct.get('restore_config_fail'): sys.exit(53)
+  print('ostype: debian\\ntags: community-script\\n'+('' if ct.get('recovery') and ct.get('restore_storage_missing') else 'rootfs: local:fixture\\n')+ct.get('config','cores: 1\\nmemory: 1024\\n'))
  elif op=='status':
   if ct.get('status_fail'): sys.exit(49)
   print('status: '+ct['status'])
@@ -120,8 +122,13 @@ elif tool=='pct':
   elif cmd and cmd[0]=='[': sys.exit(0 if ct.get('reboot_required') else 1)
   elif cmd==['hostname']: print('fixture')
   else: sys.exit(98)
- elif op=='stop': ct['status']='stopped'; save()
- elif op=='restore': ct['restoring']=True; save()
+ elif op=='stop':
+  ct['recovery']=True; save()
+  if ct.get('restore_stop_fail'):sys.exit(52)
+  ct['status']='stopped'; save()
+ elif op=='restore':
+  if ct.get('restore_fail'):sys.exit(54)
+  ct['restoring']=True; save()
  elif op=='reboot': pass
  else: sys.exit(98)
 elif tool=='vzdump':
@@ -180,7 +187,32 @@ for label, answer, fault, status in [('yes', b'yes\n', '', 0), ('no', b'no\n', '
     check(label + ' direct adapter explicit terminal status', status, r.returncode)
     check(label + ' direct downstream effect', status == 0, (c / 'software').exists())
 
+# Independent direct calls cannot borrow imported/global or prior-call consent.
+c = case('outside-owner-repeat')
+r = run(c, prefix + '''LXC_REQUIRED_CPU=4 LXC_REQUIRED_RAM=4096
+declare -a _lxc_resource_admission=(4 4096 1 1024)
+check_container_resources; printf first > first
+check_container_resources; printf second > second
+''', b'yes\nno\n')
+check('outside owner repeats actual consent despite matching forged tuple', 2, (r.stdout + r.stderr).count(b'Continue update'))
+check('outside owner second refusal is terminal', 1, r.returncode)
+check('outside owner first admitted effect observed', True, (c / 'first').exists())
+check('outside owner no second software effect', False, (c / 'second').exists())
+
 # Real producer, frozen core/error, real cold update runner and resource adapter.
+for label, setup, answer, status in [
+    ('absent-no', '', b'no\n', 1), ('absent-eof', '', b'', 1),
+    ('absent-yes', '', b'yes\n', 0),
+    ('explicit-zero', 'LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0 var_cpu=99 var_ram=99999', b'', 0),
+    ('explicit-empty', "LXC_REQUIRED_CPU='' LXC_REQUIRED_RAM='' var_cpu=0 var_ram=0", b'no\n', 1),
+    ('explicit-minimum', 'LXC_REQUIRED_CPU=4 LXC_REQUIRED_RAM=4096 var_cpu=0 var_ram=0', b'no\n', 1),
+]:
+    c = case('direct-presence-' + label)
+    r = run(c, prefix + 'unset var_cpu var_ram LXC_REQUIRED_CPU LXC_REQUIRED_RAM; ' +
+            (setup + '; ' if setup else '') + 'if check_container_resources; then printf effect > software; fi', answer)
+    check(label + ' direct presence exact status', status, r.returncode)
+    check(label + ' direct presence productive frontier', status == 0, (c / 'software').exists())
+
 cache = W / 'framework'
 cache.mkdir()
 core = (S / 'misc/core.func').read_text()
@@ -341,6 +373,7 @@ def priority_case(label, overrides, expected_status, expected_updates, answer=b'
     (c / 'outcome.json').write_text(json.dumps(dict(status=r.returncode,
         expected_status=expected_status, expected_updates=expected_updates,
         actual_updates=effects, protected75=protected, state=final), sort_keys=True, indent=2))
+    return c, r, calls
 
 
 priority_case('75-then-backup-fail', {'500': dict(result=75), '501': dict(backup_fail=True)},
@@ -362,6 +395,26 @@ priority_case('65-then75-backup-fail', {'500': dict(cpu='unknown'), '501': dict(
               75, ['501'], b'yes\n')
 priority_case('75-then65-backup-fail', {'500': dict(result=75), '501': dict(cpu='unknown'), '502': dict(backup_fail=True)},
               75, ['500'], b'yes\n')
+
+for step, fault, native in [('stop', 'restore_stop_fail', 52), ('config', 'restore_config_fail', 53),
+                            ('storage', 'restore_storage_missing', 65), ('restore', 'restore_fail', 54),
+                            ('start', 'restore_start_fail', 51)]:
+    for prior in ('none', '75', '65'):
+        target = '500' if prior == 'none' else '501'
+        overrides = {target: dict(result=41, **{fault: True})}
+        if prior == '75': overrides['500'] = dict(result=75)
+        if prior == '65': overrides['500'] = dict(cpu='unknown')
+        expected = 1 if prior == 'none' else int(prior)
+        updates = ['500'] if prior == 'none' else ['500', '501'] if prior == '75' else ['501']
+        c, r, calls = priority_case('restore-' + step + '-prior-' + prior, overrides,
+                                     expected, updates, b'yes\n' if prior == '65' else b'')
+        out = r.stdout + r.stderr
+        check(step + '/' + prior + ' recovery identifies exact failed step/status', True,
+              ('backup recovery failed at ' + step + ' (status ' + str(native) + ')').encode() in out)
+        check(step + '/' + prior + ' no false restoration success', False, b'OK Restored LXC from backup' in out)
+        selected = [v for v in calls if v[:2] in (['pct', 'stop'], ['pct', 'restore'], ['pct', 'start']) and v[2] == target]
+        expected_ops = ['stop'] + (['restore'] if step in ('restore', 'start') else []) + (['start'] if step == 'start' else [])
+        check(step + '/' + prior + ' exact recovery effects frontier', expected_ops, [v[1] for v in selected])
 
 (W / 'checks.json').write_text(json.dumps(checks, indent=2))
 failures = sum(not v['passed'] for v in checks)

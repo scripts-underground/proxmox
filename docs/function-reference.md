@@ -66,7 +66,7 @@ Each is called by `build.func` during `setup_script`:
 ### Update runner
 
 - **`confirm_container_resources <requiredCPU> <requiredMiB> <actualCPU> <actualMiB> [label]`** - Returning resource admission owner; never changes container configuration. Validates bounded decimal literals before comparing dimensions. Returns 0 when requirements are met or explicit case-insensitive y/yes approves; unknown requirements also require consent. No, empty input or EOF returns 1. Invalid/zero actual allocation returns 65 without software admission. Uses actual stdin; unattended and initial skip-confirm flags do not grant consent. Diagnostics include required/current values and tolerate absent color globals.
-- **`check_container_resources()`** - No-argument direct-container adapter using the existing nproc/free total-MiB measurements and caller var_cpu/var_ram defaults (0 when absent). Calls the shared confirmation owner and explicitly exits on refusal or measurement failure, even under conditional callers that disable errexit. Probe failures retain their status. It does not discover new requirements, resize or refresh frozen bundle libraries.
+- **`check_container_resources()`** - No-argument direct-container adapter using existing nproc/free total-MiB measurements. Present LXC_REQUIRED_CPU/RAM fields take precedence, including empty/unknown; otherwise use caller var_cpu/var_ram. Missing is unknown, not zero; explicit zero remains zero. Calls the shared confirmation owner and explicitly exits on refusal or measurement failure, even under conditional callers that disable errexit. Probe failures retain their status. It does not discover new requirements, resize or refresh frozen bundle libraries.
 - **`app_maintenance_contents`** - Emits only the component-owned acquisition function definitions for cold offline consumers, using checked `declare -f` and preserving its failure status. No arguments select private dependencies; no current state, descriptors, initialization or traps are emitted. The cron updater manager uses this API so its scheduled/manual worker acquires the literal `cron-update-lxcs` key before config reads or target effects and keeps the owner through graceful restoration. Generation failure preserves the previous executable and schedule.
 - **`app_maintenance_acquire <key>`** — Returning helper for one app's maintenance fork lineage. Keys are 1–64 ASCII lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric. Acquires a native nonblocking flock on a stable empty private inode under `/var/lib/scripts-underground/maintenance-locks`; validates root ownership, safe nonsymlink ancestors, 0700 leaf and 0600 one-link regular file plus opened-FD/path identity. Returns 0 held/validated same-key fork borrow, 65 bad key, 69 unsafe/unavailable infrastructure, 70 different-key lineage misuse, 75 contention. Requires executable flock/stat/mkdir (including compatible BusyBox applets), never installs dependencies or repairs existing metadata. State is non-exported even under set-a; exec'd commands acquire independently. Never unlink/unlock the inode: final kernel FD closure releases it, including productive children surviving launcher death. A new independent update must not borrow.
 - **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Pure argument/key validation precedes a fresh maintenance owner; in-lineage wrapper re-entry exits 70. Ownership covers pending admission, hook/recovery, outer `on_exit` cleanup and pending retirement, including explicit hook exit. Writes `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; successful EXIT removes it. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`; other options exit 65. Busy 75 runs no preparation/hook/cleanup or pending mutation. Refusals use non-spawning stderr diagnostics without stopping another owner's spinner. Called by `lxc_setup` and LXC update bundles.
@@ -95,6 +95,15 @@ It locally captures the optional fixed `--script-id <id> --` producer tuple
 before defaults; invalid/duplicate explicit tuples return 65 before setup.
 Legacy no-tuple calls retain their arguments and unknown identity.
 
+The public LXC `run_update_script` supplies literal `check_container_resources`
+preparation to `_run_update_script`. Option/key/fresh-lock admission precedes it;
+pending/FORCE/hook/cleanup admission follows it. Every hook is covered, including
+ones without an app-local check. A fresh non-exported invocation-local four-input
+tuple suppresses only duplicate unchanged-input consent. Every adapter call still
+measures CPU/RAM; changed inputs/query errors cannot reuse consent. Direct calls
+outside the LXC owner remain independent. Shared confirmation stays stateless;
+addon literal baseline preparation is unchanged.
+
 - **`variables()`** — Initializes per-session globals: `NSAPP` (lowercase, no spaces), `var_install` (`<nsapp>-install`), `SESSION_ID` (8-char random), `BUILD_LOG`, `RANDOM_UUID`, `PVEHOST_NAME`, `PVEVERSION`, `KERNEL_VERSION`. Captures `APP_DEFAULT_*` from `var_*`. Reads `APP`, `var_cpu`/`ram`/`disk`, `/proc/sys/kernel/random/uuid`, `hostname`, `pveversion`.
 - **`start()`** — Context dispatcher. On Proxmox host (`pveversion` exists) → calls `setup_script` then returns. Inside existing container → runs update flow (`update_script` + `cleanup_lxc`). Reads `PHS_SILENT`, `SCRIPTS_URL`.
 - **`build_container()`** — The LXC creation orchestrator. Stages: `pre_build_script` → `pct create` → `pct start` → base packages → compose/push bundles → `lxc-attach` → check failure flag → `post_build_script`. Host staging/logs use `${TMPDIR:-/tmp}`. Optional baked `var_lxc_tmpdir` selects and creates the receiver's separate temporary root; push/execution and in-place retry use that same path. Creator TMPDIR is never implicitly transported. Reads container-config globals (`CT_ID`, `HN`, `BRG`, `NET`, `GATE`, `CORE_COUNT`, `RAM_SIZE`, `DISK_SIZE`, `PW`, `var_os`, `var_version`, `SCRIPTS_URL`, `SESSION_ID`, etc.). Persistent update/uninstall bundles go directly to `/usr/local/sbin`.
@@ -104,8 +113,8 @@ Legacy no-tuple calls retain their arguments and unknown identity.
 - **`_addon_bundle_contents()` / `_addon_bundle_write()`** (`addon_lxc.func`) — Checked addon serializer and private same-filesystem publication owner. Generation, write, chmod, alias and rename failures remove the owned stage and preserve the previous valid command; complete executable bytes publish by atomic rename. Both addon/LXC uninstall bundles invoke the hook normally under existing ERR/EXIT handling, never conditionally; cleanup of commands/marker follows only a successful return.
 - **`complete_install()`** — Finalization stage. Queries container IP, sets PVE web-UI description, runs `systemctl start ping-instances.service`, invokes `post_install_script` hook, prints final success message. Previously called `description`.
 
-`build_bundle <role> <hook> <destination> <mode> [--script-id <id> --] [pipeline ...]`
-and `_write_bundle <role> <hook> <cache> [--script-id <id> --] [pipeline ...]`
+`build_bundle <role> <hook> <destination> <mode> [--script-id <id> --] [--requirements <cpu> <ram> --] [pipeline ...]`
+and `_write_bundle <role> <hook> <cache> [--script-id <id> --] [--requirements <cpu> <ram> --] [pipeline ...]`
 preserve the existing positional pipeline API. Each validates an explicit prefix
 before effects. `_validate_lxc_script_id` is the shared lexical owner: 1-64 ASCII
 lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric, with no
@@ -113,6 +122,13 @@ lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric, with 
 `declare -- LXC_SCRIPT_ID=<id>` using printf %q; omitted identity emits no field,
 regardless of ambient/default variables. Identity-write failures preserve their
 exact status and the previous receiving command through the existing stage owner.
+`_lxc_bundle_args` checks both internal prefixes before staging/output; bad prefix
+structure returns 65. Raw requirement values remain data for core's validator.
+`_lxc_bootstrap` locally captures app-supplied var_cpu/var_ram before defaults and
+menus and passes them through `build_container [id] [cpu] [ram]` and
+`_prepare_container_bundles <path> [id] [cpu] [ram]` on both initial/repair paths.
+Every new update bundle emits both checked LXC_REQUIRED fields, even for an old
+positional writer call with an unknown pair. Install/uninstall emit neither.
 
 ### Menu & settings
 

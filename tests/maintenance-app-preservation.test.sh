@@ -20,7 +20,8 @@ if [[ "${1:-}" == --child ]]; then
   source "$c/update.sh"
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Preservation unit inputs; do not replace the shared admission owner.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   check_for_gh_release() { return 0; }
   setup_ruby() { :; }

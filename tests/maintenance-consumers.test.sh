@@ -15,7 +15,8 @@ if [[ "${1:-}" == --aria ]]; then
   load_functions
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Lifecycle fault isolation, with real resource admission and known unit inputs.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   stop_spinner() { :; }
   msg_info() { :; }
   msg_ok() { printf '%s\n' "$*" >> "$CASE_ROOT/success"; }

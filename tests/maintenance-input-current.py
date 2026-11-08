@@ -117,7 +117,7 @@ if fmt:print('200',end='')
    for k,v in addon.items():compose+='export var_addon_'+k+'='+shlex.quote(v)+'\n'
    compose+='source '+shlex.quote(str(c/'hook.sh'))+'\n'
    compose+=('_addon_bundle_contents update update_script ' if kind=='addon' else '_write_bundle update update_script ')+shlex.quote(str(c/'stage'))
-   if kind!='addon':compose+=' '+shlex.quote('run_update_script "$@"')
+   if kind!='addon':compose+=' --requirements 0 0 -- '+shlex.quote('run_update_script "$@"')
    with (c/'sbin/update').open('w') as out:subprocess.run(['bash','-ceu',compose],stdout=out,check=True,timeout=20)
    frozen=hashlib.sha256((c/'sbin/update').read_bytes()).hexdigest()
    env=dict(PATH=os.environ['PATH'],HOME=str(c/'home'),TMPDIR=str(c/'tmp'),CASE_ROOT=str(c),TEST_APP=app,FAULT=scenario if scenario in ('checker','search-checker') else 'none',VERBOSE=verbose,var_appversion='v2.0',BACKUP_DIR=str(c/'backup'),BUILD_LOG=str(c/'input.log'),DEBUG_LOGFILE=str(c/'input-error.log'))

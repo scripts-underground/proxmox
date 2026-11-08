@@ -27,7 +27,8 @@ if [[ "${1:-}" == --child ]]; then
   fi
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Compatibility unit inputs; resource consent has its own actual-app proofs.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   ensure_dependencies() { :; }
   getent() { return 0; }

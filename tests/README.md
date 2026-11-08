@@ -242,6 +242,21 @@ Go policy tests cover all maintained LXC producers, including absent footers and
 orphan-generator fixtures. PVE/network/app effects remain modeled; native locking
 uses the separate actual BusyBox/kernel gate.
 
+The maintained Actual Budget hook is also generated through its actual footer,
+initial/repair preparation and cold update runner. Real requirement fields and
+consent gate modeled package/release/service effects; equal/enough, short CPU/RAM,
+missing/invalid/zero values, explicit input, mutated defaults/menus and poisoned
+ambient fields are observed with unchanged app configuration. Writer CPU/RAM printf
+faults preserve prior command bytes/mode. Whole-batch recovery controls fail each
+stop/config/storage/restore/start stage under ordinary, prior-75 and prior-admission
+outcomes and assert the exact effect frontier. These remain labeled models for
+PVE/package/service operations; they do not claim a native app installation.
+The actual Alpine-Grafana hook, which has no resource-helper call, exercises the
+same central admission before package/service effects. Actual Budget's repeated
+helper call observes exactly one unchanged-input prompt. Native owner controls
+cover busy75 before probes, exact tuple changes, failed queries, set-a/import
+poison, independent invocations and refusal before pending/FORCE/cleanup.
+
 | # | Test | Actual outcome and modeled boundary |
 |---|---|---|
 | 1 | `maintenance-silent.test.sh` | Actual core/error helpers: same-shell effects, exact handled/fatal statuses, retry, quiet log bytes, pipeline semantics, options and ERR restoration (including command mutation); spinner UI only is stubbed. Cold generated update/header consumers and native clear use real PTY/non-TTY/TERM controls. Actual resource consent owner, fatal direct adapter, cold bundle and whole-batch paths cover sufficient/short/unknown requirements, yes/no/empty/EOF, failed probes, owned-start cleanup, remaining-target choice and updater 75/0/failure. Whole-batch fatal backup/restore/update combinations observe prior 75 and first-admission priority in both orders, exact abort frontier and no extra reboot/cleanup of protected targets. Exact persisted configuration and zero setters are checked, with software effects observed only after consent; real PTY prompts also pause before effects. Current/legacy detector data is never executed. PVE/network/package/lifecycle boundaries are modeled; this does not establish native app acceptance. |

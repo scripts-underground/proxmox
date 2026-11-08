@@ -120,7 +120,7 @@ start=next(i for i,l in enumerate(lines) if ('msg_info "Preparing container inst
 while start>0 and (not lines[start-1].strip() or lines[start-1].strip().startswith(('#','set ','trap '))):start-=1
 needle='local lxc_exit=' if route=='normal' else 'local apt_retry_exit='
 end=next(i for i in range(start,len(lines)) if needle in lines[i])
-capture=next((l for l in lines if l.strip()=='local _bc_script_id=${1-}'),'')
+capture='\n'.join(l for l in lines if l.strip().startswith(('local _bc_script_id=', 'local _bc_required_cpu=')))
 pathlib.Path(sys.argv[2]).write_text(capture+'\n'+'\n'.join(lines[start:end+1])+'\n')
 PY
     rc=0

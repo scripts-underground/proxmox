@@ -107,7 +107,7 @@ update_script() {{
   printf 'productive:%s:%s\\n' "${{UPDATE_FORCE:-none}}" "${{FORCE_DEPLOY:-none}}" >> {quote(WORK / 'productive')}
   return "${{HOOK_STATUS:-0}}"
 }}
-_write_bundle update update_script {quote(cache)} \
+_write_bundle update update_script {quote(cache)} --requirements 0 0 -- \
   'stop_spinner() {{ :; }}' 'cleanup_lxc() {{ :; }}' 'run_update_script "$@"' > {quote(bundle)}
 '''
 rc, _, err = run('generate', generate)
@@ -387,8 +387,10 @@ printf 'requirements:%s:%s' "$required_cpu" "$required_ram"
         check(kind + '/' + str(failure) + ' explicit unknown diagnostic', failure, b'requirements are unknown' in err)
 (WORK / 'checks.json').write_text(json.dumps(CHECKS, indent=2, default=serialize))
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
+child_failed = False
 if all(v['passed'] for v in CHECKS):
-    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/batch_metadata_fixture.py'), str(SOURCE)], check=True, timeout=120)
-    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/resource_consent_fixture.py'), str(SOURCE)], check=True, timeout=240)
-    subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib/source_script_identity_fixture.py'), str(SOURCE)], check=True, timeout=240)
-raise SystemExit(any(not v['passed'] for v in CHECKS))
+    for name, seconds in [('batch_metadata_fixture.py', 120), ('resource_consent_fixture.py', 240),
+                          ('source_script_identity_fixture.py', 240)]:
+        result = subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib' / name), str(SOURCE)], timeout=seconds)
+        child_failed |= result.returncode != 0
+raise SystemExit(any(not v['passed'] for v in CHECKS) or child_failed)

@@ -1041,7 +1041,11 @@ _app_maintenance_ui_detach() {
 #   redeployed through the app's normal backup/restore path
 # ------------------------------------------------------------------------------
 run_update_script() {
-  _run_update_script '' "$@"
+  # Clear an imported outer export before local shadowing can hide its attribute.
+  export -n _lxc_resource_admission
+  local -a _lxc_resource_admission=()
+  export -n _lxc_resource_admission
+  _run_update_script check_container_resources "$@"
 }
 
 # Internal preparation injection; no public command-line preparation option.
@@ -1986,6 +1990,8 @@ confirm_container_resources() {
 # including when a conditional caller suppresses errexit inside this function.
 check_container_resources() {
   local current_cpu current_ram _cr_free _cr_status
+  local _cr_required_cpu=${LXC_REQUIRED_CPU-${var_cpu-}} _cr_required_ram=${LXC_REQUIRED_RAM-${var_ram-}}
+  local _cr_cache_owned=0 _cr_frame
   current_cpu=$(nproc) || {
     _cr_status=$?
     printf 'Unable to read container CPU allocation.\n' >&2
@@ -2000,7 +2006,26 @@ check_container_resources() {
     _cr_status=$?
     exit "$_cr_status"
   }
-  if confirm_container_resources "${var_cpu:-0}" "${var_ram:-0}" "$current_cpu" "$current_ram" "${APP:-Container}"; then
+  # Only this component's active public LXC invocation owns the local tuple.
+  # Imported/global lookalikes and independent direct calls cannot borrow it.
+  for _cr_frame in "${FUNCNAME[@]}"; do
+    if [[ "$_cr_frame" == run_update_script ]]; then
+      _cr_cache_owned=1
+      break
+    fi
+  done
+  if [[ "$_cr_cache_owned" == 1 && ${#_lxc_resource_admission[@]} == 4 &&
+    "${_lxc_resource_admission[0]}" == "$_cr_required_cpu" &&
+    "${_lxc_resource_admission[1]}" == "$_cr_required_ram" &&
+    "${_lxc_resource_admission[2]}" == "$current_cpu" &&
+    "${_lxc_resource_admission[3]}" == "$current_ram" ]]; then
+    return 0
+  fi
+  if confirm_container_resources "$_cr_required_cpu" "$_cr_required_ram" "$current_cpu" "$current_ram" "${APP:-Container}"; then
+    if [[ "$_cr_cache_owned" == 1 ]]; then
+      _lxc_resource_admission=("$_cr_required_cpu" "$_cr_required_ram" "$current_cpu" "$current_ram")
+      export -n _lxc_resource_admission
+    fi
     return 0
   else
     _cr_status=$?

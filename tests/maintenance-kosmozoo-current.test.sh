@@ -43,6 +43,9 @@ prepare_cold_case() {
   printf 'root:x:0:0:root:/root:/bin/bash\nkosmozoo:x:3456:3457:service:/data:/usr/sbin/nologin\noperator:x:3459:3457:operator:/data:/usr/sbin/nologin\n' > "$c/root/etc/passwd"
   printf 'root:x:0:\nkosmozoo:x:3457:\nmedia:x:3458:kosmozoo,operator\nextra:x:3460:\n' > "$c/root/etc/group"
   printf 'passwd: files\ngroup: files\n' > "$c/root/etc/nsswitch.conf"
+  # /usr is bound read-only; resolve its awk alternative inside this owned /etc.
+  mkdir -p "$c/root/etc/alternatives"
+  ln -s "$(readlink -e "$(command -v awk)")" "$c/root/etc/alternatives/awk"
   cp "$0" "$c/root/fixture/test.sh"
   cp /usr/bin/sleep "$c/root/fixture/new"
   printf '\nNEW\n' >> "$c/root/fixture/new"
@@ -52,7 +55,7 @@ prepare_cold_case() {
   var_lxc_kosmozoo_state=/data/state var_lxc_kosmozoo_cache=/data/cache
   var_lxc_kosmozoo_hosts=${seed:-} var_lxc_kosmozoo_initial_release=latest
   _write_bundle install install_script "$ROOT/misc" 'source /fixture/models.sh' 'install_script' > "$c/root/fixture/install.sh"
-  _write_bundle update update_script "$ROOT/misc" 'source /fixture/models.sh' 'run_update_script' > "$c/root/fixture/update.sh"
+  _write_bundle update update_script "$ROOT/misc" --requirements "${var_cpu-}" "${var_ram-}" -- 'source /fixture/models.sh' 'run_update_script' > "$c/root/fixture/update.sh"
   cat > "$c/root/fixture/models.sh" << 'MODELS'
 STD='' VERBOSE=no
 msg_info() { :; }
@@ -61,7 +64,6 @@ msg_error() { printf 'ERROR %s\n' "$*" >&2; }
 render_header() { :; }
 header_info() { :; }
 check_container_storage() { :; }
-check_container_resources() { :; }
 ownership_point() { :; }
 cleanup_lxc() { ownership_point outer-cleanup; }
 get_system_arch() { ownership_point architecture || return $?; printf amd64; }

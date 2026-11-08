@@ -104,7 +104,16 @@ bundles pushed at install time:
 
 Update bundles and `lxc_setup` run `update_script` through `run_update_script`
 (core.func): `update` or `update --clean`, other options exit 65. The runner
-acquires a fresh per-app maintenance owner before pending admission. One stable
+acquires a fresh per-app maintenance owner before pending admission.
+LXC preparation now runs the resource adapter after fresh ownership but before
+pending/FORCE/hook/cleanup admission, including hooks that omit their own check.
+Refusal or query failure preserves prior pending bytes and arms no cleanup. The
+public LXC invocation owns a fresh non-exported four-value consent tuple; repeated
+hook checks reuse only identical required CPU/RAM and freshly measured actual
+CPU/RAM. Changed inputs or failed probes cannot reuse it. Independent invocations
+and direct adapter calls outside that owner perform normal admission. Addon
+literal baseline preparation remains separate; shared confirmation is stateless.
+One stable
 empty root-owned 0600 one-link inode lives under the private 0700
 `/var/lib/scripts-underground/maintenance-locks`; its nonsymlink ancestors must be
 root-owned and not group/world writable. Existing unsafe metadata is refused,
@@ -184,10 +193,20 @@ admission boundary. Literal decimal values are checked before comparisons.
 Unknown requirements and insufficient CPU or RAM require explicit y/yes consent;
 No, empty input and EOF refuse. An unknown actual allocation is a checked error.
 The no-argument `check_container_resources` adapter measures nproc/free inside the
-container, uses the caller's existing var_cpu/var_ram defaults and explicitly exits
+container, uses explicit baked LXC_REQUIRED_CPU/RAM fields when present, otherwise
+the direct caller's existing var_cpu/var_ram values, and explicitly exits
 on refusal or query failure, including under conditional callers. No unattended
 or initial-confirm flag authorizes this consent. Frozen update bundles retain
 their existing generation and caller defaults; this adds no framework refresh.
+
+The LXC entry captures app-supplied var_cpu/var_ram locally before defaults and
+menus. The pair is the script's resolved input at that point, not the eventual
+allocation. Initial and repair preparation pass it explicitly with the source ID.
+New update bundles always declare both LXC_REQUIRED_CPU and LXC_REQUIRED_RAM,
+empty when unknown, so ambient fields cannot supply missing provenance. Explicit
+zero remains zero; absent or invalid requirements require consent, never a zero
+fallback. The internal optional `--requirements <cpu> <ram> --` bundle prefix
+follows the optional identity prefix; it is not an installer CLI option.
 
 The PVE batch updater reads literal script requirements as data only. Modern
 bundles keep their maintenance namespace separate from source identity: exactly
@@ -213,6 +232,11 @@ It never enters pre-update refusal cleanup. Final status prioritizes observed
 updater 75, then the first admission refusal/error, then the ordinary result.
 Successful-CT reboot handling and ordinary non-75 backup recovery remain separate;
 a restored failed update is not reported as an all-updated success.
+Backup recovery has one checked script-owned stop/config-storage/restore/start
+sequence. Each producer retains its native failure status; start is reached only
+after restore succeeds. Failed recovery stops the batch immediately and identifies
+the failed step/status without guessing resulting state. Existing backup selection
+and the final updater-75/first-admission/ordinary-failure priority are retained.
 One script-owned terminal selector applies that priority to every exit after batch
 work begins, including fatal backup, restoration and unrecoverable update failures.
 Those failures still abort at their original point; they do not advance to later

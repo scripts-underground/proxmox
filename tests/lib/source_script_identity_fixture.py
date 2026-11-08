@@ -29,7 +29,8 @@ def function(text, name):
 def run(c, name, code, answer=b''):
     r = subprocess.run(['/bin/bash', '-c', code], cwd=c, input=answer,
                        env=dict(PATH='/usr/bin:/bin', HOME=str(c), TMPDIR=str(c),
-                                LXC_SCRIPT_ID='ambient-poison', var_lxc_script_id='default-poison'),
+                                LXC_SCRIPT_ID='ambient-poison', var_lxc_script_id='default-poison',
+                                LXC_REQUIRED_CPU='0', LXC_REQUIRED_RAM='0'),
                        capture_output=True, timeout=30)
     (c / (name + '.json')).write_text(json.dumps(dict(status=r.returncode,
         code=code, stdout=r.stdout.decode(errors='replace'), stderr=r.stderr.decode(errors='replace'))))
@@ -83,9 +84,10 @@ variables() {{
 {normalization}
   var_lxc_tmpdir={q(c / 'received')}
   LXC_SCRIPT_ID=mutated-default var_lxc_script_id=mutated-default
+  var_cpu=99 var_ram=99999
 }}
 color() {{ :; }}; render_header() {{ :; }}; catch_errors() {{ :; }}
-lxc_setup() {{ printf '%s\\n' "$@" > {q(c / 'arguments')}; }}
+lxc_setup() {{ printf '%s\\n' "$@" > {q(c / 'arguments')}; var_cpu=1 var_ram=1; }}
 complete_install() {{ printf complete > {q(c / 'complete')}; }}
 execute_optional_hook() {{ printf '%s\\n' "$*" >> {q(c / 'prebuild')}; }}
 msg_info() {{ :; }}; msg_ok() {{ :; }}; msg_error() {{ :; }}; msg_debug() {{ :; }}
@@ -95,7 +97,10 @@ build_bundle() {{
   local role=$1 hook=$2 ignored_destination=$3 mode=$4
   shift 4
   printf '%s\\n' "$role" >> {q(c / 'prepared')}
-  fixture_real_build_bundle "$role" "$hook" {q(c / 'received')}/"$role" "$mode" "$@"
+  fixture_real_build_bundle "$role" "$hook" {q(c / 'received')}/"$role" "$mode" "$@" || return $?
+  if [[ "$role" == update ]]; then
+    /bin/cp {q(c / 'received')}/update {q(c / 'received')}/"update.$(wc -l < {q(c / 'prepared')})"
+  fi
 }}
 pct() {{
   printf '%s\\n' "$*" >> {q(c / 'pct')}
@@ -242,6 +247,99 @@ if 'scanopy' in produced:
         p = W / ('unsupported-' + label)
         p.write_text(raw + '\n' + assignment + '\n')
         admission('unsupported-' + label, p, namespace, b'no\n', 1, '', '', [])
+
+# Actual maintained app hook, through its footer and both real preparation paths.
+# Service/package/release executables are modeled; consent, bundles and files are real.
+budget_cases = [
+    ('equal', '', ('2', '2048'), b'', 0, ('2', '2048'), False),
+    ('enough', '', ('4', '4096'), b'', 0, ('2', '2048'), False),
+    ('cpu-no', '', ('1', '4096'), b'no\n', 1, ('2', '2048'), True),
+    ('ram-no', '', ('4', '1024'), b'no\n', 1, ('2', '2048'), True),
+    ('short-empty', '', ('1', '1024'), b'\n', 1, ('2', '2048'), True),
+    ('short-eof', '', ('1', '1024'), b'', 1, ('2', '2048'), True),
+    ('short-yes', '', ('1', '1024'), b'YeS\n', 0, ('2', '2048'), True),
+    ('override', 'var_cpu=3 var_ram=3072', ('3', '3072'), b'', 0, ('3', '3072'), False),
+    ('missing-no', 'unset var_cpu var_ram', ('8', '8192'), b'no\n', 1, ('', ''), True),
+    ('missing-eof', 'unset var_cpu var_ram', ('8', '8192'), b'', 1, ('', ''), True),
+    ('missing-yes', 'unset var_cpu var_ram', ('8', '8192'), b'yes\n', 0, ('', ''), True),
+    ('invalid', "var_cpu='$(touch BAD)' var_ram=2048", ('8', '8192'), b'no\n', 1, ('$(touch BAD)', '2048'), True),
+    ('zero', 'var_cpu=0 var_ram=0', ('1', '1024'), b'', 0, ('0', '0'), False),
+    ('prior-no', '', ('1', '1024'), b'no\n', 1, ('2', '2048'), True),
+]
+grafana_cases = [
+    ('short-no', '', ('1', '1024'), b'no\n', 1, ('2', '1024'), True),
+    ('short-eof', '', ('1', '1024'), b'', 1, ('2', '1024'), True),
+    ('short-yes', '', ('1', '1024'), b'yes\n', 0, ('2', '1024'), True),
+    ('unknown-no', 'unset var_cpu var_ram', ('8', '8192'), b'no\n', 1, ('', ''), True),
+    ('unknown-eof', 'unset var_cpu var_ram', ('8', '8192'), b'', 1, ('', ''), True),
+    ('unknown-yes', 'unset var_cpu var_ram', ('8', '8192'), b'yes\n', 0, ('', ''), True),
+    ('enough', '', ('8', '8192'), b'', 0, ('2', '1024'), False),
+    ('prior-no', '', ('1', '1024'), b'no\n', 1, ('2', '1024'), True),
+]
+for slug, scenario in [('actualbudget', row) for row in budget_cases] + [('alpine-grafana', row) for row in grafana_cases]:
+    label, supplied, actual, answer, status, required, prompt = scenario
+    app = (S / ('scripts/lxc/' + slug + '.sh')).read_text()
+    app_declarations = app[:app.index('function install_script() {')]
+    app_hook = function(app, 'update_script')
+    app_footer, = [line for line in app.splitlines() if line.startswith('source ') and '/misc/bootstrap/lxc' in line]
+    label = slug + '-' + label
+    c = case('direct-requirements-' + label)
+    m, _ = module(c)
+    mapped_hook = app_hook.replace('/opt/actualbudget-data', str(c / 'app-data'))
+    m.write_text(m.read_text().replace('update_script() { :; }', mapped_hook, 1))
+    code = f'''set -euo pipefail
+{app_declarations}
+{supplied}
+curl() {{ case "${{!#}}" in */misc/bootstrap/lxc) /bin/cat {q(S / 'misc/bootstrap/lxc')};; */misc/build.func) /bin/cat {q(m)};; *) return 89;; esac; }}
+{app_footer}
+'''
+    r = run(c, 'producer', code)
+    check(label + ' maintained footer capture producer status', 0, r.returncode)
+    for suffix in ('2', '5'):
+        p = c / 'received' / ('update.' + suffix)
+        text = p.read_text() if p.exists() else ''
+        # Read field values through the actual cold shell below, never eval them here.
+        check(label + '/' + suffix + ' both explicit requirement declarations', 2,
+              len(re.findall(r'(?m)^declare -- LXC_REQUIRED_(?:CPU|RAM)=', text)))
+    (c / '.actualbudget').write_text('fixture release')
+    (c / 'app-data').mkdir()
+    (c / 'app-data/config.json').write_text('operator-config: retained\n')
+    runtime = c / 'received/update'
+    (c / 'models').write_text('''header_info() { :; }; check_container_storage() { :; }; cleanup_lxc() { :; }
+msg_info() { :; }; msg_ok() { :; }; msg_warn() { :; }
+setup_nodejs() { printf package >> "$HOME/software"; }
+get_latest_github_release() { printf release >> "$HOME/software"; printf fixture; }
+check_for_gh_release() { return 0; }
+systemctl() { printf service >> "$HOME/software"; }; npm() { printf npm >> "$HOME/software"; }
+apk() { printf apk >> "$HOME/software"; }; rc-service() { printf service >> "$HOME/software"; }
+printf '%s\\n%s' "${LXC_REQUIRED_CPU-absent}" "${LXC_REQUIRED_RAM-absent}" > "$HOME/captured"
+''')
+    # The bundle pipeline remains real run_update_script, with modeled APIs supplied
+    # immediately before that call rather than by a seeded replacement update hook.
+    # A second consumer file is constructed only from the generated bundle bytes.
+    text = runtime.read_text()
+    text = text.replace('run_update_script "$@"', f'source {q(c / "models")}\nrun_update_script "$@"', 1)
+    consumer = c / 'cold-consumer';consumer.write_text(text)
+    pending = c / 'pending' / slug
+    if label.endswith('prior-no'):
+        pending.parent.mkdir(exist_ok=True)
+        pending.write_text('original pending bytes\n')
+    check(label + ' initial and repair requirement fields identical',
+          re.findall(r'(?m)^declare -- LXC_REQUIRED_(?:CPU|RAM)=.*$', (c / 'received/update.2').read_text()),
+          re.findall(r'(?m)^declare -- LXC_REQUIRED_(?:CPU|RAM)=.*$', text))
+    r = run(c, 'cold-consumer', f'''nproc() {{ printf '%s\\n' {q(actual[0])}; }}; free() {{ printf 'total used free\\nMem: %s 0 0\\n' {q(actual[1])}; }}; export -f nproc free
+exec /bin/bash {q(consumer)}''', answer)
+    check(label + ' actual maintained cold terminal status', status, r.returncode)
+    check(label + ' actual package/service boundary requires consent', status == 0, (c / 'software').exists())
+    check(label + ' warning/consent at the real adapter', prompt, b'Continue update' in r.stdout + r.stderr)
+    check(label + ' exactly one unchanged-input consent prompt', int(prompt), (r.stdout + r.stderr).count(b'Continue update'))
+    check(label + ' refusal preserves original pending without new flag',
+          'original pending bytes\n' if label.endswith('prior-no') else None,
+          pending.read_text() if pending.exists() else None)
+    check(label + ' captured pair survives defaults/menus/ambient poison', '\n'.join(required),
+          (c / 'captured').read_text() if (c / 'captured').exists() else '')
+    check(label + ' actual app configuration unchanged', 'operator-config: retained\n', (c / 'app-data/config.json').read_text())
+    check(label + ' requirement expression never executes', False, (c / 'BAD').exists())
 
 (W / 'checks.json').write_text(json.dumps(checks, sort_keys=True, indent=2))
 failures = sum(not d['passed'] for d in checks)

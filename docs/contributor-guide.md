@@ -87,6 +87,13 @@ New update bundles carry this explicit source identity; old unproven bundles
 require unknown-requirements consent during batch updates. Identity is not an
 operator override and does not change the application's maintenance namespace.
 
+The framework captures resolved var_cpu/var_ram alongside that identity before
+defaults/menus and bakes them into new direct-update bundles. Resource overrides
+already resolved by the app declaration keep their existing meaning. Later menu
+allocation changes do not rewrite the captured pair. Missing/invalid requirements
+require explicit update consent; they are not zero minima. Do not set the reserved
+LXC_REQUIRED_CPU/RAM fields as app options. Older frozen bundles are not refreshed.
+
 ## File structure (required order)
 
 ```
