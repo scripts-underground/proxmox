@@ -293,7 +293,7 @@ parse_dev_mode() {
 # ------------------------------------------------------------------------------
 shell_check() {
   if [[ "$(ps -p $$ -o comm=)" != "bash" ]]; then
-    clear
+    terminal_clear
     msg_error "Your default shell is currently not set to Bash. To use these scripts, please switch to the Bash shell."
     echo -e "\nExiting..."
     sleep 2
@@ -310,7 +310,7 @@ shell_check() {
 # ------------------------------------------------------------------------------
 root_check() {
   if [[ "$(id -u)" -ne 0 || $(ps -o comm= -p $PPID) == "sudo" ]]; then
-    clear
+    terminal_clear
     msg_error "Please run this script as root."
     echo -e "\nExiting..."
     sleep 2
@@ -782,6 +782,13 @@ fatal() {
 # SECTION 5: UTILITY FUNCTIONS
 # ==============================================================================
 
+# Cosmetic display must never prevent an unattended productive operation.
+# Use the external command only for a real, usable stdout terminal.
+terminal_clear() {
+  [[ -t 1 && -n "${TERM:-}" && "${TERM:-}" != dumb ]] || return 0
+  command clear 2> /dev/null || true
+}
+
 # ------------------------------------------------------------------------------
 # exit_script()
 #
@@ -790,7 +797,7 @@ fatal() {
 # - Exits with default exit code
 # ------------------------------------------------------------------------------
 exit_script() {
-  clear
+  terminal_clear
   echo -e "\n${CROSS}${RD}User exited script${CL}\n"
   exit
 }
@@ -827,7 +834,7 @@ get_header() {
 # - Clears screen and displays the app name
 # ------------------------------------------------------------------------------
 header_info_fallback() {
-  clear
+  terminal_clear
   echo -e "${BL}${BOLD}${APP:-}${CL}\n"
 }
 
@@ -1034,7 +1041,11 @@ _app_maintenance_ui_detach() {
 #   redeployed through the app's normal backup/restore path
 # ------------------------------------------------------------------------------
 run_update_script() {
-  _run_update_script '' "$@"
+  # Clear an imported outer export before local shadowing can hide its attribute.
+  export -n _lxc_resource_admission
+  local -a _lxc_resource_admission=()
+  export -n _lxc_resource_admission
+  _run_update_script check_container_resources "$@"
 }
 
 # Internal preparation injection; no public command-line preparation option.
@@ -1935,26 +1946,91 @@ on_hup_keepalive() {
 }
 
 # ------------------------------------------------------------------------------
-# check_container_resources()
-#
-# - Checks LXC CPU/RAM against app-required values
-# - Warns if under-provisioned and prompts to continue or abort
+# Literal decimal normalization shared by resource admission. Never evaluate input.
+# Values are bounded before any arithmetic comparison (including leading zeroes).
 # ------------------------------------------------------------------------------
-check_container_resources() {
-  current_ram=$(free -m | awk 'NR==2{print $2}')
-  current_cpu=$(nproc)
+_container_resource_decimal() {
+  local LC_ALL=C _crd_value=$1 _crd_output=$2
+  [[ -n "$_crd_value" && "$_crd_value" != *[!0123456789]* ]] || return 65
+  while [[ ${#_crd_value} -gt 1 && "$_crd_value" == 0* ]]; do _crd_value=${_crd_value#0}; done
+  # Equal-length decimal string comparison prevents overflow before arithmetic.
+  # shellcheck disable=SC2071
+  [[ ${#_crd_value} -lt 19 || (${#_crd_value} == 19 && ! "$_crd_value" > 9223372036854775807) ]] || return 65
+  printf -v "$_crd_output" '%s' "$_crd_value"
+}
 
-  if [[ "$current_ram" -lt "${var_ram:-0}" ]] || [[ "$current_cpu" -lt "${var_cpu:-0}" ]]; then
-    echo -e "\n${INFO}${HOLD} ${GN}Required: ${var_cpu:-0} CPU, ${var_ram:-0}MB RAM ${CL}| ${RD}Current: ${current_cpu} CPU, ${current_ram}MB RAM${CL}"
-    echo -e "${YWB}Please ensure that the ${APP} LXC is configured with at least ${var_cpu:-0} vCPU and ${var_ram:-0} MB RAM for the build process.${CL}\n"
-    echo -ne "${INFO}${HOLD} May cause data loss! ${INFO} Continue update with under-provisioned LXC? <yes/No>  "
-    read -r prompt
-    if [[ ! ${prompt,,} =~ ^(yes)$ ]]; then
-      echo -e "${CROSS}${HOLD} ${YWB}Exiting based on user input.${CL}"
-      exit 1
-    fi
+# Returning admission owner. Unknown requirements require consent; unknown actual
+# allocation is an error. App unattended/initial-confirm flags are not consent.
+confirm_container_resources() {
+  local _cr_cpu='' _cr_ram='' _cr_actual_cpu='' _cr_actual_ram='' _cr_unknown=0 _cr_prompt=''
+  local _cr_label=${5:-Container}
+  if ! _container_resource_decimal "${3:-}" _cr_actual_cpu ||
+    ! _container_resource_decimal "${4:-}" _cr_actual_ram ||
+    [[ "$_cr_actual_cpu" == 0 || "$_cr_actual_ram" == 0 ]]; then
+    printf 'Unable to measure actual CPU/RAM for %s; update not admitted.\n' "$_cr_label" >&2
+    return 65
+  fi
+  _container_resource_decimal "${1:-}" _cr_cpu || _cr_unknown=1
+  _container_resource_decimal "${2:-}" _cr_ram || _cr_unknown=1
+  if [[ "$_cr_unknown" == 0 && "$_cr_actual_cpu" -ge "$_cr_cpu" && "$_cr_actual_ram" -ge "$_cr_ram" ]]; then
+    return 0
+  fi
+  if [[ "$_cr_unknown" == 1 ]]; then
+    printf 'Warning: %s declared resource requirements are unknown or invalid; the minimum check is unavailable.\n' "$_cr_label" >&2
   else
-    echo -e ""
+    printf 'Warning: %s is under-provisioned for the declared requirements.\n' "$_cr_label" >&2
+  fi
+  printf 'Required: %s CPU, %s MiB RAM | Current: %s CPU, %s MiB RAM\n' "${_cr_cpu:-unknown}" "${_cr_ram:-unknown}" "$_cr_actual_cpu" "$_cr_actual_ram" >&2
+  printf 'Container resource configuration will not be changed. Continue update for %s? <yes/No> ' "$_cr_label" >&2
+  IFS= read -r _cr_prompt || return 1
+  case "${_cr_prompt,,}" in y | yes) return 0 ;; *) return 1 ;; esac
+}
+
+# No-argument compatibility adapter: refusal/query failure explicitly aborts,
+# including when a conditional caller suppresses errexit inside this function.
+check_container_resources() {
+  local current_cpu current_ram _cr_free _cr_status
+  local _cr_required_cpu=${LXC_REQUIRED_CPU-${var_cpu-}} _cr_required_ram=${LXC_REQUIRED_RAM-${var_ram-}}
+  local _cr_cache_owned=0 _cr_frame
+  current_cpu=$(nproc) || {
+    _cr_status=$?
+    printf 'Unable to read container CPU allocation.\n' >&2
+    exit "$_cr_status"
+  }
+  _cr_free=$(free -m) || {
+    _cr_status=$?
+    printf 'Unable to read container RAM allocation.\n' >&2
+    exit "$_cr_status"
+  }
+  current_ram=$(awk 'NR==2{print $2}' <<< "$_cr_free") || {
+    _cr_status=$?
+    exit "$_cr_status"
+  }
+  # Only this component's active public LXC invocation owns the local tuple.
+  # Imported/global lookalikes and independent direct calls cannot borrow it.
+  for _cr_frame in "${FUNCNAME[@]}"; do
+    if [[ "$_cr_frame" == run_update_script ]]; then
+      _cr_cache_owned=1
+      break
+    fi
+  done
+  if [[ "$_cr_cache_owned" == 1 && ${#_lxc_resource_admission[@]} == 4 &&
+    "${_lxc_resource_admission[0]}" == "$_cr_required_cpu" &&
+    "${_lxc_resource_admission[1]}" == "$_cr_required_ram" &&
+    "${_lxc_resource_admission[2]}" == "$current_cpu" &&
+    "${_lxc_resource_admission[3]}" == "$current_ram" ]]; then
+    return 0
+  fi
+  if confirm_container_resources "$_cr_required_cpu" "$_cr_required_ram" "$current_cpu" "$current_ram" "${APP:-Container}"; then
+    if [[ "$_cr_cache_owned" == 1 ]]; then
+      _lxc_resource_admission=("$_cr_required_cpu" "$_cr_required_ram" "$current_cpu" "$current_ram")
+      export -n _lxc_resource_admission
+    fi
+    return 0
+  else
+    _cr_status=$?
+    printf 'Update aborted before software changes.\n' >&2
+    exit "$_cr_status"
   fi
 }
 

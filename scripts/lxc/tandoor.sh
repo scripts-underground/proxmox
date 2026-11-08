@@ -197,4 +197,4 @@ EOF
 }
 
 # shellcheck disable=SC1090
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "tandoor" -- "$@"

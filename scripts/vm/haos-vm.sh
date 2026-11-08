@@ -18,7 +18,7 @@ VM_BIOS="${VM_BIOS:-ovmf}"
 VM_CLOUD_INIT="${VM_CLOUD_INIT:-no}"
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     __  __                        ___              _      __              __     ____  _____
    / / / /___  ____ ___  ___     /   |  __________(_)____/ /_____ _____  / /_   / __ \/ ___/

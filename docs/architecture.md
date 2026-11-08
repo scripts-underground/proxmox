@@ -11,8 +11,9 @@
 Each script in this repo is a single file. The user's CT script declares
 configuration variables (APP, resource defaults) and bash functions that
 serve as lifecycle hooks (install_script, update_script, etc.). The script
-ends with `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc")`, which
-loads the framework and runs the install path.
+ends with `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "appname" -- "$@"`,
+where `appname` is the literal filename stem. This loads the framework and runs
+the install path while preserving caller arguments.
 
 The bootstrap shim is the orchestrator. It loads the framework files,
 guards preconditions, and invokes framework functions — it does not call
@@ -43,47 +44,39 @@ stages and invoke the appropriate user hooks as part of their work.
 
 ### 3.1 LXC — `misc/bootstrap/lxc`
 
-The spec'd shim (with migration applied):
+The shim loads the framework and invokes its checked entry:
 
 ```bash
 source <(curl -fsSL "${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}/misc/build.func") 2>/dev/null
 
-declare -F install_script >/dev/null || {
-  echo "Error: install_script() not defined"
-  exit 1
-}
-
-variables
-color
-catch_errors
-
-start
-build_container
-complete_install
+declare -F _lxc_bootstrap >/dev/null || { printf 'FATAL: LXC bootstrap entry not loaded\n' >&2; exit 111; }
+_lxc_bootstrap "$@"
 ```
 
-Every line is `source`, a guard, or a framework function call. No user
-hooks invoked directly.
+Every line is `source`, a guard, or a framework function call. The shim invokes
+no user hook directly. `_lxc_bootstrap` captures the optional producer tuple
+`--script-id <id> --` into a local before defaults, then runs `variables`,
+`color`, `render_header`, `catch_errors`, `lxc_setup`, `build_container` and
+`complete_install` in order. Only remaining arguments reach `lxc_setup`.
 
 - Line 1 sources `build.func`, which as a side effect pulls in
   `core.func` and `error_handler.func` and runs setup
   code (`load_functions`, `catch_errors`).
 
-- Lines 3–6 assert the user defined `install_script`. Required; fail fast
-  if absent.
+- The guard refuses an unavailable framework entry with 111.
 
-- Lines 8–10 set up the framework's global state: normalized app
+- The entry sets up the framework's global state: normalized app
   identifiers, ANSI color vars, strict-mode error traps.
 
-- Line 12 — `start` dispatches by context. On the Proxmox host it runs
+- `lxc_setup` dispatches by context. On the Proxmox host it runs
   the whiptail menu (via `setup_script`) to collect container settings.
   Inside an existing container it runs the update flow instead.
   If `start` returns, the install path continues.
 
-- Line 13 — `build_container` creates the LXC, runs the app installer
+- `build_container` creates the LXC, runs the app installer
   inside it, checks the result, fires `post_build_script`.
 
-- Line 14 — `complete_install` queries the container for network info,
+- `complete_install` queries the container for network info,
   sets the PVE web-UI description, fires `post_install_script`, prints
   the final success message.
 
@@ -111,7 +104,16 @@ bundles pushed at install time:
 
 Update bundles and `lxc_setup` run `update_script` through `run_update_script`
 (core.func): `update` or `update --clean`, other options exit 65. The runner
-acquires a fresh per-app maintenance owner before pending admission. One stable
+acquires a fresh per-app maintenance owner before pending admission.
+LXC preparation now runs the resource adapter after fresh ownership but before
+pending/FORCE/hook/cleanup admission, including hooks that omit their own check.
+Refusal or query failure preserves prior pending bytes and arms no cleanup. The
+public LXC invocation owns a fresh non-exported four-value consent tuple; repeated
+hook checks reuse only identical required CPU/RAM and freshly measured actual
+CPU/RAM. Changed inputs or failed probes cannot reuse it. Independent invocations
+and direct adapter calls outside that owner perform normal admission. Addon
+literal baseline preparation remains separate; shared confirmation is stateless.
+One stable
 empty root-owned 0600 one-link inode lives under the private 0700
 `/var/lib/scripts-underground/maintenance-locks`; its nonsymlink ancestors must be
 root-owned and not group/world writable. Existing unsafe metadata is refused,
@@ -185,16 +187,90 @@ their own exact stages at their lifecycle boundaries instead.
 An existing hook that calls this public helper explicitly acknowledges the same
 due cleanup, so its later successful exit does not repeat package/cache work.
 
-The PVE batch updater treats raw status 75 conservatively as temporary/busy, not
-as proof of a unique authenticated refusal: a hook can also return 75. Immediately
-after result capture it skips automatic shutdown, resource restore, backup
-rollback and reboot eligibility, preserving state at result capture and retaining
-any backup already taken. A CT successfully started by this
-batch remains running; any requested build-resource increase is not automatically
-restored. Messages identify successful starts and requested build/run values,
-without claiming a requested config change succeeded. Final output reports partial
-completion and skipped CTs, then exits 75 after ordinary successful-CT reboot
-handling. Ordinary successful and non-75 failure behavior is unchanged.
+Software upgrades do not resize container resources. Core owns the returning
+`confirm_container_resources(requiredCPU, requiredMiB, actualCPU, actualMiB, label)`
+admission boundary. Literal decimal values are checked before comparisons.
+Unknown requirements and insufficient CPU or RAM require explicit y/yes consent;
+No, empty input and EOF refuse. An unknown actual allocation is a checked error.
+The no-argument `check_container_resources` adapter measures nproc/free inside the
+container, uses explicit baked LXC_REQUIRED_CPU/RAM fields when present, otherwise
+the direct caller's existing var_cpu/var_ram values, and explicitly exits
+on refusal or query failure, including under conditional callers. No unattended
+or initial-confirm flag authorizes this consent. Frozen update bundles retain
+their existing generation and caller defaults; this adds no framework refresh.
+
+The LXC entry captures app-supplied var_cpu/var_ram locally before defaults and
+menus. The pair is the script's resolved input at that point, not the eventual
+allocation. It passes the pair explicitly into build's internal `_lxc_setup`.
+The compatible `lxc_setup` wrapper supplies its caller's current declarations.
+Both source-update modes converge after profile loading and bind local
+LXC_REQUIRED_CPU/RAM fields from that pair before the public runner, so imported
+fields and profile mutations cannot replace source-owned requirements. Initial
+and repair preparation pass the same captured pair explicitly with the source ID.
+New update bundles always declare both LXC_REQUIRED_CPU and LXC_REQUIRED_RAM,
+empty when unknown, so ambient fields cannot supply missing provenance. Explicit
+zero remains zero; absent or invalid requirements require consent, never a zero
+fallback. The internal optional `--requirements <cpu> <ram> --` bundle prefix
+follows the optional identity prefix; it is not an installer CLI option.
+
+The PVE batch updater reads literal script requirements as data only. Modern
+bundles keep their maintenance namespace separate from source identity: exactly
+one canonical `declare -- LXC_SCRIPT_ID=<slug>` selects that source script.
+Missing, duplicate or malformed identity means unknown requirements and explicit
+consent, with no guessed NSAPP filename request. Strict whole-file legacy thin
+wrappers retain their literal selected `/ct/<slug>.sh` target. Neither pulled
+updaters nor fetched requirement scripts are evaluated. The batch measures the
+selected CT using `pct exec <CT> -- nproc` and
+`pct exec <CT> -- free -m`, then calls the same core owner before software effects.
+Missing or malformed metadata is unknown, never a sizing instruction or a
+satisfied check. On pre-update refusal/error it gracefully shuts down only a CT
+successfully started by that batch, checks the resulting status and reports
+restoration failures. Pre-existing running state and backups remain intact.
+When targets remain, a separate explicit y/yes answer continues the batch; empty
+input or EOF stops it. Partial summaries distinguish declined, failed admission,
+failed updates, unattempted and temporary/busy targets.
+
+Raw updater status 75 remains conservatively temporary/busy, not authenticated
+lock refusal: a hook can also return 75. It skips automatic shutdown, backup
+rollback and reboot eligibility, retaining any backup and a batch-owned start.
+It never enters pre-update refusal cleanup. Final status prioritizes observed
+updater 75, then the first admission refusal/error, then the ordinary result.
+Successful-CT reboot handling and ordinary non-75 backup recovery remain separate;
+a restored failed update is not reported as an all-updated success.
+The backup producer brackets its checked vzdump with selected-storage JSON content
+inventory through pvesh. Exactly one new typed CT backup, associated with the
+selected storage/CT and a unique token in the script-owned notes line, produces
+the per-CT receipt. A missing note is failure even if vzdump only warned and
+returned0. Duplicate, reused, ambiguous or foreign artifacts fail before software
+effects; old backups removed by configured retention are not new artifacts.
+Recovery revalidates that exact receipt before any stop and passes its literal
+storage volid, including PBS IDs, to pct restore. Destination rootfs storage stays
+separate. No latest/local glob, hook override or retention override is used.
+The JSON parser accepts only explicit inventory/select-new/verify-exact modes
+with checked arity; expected volume IDs are data and never select parser behavior.
+Backup recovery has one checked script-owned state/stop/config-storage/restore/start
+sequence. Stop is skipped only for a positively observed stopped CT; an actual
+stop must be followed by stopped-state readback. Each producer retains its native
+failure status; start is reached only after restore succeeds. Failed recovery
+stops the batch immediately and identifies the failed step/status without guessing
+resulting state. Owned-start cleanup runs synchronously after the selected outcome,
+never as a background shutdown competing with restore. It also verifies state
+before skipping or completing shutdown. Reboot eligibility is collected only
+after the completed outcome and owned-start cleanup, on a positively running CT
+with the existing marker. An initially stopped CT stays stopped; it is never
+started merely for reboot. Requested reboots revalidate running state immediately
+before the command. Marker existence uses a guest POSIX-sh payload emitting the
+exact token present or absent with status0, separate from pct-exec transport status.
+Every nonzero transport status fails; empty/malformed/multiple output, trailing
+newlines and NUL bytes fail closed. Output is compared as data, never evaluated.
+A target stopped since collection is skipped; failed/unknown
+queries and reboot-command failures report their status and set ordinary failure.
+The final summary follows those outcomes, and the updater-75/first-admission/
+ordinary-failure priority is retained.
+One script-owned terminal selector applies that priority to every exit after batch
+work begins, including fatal backup, restoration and unrecoverable update failures.
+Those failures still abort at their original point; they do not advance to later
+targets, automatic cleanup or reboot handling just to select the terminal result.
 
 `silent` is a returning same-shell command wrapper. Quiet command output goes to
 the active log, and its exact status is available to `if`/`||` retry branches.
@@ -215,6 +291,17 @@ Each bundle carries its own **runtime context**, baked at build time from the
 host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
+
+New update bundles also bake `LXC_SCRIPT_ID`, supplied explicitly from the literal
+source footer through `build_container` and both initial/repair
+`_prepare_container_bundles` calls. The bundle-owned validator accepts 1-64 ASCII
+lowercase alphanumeric/dot/underscore/hyphen bytes, starting alphanumeric, without
+a `.sh` suffix; malformed explicit tuples return 65 before productive work.
+The ID is independent of APP/NSAPP and ambient/default `LXC_SCRIPT_ID` or
+`var_lxc_*` values. It never renames maintenance, pending or backup ownership.
+Old positional producers omit the field and remain unknown. This is declared
+provenance, not authentication of arbitrary root-written code. Frozen bundles
+are not automatically refreshed.
 
 GPU context is also baked into every LXC bundle: `ENABLE_GPU`, `GPU_TYPE`
 (a space-separated list of selected vendors), `INSTALL_NVIDIA_DRIVERS`, and
@@ -238,11 +325,156 @@ steps log directly to the active log and warn on failure rather than using
 `silent()`. Intel OpenCL uses the IGC tag in compute-runtime's release
 notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
 
+The separate manual PVE hardware tool uses `tools/pve/gpu-nvidia.func` for its
+NVIDIA branch. Checked driver/CUDA-capability reads, proc records, dialog membership
+and character-device metadata precede config effects. Its existing 500/11 warning
+thresholds require explicit consent for known older versions; unknown data fails.
+CUDA capability does not establish an installed toolkit. The selected device minor
+is independent of menu position, and sparse numbered nodes are eligible.
+
+All three manual GPU providers use `tools/pve/gpu-config.func`, one vendor-neutral
+configuration owner. Its checked `gpu_config_contents` emitter owns the writer
+and character-metadata closure. Providers retain their public APIs; NVIDIA's
+`nvidia_write_lxc_config` is a compatibility adapter, not another writer. The
+caller separately checked-loads the common owner before selected GPU effects;
+missing/partial support fails that GPU while USB remains independent.
+The shared owner publishes active `lxc` pairs through native PVE config
+lock/load/check/write APIs. Strict parsing, loss audits and native serializer
+roundtrips must preserve unrelated active fields, foreign pair order, pending and
+snapshots before publication. Duplicate singleton/section input, discarded active
+snapstate, normalization loss (including referenced `unusedX`) and conflicting
+mount destinations refuse specifically. Mount targets are rootfs-relative
+`dev/*`; equivalent existing entries are reused. Checked CFS refresh and
+raw/cached digest/semantic readback remain inside the lock. Write/readback failure
+reports uncertainty without rollback. Failed/declined GPU targets, including
+mixed-feature partial changes, never enter automatic reboot eligibility.
+Requested reboots require a checked, positively running `pct status`; stopped CTs
+stay stopped and apply configuration on their next start. Unknown/failed queries
+and reboot failures remain errors without Restarted success. No/EOF requests no
+lifecycle effect. The manual utility needs no scratch allocation or local EXIT
+owner; the loaded framework retains its existing spinner cleanup.
+This config outcome does not prove GPU operation, toolkit availability or per-card
+security isolation; existing major-wide/DRM compatibility policy is retained.
+
+The same shared GPU owner checks the configured unified device program rather
+than the presence of an allow string. Its helper-local source-characterized
+LXC 5/6/7 model resolves the PVE OS/common prelude, generated device/console rules
+and ordered active suffix, including include and controller-clear behavior.
+Global rules reset the surviving program; exact native access strings retain
+replacement identity, and every nonempty r/w/m request mask is checked for actual
+required character tuples. Missing allowlist rights may add the existing
+major-wide rule when the native list is nonempty. An entirely empty native list
+attaches no additional device program: mounts may be added, but no device grant
+is appended. Ineffectual entries still activate the default program. This follows
+LXC 5/6/7 `cgfsng.c:cgfsng_devices_activate` (7.0.0 lines 2972-2976), rather than
+assuming the list's allowlist/denylist type alone establishes its default.
+Already-permitted denylist devices need no ineffective
+allow; foreign denial effects, including other minors affected by a broad grant,
+cannot be neutralized. Foreign entries and global mode are never rewritten.
+Native controller-list clears are resolved before preparing surviving device
+values; a device-program reset cannot excuse an invalid surviving rule. Numeric
+device fields retain native base-zero parsing, including leading-zero octal.
+Typed structured `devN` deny-write constraints also forbid newly granted write
+for that mapped tuple, including another minor sharing a broad grant's major.
+Already-configured write is not a new relaxation. No global mode or grant shape
+is changed to bypass a refusal.
+Directory comparison distinguishes empty/nonempty activation only in allowlist
+mode. Empty denylist and denylist with only ineffectual allows both permit all
+devices at this layer, so their directory order does not cause a false refusal.
+
+Policy dependencies are read-only, bounded regular files/directories or device
+metadata, never special-file contents. Identity, bytes and membership are captured
+and revalidated before publication and readback. Directory load order is not
+assumed lexical: commuting transforms or bounded complete order exploration must
+prove consistent policy; otherwise the exact dependency is refused. Missing
+required files, cycles, unsupported/changing data and uncharacterized
+loader-relative dependencies fail before publication. Native optional absent
+directories remain captured, revalidated dependencies. External files are not
+locked by the CT owner, so this is
+configured consistency at validation time, not ancestor-BPF, DAC or future-start
+permission proof. Native config/serializer/readback fidelity remains unchanged.
+Included file lexing follows `parse.c:lxc_file_for_each_line_mmap` and
+`confile.c:parse_line` with `string_utils.c:lxc_char_left_gc/right_gc`: CR/LF
+parts, first-NUL termination and space/tab trimming. The native `devices` prefix
+is classified without a suffix boundary; unsupported surviving controllers refuse
+specifically. Control bytes in rendered active LXC pairs refuse before publication
+instead of bypassing the device projection.
+
+Native PVE startup applies pending deletions and whole-value replacements before
+generating LXC config. Under the same lock, the owner compares the candidate's
+consumed logical lxc/devN/ostype/unprivileged/console inputs with that pending
+result. A material change refuses with the exact key; unrelated pending, proven
+no-ops/defaults and snapshots remain unchanged. Comparison uses the candidate:
+adding lxc can make a previously vacuous pending deletion effective. The owner
+never invokes side-effecting apply-pending or edits the pending section.
+
+Optional NVIDIA helper transport/source failure is isolated from other features.
+The component-owned checked `nvidia_helper_contents` emitter supplies its complete
+runtime function/dependency closure, including `msg`, rather than caller prefix
+discovery. It emits definitions only, without imported state, descriptors,
+initialization or traps. A strict child must finish both sourcing and emission
+before import; missing emitter, emission failure/early exit or empty output leaves
+NVIDIA unavailable. Older helpers without this emitter do not satisfy the ABI:
+selected NVIDIA reports the unavailable helper while unrelated features continue.
+Stale required public functions are removed before loading; partial output cannot
+borrow them. NVIDIA availability is guarded and its required API is checked when
+selected. Intel/AMD passthrough success is
+recorded before the returned tool-stage result, so a tool failure retains known
+partial changes and excludes that CT from automatic restart.
+Intel/AMD now submit active config requests to the common owner with checked
+actual character tuples. AMD does not infer KFD major238; Intel keeps its exact
+framebuffer-minor and DRM major-wide shape. Their actual providers explicitly
+return config, transport and required child package failures even under conditional
+callers. A typed OS-probe value is separate from pct status: transport/grep errors
+are not non-Alpine. Intel's intentionally optional group failures warn; AMD's
+required group failures return nonzero. Package names remain unchanged.
+Intel repository enablement uses native APT source identities and verified archive
+metadata, not a legacy-file assumption or a fixed-release repository template.
+Only missing supported components are appended to active configured Debian/Ubuntu
+entries; URIs, suites, source options, disabled entries and operator fragments are
+preserved. Native APT validates the complete projection before publication, and
+source aliases are resolved with captured link/directory identities. A Linux
+metadata-only inode pin precedes regular-file byte reads; special targets are
+never opened for I/O. Sufficient sources may be symlinked or hardlinked. Needed
+edits preserve the alias and resolved target ownership/mode/xattrs; hardlinked
+write targets and multiply named source targets refuse with the exact path.
+Per-source publication prepares the candidate at a private mode0700 same-filesystem
+`.gpu-intel-recovery.XXXXXXXX/source`, then uses Linux renameat2 RENAME_EXCHANGE:
+the live path is never removed, and that recovery pathname atomically receives the
+actual displaced inode. An exact recovery intent is emitted before exchange; the
+operand/directory are never registered for automatic cleanup, including publisher
+death or normal exit before readback. The native ABI is checked, and a private
+same-filesystem exchange probe must succeed before live publication. Unsupported
+architecture/kernel/filesystem refuses without a two-step fallback. Conflicts
+fail with possible partial-change and exact recovery-path diagnostics, without
+automatic exchange-back/restore over another writer. The original inode retains
+operator ownership/metadata even after success and is not automatically removed:
+an uncooperative editor may still hold it open.
+This bounded recovery custody does not promise a lock against other writers or
+an all-source transaction. Both index refreshes require Error-Mode=any before
+package installation, so a transient second refresh cannot admit stale indexes.
+Sufficient configured repository versions are a no-op; an installed-only package
+does not count as configured source support. Unknown/custom archives are
+not replaced with foreign repositories; real read/parse/update/package failures
+remain failures. Debian requires non-free for the media package; Ubuntu uses
+universe/multiverse. Repository component enablement does not manufacture an
+unavailable package: the unchanged intel-opencl-icd requirement has no candidate
+in current trixie metadata and must retain its genuine APT failure there.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
 framework's `render_header()` dispatches to it; otherwise a generic
 fallback (`header_info_fallback()`) displays the app name.
+
+Screen clearing belongs to core's `terminal_clear()`. It returns 0 without output
+when stdout is not a TTY or TERM is unset, empty or `dumb`. For a usable stdout
+terminal it invokes the external `clear` command, treating missing executables,
+unsupported terminfo and other cosmetic failures as nonfatal and suppressing only
+that command's stderr. It does not set TERM, alter options/traps or mask productive
+command failures. Custom headers and menus use this same boundary after core is
+loaded. PVE scripts load their existing bootstrap before their first header;
+the cron manager declares its custom banner first and renders it after bootstrap.
 
 ### 3.2 Addon — `misc/bootstrap/addon_lxc`
 

@@ -40,7 +40,7 @@ export APP=Kosmozoo NSAPP=kosmozoo REPO_BASE="$publisher"
 export var_lxc_tmpdir="$TMPDIR" var_lxc_kosmozoo_hosts='local=folder:/sources/images'
 export var_lxc_kosmozoo_initial_release=v0.3.0
 _write_bundle install install_script "$ROOT/misc" 'install_script' > "$work/install.sh"
-_write_bundle update update_script "$ROOT/misc" 'run_update_script "$@"' > "$work/update.sh"
+_write_bundle update update_script "$ROOT/misc" --requirements "${var_cpu-}" "${var_ram-}" -- 'run_update_script "$@"' > "$work/update.sh"
 timeout --signal=TERM --kill-after=30 1200 bash "$work/install.sh" > "$work/install.log" 2>&1
 install -m 0755 "$work/update.sh" /usr/local/sbin/update
 ln -s /usr/local/sbin/update /usr/bin/update

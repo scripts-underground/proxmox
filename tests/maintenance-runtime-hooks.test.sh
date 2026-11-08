@@ -20,7 +20,8 @@ if [[ "${1:-}" == --child ]]; then
   source "$c/hooks.sh"
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Runtime-contract unit inputs, consumed by the real admission adapter.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   ensure_dependencies() { :; }
   getent() { return 0; }

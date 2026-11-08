@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 function header_info {
-  clear
+  terminal_clear
   cat << "EOF"
     __ __                     __   ________
    / //_/__  _________  ___  / /  / ____/ /__  ____ _____

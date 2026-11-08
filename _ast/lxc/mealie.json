@@ -3,7 +3,7 @@
   "slug": "mealie",
   "type": "lxc",
   "total_lines": 202,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://mealie.io | Github: https://github.com/mealie-recipes/mealie\n\n# shellcheck disable=SC2034\nAPP=\"Mealie\"\nvar_tags=\"${var_tags:-recipes}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-3072}\"\nvar_disk=\"${var_disk:-10}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libpq-dev \\\n    libwebp-dev \\\n    libsasl2-dev \\\n    libldap2-dev \\\n    libldap-common \\\n    libssl-dev \\\n    libldap2 \\\n    gosu \\\n    iproute2\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.12\" setup_uv\n  PG_VERSION=\"16\" setup_postgresql\n  NODE_MODULE=\"yarn\" NODE_VERSION=\"24\" setup_nodejs\n  fetch_and_deploy_gh_release \"mealie\" \"mealie-recipes/mealie\" \"tarball\"\n  PG_DB_NAME=\"mealie_db\" PG_DB_USER=\"mealie_user\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  msg_info \"Installing Python Dependencies with uv\"\n  cd /opt/mealie || exit\n  $STD uv sync --frozen --extra pgsql\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Building Frontend\"\n  MEALIE_VERSION=$(\u003c $HOME/.mealie)\n  export NUXT_TELEMETRY_DISABLED=1\n  cd /opt/mealie/frontend || exit\n  SITE_SETTINGS=$(find /opt/mealie/frontend -name \"site-settings.vue\" -path \"*/admin/*\" | head -1)\n  $STD sed -i \"s|https://github.com/mealie-recipes/mealie/commit/|https://github.com/mealie-recipes/mealie/releases/tag/|g\" \"$SITE_SETTINGS\"\n  $STD sed -i \"s|value: data.buildId,|value: \\\"v${MEALIE_VERSION}\\\",|g\" \"$SITE_SETTINGS\"\n  $STD sed -i \"s|value: data.production ? i18n.t(\\\"about.production\\\") : i18n.t(\\\"about.development\\\"),|value: \\\"bare-metal\\\",|g\" \"$SITE_SETTINGS\"\n  $STD yarn install --prefer-offline --frozen-lockfile --non-interactive --production=false --network-timeout 1000000\n  $STD yarn generate\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Copying Built Frontend\"\n  mkdir -p /opt/mealie/mealie/frontend\n  cp -r /opt/mealie/frontend/dist/* /opt/mealie/mealie/frontend/\n  msg_ok \"Copied Frontend\"\n\n  setup_nltk \"averaged_perceptron_tagger_eng\" \"/nltk_data\"\n\n  msg_info \"Writing Environment File\"\n  SECRET=$(openssl rand -hex 32)\n  mkdir -p /run/secrets\n  CONTAINER_IP=$(get_current_ip)\n  cat \u003c\u003c EOF \u003e /opt/mealie/mealie.env\nMEALIE_HOME=/opt/mealie\nNLTK_DATA=/nltk_data\nSECRET=${SECRET}\n\nDB_ENGINE=postgres\nPOSTGRES_SERVER=localhost\nPOSTGRES_PORT=5432\nPOSTGRES_USER=${PG_DB_USER}\nPOSTGRES_PASSWORD=${PG_DB_PASS}\nPOSTGRES_DB=${PG_DB_NAME}\n\nPRODUCTION=true\nHOST=0.0.0.0\nPORT=9000\nBASE_URL=http://${CONTAINER_IP}:9000\nEOF\n  msg_ok \"Wrote Environment File\"\n\n  msg_info \"Creating Start Script\"\n  cat \u003c\u003c 'EOF' \u003e /opt/mealie/start.sh\n#!/bin/bash\nset -a\nsource /opt/mealie/mealie.env\nset +a\nexec uv run mealie\nEOF\n  chmod +x /opt/mealie/start.sh\n  msg_ok \"Created Start Script\"\n\n  msg_info \"Creating Systemd Service\"\n  cat \u003c\u003c 'EOF' \u003e /etc/systemd/system/mealie.service\n[Unit]\nDescription=Mealie Recipe Manager\nAfter=network.target postgresql.service\nWants=postgresql.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/mealie\nExecStart=/opt/mealie/start.sh\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now mealie\n  msg_ok \"Created and Started Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:9000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/mealie ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"mealie\" \"mealie-recipes/mealie\"; then\n    PYTHON_VERSION=\"3.12\" setup_uv\n    NODE_MODULE=\"yarn\" NODE_VERSION=\"24\" setup_nodejs\n\n    msg_info \"Stopping Service\"\n    systemctl stop mealie\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Backing up Configuration\"\n    cp -f /opt/mealie/mealie.env /opt/mealie.env\n    [[ -f /opt/mealie/start.sh ]] \u0026\u0026 cp -f /opt/mealie/start.sh /opt/mealie.start.sh\n    msg_ok \"Backup completed\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"mealie\" \"mealie-recipes/mealie\" \"tarball\"\n\n    msg_info \"Restoring Configuration\"\n    mv -f /opt/mealie.env /opt/mealie/mealie.env\n    if [[ -f /opt/mealie.start.sh ]]; then\n      mv -f /opt/mealie.start.sh /opt/mealie/start.sh\n    else\n      cat \u003c\u003c 'STARTEOF' \u003e /opt/mealie/start.sh\n#!/bin/bash\nset -a\nsource /opt/mealie/mealie.env\nset +a\nexec uv run mealie\nSTARTEOF\n    fi\n    chmod +x /opt/mealie/start.sh\n    msg_ok \"Configuration restored\"\n\n    msg_info \"Installing Python Dependencies with uv\"\n    cd /opt/mealie || exit\n    $STD uv sync --frozen --extra pgsql\n    msg_ok \"Installed Python Dependencies\"\n\n    msg_info \"Building Frontend\"\n    MEALIE_VERSION=$(\u003c $HOME/.mealie)\n    SITE_SETTINGS=$(find /opt/mealie/frontend -name \"site-settings.vue\" -path \"*/admin/*\" | head -1)\n    $STD sed -i \"s|https://github.com/mealie-recipes/mealie/commit/|https://github.com/mealie-recipes/mealie/releases/tag/|g\" \"$SITE_SETTINGS\"\n    $STD sed -i \"s|value: data.buildId,|value: \\\"v${MEALIE_VERSION}\\\",|g\" \"$SITE_SETTINGS\"\n    $STD sed -i \"s|value: data.production ? i18n.t(\\\"about.production\\\") : i18n.t(\\\"about.development\\\"),|value: \\\"bare-metal\\\",|g\" \"$SITE_SETTINGS\"\n    export NUXT_TELEMETRY_DISABLED=1\n    cd /opt/mealie/frontend || exit\n    $STD yarn install --prefer-offline --frozen-lockfile --non-interactive --production=false --network-timeout 1000000\n    $STD yarn generate\n    msg_ok \"Built Frontend\"\n\n    msg_info \"Copying Built Frontend\"\n    mkdir -p /opt/mealie/mealie/frontend\n    cp -r /opt/mealie/frontend/dist/* /opt/mealie/mealie/frontend/\n    msg_ok \"Copied Frontend\"\n\n    setup_nltk \"averaged_perceptron_tagger_eng\" \"/nltk_data\"\n\n    msg_info \"Starting Service\"\n    systemctl start mealie\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://mealie.io | Github: https://github.com/mealie-recipes/mealie\n\n# shellcheck disable=SC2034\nAPP=\"Mealie\"\nvar_tags=\"${var_tags:-recipes}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-3072}\"\nvar_disk=\"${var_disk:-10}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libpq-dev \\\n    libwebp-dev \\\n    libsasl2-dev \\\n    libldap2-dev \\\n    libldap-common \\\n    libssl-dev \\\n    libldap2 \\\n    gosu \\\n    iproute2\n  msg_ok \"Installed Dependencies\"\n\n  PYTHON_VERSION=\"3.12\" setup_uv\n  PG_VERSION=\"16\" setup_postgresql\n  NODE_MODULE=\"yarn\" NODE_VERSION=\"24\" setup_nodejs\n  fetch_and_deploy_gh_release \"mealie\" \"mealie-recipes/mealie\" \"tarball\"\n  PG_DB_NAME=\"mealie_db\" PG_DB_USER=\"mealie_user\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  msg_info \"Installing Python Dependencies with uv\"\n  cd /opt/mealie || exit\n  $STD uv sync --frozen --extra pgsql\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Building Frontend\"\n  MEALIE_VERSION=$(\u003c $HOME/.mealie)\n  export NUXT_TELEMETRY_DISABLED=1\n  cd /opt/mealie/frontend || exit\n  SITE_SETTINGS=$(find /opt/mealie/frontend -name \"site-settings.vue\" -path \"*/admin/*\" | head -1)\n  $STD sed -i \"s|https://github.com/mealie-recipes/mealie/commit/|https://github.com/mealie-recipes/mealie/releases/tag/|g\" \"$SITE_SETTINGS\"\n  $STD sed -i \"s|value: data.buildId,|value: \\\"v${MEALIE_VERSION}\\\",|g\" \"$SITE_SETTINGS\"\n  $STD sed -i \"s|value: data.production ? i18n.t(\\\"about.production\\\") : i18n.t(\\\"about.development\\\"),|value: \\\"bare-metal\\\",|g\" \"$SITE_SETTINGS\"\n  $STD yarn install --prefer-offline --frozen-lockfile --non-interactive --production=false --network-timeout 1000000\n  $STD yarn generate\n  msg_ok \"Built Frontend\"\n\n  msg_info \"Copying Built Frontend\"\n  mkdir -p /opt/mealie/mealie/frontend\n  cp -r /opt/mealie/frontend/dist/* /opt/mealie/mealie/frontend/\n  msg_ok \"Copied Frontend\"\n\n  setup_nltk \"averaged_perceptron_tagger_eng\" \"/nltk_data\"\n\n  msg_info \"Writing Environment File\"\n  SECRET=$(openssl rand -hex 32)\n  mkdir -p /run/secrets\n  CONTAINER_IP=$(get_current_ip)\n  cat \u003c\u003c EOF \u003e /opt/mealie/mealie.env\nMEALIE_HOME=/opt/mealie\nNLTK_DATA=/nltk_data\nSECRET=${SECRET}\n\nDB_ENGINE=postgres\nPOSTGRES_SERVER=localhost\nPOSTGRES_PORT=5432\nPOSTGRES_USER=${PG_DB_USER}\nPOSTGRES_PASSWORD=${PG_DB_PASS}\nPOSTGRES_DB=${PG_DB_NAME}\n\nPRODUCTION=true\nHOST=0.0.0.0\nPORT=9000\nBASE_URL=http://${CONTAINER_IP}:9000\nEOF\n  msg_ok \"Wrote Environment File\"\n\n  msg_info \"Creating Start Script\"\n  cat \u003c\u003c 'EOF' \u003e /opt/mealie/start.sh\n#!/bin/bash\nset -a\nsource /opt/mealie/mealie.env\nset +a\nexec uv run mealie\nEOF\n  chmod +x /opt/mealie/start.sh\n  msg_ok \"Created Start Script\"\n\n  msg_info \"Creating Systemd Service\"\n  cat \u003c\u003c 'EOF' \u003e /etc/systemd/system/mealie.service\n[Unit]\nDescription=Mealie Recipe Manager\nAfter=network.target postgresql.service\nWants=postgresql.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/mealie\nExecStart=/opt/mealie/start.sh\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now mealie\n  msg_ok \"Created and Started Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW}Access it using the following URL:${CL}\"\n  echo -e \"${GATEWAY}${BGN}http://${IP}:9000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/mealie ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n  if check_for_gh_release \"mealie\" \"mealie-recipes/mealie\"; then\n    PYTHON_VERSION=\"3.12\" setup_uv\n    NODE_MODULE=\"yarn\" NODE_VERSION=\"24\" setup_nodejs\n\n    msg_info \"Stopping Service\"\n    systemctl stop mealie\n    msg_ok \"Stopped Service\"\n\n    msg_info \"Backing up Configuration\"\n    cp -f /opt/mealie/mealie.env /opt/mealie.env\n    [[ -f /opt/mealie/start.sh ]] \u0026\u0026 cp -f /opt/mealie/start.sh /opt/mealie.start.sh\n    msg_ok \"Backup completed\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"mealie\" \"mealie-recipes/mealie\" \"tarball\"\n\n    msg_info \"Restoring Configuration\"\n    mv -f /opt/mealie.env /opt/mealie/mealie.env\n    if [[ -f /opt/mealie.start.sh ]]; then\n      mv -f /opt/mealie.start.sh /opt/mealie/start.sh\n    else\n      cat \u003c\u003c 'STARTEOF' \u003e /opt/mealie/start.sh\n#!/bin/bash\nset -a\nsource /opt/mealie/mealie.env\nset +a\nexec uv run mealie\nSTARTEOF\n    fi\n    chmod +x /opt/mealie/start.sh\n    msg_ok \"Configuration restored\"\n\n    msg_info \"Installing Python Dependencies with uv\"\n    cd /opt/mealie || exit\n    $STD uv sync --frozen --extra pgsql\n    msg_ok \"Installed Python Dependencies\"\n\n    msg_info \"Building Frontend\"\n    MEALIE_VERSION=$(\u003c $HOME/.mealie)\n    SITE_SETTINGS=$(find /opt/mealie/frontend -name \"site-settings.vue\" -path \"*/admin/*\" | head -1)\n    $STD sed -i \"s|https://github.com/mealie-recipes/mealie/commit/|https://github.com/mealie-recipes/mealie/releases/tag/|g\" \"$SITE_SETTINGS\"\n    $STD sed -i \"s|value: data.buildId,|value: \\\"v${MEALIE_VERSION}\\\",|g\" \"$SITE_SETTINGS\"\n    $STD sed -i \"s|value: data.production ? i18n.t(\\\"about.production\\\") : i18n.t(\\\"about.development\\\"),|value: \\\"bare-metal\\\",|g\" \"$SITE_SETTINGS\"\n    export NUXT_TELEMETRY_DISABLED=1\n    cd /opt/mealie/frontend || exit\n    $STD yarn install --prefer-offline --frozen-lockfile --non-interactive --production=false --network-timeout 1000000\n    $STD yarn generate\n    msg_ok \"Built Frontend\"\n\n    msg_info \"Copying Built Frontend\"\n    mkdir -p /opt/mealie/mealie/frontend\n    cp -r /opt/mealie/frontend/dist/* /opt/mealie/mealie/frontend/\n    msg_ok \"Copied Frontend\"\n\n    setup_nltk \"averaged_perceptron_tagger_eng\" \"/nltk_data\"\n\n    msg_info \"Starting Service\"\n    systemctl start mealie\n    msg_ok \"Started Service\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# shellcheck disable=SC1090\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"mealie\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -205,7 +205,7 @@
     "}",
     "",
     "# shellcheck disable=SC1090",
-    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\")",
+    "source \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"mealie\" -- \"$@\"",
     ""
   ],
   "functions": [
@@ -1687,14 +1687,14 @@
       "end_col": 9
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 89,
       "start_col": 10,
       "end_line": 89,
       "end_col": 15
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 89,
       "start_col": 10,
       "end_line": 89,
@@ -1766,14 +1766,14 @@
       "end_col": 9
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 100,
       "start_col": 10,
       "end_line": 100,
       "end_col": 15
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 100,
       "start_col": 10,
       "end_line": 100,
@@ -3105,6 +3105,27 @@
       "start_col": 22,
       "end_line": 201,
       "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 66,
+      "end_line": 201,
+      "end_col": 74
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 78,
+      "end_line": 201,
+      "end_col": 82
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 79,
+      "end_line": 201,
+      "end_col": 81
     }
   ],
   "bootstrap_line": 201,

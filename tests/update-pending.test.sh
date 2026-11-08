@@ -23,6 +23,8 @@ source "$ROOT/misc/error_handler.func"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 export NSAPP=upd-probe APP=UpdProbe
+# This pending/force unit has no resource-minimum contract; run real admission.
+export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
 calls="$work/calls"
 flag=/var/lib/scripts-underground/update-pending/upd-probe
 

@@ -150,9 +150,80 @@ _framework_cache_ensure() {
 #   [update]  <pipeline steps in order>
 #   [uninstall] <hook>; remove commands only after its normal successful return
 # ------------------------------------------------------------------------------
+# Source identity is producer data, never an ambient or var_lxc_* setting.
+_validate_lxc_script_id() {
+  local LC_ALL=C _lsi_value=${1-}
+  if [[ ! "$_lsi_value" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ || "$_lsi_value" == *.sh ]]; then
+    printf 'Invalid LXC source-script identity.\n' >&2
+    return 65
+  fi
+}
+
+# Checked prefix parser; legacy pipeline/CLI arguments remain untouched.
+_lxc_script_identity_args() {
+  local _lia_output=$1 _lia_count=$2 _lia_id='' _lia_used=0 _lia_arg
+  shift 2
+  if [[ "${1-}" == --script-id ]]; then
+    [[ $# -ge 3 && "${3-}" == -- ]] || {
+      printf 'Invalid source-script identity arguments.\n' >&2
+      return 65
+    }
+    _validate_lxc_script_id "$2" || return $?
+    _lia_id=$2 _lia_used=3
+    for _lia_arg in "${@:4}"; do
+      [[ "$_lia_arg" != --script-id ]] || {
+        printf 'Duplicate source-script identity.\n' >&2
+        return 65
+      }
+    done
+  fi
+  printf -v "$_lia_output" '%s' "$_lia_id" || return $?
+  printf -v "$_lia_count" '%s' "$_lia_used" || return $?
+}
+
+# Internal bundle prefixes; requirement values remain literal data for core's
+# numeric consent owner. An omitted pair is unknown, never inherited context.
+_lxc_bundle_args() {
+  local _lba_id_out=$1 _lba_cpu_out=$2 _lba_ram_out=$3 _lba_count_out=$4
+  local _lba_id='' _lba_cpu='' _lba_ram='' _lba_count=0 _lba_arg
+  shift 4
+  if [[ "${1-}" == --script-id ]]; then
+    [[ $# -ge 3 && "${3-}" == -- ]] || {
+      printf 'Invalid source-script identity arguments.\n' >&2
+      return 65
+    }
+    _validate_lxc_script_id "$2" || return $?
+    _lba_id=$2 _lba_count=3
+    shift 3
+  fi
+  if [[ "${1-}" == --requirements ]]; then
+    [[ $# -ge 4 && "${4-}" == -- ]] || {
+      printf 'Invalid bundle requirements arguments.\n' >&2
+      return 65
+    }
+    _lba_cpu=$2 _lba_ram=$3
+    _lba_count=$((_lba_count + 4))
+    shift 4
+  fi
+  for _lba_arg in "$@"; do
+    [[ "$_lba_arg" != --requirements && "$_lba_arg" != --script-id ]] || {
+      printf 'Duplicate or misplaced bundle prefix.\n' >&2
+      return 65
+    }
+  done
+  printf -v "$_lba_id_out" '%s' "$_lba_id" || return $?
+  printf -v "$_lba_cpu_out" '%s' "$_lba_cpu" || return $?
+  printf -v "$_lba_ram_out" '%s' "$_lba_ram" || return $?
+  printf -v "$_lba_count_out" '%s' "$_lba_count" || return $?
+}
+
 _write_bundle() {
   local name="$1" hook="$2" cache_dir="$3"
   shift 3
+  local _bundle_source_id='' _bundle_prefix_count=0
+  local _bundle_required_cpu='' _bundle_required_ram=''
+  _lxc_bundle_args _bundle_source_id _bundle_required_cpu _bundle_required_ram _bundle_prefix_count "$@" || return $?
+  shift "$_bundle_prefix_count"
   local pipeline=("$@")
   local tag="${name:0:4}" _v step f
   tag="${tag^^}"
@@ -173,6 +244,13 @@ BUNDLE_HEADER
 
   printf 'declare -- APP=%q\n' "$APP" || return $?
   printf 'declare -- NSAPP=%q\n' "$NSAPP" || return $?
+  if [[ "$name" == update && -n "$_bundle_source_id" ]]; then
+    printf 'declare -- LXC_SCRIPT_ID=%q\n' "$_bundle_source_id" || return $?
+  fi
+  if [[ "$name" == update ]]; then
+    printf 'declare -- LXC_REQUIRED_CPU=%q\n' "$_bundle_required_cpu" || return $?
+    printf 'declare -- LXC_REQUIRED_RAM=%q\n' "$_bundle_required_ram" || return $?
+  fi
   printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE" || return $?
   printf 'declare -- ENABLE_GPU=%q\n' "${ENABLE_GPU:-no}" || return $?
   printf 'declare -- GPU_TYPE=%q\n' "${GPU_TYPE:-}" || return $?
@@ -239,6 +317,14 @@ build_bundle() {
   local name="$1" hook="$2" dest="$3" mode="$4"
   shift 4
   local bundle_path cache_dir write_exit=0
+  local _bundle_source_id='' _bundle_prefix_count=0
+  local _bundle_required_cpu='' _bundle_required_ram=''
+  local -a _bundle_identity=()
+  local -a _bundle_requirements=()
+  _lxc_bundle_args _bundle_source_id _bundle_required_cpu _bundle_required_ram _bundle_prefix_count "$@" || return $?
+  shift "$_bundle_prefix_count"
+  [[ -z "$_bundle_source_id" ]] || _bundle_identity=(--script-id "$_bundle_source_id" --)
+  _bundle_requirements=(--requirements "$_bundle_required_cpu" "$_bundle_required_ram" --)
 
   _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
   declare -F "$hook" > /dev/null 2>&1 || {
@@ -252,7 +338,7 @@ build_bundle() {
   cache_dir=$(_framework_cache_dir) || return $?
   bundle_path=$(mktemp "${TMPDIR:-/tmp}/${name}-bundle-${SESSION_ID}.XXXXXX") || return $?
 
-  _write_bundle "$name" "$hook" "$cache_dir" "$@" > "$bundle_path" || write_exit=$?
+  _write_bundle "$name" "$hook" "$cache_dir" "${_bundle_identity[@]}" "${_bundle_requirements[@]}" "$@" > "$bundle_path" || write_exit=$?
   if [[ $write_exit -ne 0 ]]; then
     rm -f -- "$bundle_path" || true
     msg_error "${name} bundle generation failed (exit=${write_exit})" || true

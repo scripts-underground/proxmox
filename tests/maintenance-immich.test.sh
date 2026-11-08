@@ -113,7 +113,8 @@ PY
   }
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # Publication/build unit inputs, not a claim about native app sizing.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   apt() { :; }
   apt-mark() { :; }

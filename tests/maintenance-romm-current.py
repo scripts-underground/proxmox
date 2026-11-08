@@ -104,7 +104,7 @@ for verbose in ('no', 'yes'):
   text=(R/'scripts/lxc/romm.sh').read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
   hook=text[start:end].replace('/opt',str(c/'opt')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/angie',str(c/'angie')).replace('/etc/nginx',str(c/'nginx'))
   write(c/'hook.sh',hook)
-  compose='source '+shlex.quote(str(R/'misc/bundle.func'))+'\nexport APP=RomM NSAPP=romm REPO_BASE=https://fixture.invalid var_lxc_tmpdir='+shlex.quote(str(c/'tmp'))+'\nsource '+shlex.quote(str(c/'hook.sh'))+'\n_write_bundle update update_script '+shlex.quote(str(c/'stage'))+' '+shlex.quote('run_update_script "$@"')
+  compose='source '+shlex.quote(str(R/'misc/bundle.func'))+'\nexport APP=RomM NSAPP=romm REPO_BASE=https://fixture.invalid var_lxc_tmpdir='+shlex.quote(str(c/'tmp'))+'\nsource '+shlex.quote(str(c/'hook.sh'))+'\n_write_bundle update update_script '+shlex.quote(str(c/'stage'))+' --requirements 0 0 -- '+shlex.quote('run_update_script "$@"')
   with (c/'sbin/update').open('w') as out:subprocess.run(['bash','-ceu',compose],stdout=out,check=True,timeout=20)
   digest=hashlib.sha256((c/'sbin/update').read_bytes()).hexdigest()
   def invoke_romm(label,active):

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 #
 # Title: Proxmox LXC Hardware Passthrough & GPU Acceleration Setup
 # Description: Enables hardware passthrough for USB, Intel, NVIDIA, AMD GPUs inside privileged LXC containers.
@@ -8,7 +9,7 @@
 # Author: MickLesk (CanbiZ)
 # Repo: https://raw.githubusercontent.com/scripts-underground/proxmox
 #
-# Usage: bash -c "$(wget -qLO - https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/misc/hw-acceleration.sh)"
+# Usage: bash -c "$(wget -qLO - https://raw.githubusercontent.com/scripts-underground/proxmox/main/scripts/pve/hw-acceleration.sh)"
 #
 # Requires:
 #   - Proxmox VE 8.1+
@@ -29,21 +30,59 @@
 
 set -euo pipefail
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf $TEMP_DIR' EXIT
+# All GPU providers use one native configuration owner. A failed optional load
+# must not terminate USB selection or leave stale public definitions usable.
+_GPU_CONFIG_READY=0
+unset -f gpu_config_contents gpu_config_node gpu_write_lxc_config
+if _gpu_source=$(wget -qO- "$REPO_BASE/tools/pve/gpu-config.func"); then
+  if _gpu_functions=$(BASH_ENV=/dev/null /bin/bash -euo pipefail -c '
+    source /dev/stdin >&2
+    declare -F gpu_config_contents >/dev/null
+    gpu_config_contents
+    printf "\n# GPU_CONFIG_DECLARATIONS_COMPLETE\n"
+  ' <<< "$_gpu_source"); then
+    if [[ "$_gpu_functions" == *$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE' && -n "${_gpu_functions%$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE'}" ]]; then
+      # shellcheck disable=SC1090
+      if source /dev/stdin <<< "${_gpu_functions%$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE'}"; then
+        if declare -F gpu_config_node > /dev/null && declare -F gpu_write_lxc_config > /dev/null; then
+          _GPU_CONFIG_READY=1
+        fi
+      fi
+    fi
+  fi
+fi
+unset _gpu_source _gpu_functions
 
+# NVIDIA is optional. Load declarations once in a fresh strict shell so a failed
+# source (including an explicit exit) cannot terminate unrelated feature paths.
+_NVIDIA_HELPERS_READY=0
+unset -f nvidia_helper_contents nvidia_gpu_available nvidia_validate_driver_version \
+  nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough
+if _nv_source=$(wget -qO- "$REPO_BASE/tools/pve/gpu-nvidia.func"); then
+  if _nv_functions=$(BASH_ENV=/dev/null /bin/bash -euo pipefail -c '
+    source /dev/stdin >&2
+    declare -F nvidia_helper_contents >/dev/null
+    nvidia_helper_contents
+    printf "\n# NVIDIA_DECLARATIONS_COMPLETE\n"
+  ' <<< "$_nv_source"); then
+    if [[ "$_nv_functions" == *$'\n# NVIDIA_DECLARATIONS_COMPLETE' && -n "${_nv_functions%$'\n# NVIDIA_DECLARATIONS_COMPLETE'}" ]]; then
+      # shellcheck disable=SC1090
+      if source /dev/stdin <<< "${_nv_functions%$'\n# NVIDIA_DECLARATIONS_COMPLETE'}"; then
+        _NVIDIA_HELPERS_READY=1
+      fi
+    fi
+  fi
+fi
+unset _nv_source _nv_functions
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-nvidia.func)
+source <(wget -qO- "$REPO_BASE/tools/pve/gpu-intel.func")
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-intel.func)
-# shellcheck disable=SC1090
-# Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- https://raw.githubusercontent.com/scripts-underground/proxmox/raw/main/tools/pve/gpu-amd.func)
+source <(wget -qO- "$REPO_BASE/tools/pve/gpu-amd.func")
 
 function header_info() {
-  clear
+  terminal_clear
   cat << "EOF"
 
    __ ___      __  ___              __             __  _
@@ -77,7 +116,7 @@ function prompt_features() {
     echo " [2] Intel iGPU (VAAPI)"
     features+=("intel")
   fi
-  if [[ -e /dev/nvidia0 ]]; then
+  if [[ "$_NVIDIA_HELPERS_READY" == 1 ]] && declare -F nvidia_gpu_available > /dev/null && (nvidia_gpu_available); then
     echo " [3] NVIDIA GPU"
     features+=("nvidia")
   fi
@@ -149,60 +188,143 @@ lxc.mount.entry: /dev/ttyACM1       dev/ttyACM1       none bind,optional,create=
 EOF
 }
 
+function gpu_config_support_available() {
+  if [[ "$_GPU_CONFIG_READY" != 1 ]] || ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable; no GPU effects applied"
+    return 1
+  fi
+}
+
+function nvidia_support_available() {
+  local api
+  if [[ "$_NVIDIA_HELPERS_READY" != 1 ]]; then
+    msg err "NVIDIA helper load failed; NVIDIA integration unavailable"
+    return 1
+  fi
+  for api in nvidia_gpu_available nvidia_validate_driver_version nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough; do
+    if ! declare -F "$api" > /dev/null; then
+      msg err "NVIDIA helper API unavailable: $api"
+      return 1
+    fi
+  done
+  if ! (nvidia_gpu_available); then
+    msg err "NVIDIA availability check failed; no NVIDIA effects applied"
+    return 1
+  fi
+}
+
 function main() {
   header_info
   prompt_features
   select_lxc_cts
 
-  local updated_cts=()
+  local updated_cts=() partial_cts=() failed_cts=() result=0 gpu_minor restart='' rc state
 
   for ctid in $SELECTED_CTIDS; do
     local conf="/etc/pve/lxc/${ctid}.conf"
     local updated=0
+    local failed=0
 
     for feature in "${SELECTED_FEATURES[@]}"; do
       case "$feature" in
+        intel | amd | nvidia)
+          if ! gpu_config_support_available; then
+            failed=1
+            continue
+          fi
+          ;;
+      esac
+      case "$feature" in
         usb)
           msg info "Applying USB passthrough to CT $ctid..."
-          apply_usb_passthrough "$conf" && updated=1
+          if apply_usb_passthrough "$conf"; then updated=1; else failed=1; fi
           ;;
         intel)
           msg info "Applying Intel VAAPI passthrough to CT $ctid..."
-          passthrough_intel_to_lxc "$ctid" && install_intel_tools_in_ct "$ctid" && updated=1
+          if passthrough_intel_to_lxc "$ctid"; then
+            updated=1
+            if ! install_intel_tools_in_ct "$ctid"; then failed=1; fi
+          else failed=1; fi
           ;;
         amd)
           msg info "Applying AMD GPU passthrough to CT $ctid..."
-          passthrough_amd_to_lxc "$ctid" && install_amd_tools_in_ct "$ctid" && updated=1
+          if passthrough_amd_to_lxc "$ctid"; then
+            updated=1
+            if ! install_amd_tools_in_ct "$ctid"; then failed=1; fi
+          else failed=1; fi
           ;;
         nvidia)
           msg info "Checking NVIDIA GPU on host..."
-          check_nvidia_driver_status && check_cuda_version
-          gpu_minor=$(select_nvidia_gpu) || continue
-          passthrough_nvidia_to_lxc "$ctid" "$gpu_minor" && updated=1
+          if ! nvidia_support_available; then
+            failed=1
+          elif ! nvidia_validate_driver_version; then
+            failed=1
+          elif ! nvidia_validate_cuda_version; then
+            failed=1
+          elif ! gpu_minor=$(nvidia_select_gpu_minor); then
+            failed=1
+          elif nvidia_lxc_passthrough "$ctid" "$gpu_minor"; then
+            updated=1
+          else
+            failed=1
+          fi
           ;;
       esac
     done
 
-    if [[ "$updated" -eq 1 ]]; then
+    if [[ "$failed" == 1 ]]; then
+      result=1
+      failed_cts+=("$ctid")
+      [[ "$updated" == 0 ]] || partial_cts+=("$ctid")
+    elif [[ "$updated" -eq 1 ]]; then
       updated_cts+=("$ctid")
     fi
   done
 
   echo
+  if [[ ${#failed_cts[@]} -gt 0 ]]; then
+    msg warn "Failed or declined hardware integration: ${failed_cts[*]}"
+  fi
+  if [[ ${#partial_cts[@]} -gt 0 ]]; then
+    msg warn "Partial changes retained; automatic restart skipped: ${partial_cts[*]}"
+  fi
   if [[ ${#updated_cts[@]} -gt 0 ]]; then
     msg ok "Updated: ${updated_cts[*]}"
-    read -rp "Restart updated container(s)? [y/N]: " restart
+    read -rp "Restart updated container(s)? [y/N]: " restart || restart=''
     if [[ "${restart,,}" == "y" ]]; then
       for ctid in "${updated_cts[@]}"; do
-        pct reboot "$ctid"
-        msg ok "Restarted container $ctid"
+        if state=$(pct status "$ctid"); then
+          case "$state" in
+            'status: running')
+              if pct reboot "$ctid"; then
+                msg ok "Restarted container $ctid"
+              else
+                rc=$?
+                msg err "Restart failed for container $ctid (status $rc)"
+                [[ "$result" != 0 ]] || result=$rc
+              fi
+              ;;
+            'status: stopped')
+              msg info "Container $ctid is stopped; configuration applies on next start."
+              ;;
+            *)
+              msg err "Unknown state for container $ctid; restart skipped"
+              [[ "$result" != 0 ]] || result=65
+              ;;
+          esac
+        else
+          rc=$?
+          msg err "State query failed for container $ctid (status $rc); restart skipped"
+          [[ "$result" != 0 ]] || result=$rc
+        fi
       done
     else
-      msg info "Manual restart required for: ${updated_cts[*]}"
+      msg info "Configuration applies on the next start or restart for: ${updated_cts[*]}"
     fi
   else
-    msg warn "No passthrough applied."
+    msg warn "No container completed hardware integration."
   fi
+  return "$result"
 }
 
 # framework bootstrap

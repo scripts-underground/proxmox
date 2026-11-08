@@ -14,7 +14,8 @@ if [[ "${1:-}" == --hook ]]; then
   source "$c/hook"
   header_info() { :; }
   check_container_storage() { :; }
-  check_container_resources() { :; }
+  # HTTP/configuration unit inputs; keep shared resource admission real.
+  export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
   setup_php() { :; }
   setup_mariadb() { :; }

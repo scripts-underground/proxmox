@@ -253,6 +253,18 @@ any download command on the detected `bootstrap_line` is skipped for all
 three signals. Non-bootstrap external loads (e.g. sourcing `core.func`
 directly) are still detected.
 
+### LXC producer source identity
+
+LXC producer policy is checked separately against the parsed Bash AST for every
+`scripts/lxc/*.sh`, even when bootstrap detection found no footer. Require exactly
+one top-level `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "slug" -- "$@"`
+call with the literal ID equal to the filename stem. Missing, dynamic/defaulted,
+wrong or duplicate identities and missing argument forwarding fail policy.
+Comments, strings, functions and conditional lookalikes cannot satisfy it.
+Existing REPO_BASE policy remains in force. Diagnostics use the Script Policy
+Violations heading; schema v2 has no additional identity field. Source/tokens
+already retain the literal declaration.
+
 ### Known limitations
 
 1. **Chained pipes**: `a | b | c` parses as `(a | b) | c`; only the

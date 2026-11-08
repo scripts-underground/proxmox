@@ -6,6 +6,14 @@
 
 set -euo pipefail
 
+function nvidia_helper_contents() {
+  # Definitions only; shared configuration is a separate component dependency.
+  declare -f msg nvidia_exit nvidia_check_driver_installed nvidia_get_driver_version \
+    nvidia_get_cuda_version nvidia_validate_driver_version nvidia_validate_cuda_version \
+    nvidia_setup_kernel_modules nvidia_valid_minor nvidia_gpu_available nvidia_select_gpu_minor \
+    nvidia_lxc_passthrough nvidia_write_lxc_config || return $?
+}
+
 function nvidia_exit() {
   printf "⚠️  User exited script\n"
   exit 0
@@ -27,102 +35,187 @@ function nvidia_check_driver_installed() {
 }
 
 function nvidia_get_driver_version() {
-  nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2> /dev/null | head -n1
+  local output line version=''
+  if output=$(LC_ALL=C nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits); then :; else return $?; fi
+  while IFS= read -r line; do
+    if [[ ! "$line" =~ ^[[:space:]]*([0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?)[[:space:]]*$ ]]; then
+      msg err "Invalid NVIDIA driver version output"
+      return 65
+    fi
+    line=${BASH_REMATCH[1]}
+    if [[ -n "$version" && "$version" != "$line" ]]; then
+      msg err "Ambiguous NVIDIA driver versions"
+      return 65
+    fi
+    version=$line
+  done <<< "$output"
+  printf '%s' "$version"
 }
 
 function nvidia_get_cuda_version() {
-  nvidia-smi --query-gpu=cuda_version --format=csv,noheader,nounits 2> /dev/null | head -n1
+  local output line version='' count=0
+  if output=$(LC_ALL=C nvidia-smi -q); then :; else return $?; fi
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*CUDA[[:space:]]+(UMD[[:space:]]+)?Version[[:space:]]*:[[:space:]]*(.*)$ ]] || continue
+    line=${BASH_REMATCH[2]}
+    if [[ ! "$line" =~ ^([0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?)[[:space:]]*$ ]]; then
+      msg err "Invalid NVIDIA CUDA driver capability"
+      return 65
+    fi
+    version=${BASH_REMATCH[1]}
+    count=$((count + 1))
+  done <<< "$output"
+  if [[ "$count" != 1 ]]; then
+    msg err "Missing or ambiguous NVIDIA CUDA driver capability"
+    return 65
+  fi
+  printf '%s' "$version"
 }
 
 function nvidia_validate_driver_version() {
   if ! nvidia_check_driver_installed; then
-    msg err "NVIDIA drivers not found"
-    nvidia_exit
+    msg err "nvidia-smi not found; install host drivers separately"
+    return 127
   fi
-  local ver major
-  ver=$(nvidia_get_driver_version)
+  local ver major confirm=''
+  if ver=$(nvidia_get_driver_version); then :; else return $?; fi
   major=${ver%%.*}
-  if ((major < 500)); then
+  if ((10#$major < 500)); then
     msg warn "Detected old NVIDIA driver version: $ver"
-    read -rp "Continue anyway? [y/N]: " confirm
-    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || nvidia_exit
+    read -rp "Continue anyway? [y/N]: " confirm || confirm=''
+    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || return 1
   fi
+  return 0
 }
 
 function nvidia_validate_cuda_version() {
   if ! nvidia_check_driver_installed; then
-    msg err "NVIDIA drivers not found"
-    nvidia_exit
+    msg err "nvidia-smi not found; install host drivers separately"
+    return 127
   fi
-  local ver major
-  ver=$(nvidia_get_cuda_version)
+  local ver major confirm=''
+  if ver=$(nvidia_get_cuda_version); then :; else return $?; fi
   major=${ver%%.*}
-  if ((major < 11)); then
-    msg warn "Detected old CUDA version: $ver"
-    read -rp "Continue anyway? [y/N]: " confirm
-    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || nvidia_exit
+  if ((10#$major < 11)); then
+    msg warn "Detected old CUDA driver capability: $ver (not an installed toolkit)"
+    read -rp "Continue anyway? [y/N]: " confirm || confirm=''
+    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || return 1
   fi
+  return 0
 }
 
 function nvidia_setup_kernel_modules() {
   local modfile="/etc/modules-load.d/nvidia.conf"
   local udevfile="/etc/udev/rules.d/70-nvidia.rules"
-
   printf "nvidia\nnvidia_uvm\nnvidia_drm\n" > "$modfile"
-
   cat << EOF > "$udevfile"
 KERNEL=="nvidia", RUN+="/bin/bash -c '/usr/bin/nvidia-smi -L && chmod 666 /dev/nvidia*'"
 KERNEL=="nvidia_uvm", RUN+="/bin/bash -c '/usr/bin/nvidia-modprobe -c0 -u && chmod 0666 /dev/nvidia-uvm*'"
 EOF
-
   msg ok "NVIDIA modules configured"
   msg warn "Reboot the host to apply kernel changes"
 }
 
+function nvidia_valid_minor() {
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,6})$ ]] && ((10#$1 <= 1048575))
+}
+
+function nvidia_gpu_available() {
+  local device
+  for device in /dev/nvidia[0-9]*; do
+    [[ "$device" =~ ^/dev/nvidia[0-9]+$ && -c "$device" ]] && return 0
+  done
+  return 1
+}
+
 function nvidia_select_gpu_minor() {
-  local menu=() max=0
-  while IFS= read -r path; do
-    local dev="${path##*/}"
-    local info="/proc/driver/nvidia/gpus/${dev}/information"
-    [[ -f "$info" ]] || continue
-    local model minor
-    model=$(awk -F': ' '/Model:/ {print $2}' "$info")
-    minor=$(awk '/Device Minor/ {print $NF}' "$info")
+  local menu=() max=0 info record line model minor selected rc models minors
+  local -A seen=()
+  if [[ ! -d /proc/driver/nvidia/gpus || ! -r /proc/driver/nvidia/gpus || ! -x /proc/driver/nvidia/gpus ]]; then
+    msg err "NVIDIA GPU inventory is unavailable"
+    return 1
+  fi
+  for info in /proc/driver/nvidia/gpus/*; do
+    [[ -e "$info" || -L "$info" ]] || continue
+    [[ -d "$info" ]] || continue
+    if record=$(cat "$info/information"); then :; else return $?; fi
+    model='' minor='' models=0 minors=0
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^Model:[[:space:]]*(.+)$ ]]; then
+        model=${BASH_REMATCH[1]} models=$((models + 1))
+      elif [[ "$line" =~ ^Device[[:space:]]Minor:[[:space:]]*(.*)$ ]]; then
+        minor=${BASH_REMATCH[1]} minors=$((minors + 1))
+      fi
+    done <<< "$record"
+    if [[ "$models" != 1 || "$minors" != 1 ]] || ! nvidia_valid_minor "$minor" || [[ -n "${seen[$minor]:-}" ]]; then
+      msg err "Invalid or duplicate NVIDIA GPU record: $info/information"
+      return 65
+    fi
+    seen[$minor]=1
     menu+=("$minor" "$model" "OFF")
-    ((${#model} > max)) && max=${#model}
-  done < <(find /proc/driver/nvidia/gpus -mindepth 1 -type d)
-
-  [[ ${#menu[@]} -eq 0 ]] && msg err "No NVIDIA GPU found" && return 1
-  [[ ${#menu[@]} -eq 3 ]] && printf "%s" "${menu[0]}" && return
-
-  whiptail --title "NVIDIA GPU Selection" --radiolist \
-    "Select GPU for passthrough:" 15 $((max + 40)) 6 \
-    "${menu[@]}" 3>&1 1>&2 2>&3
+    ((${#model} <= max)) || max=${#model}
+  done
+  if [[ ${#menu[@]} == 0 ]]; then
+    msg err "No NVIDIA GPU found"
+    return 1
+  elif [[ ${#menu[@]} == 3 ]]; then
+    selected=${menu[0]}
+  elif selected=$(whiptail --title "NVIDIA GPU Selection" --radiolist \
+    "Select GPU for passthrough:" 15 $((max + 40)) 6 "${menu[@]}" 3>&1 1>&2 2>&3); then
+    :
+  else
+    rc=$?
+    if [[ "$rc" == 1 || "$rc" == 255 ]]; then
+      msg warn "NVIDIA GPU selection cancelled"
+      return 1
+    fi
+    return "$rc"
+  fi
+  if ! nvidia_valid_minor "$selected" || [[ -z "${seen[$selected]:-}" ]]; then
+    msg err "Invalid NVIDIA GPU selection"
+    return 65
+  fi
+  printf '%s' "$selected"
 }
 
 function nvidia_lxc_passthrough() {
-  local ctid="$1" minor="$2"
-  local conf="/etc/pve/lxc/${ctid}.conf"
-  local devices=(
-    "/dev/nvidia${minor}"
-    "/dev/nvidiactl"
-    "/dev/nvidia-uvm"
-    "/dev/nvidia-uvm-tools"
-  )
-
-  local devnums=()
+  if [[ $# != 2 || ! "$1" =~ ^[1-9][0-9]{2,8}$ ]] || ! nvidia_valid_minor "${2:-}"; then
+    msg err "Invalid NVIDIA container ID or device minor"
+    return 65
+  fi
+  if ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable"
+    return 127
+  fi
+  local ctid="$1" minor="$2" dev numbers major actual_minor rc n
+  local devices=("/dev/nvidia${minor}" "/dev/nvidiactl" "/dev/nvidia-uvm" "/dev/nvidia-uvm-tools")
+  local entries=() devnums=() required=()
   for dev in "${devices[@]}"; do
-    [[ -e "$dev" ]] || continue
-    local major_hex
-    major_hex=$(stat -c '%t' "$dev")
-    devnums+=($((16#$major_hex)))
-    echo "lxc.mount.entry: $dev ${dev##*/} none bind,optional,create=file" >> "$conf"
+    if [[ ! -e "$dev" && ! -L "$dev" && "$dev" == /dev/nvidia-uvm* ]]; then continue; fi
+    if numbers=$(gpu_config_node "$dev"); then :; else return $?; fi
+    major=${numbers%%:*} actual_minor=${numbers#*:}
+    if [[ "$dev" == "/dev/nvidia${minor}" ]] && ((actual_minor != 10#$minor)); then
+      msg err "NVIDIA device minor changed: $dev"
+      return 65
+    fi
+    devnums+=("$major")
+    required+=("$dev:$major:$actual_minor")
+    entries+=("lxc.mount.entry" "$dev dev/${dev##*/} none bind,optional,create=file")
   done
+  entries+=("lxc.mount.entry" "/dev/dri dev/dri none bind,optional,create=dir")
+  for n in "${devnums[@]}"; do entries+=("lxc.cgroup2.devices.allow" "c ${n}:* rwm"); done
+  if nvidia_write_lxc_config "$ctid" "${#required[@]}" "${required[@]}" "${entries[@]}"; then :; else
+    rc=$?
+    msg err "NVIDIA passthrough configuration failed for CT $ctid"
+    return "$rc"
+  fi
+  msg ok "NVIDIA passthrough configured for CT $ctid"
+}
 
-  echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$conf"
-
-  for n in "${devnums[@]}"; do
-    echo "lxc.cgroup2.devices.allow: c ${n}:* rwm" >> "$conf"
-  done
-  msg ok "Installed NVIDIA GPU tools in $ctid"
+function nvidia_write_lxc_config() {
+  if ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable"
+    return 127
+  fi
+  gpu_write_lxc_config "$@"
 }

@@ -23,7 +23,6 @@ def pack(source,dest):
 models=r'''
 header_info() { :; }
 check_container_storage() { :; }
-check_container_resources() { :; }
 cleanup_lxc() { :; }
 addon_baseline() { :; }
 stop_spinner() { :; }
@@ -159,7 +158,7 @@ for app in ('endurain','invidious','keycloak','cronmaster','autocaliweb'):
     for k,v in dict(install_path=str(live),config_path=str(c/'config/operator.env'),service_path=str(c/'systemd/custom.service'),service='fixture-cronmaster',repo='fixture/cronmaster',backup_dir=str(c/'cron-backup'),creds_path=str(c/'config/creds'),default_port='80').items():compose+='export var_addon_'+k+'='+shlex.quote(v)+'\n'
    compose+='source '+shlex.quote(str(c/'hook.sh'))+'\n'
    compose+=('_addon_bundle_contents update update_script ' if kind=='addon' else '_write_bundle update update_script ')+shlex.quote(str(c/'stage'))
-   if kind!='addon':compose+=' '+shlex.quote('run_update_script "$@"')
+   if kind!='addon':compose+=' --requirements 0 0 -- '+shlex.quote('run_update_script "$@"')
    with (c/'sbin/update').open('w') as out:subprocess.run(['bash','-ceu',compose],stdout=out,check=True,timeout=20)
    digest=hashlib.sha256((c/'sbin/update').read_bytes()).hexdigest()
    def invoke(label,active):
