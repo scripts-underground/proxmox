@@ -438,12 +438,18 @@ metadata-only inode pin precedes regular-file byte reads; special targets are
 never opened for I/O. Sufficient sources may be symlinked or hardlinked. Needed
 edits preserve the alias and resolved target ownership/mode/xattrs; hardlinked
 write targets and multiply named source targets refuse with the exact path.
-Per-source publication moves the actual displaced inode into a private mode0700
-same-filesystem `.gpu-intel-recovery.XXXXXXXX/source`, checks its identity/bytes,
-and publishes with no-clobber link. Conflicts fail with possible partial-change
-and exact recovery-path diagnostics, without automatic restore over another
-writer. The original inode retains operator ownership/metadata even after success
-and is not automatically removed: an uncooperative editor may still hold it open.
+Per-source publication prepares the candidate at a private mode0700 same-filesystem
+`.gpu-intel-recovery.XXXXXXXX/source`, then uses Linux renameat2 RENAME_EXCHANGE:
+the live path is never removed, and that recovery pathname atomically receives the
+actual displaced inode. An exact recovery intent is emitted before exchange; the
+operand/directory are never registered for automatic cleanup, including publisher
+death or normal exit before readback. The native ABI is checked, and a private
+same-filesystem exchange probe must succeed before live publication. Unsupported
+architecture/kernel/filesystem refuses without a two-step fallback. Conflicts
+fail with possible partial-change and exact recovery-path diagnostics, without
+automatic exchange-back/restore over another writer. The original inode retains
+operator ownership/metadata even after success and is not automatically removed:
+an uncooperative editor may still hold it open.
 This bounded recovery custody does not promise a lock against other writers or
 an all-source transaction. Both index refreshes require Error-Mode=any before
 package installation, so a transient second refresh cannot admit stale indexes.

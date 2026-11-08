@@ -26,7 +26,29 @@ sub mark {
 if ($ENV{GPU_BOUNDARY_KIND} eq 'held-inode') {
     open($held, '>>', $ENV{GPU_BOUNDARY_TARGET}) or die $!;
 }
+sub native {
+    my ($number, @args) = @_;
+    return CORE::syscall($number, @args);
+}
 BEGIN {
+    *CORE::GLOBAL::syscall = sub {
+        my @args = @_;
+        my $target = $ENV{GPU_BOUNDARY_TARGET};
+        my $publication = @args == 6 && $args[5] == 2 && ($args[2] eq $target || $args[4] eq $target);
+        if ($publication && !$done) {
+            my $kind = $ENV{GPU_BOUNDARY_KIND};
+            if ($kind eq 'late-inplace') { edit($target); $done = 1; mark(); }
+            if ($kind eq 'late-replace' || $kind eq 'late-create') {
+                my $writer = "$target.writer";
+                edit($writer); CORE::rename($writer, $target) or die $!; $done = 1; mark();
+            }
+        }
+        my $rc = native(@args);
+        if ($publication && $rc == 0 && !$done && $ENV{GPU_BOUNDARY_KIND} eq 'held-inode') {
+            print {$held} "# late operator edit\n"; close($held); $done = 1; mark();
+        }
+        return $rc;
+    };
     *CORE::GLOBAL::rename = sub ($$) {
         my ($from, $to) = @_;
         my $target = $ENV{GPU_BOUNDARY_TARGET};

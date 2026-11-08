@@ -191,3 +191,5 @@ def exercise_intel_sources(source, work, run, check, base, sections):
             os.environ['APT_CONFIG'] = original_config
     from intel_publication_fixture import exercise_intel_publication
     exercise_intel_publication(source, work, run, check)
+    from intel_atomic_fixture import exercise_intel_atomic
+    exercise_intel_atomic(source, work, run, check)
