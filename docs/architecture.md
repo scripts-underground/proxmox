@@ -350,6 +350,64 @@ owner; the loaded framework retains its existing spinner cleanup.
 This config outcome does not prove GPU operation, toolkit availability or per-card
 security isolation; existing major-wide/DRM compatibility policy is retained.
 
+The same manual NVIDIA owner checks the configured unified device program rather
+than the presence of an allow string. Its helper-local source-characterized
+LXC 5/6/7 model resolves the PVE OS/common prelude, generated device/console rules
+and ordered active suffix, including include and controller-clear behavior.
+Global rules reset the surviving program; exact native access strings retain
+replacement identity, and every nonempty r/w/m request mask is checked for actual
+required character tuples. Missing allowlist rights may add the existing
+major-wide rule when the native list is nonempty. An entirely empty native list
+attaches no additional device program: mounts may be added, but no device grant
+is appended. Ineffectual entries still activate the default program. This follows
+LXC 5/6/7 `cgfsng.c:cgfsng_devices_activate` (7.0.0 lines 2972-2976), rather than
+assuming the list's allowlist/denylist type alone establishes its default.
+Already-permitted denylist devices need no ineffective
+allow; foreign denial effects, including other minors affected by a broad grant,
+cannot be neutralized. Foreign entries and global mode are never rewritten.
+Native controller-list clears are resolved before preparing surviving device
+values; a device-program reset cannot excuse an invalid surviving rule. Numeric
+device fields retain native base-zero parsing, including leading-zero octal.
+Typed structured `devN` deny-write constraints also forbid newly granted write
+for that mapped tuple, including another minor sharing a broad grant's major.
+Already-configured write is not a new relaxation. No global mode or grant shape
+is changed to bypass a refusal.
+Directory comparison distinguishes empty/nonempty activation only in allowlist
+mode. Empty denylist and denylist with only ineffectual allows both permit all
+devices at this layer, so their directory order does not cause a false refusal.
+
+Policy dependencies are read-only, bounded regular files/directories or device
+metadata, never special-file contents. Identity, bytes and membership are captured
+and revalidated before publication and readback. Directory load order is not
+assumed lexical: commuting transforms or bounded complete order exploration must
+prove consistent policy; otherwise the exact dependency is refused. Missing
+required files, cycles, unsupported/changing data and uncharacterized
+loader-relative dependencies fail before publication. Native optional absent
+directories remain captured, revalidated dependencies. External files are not
+locked by the CT owner, so this is
+configured consistency at validation time, not ancestor-BPF, DAC or future-start
+permission proof. Native config/serializer/readback fidelity remains unchanged.
+Included file lexing follows `parse.c:lxc_file_for_each_line_mmap` and
+`confile.c:parse_line` with `string_utils.c:lxc_char_left_gc/right_gc`: CR/LF
+parts, first-NUL termination and space/tab trimming. The native `devices` prefix
+is classified without a suffix boundary; unsupported surviving controllers refuse
+specifically. Control bytes in rendered active LXC pairs refuse before publication
+instead of bypassing the device projection.
+
+Optional NVIDIA helper transport/source failure is isolated from other features.
+The component-owned checked `nvidia_helper_contents` emitter supplies its complete
+runtime function/dependency closure, including `msg`, rather than caller prefix
+discovery. It emits definitions only, without imported state, descriptors,
+initialization or traps. A strict child must finish both sourcing and emission
+before import; missing emitter, emission failure/early exit or empty output leaves
+NVIDIA unavailable. Older helpers without this emitter do not satisfy the ABI:
+selected NVIDIA reports the unavailable helper while unrelated features continue.
+Stale required public functions are removed before loading; partial output cannot
+borrow them. NVIDIA availability is guarded and its required API is checked when
+selected. Intel/AMD passthrough success is
+recorded before the returned tool-stage result, so a tool failure retains known
+partial changes and excludes that CT from automatic restart.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the

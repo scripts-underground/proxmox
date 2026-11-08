@@ -30,9 +30,27 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 set -euo pipefail
 
-# shellcheck disable=SC1090
-# Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(wget -qO- "$REPO_BASE/tools/pve/gpu-nvidia.func")
+# NVIDIA is optional. Load declarations once in a fresh strict shell so a failed
+# source (including an explicit exit) cannot terminate unrelated feature paths.
+_NVIDIA_HELPERS_READY=0
+unset -f nvidia_helper_contents nvidia_gpu_available nvidia_validate_driver_version \
+  nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough
+if _nv_source=$(wget -qO- "$REPO_BASE/tools/pve/gpu-nvidia.func"); then
+  if _nv_functions=$(BASH_ENV=/dev/null /bin/bash -euo pipefail -c '
+    source /dev/stdin >&2
+    declare -F nvidia_helper_contents >/dev/null
+    nvidia_helper_contents
+    printf "\n# NVIDIA_DECLARATIONS_COMPLETE\n"
+  ' <<< "$_nv_source"); then
+    if [[ "$_nv_functions" == *$'\n# NVIDIA_DECLARATIONS_COMPLETE' && -n "${_nv_functions%$'\n# NVIDIA_DECLARATIONS_COMPLETE'}" ]]; then
+      # shellcheck disable=SC1090
+      if source /dev/stdin <<< "${_nv_functions%$'\n# NVIDIA_DECLARATIONS_COMPLETE'}"; then
+        _NVIDIA_HELPERS_READY=1
+      fi
+    fi
+  fi
+fi
+unset _nv_source _nv_functions
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(wget -qO- "$REPO_BASE/tools/pve/gpu-intel.func")
@@ -75,7 +93,7 @@ function prompt_features() {
     echo " [2] Intel iGPU (VAAPI)"
     features+=("intel")
   fi
-  if nvidia_gpu_available; then
+  if [[ "$_NVIDIA_HELPERS_READY" == 1 ]] && declare -F nvidia_gpu_available > /dev/null && (nvidia_gpu_available); then
     echo " [3] NVIDIA GPU"
     features+=("nvidia")
   fi
@@ -147,14 +165,25 @@ lxc.mount.entry: /dev/ttyACM1       dev/ttyACM1       none bind,optional,create=
 EOF
 }
 
-function main() {
+function nvidia_support_available() {
   local api
+  if [[ "$_NVIDIA_HELPERS_READY" != 1 ]]; then
+    msg err "NVIDIA helper load failed; NVIDIA integration unavailable"
+    return 1
+  fi
   for api in nvidia_gpu_available nvidia_validate_driver_version nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough; do
     if ! declare -F "$api" > /dev/null; then
       msg err "NVIDIA helper API unavailable: $api"
-      return 127
+      return 1
     fi
   done
+  if ! (nvidia_gpu_available); then
+    msg err "NVIDIA availability check failed; no NVIDIA effects applied"
+    return 1
+  fi
+}
+
+function main() {
   header_info
   prompt_features
   select_lxc_cts
@@ -174,15 +203,23 @@ function main() {
           ;;
         intel)
           msg info "Applying Intel VAAPI passthrough to CT $ctid..."
-          if passthrough_intel_to_lxc "$ctid" && install_intel_tools_in_ct "$ctid"; then updated=1; else failed=1; fi
+          if passthrough_intel_to_lxc "$ctid"; then
+            updated=1
+            if ! install_intel_tools_in_ct "$ctid"; then failed=1; fi
+          else failed=1; fi
           ;;
         amd)
           msg info "Applying AMD GPU passthrough to CT $ctid..."
-          if passthrough_amd_to_lxc "$ctid" && install_amd_tools_in_ct "$ctid"; then updated=1; else failed=1; fi
+          if passthrough_amd_to_lxc "$ctid"; then
+            updated=1
+            if ! install_amd_tools_in_ct "$ctid"; then failed=1; fi
+          else failed=1; fi
           ;;
         nvidia)
           msg info "Checking NVIDIA GPU on host..."
-          if ! nvidia_validate_driver_version; then
+          if ! nvidia_support_available; then
+            failed=1
+          elif ! nvidia_validate_driver_version; then
             failed=1
           elif ! nvidia_validate_cuda_version; then
             failed=1

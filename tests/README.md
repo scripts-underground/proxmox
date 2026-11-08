@@ -246,6 +246,32 @@ require positively running status, and observe the modeled reboot effect rather
 than only its request. A private space/glob TMPDIR canary preserves existing
 lookalikes, checks that startup adds no scratch artifacts, and traces the actual
 framework spinner EXIT cleanup without replacing it.
+Independent device-policy cases cover the identical source-characterized LXC
+5/6/7 core model, global resets, effective grant reuse, already-permitted denylist,
+opposite-key/access-order and combined-mask denials, other-minor preservation,
+nested/repeated includes, include/controller clears, commuting and conflicting
+directory orders, nonregular/unreadable/changing dependencies and readback races.
+They distinguish controller clears from later program resets, cover native octal
+and whitespace parsing, optional absent directories, symlink includes and invalid
+directory members, and retain explicit source-version/model boundaries.
+Explicit expected outcomes and resulting active configuration are checked; the
+production validator is not its own oracle. Version/controller and CFS boundaries
+are models around installed native PVE parsing/serialization, not PVE 8 runtime or
+kernel BPF execution. Optional NVIDIA load/API/probe failures and successful
+Intel/AMD passthrough followed by returned tool failure exercise real caller paths.
+Activation cases distinguish an empty native list (no attached device program)
+from nonempty ineffectual entries and compare directory orders across that
+boundary. Source references are LXC 5/6/7 `cgfsng_devices_activate`, `parse.c`
+CR/LF/first-NUL iteration and `confile.c`/`string_utils.c` space/tab trimming.
+Byte-preserving controls cover included lexer payloads and rendered active-pair
+injection, plus structured devN deny-write on selected/other minors versus
+already-configured write. Reset/clear cases assert unchanged device directives
+while still observing the native mount consumer.
+The denylist counterpart admits empty/ineffectual directory orders with mounts
+only. A separate fake component emits non-prefix private code plus owned data;
+the real caller consumes it through `nvidia_helper_contents`. Missing/failed/
+early-exit/empty/partial emission controls retain stale-public protection and
+selected-API refusals while unrelated features continue.
 
 The maintenance-silent source-identity fixture executes actual literal LXC
 footers, the bootstrap entry, initial/repair preparation, checked bundle writer

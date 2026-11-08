@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import shutil
 
 SOURCE = Path(sys.argv[1]).resolve()
 WORK = Path(tempfile.mkdtemp(prefix='nvidia-integration.', dir=os.environ['TMPDIR']))
@@ -32,11 +33,16 @@ node = os.uname().nodename
 (WORK / 'pve/lxc').symlink_to('nodes/' + node + '/lxc')
 (WORK / 'driver/nvidia/gpus').mkdir(parents=True)
 (WORK / 'dev/fd').symlink_to('/proc/self/fd')
+for name, fd in [('stdin', 0), ('stdout', 1), ('stderr', 2)]:
+    (WORK / 'dev' / name).symlink_to('/proc/self/fd/' + str(fd))
 for name, major, minor in [('null', 1, 3), ('zero', 1, 5), ('random', 1, 8),
                            ('urandom', 1, 9), ('nvidia2', 195, 2), ('nvidia7', 195, 7),
                            ('nvidiactl', 195, 255), ('nvidia-uvm', 509, 0)]:
     os.mknod(WORK / 'dev' / name, stat.S_IFCHR | 0o600, os.makedev(major, minor))
 (WORK / 'dev/dri').mkdir()
+config_root = WORK / 'configs'
+shutil.copytree('/usr/share/lxc/config', config_root, symlinks=True)
+subprocess.run(['mount', '--bind', str(config_root), '/usr/share/lxc/config'], check=True, timeout=10)
 for pci, minor in [('0000:01:00.0', 2), ('0000:02:00.0', 7)]:
     directory = WORK / 'driver/nvidia/gpus' / pci
     directory.mkdir()
@@ -48,14 +54,35 @@ lib.mkdir(parents=True)
 package Test::NvidiaCFS;
 use strict; use warnings;
 use PVE::LXC::Config; use PVE::Cluster; use PVE::Tools;
-my $updates = 0; my $reads = 0;
+my $updates = 0; my $reads = 0; my $raw_reads = 0;
 my $original_write = \&PVE::Tools::file_set_contents;
+my $original_read = \&PVE::Tools::file_get_contents;
 sub record { open(my $f, '>>', "$ENV{NVIDIA_WORK}/cfs.calls") or die $!; print $f "@_\n"; close($f) or die $!; }
 no warnings 'redefine';
+*PVE::LXC::get_lxc_version = sub { return (int($ENV{NVIDIA_LXC_MAJOR} // 7), 0); };
+*PVE::CGroup::get_cgroup_controllers = sub {
+    return ({}, ($ENV{NVIDIA_CASE} // '') eq 'v2-unavailable' ? undef : {});
+};
+*PVE::Tools::file_get_contents = sub {
+    if ($_[0] =~ m{/lxc/987654\.conf$} && ++$raw_reads == 3) {
+        if (($ENV{NVIDIA_CASE} // '') eq 'dependency-change') {
+            open(my $f, '>', "$ENV{NVIDIA_WORK}/configs/changing.conf") or die $!;
+            print $f "lxc.cgroup2.devices.allow = a\n"; close($f) or die $!;
+        } elsif (($ENV{NVIDIA_CASE} // '') eq 'membership-change') {
+            open(my $f, '>', "$ENV{NVIDIA_WORK}/configs/stable.d/new.conf") or die $!;
+            print $f "lxc.cgroup2.devices.deny = a\n"; close($f) or die $!;
+        }
+    }
+    return $original_read->(@_);
+};
 *PVE::Cluster::cfs_update = sub {
     record('refresh', ++$updates, defined($_[0]) ? $_[0] : 'default');
     die "modeled CFS refresh failure\n" if ($ENV{NVIDIA_CASE} // '') eq 'refresh-fail' && $updates == 2;
     die "modeled readback refresh failure\n" if ($ENV{NVIDIA_CASE} // '') eq 'readback-refresh-fail' && $updates == 3;
+    if (($ENV{NVIDIA_CASE} // '') eq 'dependency-readback-change' && $updates == 3) {
+        open(my $f, '>', "$ENV{NVIDIA_WORK}/configs/changing.conf") or die $!;
+        print $f "lxc.cgroup2.devices.allow = a\n"; close($f) or die $!;
+    }
 };
 *PVE::Cluster::cfs_file_version = sub {
     return (1, { parser => \&PVE::LXC::Config::parse_pct_config,
@@ -92,7 +119,7 @@ def quote(value):
     return shlex.quote(str(value))
 
 
-base = ('arch: amd64\nhostname: fixture\nmemory: 512\nswap: 512\nunprivileged: 0\n'
+base = ('arch: amd64\nostype: debian\nhostname: fixture\nmemory: 512\nswap: 512\nunprivileged: 0\n'
         'rootfs: owned:vm-987654-disk-0,size=4G\n'
         'lxc.mount.entry: /dev/foreign dev/foreign none bind,optional,create=file\n'
         'lxc.cgroup2.devices.allow: c 42:* rwm\n')
@@ -108,7 +135,11 @@ assert marker, 'fixed main boundary'
 prefix = f'''
 set -Eeuo pipefail
 export PERL5LIB={quote(WORK / 'lib')} NVIDIA_WORK={quote(WORK)}
-perl() {{ /usr/bin/perl -MTest::NvidiaCFS "$@"; }}
+perl() {{
+ if [[ "$NVIDIA_CASE" == policy-unreadable ]]; then
+  /usr/bin/setpriv --bounding-set=-dac_override,-dac_read_search /usr/bin/perl -MTest::NvidiaCFS "$@"
+ else /usr/bin/perl -MTest::NvidiaCFS "$@"; fi
+}}
 nvidia-smi() {{
  printf 'smi %s\\n' "$*" >> {quote(WORK / 'events')}
  if [[ "$NVIDIA_CASE" == second-fail && "${{ctid:-}}" == 987655 ]]; then return 37; fi
@@ -149,15 +180,15 @@ cat() {{
 '''
 
 
-def run(name, code, text=base + sections, answer='', scenario='ok', conditional=True):
+def run(name, code, text=base + sections, answer='', scenario='ok', conditional=True, major=7):
     conf.write_text(text)
     (WORK / 'cfs.calls').unlink(missing_ok=True)
-    env = dict(os.environ, NVIDIA_CASE=scenario, TMPDIR=os.environ['TMPDIR'], TERM='dumb')
+    env = dict(os.environ, NVIDIA_CASE=scenario, NVIDIA_LXC_MAJOR=str(major), TMPDIR=os.environ['TMPDIR'], TERM='dumb')
     call = ('if ' + code + '; then rc=0; else rc=$?; fi; exit "$rc"') if conditional else code
     result = subprocess.run(['/bin/bash', '-c', prefix + f'\nsource {quote(helper)}\n' + call],
                             input=answer, text=True, capture_output=True, env=env, timeout=15)
     facts = dict(status=result.returncode, stdout=result.stdout, stderr=result.stderr,
-                 before=text, after=conf.read_text() if conf.exists() else None, calls=(WORK / 'cfs.calls').read_text()
+                  before=text, after=conf.read_bytes().decode() if conf.exists() else None, calls=(WORK / 'cfs.calls').read_text()
                  if (WORK / 'cfs.calls').exists() else '')
     (WORK / (name + '.json')).write_text(json.dumps(facts, indent=2))
     return facts
@@ -322,10 +353,29 @@ active = facts['after'].split('[pve:pending]')[0]
 check('equivalent mount is not duplicated', 1, active.count('/dev/nvidia7 dev/nvidia7'))
 check('equivalent permission set is not duplicated', 1, len(re.findall(r'c 195:\* [rwm]+', active)))
 
+sys.path.insert(0, str(SOURCE / 'tests/lib'))
+from nvidia_policy_cases import exercise_policy
+exercise_policy(WORK, run, check, base, sections)
+
 # The full real startup/dispatch remains the consumer; only operator inputs and
 # external hardware/service tools are replaced. Real helper bodies stay loaded.
 states = WORK / 'ct-states'
 states.mkdir()
+# A component-owned emitter may carry non-prefix private dependencies and data.
+# This independent fake module makes the actual caller consume that contract.
+private_module = r'''
+_owned_gpu_dependency() { [[ "$_owned_gpu_value" == owned-data ]] || return 61; printf 'private-closure:%s\n' "$_owned_gpu_value" >> "$NVIDIA_WORK/events"; }
+nvidia_gpu_available() { return 0; }
+nvidia_validate_driver_version() { _owned_gpu_dependency; }
+nvidia_validate_cuda_version() { return 0; }
+nvidia_select_gpu_minor() { printf 7; }
+nvidia_lxc_passthrough() { printf 'owned-passthrough %s\n' "$*" >> "$NVIDIA_WORK/effects"; }
+nvidia_helper_contents() {
+ printf 'declare -- _owned_gpu_value=owned-data\n' || return $?
+ declare -f _owned_gpu_dependency nvidia_gpu_available nvidia_validate_driver_version nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough || return $?
+}
+'''
+(WORK / 'private-component.func').write_text(private_module)
 for name, scenario, features, answer in [
     ('main-ok', 'ok', 'nvidia', 'n\n'),
     ('main-query-fail', 'query-fail', 'nvidia', 'y\n'),
@@ -334,6 +384,29 @@ for name, scenario, features, answer in [
     ('main-multi', 'second-fail', 'nvidia', 'y\n'),
     ('main-siblings', 'ok', 'intel amd', 'n\n'),
     ('main-library-missing', 'ok', 'nvidia', 'y\n'),
+    ('main-missing-nv-usb', 'library-missing', 'usb', 'n\n'),
+    ('main-missing-nv-intel', 'library-missing', 'intel', 'n\n'),
+    ('main-missing-nv-selected', 'library-missing', 'nvidia', 'y\n'),
+    ('main-partial-nv-amd', 'library-partial', 'amd', 'n\n'),
+    ('main-partial-nv-selected', 'library-partial', 'nvidia', 'y\n'),
+    ('main-old-api-amd', 'library-old-api', 'amd', 'n\n'),
+    ('main-old-api-selected', 'library-old-api', 'nvidia', 'y\n'),
+    ('main-exit-zero-intel', 'library-exit-zero', 'intel', 'n\n'),
+    ('main-exit-zero-selected', 'library-exit-zero', 'nvidia', 'y\n'),
+    ('main-malformed-nv-usb', 'library-malformed', 'usb', 'n\n'),
+    ('main-exit-nv-intel', 'library-exit', 'intel', 'n\n'),
+    ('main-private-component', 'private-component', 'nvidia', 'n\n'),
+    ('main-no-emitter-selected', 'no-emitter', 'nvidia', 'y\n'),
+    ('main-no-emitter-intel', 'no-emitter', 'intel', 'n\n'),
+    ('main-emitter-fail-selected', 'emitter-fail', 'nvidia', 'y\n'),
+    ('main-emitter-fail-usb', 'emitter-fail', 'usb', 'n\n'),
+    ('main-emitter-exit-selected', 'emitter-exit', 'nvidia', 'y\n'),
+    ('main-emitter-exit-intel', 'emitter-exit', 'intel', 'n\n'),
+    ('main-emitter-empty-selected', 'emitter-empty', 'nvidia', 'y\n'),
+    ('main-emitter-partial-selected', 'emitter-partial', 'nvidia', 'y\n'),
+    ('main-probe-nv-usb', 'availability-exit', 'usb', '1\n987654\nn\n'),
+    ('main-intel-tools-fail', 'ok', 'intel', 'y\n'),
+    ('main-amd-tools-fail', 'ok', 'amd', 'y\n'),
     ('main-restart-eof', 'ok', 'nvidia', ''),
     ('main-operator', 'ok', 'nvidia', '3\n987654\nn\n'),
     ('main-running-requested', 'ok', 'nvidia', 'y\n'),
@@ -351,7 +424,9 @@ for name, scenario, features, answer in [
     for ctid in ('987654', '987655'):
         (states / ctid).write_text('stopped' if name == 'main-stopped-requested' else 'running')
         (states / (ctid + '.reboots')).write_text('0')
-    operator_overrides = '' if name == 'main-operator' else f'''
+    if name == 'main-probe-nv-usb':
+        os.mknod(WORK / 'dev/ttyUSB0', stat.S_IFCHR | 0o600, os.makedev(188, 0))
+    operator_overrides = '' if name in ('main-operator', 'main-probe-nv-usb') else f'''
 header_info() {{ :; }}
 prompt_features() {{ SELECTED_FEATURES=({features}); }}
 select_lxc_cts() {{ SELECTED_CTIDS={'"987654 987655"' if name == 'main-multi' else '987654'}; }}
@@ -363,17 +438,33 @@ curl() {{ case "${{!#}}" in
  */core.func) /bin/cat {quote(SOURCE / 'misc/core.func')};;
  */error_handler.func) /bin/cat {quote(SOURCE / 'misc/error_handler.func')};; *) return 89;; esac; }}
 wget() {{ case "${{!#}}" in
- */gpu-nvidia.func) /bin/cat {quote(helper)};;
+ */gpu-nvidia.func)
+   case "$NVIDIA_CASE" in
+    private-component) /bin/cat {quote(WORK / 'private-component.func')};;
+    no-emitter) /bin/cat {quote(helper)}; printf '\nunset -f nvidia_helper_contents\n';;
+    emitter-fail) /bin/cat {quote(helper)}; printf '\nnvidia_helper_contents() {{ declare -f nvidia_gpu_available; return 37; }}\n';;
+    emitter-exit) /bin/cat {quote(helper)}; printf '\nnvidia_helper_contents() {{ declare -f nvidia_gpu_available; exit 0; }}\n';;
+    emitter-empty) /bin/cat {quote(helper)}; printf '\nnvidia_helper_contents() {{ :; }}\n';;
+    emitter-partial) /bin/cat {quote(helper)}; printf '\nnvidia_helper_contents() {{ declare -f nvidia_gpu_available; }}\n';;
+   library-missing) return 22;;
+   library-partial) /bin/cat {quote(helper)}; printf '\\nreturn 1\\n';;
+   library-malformed) printf 'function broken() {{\\n';;
+   library-exit) /bin/cat {quote(helper)}; printf '\\nexit 1\\n';;
+   library-exit-zero) /bin/cat {quote(helper)}; printf '\\nexit 0\\n';;
+   library-old-api) printf 'function nvidia_gpu_available() {{ return 0; }}\\nfunction check_nvidia_driver_status() {{ return 0; }}\\n';;
+   availability-exit) /bin/cat {quote(helper)}; printf '\\nfunction nvidia_gpu_available() {{ exit 1; }}\\n';;
+   *) /bin/cat {quote(helper)};; esac;;
  */gpu-intel.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-intel.func')};;
  */gpu-amd.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-amd.func')};; *) return 89;; esac; }}
 pveversion() {{ :; }}
+{'nvidia_validate_driver_version() { printf "stale-public\\n" >> "$NVIDIA_WORK/events"; }; nvidia_validate_cuda_version() { return 0; }; nvidia_select_gpu_minor() { printf 7; }; nvidia_lxc_passthrough() { return 0; }' if scenario.startswith('emitter-') else ':'}
 {startup}
 {operator_overrides}
 apply_usb_passthrough() {{ printf 'usb\\n' >> {quote(calls)}; }}
 passthrough_intel_to_lxc() {{ printf 'intel %s\\n' "$*" >> {quote(calls)}; }}
-install_intel_tools_in_ct() {{ printf 'intel-tools %s\\n' "$*" >> {quote(calls)}; }}
+install_intel_tools_in_ct() {{ printf 'intel-tools %s\\n' "$*" >> {quote(calls)}; {'return 45' if name == 'main-intel-tools-fail' else ':'}; }}
 passthrough_amd_to_lxc() {{ printf 'amd %s\\n' "$*" >> {quote(calls)}; }}
-install_amd_tools_in_ct() {{ printf 'amd-tools %s\\n' "$*" >> {quote(calls)}; }}
+install_amd_tools_in_ct() {{ printf 'amd-tools %s\\n' "$*" >> {quote(calls)}; {'return 46' if name == 'main-amd-tools-fail' else ':'}; }}
 pct() {{
  printf '%s\\n' "$*" >> {quote(calls)}
  case "$1" in
@@ -397,7 +488,9 @@ main
 printf 'operator-selection:%s:%s\\n' "${{SELECTED_FEATURES[*]}}" "$SELECTED_CTIDS"
 '''
     result = subprocess.run(['/bin/bash', '-c', code], text=True, input=answer, capture_output=True,
-                            timeout=20, env=dict(os.environ, NVIDIA_CASE=scenario, TERM='dumb'))
+                             timeout=20, env=dict(os.environ, NVIDIA_CASE=scenario, TERM='dumb'))
+    if name == 'main-probe-nv-usb':
+        (WORK / 'dev/ttyUSB0').unlink()
     effects = calls.read_text() if calls.exists() else ''
     actual_reboots = reboot_effects.read_text() if reboot_effects.exists() else ''
     final_state = (states / '987654').read_text()
@@ -407,18 +500,34 @@ printf 'operator-selection:%s:%s\\n' "${{SELECTED_FEATURES[*]}}" "$SELECTED_CTID
                                                         actual_reboots=actual_reboots,
                                                         state=final_state, reboot_count=reboot_count), indent=2))
     expected_status = 0 if name in ('main-ok', 'main-restart-eof', 'main-siblings', 'main-operator',
+                                   'main-missing-nv-usb', 'main-missing-nv-intel', 'main-partial-nv-amd',
+                                    'main-old-api-amd', 'main-exit-zero-intel',
+                                    'main-private-component', 'main-no-emitter-intel',
+                                    'main-emitter-fail-usb', 'main-emitter-exit-intel',
+                                   'main-malformed-nv-usb', 'main-exit-nv-intel', 'main-probe-nv-usb',
                                    'main-running-requested', 'main-stopped-requested') else {
-        'main-reboot-fail': 43, 'main-library-missing': 127, 'main-status-unknown': 65}.get(name, 1)
+        'main-reboot-fail': 43, 'main-status-unknown': 65}.get(name, 1)
     check(name + ' status', expected_status, result.returncode)
+    if name == 'main-private-component':
+        check(name + ' public function consumes private dependency/data', 'private-closure:owned-data\n',
+              (WORK / 'events').read_text() if (WORK / 'events').exists() else '')
+        check(name + ' actual caller reaches emitted component consumer', 'owned-passthrough 987654 7\n', effects)
+        check(name + ' reported configured after consumer', True, 'Updated:' in result.stdout)
+    if name.endswith('-selected') and (scenario.startswith('emitter-') or scenario == 'no-emitter'):
+        check(name + ' no stale public producer borrowed', False, (WORK / 'events').exists())
+        check(name + ' no config mutation', base + sections, conf.read_text())
+        check(name + ' clear unavailable diagnostic', True,
+              'NVIDIA helper' in result.stderr and ('unavailable' in result.stderr or 'API' in result.stderr))
     if name not in ('main-reboot-fail', 'main-multi', 'main-running-requested'):
         check(name + ' no unintended reboot', False, 'reboot ' in effects)
-    if scenario not in ('ok', 'second-fail'):
+    if scenario in ('query-fail', 'cancel', 'write-fail') or name in ('main-missing-nv-selected', 'main-partial-nv-selected'):
         check(name + ' no false Updated', False, 'Updated:' in result.stdout)
     if name == 'main-multi':
         check(name + ' only complete target rebooted', 'rebooted 987654\n', actual_reboots)
         check(name + ' failed target unchanged', base + sections, (conf.parent / '987655.conf').read_text())
     if name == 'main-query-fail':
-        check(name + ' failed producer stops selection', False, 'select\n' in (WORK / 'events').read_text())
+        check(name + ' failed producer stops selection', False,
+              'select\n' in ((WORK / 'events').read_text() if (WORK / 'events').exists() else ''))
     if name == 'main-mixed':
         check(name + ' retained changes are not denied', False, 'No passthrough applied.' in result.stderr)
     if name == 'main-siblings':
@@ -449,6 +558,14 @@ printf 'operator-selection:%s:%s\\n' "${{SELECTED_FEATURES[*]}}" "$SELECTED_CTID
         check(name + ' native config consumer receives selected minor', True,
               '/dev/nvidia7 dev/nvidia7 ' in conf.read_text().split('[pve:pending]')[0])
         check(name + ' pct list modeled, no reboot effect', ('list\n', ''), (effects, actual_reboots))
+    if name in ('main-intel-tools-fail', 'main-amd-tools-fail'):
+        check(name + ' known passthrough retained as partial', True, 'Partial changes retained' in result.stderr)
+        check(name + ' partial is not a completed target', False, 'Updated:' in result.stdout)
+        check(name + ' no state or reboot effects', False, 'status ' in effects or 'reboot ' in effects)
+    if name in ('main-missing-nv-selected', 'main-partial-nv-selected', 'main-library-missing',
+                'main-old-api-selected', 'main-exit-zero-selected'):
+        check(name + ' unavailable NVIDIA has no producer effects', False, (WORK / 'events').exists())
+        check(name + ' unavailable NVIDIA preserves config bytes', base + sections, conf.read_text())
 
 # Full startup/exit under a space/glob TMPDIR: no utility scratch is needed.
 # Preserve both shell-splitting lookalikes and pre-existing tmp.* user contents.
