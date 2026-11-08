@@ -25,7 +25,16 @@ def exercise_gpu_contract(source, work, run, check, base, sections):
 printf 'apt-get %s\n' "$*" >> "$GPU_TEST_ROOT/effects"
 case "$1" in
  update)
-  [[ "${GPU_TEST_UPDATE_RC:-0}" == 0 ]] || exit "$GPU_TEST_UPDATE_RC"
+   [[ "${GPU_TEST_UPDATE_RC:-0}" == 0 ]] || exit "$GPU_TEST_UPDATE_RC"
+   if [[ -n "${GPU_TEST_SECOND_UPDATE_TRANSIENT:-}" ]]; then
+    n=0; [[ ! -f "$GPU_TEST_SECOND_UPDATE_TRANSIENT" ]] || n=$(< "$GPU_TEST_SECOND_UPDATE_TRANSIENT")
+    printf '%s' "$((n + 1))" > "$GPU_TEST_SECOND_UPDATE_TRANSIENT"
+    if [[ "$n" == 1 ]]; then
+     printf 'Transient second-refresh failure; old indexes retained\n' >&2
+     [[ "$*" == *APT::Update::Error-Mode=any* ]] && exit 100
+     exit 0
+    fi
+   fi
   if [[ -n "${GPU_TEST_SOURCE_EDIT:-}" ]]; then printf '# concurrent operator edit\n' >> "$GPU_TEST_SOURCE_EDIT"; fi
   if [[ "${GPU_TEST_REFRESH_INDEX:-0}" == 1 ]]; then exec /usr/bin/apt-get "$@"; fi
   exit 0;;

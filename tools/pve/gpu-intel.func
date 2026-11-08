@@ -104,16 +104,72 @@ sub capture {
 }
 sub command { system(@_); exit(status()) if $?; }
 sub identity { return join(':', @_[0,1,2,3,4,5,7,9,10]); }
-sub read_file {
+sub binding {
     my ($path) = @_;
-    sysopen(my $fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or die "Cannot read APT source $path: $!\n";
+    my (@pending, @parts, @links, @dirs); @pending = split m{/}, $path;
+    my $hops = 0;
+    while (@pending) {
+        my $part = shift @pending;
+        next if $part eq '' || $part eq '.';
+        if ($part eq '..') { pop @parts; next; }
+        my $name = '/' . join('/', @parts, $part);
+        my @s = lstat($name); die "Cannot inspect APT source $path at $name: $!\n" if !@s;
+        if (S_ISLNK($s[2])) {
+            die "APT source alias cycle/depth: $path\n" if ++$hops > 40;
+            my $link = readlink($name); die "Cannot read APT source alias $name: $!\n" if !defined($link);
+            push @links, [$name, identity(@s), $link];
+            @parts = () if $link =~ m{^/};
+            unshift @pending, split m{/}, $link;
+        } else {
+            push @parts, $part;
+            if (@pending) {
+                die "Not an APT source directory: $name\n" if !S_ISDIR($s[2]);
+                push @dirs, [$name, join(':', @s[0,1,2,4,5])];
+            } else { die "Not a regular APT source: $path ($name)\n" if !S_ISREG($s[2]); }
+        }
+    }
+    return { target => '/' . join('/', @parts), links => \@links, dirs => \@dirs };
+}
+sub check_binding {
+    my ($path, $before) = @_;
+    for my $row (@{$before->{links}}) {
+        my ($name, $id, $link) = @$row; my @s = lstat($name);
+        die "APT source alias changed: $path ($name)\n" if !@s || !S_ISLNK($s[2])
+            || identity(@s) ne $id || readlink($name) ne $link;
+    }
+    for my $row (@{$before->{dirs}}) {
+        my ($name, $id) = @$row; my @s = lstat($name);
+        die "APT source directory changed: $path ($name)\n" if !@s || !S_ISDIR($s[2]) || join(':', @s[0,1,2,4,5]) ne $id;
+    }
+}
+sub read_regular {
+    my ($path) = @_;
+    my @named = lstat($path);
+    die "Not a regular APT source: $path\n" if !@named || !S_ISREG($named[2]);
+    # Linux O_PATH (asm-generic/fcntl.h) pins metadata without opening a device
+    # or FIFO for I/O if the pathname changes after lstat. Fcntl lacks O_PATH.
+    sysopen(my $pin, $path, 010000000 | O_NOFOLLOW) or die "Cannot pin APT source $path: $!\n";
+    my @pinned = stat($pin);
+    die "APT source changed before pinning $path\n" if !S_ISREG($pinned[2]) || identity(@pinned) ne identity(@named);
+    sysopen(my $fh, '/proc/' . $$ . '/fd/' . fileno($pin), O_RDONLY | O_NONBLOCK)
+        or die "Cannot read pinned APT source $path: $!\n";
     binmode($fh);
-    my @before = stat($fh); die "Not a regular APT source: $path\n" if !S_ISREG($before[2]);
-    local $/; my $raw = <$fh> // '';
+    my @before = stat($fh);
+    local $/; local $! = 0; my $raw = <$fh>;
+    die "Cannot read APT source $path: $!\n" if !defined($raw) && $!;
+    $raw //= '';
     my @after = stat($fh); close($fh) or die "Cannot close APT source $path: $!\n";
     my @now = lstat($path);
-    die "APT source changed while reading $path\n" if !@now || identity(@before) ne identity(@after) || identity(@before) ne identity(@now);
-    return { raw => $raw, stat => \@before, identity => identity(@before) };
+    die "APT source changed while reading $path\n" if !@now || identity(@pinned) ne identity(@before)
+        || identity(@before) ne identity(@after) || identity(@before) ne identity(@now);
+    return { raw => $raw, stat => \@before, identity => identity(@before), pin => $pin };
+}
+sub read_file {
+    my ($path) = @_;
+    my $bound = binding($path); my $read = read_regular($bound->{target});
+    check_binding($path, $bound);
+    die "APT source resolution changed: $path\n" if binding($path)->{target} ne $bound->{target};
+    return { %$read, %$bound };
 }
 sub paths {
     my %out;
@@ -144,7 +200,9 @@ sub recheck {
     die "APT source membership changed\n" if join("\0", source_files()) ne join("\0", @files);
     for my $path (@files) {
         my $current = read_file($path);
-        die "APT source changed: $path\n" if $current->{raw} ne $sources{$path}{raw} || $current->{identity} ne $sources{$path}{identity};
+        check_binding($path, $sources{$path});
+        die "APT source changed: $path\n" if $current->{raw} ne $sources{$path}{raw}
+            || $current->{identity} ne $sources{$path}{identity} || $current->{target} ne $sources{$path}{target};
     }
 }
 my $uris = capture('apt-get', '--print-uris', 'update');
@@ -271,17 +329,48 @@ for my $path (keys %proposed) {
 for my $path (sort keys %proposed) {
     recheck(); my $before = $sources{$path};
     die "Cannot preserve hardlinked APT source $path\n" if $before->{stat}[3] != 1;
-    my ($fh, $temporary) = tempfile('.gpu-intel-edit.XXXXXXXX', DIR => dirname($path), UNLINK => 1);
+    my $target = $before->{target};
+    die "Cannot publish multiply aliased APT source target $target (via $path)\n"
+        if grep { $_ ne $path && $sources{$_}{target} eq $target } @files;
+    # Never discard the original inode: an uncooperative editor may still hold
+    # it open after our final check. The private same-filesystem path is recovery
+    # custody, not an APT fragment or a claim of a cooperative transaction lock.
+    my $recovery = tempdir('.gpu-intel-recovery.XXXXXXXX', DIR => dirname($target), CLEANUP => 0);
+    my $saved = "$recovery/source";
+    my ($fh, $temporary) = tempfile('candidate.XXXXXXXX', DIR => $recovery, UNLINK => 1);
     close($fh) or die "Cannot close APT stage: $!\n";
-    command('cp', '--preserve=mode,ownership,timestamps,xattr', '--', $path, $temporary);
+    command('cp', '--preserve=mode,ownership,timestamps,xattr', '--', '/proc/' . $$ . '/fd/' . fileno($before->{pin}), $temporary);
     open($fh, '>:raw', $temporary) or die "Cannot write APT stage: $!\n";
     print {$fh} $proposed{$path} or die "Cannot write APT stage: $!\n";
     close($fh) or die "Cannot close APT stage: $!\n";
-    recheck(); rename($temporary, $path) or die "Cannot publish APT source $path: $!\n";
-    my $after = read_file($path);
-    die "APT source publication/readback uncertainty: $path\n" if $after->{raw} ne $proposed{$path}
-        || join(':', @{$after->{stat}}[2,4,5]) ne join(':', @{$before->{stat}}[2,4,5]);
-    $sources{$path} = $after;
+    recheck();
+    my $moved = 0;
+    eval {
+        rename($target, $saved) or die "Cannot retain publication-boundary source: $!\n"; $moved = 1;
+        my $original = read_regular($saved);
+        # Rename changes ctime; every other captured identity field and the
+        # actual displaced bytes must still agree with the pinned original.
+        my $same = sub {
+            my ($current) = @_;
+            return $current->{raw} eq $before->{raw}
+                && join(':', @{$current->{stat}}[0,1,2,3,4,5,7,9]) eq join(':', @{$before->{stat}}[0,1,2,3,4,5,7,9]);
+        };
+        die "Concurrent displaced APT source edit\n" if !$same->($original);
+        check_binding($path, $before);
+        link($temporary, $target) or die "No-clobber APT source publication refused: $!\n";
+        unlink($temporary) or die "Cannot release owned APT candidate name: $!\n";
+        my $after = read_file($path);
+        die "APT source publication/readback differs\n" if $after->{raw} ne $proposed{$path}
+            || join(':', @{$after->{stat}}[2,4,5]) ne join(':', @{$before->{stat}}[2,4,5]);
+        die "Concurrent original-inode APT source edit\n" if !$same->(read_regular($saved));
+        $sources{$path} = $after;
+        1;
+    } or do {
+        my $error = $@ || "Unknown publication error\n";
+        die "APT source publication uncertainty: $path; possible partial change; "
+            . ($moved ? "actual displaced inode retained for recovery at $saved; no automatic restore: " : "recovery directory $recovery: ") . $error;
+    };
+    warn "APT source updated: $path; original inode retained for recovery at $saved (operator-owned metadata, private directory; not automatically removed)\n";
 }
 capture('apt-get', '--print-uris', 'update'); recheck();
 PERL
@@ -307,7 +396,7 @@ function install_intel_tools_in_ct() {
   msg info "Installing Intel tools in CT $ctid..."
 
   if pct exec "$ctid" -- bash -c '
-      apt-get update -qq || exit $?
+      apt-get update -qq -o APT::Update::Error-Mode=any || exit $?
       DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" >/dev/null 2>&1 || exit $?
       for group in video render; do
         if adduser root "$group" >/dev/null 2>&1; then :; else

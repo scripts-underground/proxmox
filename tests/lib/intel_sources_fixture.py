@@ -167,7 +167,8 @@ def exercise_intel_sources(source, work, run, check, base, sections):
                     check(name + ' native consumer requests ' + part, True, f'/{suite}/{part}/' in consumer.stdout)
                 check(name + ' no fabricated foreign suite', False, 'bookworm' in consumer.stdout if suite != 'bookworm' else False)
                 check(name + ' no foreign source file injection', sorted(originals),
-                      sorted(str(p.relative_to(apt)) for p in apt.rglob('*') if p.is_file()))
+                       sorted(str(p.relative_to(apt)) for p in apt.rglob('*') if p.is_file()
+                              and not any(part.startswith('.gpu-intel-recovery.') for part in p.relative_to(apt).parts)))
                 check(name + ' source mode retained', 0o640, path.stat().st_mode & 0o777)
                 check(name + ' source xattr retained', b'operator ownership'.hex(), os.getxattr(path, 'user.fixture').hex())
                 if disabled:
@@ -188,3 +189,5 @@ def exercise_intel_sources(source, work, run, check, base, sections):
             path.chmod(0o640)
             subprocess.run(['mount', '--bind', str(work / 'apt'), '/etc/apt'], check=True, timeout=10)
             os.environ['APT_CONFIG'] = original_config
+    from intel_publication_fixture import exercise_intel_publication
+    exercise_intel_publication(source, work, run, check)

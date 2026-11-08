@@ -277,6 +277,12 @@ requests at native consumers, including disabled/folded entries, source options,
 operator-owned fragments, uid/gid/mode/xattr preservation and sufficient-source
 no-ops. Missing legacy files are valid; unreadable/malformed/concurrently edited
 sources and unavailable unchanged package requirements remain real error paths.
+Publication cases execute the same provider with native symlink/chain and
+hardlink no-op/edit inputs. Only rename/link boundaries are modeled for late
+in-place, replacement, new-path and already-open-original-inode edits. Consumers
+observe retained operator bytes/recovery inodes and no install after uncertainty;
+special/missing targets refuse without content I/O. A first-success/second-transient
+refresh model verifies both strict update options and no stale-index install.
 Activation cases distinguish an empty native list (no attached device program)
 from nonempty ineffectual entries and compare directory orders across that
 boundary. Source references are LXC 5/6/7 `cgfsng_devices_activate`, `parse.c`

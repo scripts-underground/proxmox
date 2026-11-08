@@ -433,8 +433,20 @@ metadata, not a legacy-file assumption or a fixed-release repository template.
 Only missing supported components are appended to active configured Debian/Ubuntu
 entries; URIs, suites, source options, disabled entries and operator fragments are
 preserved. Native APT validates the complete projection before publication, and
-each regular single-link source retains ownership/mode/xattrs through checked
-native metadata copying, concurrent-change checks and atomic file publication.
+source aliases are resolved with captured link/directory identities. A Linux
+metadata-only inode pin precedes regular-file byte reads; special targets are
+never opened for I/O. Sufficient sources may be symlinked or hardlinked. Needed
+edits preserve the alias and resolved target ownership/mode/xattrs; hardlinked
+write targets and multiply named source targets refuse with the exact path.
+Per-source publication moves the actual displaced inode into a private mode0700
+same-filesystem `.gpu-intel-recovery.XXXXXXXX/source`, checks its identity/bytes,
+and publishes with no-clobber link. Conflicts fail with possible partial-change
+and exact recovery-path diagnostics, without automatic restore over another
+writer. The original inode retains operator ownership/metadata even after success
+and is not automatically removed: an uncooperative editor may still hold it open.
+This bounded recovery custody does not promise a lock against other writers or
+an all-source transaction. Both index refreshes require Error-Mode=any before
+package installation, so a transient second refresh cannot admit stale indexes.
 Sufficient configured repository versions are a no-op; an installed-only package
 does not count as configured source support. Unknown/custom archives are
 not replaced with foreign repositories; real read/parse/update/package failures
