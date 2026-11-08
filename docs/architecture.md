@@ -259,7 +259,11 @@ before skipping or completing shutdown. Reboot eligibility is collected only
 after the completed outcome and owned-start cleanup, on a positively running CT
 with the existing marker. An initially stopped CT stays stopped; it is never
 started merely for reboot. Requested reboots revalidate running state immediately
-before the command. A target stopped since collection is skipped; failed/unknown
+before the command. Marker existence uses a guest POSIX-sh payload emitting the
+exact token present or absent with status0, separate from pct-exec transport status.
+Every nonzero transport status fails; empty/malformed/multiple output, trailing
+newlines and NUL bytes fail closed. Output is compared as data, never evaluated.
+A target stopped since collection is skipped; failed/unknown
 queries and reboot-command failures report their status and set ordinary failure.
 The final summary follows those outcomes, and the updater-75/first-admission/
 ordinary-failure priority is retained.

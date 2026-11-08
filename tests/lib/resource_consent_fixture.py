@@ -81,11 +81,12 @@ def case(name):
 bin_dir = W / 'bin'
 bin_dir.mkdir()
 model = '''#!/usr/bin/python3
-import json,os,pathlib,sys,time
+import json,os,pathlib,subprocess,sys,time
 c=pathlib.Path(os.environ['CASE_ROOT']); a=sys.argv[1:]; tool=pathlib.Path(sys.argv[0]).name
 with (c/'calls').open('a') as f: f.write(json.dumps([tool,*a])+'\\n')
 s=json.loads((c/'state').read_text()) if (c/'state').exists() else {}
 def save(): (c/'state').write_text(json.dumps(s,sort_keys=True))
+marker_script='if [ -e /var/run/reboot-required ]; then printf present; else printf absent; fi'
 if tool=='curl':
  if a[-1].endswith('/misc/core.func'): print((pathlib.Path(os.environ['SUBJECT_SOURCE'])/'misc/core.func').read_text())
  elif a[-1].endswith('/misc/bootstrap/pve'): print('load_functions; color; msg_info() { :; }; msg_ok() { printf "OK %s\\\\n" "$*"; }; msg_error() { printf "ERROR %s\\\\n" "$*"; }')
@@ -129,15 +130,24 @@ elif tool=='pct':
   elif cmd==['free','-m']:
    if ct.get('ram_fail'): sys.exit(45)
    print('              total used free\\nMem: '+str(ct['ram'])+' 0 0')
-  elif '-c' in cmd:
+  elif cmd==['sh','-c',marker_script] or cmd==['[','-e','/var/run/reboot-required',']']:
+   if ct.get('marker_fail'):sys.exit(64)
+   if ct.get('marker_status'):
+    payload=ct.get('marker_payload','');(c/'marker-response').write_text(payload);sys.stdout.write(payload);sys.exit(ct['marker_status'])
+   if 'marker_payload' in ct:
+    (c/'marker-response').write_text(ct['marker_payload']);sys.stdout.write(ct['marker_payload']);sys.exit(0)
+   if cmd[0]=='[':sys.exit(0 if ct.get('reboot_required') else 1)
+   marker=c/('guest-reboot-required-'+cid)
+   if ct.get('reboot_required'):marker.touch()
+   elif marker.exists():marker.unlink()
+   result=subprocess.run(['/bin/sh','-c',marker_script.replace('/var/run/reboot-required',str(marker))],capture_output=True,timeout=5)
+   (c/'marker-response').write_bytes(result.stdout);sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr);sys.exit(result.returncode)
+  elif '-c' in cmd and cmd[0] in ('bash','ash'):
    with (c/'software').open('a') as f: f.write(cid+'\\n')
    ct['update_done']=True
    if ct.get('update_stops'):ct['status']='stopped'
    save()
    sys.exit(ct.get('result',0))
-  elif cmd and cmd[0]=='[':
-   if ct.get('marker_fail'):sys.exit(64)
-   sys.exit(0 if ct.get('reboot_required') else 1)
   elif cmd==['hostname']:
    if ct.get('hostname_fail'):sys.exit(63)
    ct['queued']=True
@@ -625,6 +635,15 @@ reboot_case('prior75-reboot-fail', {'500': dict(result=75), '501': dict(reboot_f
             75, [], ['501'], targets='500,501', expected_updates=['500','501'], diagnostic='status 61')
 reboot_case('prior65-reboot-fail', {'500': dict(cpu='unknown'), '501': dict(reboot_fail=True)},
             65, [], ['501'], targets='500,501', answer=b'yes\n', expected_updates=['501'], diagnostic='status 61')
+reboot_case('marker-attach1', {'500': dict(marker_status=1)}, 1, [], [], diagnostic='status 1')
+reboot_case('marker-attach1-partial', {'500': dict(marker_status=1, marker_payload='present')}, 1, [], [], diagnostic='status 1')
+reboot_case('marker-other-error', {'500': dict(marker_status=55)}, 1, [], [], diagnostic='status 55')
+reboot_case('marker-present-data', {'500': dict(marker_payload='present')}, 0, ['500'], ['500'])
+reboot_case('marker-absent-data', {'500': dict(marker_payload='absent')}, 0, [], [])
+for label, payload in [('empty',''),('unknown','maybe'),('multiple','present\nabsent'),
+                       ('trailing-newline','present\n'),('absent-newline','absent\n'),
+                       ('space',' present'),('nul','present\0'),('repeated','presentpresent')]:
+    reboot_case('marker-malformed-' + label, {'500': dict(marker_payload=payload)}, 1, [], [], diagnostic='status 65')
 
 (W / 'checks.json').write_text(json.dumps(checks, indent=2))
 failures = sum(not v['passed'] for v in checks)

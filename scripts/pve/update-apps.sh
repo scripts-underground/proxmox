@@ -217,15 +217,34 @@ function read_batch_state() {
 
 # Eligibility belongs to the completed outcome, after any owned-start cleanup.
 function queue_container_reboot() {
-  local _qr_ct=$1 _qr_state _qr_hostname _qr_status
+  local _qr_ct=$1 _qr_state _qr_hostname _qr_stage _qr_marker _qr_status=0 _qr_cleanup
   _qr_state=$(read_batch_state "$_qr_ct") || return $?
   [[ "$_qr_state" == running ]] || return 0
-  if pct exec "$_qr_ct" -- [ -e /var/run/reboot-required ]; then
-    _qr_hostname=$(pct exec "$_qr_ct" hostname) || return $?
-    containers_needing_reboot+=("$_qr_ct ($_qr_hostname)")
+  _qr_stage=$(mktemp "${TMPDIR:-/tmp}/update-apps-marker.XXXXXXXX") || return $?
+  if pct exec "$_qr_ct" -- sh -c 'if [ -e /var/run/reboot-required ]; then printf present; else printf absent; fi' > "$_qr_stage"; then
+    # Validate raw bytes before command substitution can normalize newlines/NUL.
+    _qr_marker=$(perl -e '
+use strict; use warnings;
+open my $fh, "<", $ARGV[0] or die "marker open failed: $!";
+binmode $fh or die "marker mode failed: $!";
+my ($value, $tail);
+my $count = read($fh, $value, 8); defined($count) or die "marker read failed: $!";
+my $extra = read($fh, $tail, 1); defined($extra) or die "marker tail failed: $!";
+close $fh or die "marker close failed: $!";
+exit 65 unless $extra == 0 && $count > 0 && ($value eq "present" || $value eq "absent");
+print $value or die "marker output failed: $!";
+' "$_qr_stage") || _qr_status=$?
   else
     _qr_status=$?
-    [[ "$_qr_status" == 1 ]] || return "$_qr_status"
+  fi
+  if rm -f -- "$_qr_stage"; then :; else
+    _qr_cleanup=$?
+    [[ "$_qr_status" != 0 ]] || _qr_status=$_qr_cleanup
+  fi
+  [[ "$_qr_status" == 0 ]] || return "$_qr_status"
+  if [[ "$_qr_marker" == present ]]; then
+    _qr_hostname=$(pct exec "$_qr_ct" hostname) || return $?
+    containers_needing_reboot+=("$_qr_ct ($_qr_hostname)")
   fi
 }
 

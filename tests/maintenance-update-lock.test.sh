@@ -469,8 +469,19 @@ case "$tool:${1:-}" in
    elif [[ "$*" == 'exec '*' -- free -m' ]]; then
     fixture_cpu=8 fixture_ram=8192
     [[ ! -f "$CASE_ROOT/resource-config" ]] || read -r fixture_cpu fixture_ram < "$CASE_ROOT/resource-config"
-    printf 'total used free\\nMem: %s 0 0\\n' "$fixture_ram"; exit
+     printf 'total used free\\nMem: %s 0 0\\n' "$fixture_ram"; exit
+    fi
+   probe_script='if [ -e /var/run/reboot-required ]; then printf present; else printf absent; fi'
+   if [[ ( $# -eq 6 && "$4" == sh && "$5" == -c && "$6" == "$probe_script" ) || ( $# -eq 7 && "$4" == '[' && "$5" == -e && "$6" == /var/run/reboot-required && "$7" == ']' ) ]]; then
+    [[ "${MARKER_STATUS:-0}" == 0 ]] || exit "$MARKER_STATUS"
+    if [[ -n "${MARKER_PAYLOAD+x}" ]]; then printf '%s' "$MARKER_PAYLOAD"; exit 0; fi
+    if [[ "$4" == '[' ]]; then [[ "${MARKER_ABSENT:-0}" != 1 ]]; exit $?; fi
+    marker="$CASE_ROOT/guest-reboot-required-$2"
+    if [[ "${MARKER_ABSENT:-0}" == 1 ]]; then rm -f "$marker"; else : > "$marker"; fi
+    /bin/sh -c "${probe_script//\\/var\\/run\\/reboot-required/$marker}"
+    exit $?
    fi
+   [[ "${4:-}" != sh ]] || exit 97
   if [[ "$*" == *'-c '* ]]; then
    if [[ "$BATCH_RESULT" == busy ]]; then
     ROLE=update ACTION=plain ACTOR=Batch /bin/bash "$TEST_SCRIPT" --worker
@@ -512,14 +523,16 @@ INVENTORY
 esac
 '''
 for name in ('pct','vzdump','pvesh','curl','sleep','clear'):(batch_bin/name).write_text(model);(batch_bin/name).chmod(0o700)
-for result in ('busy','75','75-no-backup','mixed','41','0','running'):
+for result in ('busy','75','75-no-backup','mixed','41','0','running','running-absent','running-attach1','running-malformed'):
  c=case('batch-'+result);(c/'commands').touch();a=None
- if result=='running':(c/'power-500').write_text('running')
+ if result.startswith('running'):(c/'power-500').write_text('running')
  if result=='busy':a=start(c,action='hold-return');line(a[1])
- env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT='75' if result.startswith('75') else '0' if result=='running' else result,TMPDIR=str(c),FAIL_SET='1' if result=='75-set-failed' else '0',FAIL_START='1' if result=='75-start-failed' else '0',var_backup='no' if result=='75-no-backup' else 'yes',var_backup_storage='local',var_container='500,501' if result=='mixed' else '500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
+ env=dict(os.environ,PATH=str(batch_bin)+':'+os.environ['PATH'],CASE_ROOT=str(c),TEST_SCRIPT=str(script),TEST_ROOT=str(root),SUBJECT_CORE=core,NSAPP='lock-probe',APP='LockProbe',READY_FD='0',GATE_FD='0',BATCH_RESULT='75' if result.startswith('75') else '0' if result.startswith('running') else result,TMPDIR=str(c),FAIL_SET='1' if result=='75-set-failed' else '0',FAIL_START='1' if result=='75-start-failed' else '0',MARKER_STATUS='1' if result=='running-attach1' else '0',MARKER_ABSENT='1' if result=='running-absent' else '0',var_backup='no' if result=='75-no-backup' else 'yes',var_backup_storage='local',var_container='500,501' if result=='mixed' else '500',var_unattended='yes',var_skip_confirm='yes',var_auto_reboot='yes')
+ env.pop('MARKER_PAYLOAD',None)
+ if result=='running-malformed':env['MARKER_PAYLOAD']='present absent'
  p=command(['/bin/bash',os.environ.get('BATCH_SCRIPT',str(root/'scripts/pve/update-apps.sh'))],env=env,cwd=c)
  skipped=result=='busy' or result.startswith('75') or result=='mixed'
- (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();check(p.returncode==(75 if skipped else 1 if result=='41' else 0),'whole batch reports exact outcome '+result)
+ (c/'batch.log').write_bytes(p.stdout+p.stderr);trace=(c/'commands').read_text();check(p.returncode==(75 if skipped else 1 if result in ('41','running-attach1','running-malformed') else 0),'whole batch reports exact outcome '+result)
  if result=='busy' or result.startswith('75'):
   check(all(x not in trace for x in ('pct shutdown','pct stop','pct restore','pct reboot','reboot-required','pct set ')),'batch '+result+' leaves running resources/data alone after75')
   check('not updated' in p.stdout.decode() and 'temporarily unavailable/busy' in p.stderr.decode() and (c/'backup').exists()==(result!='75-no-backup'),'batch '+result+' reports honest skip and preserves actual backup presence')
@@ -527,6 +540,7 @@ for result in ('busy','75','75-no-backup','mixed','41','0','running'):
  elif result=='mixed':check('pct reboot' not in trace and 'pct shutdown 500' not in trace and (c/'power-501').read_text()=='stopped','batch keeps owned-start CT stopped before final partial75')
  elif result=='41':check('pct stop' in trace and 'pct restore' in trace,'ordinary non75 batch failure retains backup restore path')
  elif result=='running':check((c/'rebooted-500').read_text()=='rebooted' and 'pct shutdown' not in trace,'running requested reboot reaches stateful consumer')
+ elif result.startswith('running'):check(not (c/'rebooted-500').exists() and 'pct reboot' not in trace and (c/'power-500').read_text()=='running','marker transport/data outcome stays separate '+result)
  else:check('pct shutdown' in trace and 'pct set ' not in trace and 'pct reboot' not in trace and (c/'power-500').read_text()=='stopped','successful owned start stays stopped without resizing or invalid reboot')
  if a:check(finish(a,True)==0,'batch never disturbed real concurrent owner')
 
