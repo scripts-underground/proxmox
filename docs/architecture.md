@@ -201,7 +201,12 @@ their existing generation and caller defaults; this adds no framework refresh.
 
 The LXC entry captures app-supplied var_cpu/var_ram locally before defaults and
 menus. The pair is the script's resolved input at that point, not the eventual
-allocation. Initial and repair preparation pass it explicitly with the source ID.
+allocation. It passes the pair explicitly into build's internal `_lxc_setup`.
+The compatible `lxc_setup` wrapper supplies its caller's current declarations.
+Both source-update modes converge after profile loading and bind local
+LXC_REQUIRED_CPU/RAM fields from that pair before the public runner, so imported
+fields and profile mutations cannot replace source-owned requirements. Initial
+and repair preparation pass the same captured pair explicitly with the source ID.
 New update bundles always declare both LXC_REQUIRED_CPU and LXC_REQUIRED_RAM,
 empty when unknown, so ambient fields cannot supply missing provenance. Explicit
 zero remains zero; absent or invalid requirements require consent, never a zero
@@ -232,11 +237,26 @@ It never enters pre-update refusal cleanup. Final status prioritizes observed
 updater 75, then the first admission refusal/error, then the ordinary result.
 Successful-CT reboot handling and ordinary non-75 backup recovery remain separate;
 a restored failed update is not reported as an all-updated success.
-Backup recovery has one checked script-owned stop/config-storage/restore/start
-sequence. Each producer retains its native failure status; start is reached only
-after restore succeeds. Failed recovery stops the batch immediately and identifies
-the failed step/status without guessing resulting state. Existing backup selection
-and the final updater-75/first-admission/ordinary-failure priority are retained.
+The backup producer brackets its checked vzdump with selected-storage JSON content
+inventory through pvesh. Exactly one new typed CT backup, associated with the
+selected storage/CT and a unique token in the script-owned notes line, produces
+the per-CT receipt. A missing note is failure even if vzdump only warned and
+returned0. Duplicate, reused, ambiguous or foreign artifacts fail before software
+effects; old backups removed by configured retention are not new artifacts.
+Recovery revalidates that exact receipt before any stop and passes its literal
+storage volid, including PBS IDs, to pct restore. Destination rootfs storage stays
+separate. No latest/local glob, hook override or retention override is used.
+The JSON parser accepts only explicit inventory/select-new/verify-exact modes
+with checked arity; expected volume IDs are data and never select parser behavior.
+Backup recovery has one checked script-owned state/stop/config-storage/restore/start
+sequence. Stop is skipped only for a positively observed stopped CT; an actual
+stop must be followed by stopped-state readback. Each producer retains its native
+failure status; start is reached only after restore succeeds. Failed recovery
+stops the batch immediately and identifies the failed step/status without guessing
+resulting state. Owned-start cleanup runs synchronously after the selected outcome,
+never as a background shutdown competing with restore. It also verifies state
+before skipping or completing shutdown. Existing selected reboot handling and
+the final updater-75/first-admission/ordinary-failure priority are retained.
 One script-owned terminal selector applies that priority to every exit after batch
 work begins, including fatal backup, restoration and unrecoverable update failures.
 Those failures still abort at their original point; they do not advance to later

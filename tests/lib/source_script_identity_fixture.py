@@ -87,7 +87,7 @@ variables() {{
   var_cpu=99 var_ram=99999
 }}
 color() {{ :; }}; render_header() {{ :; }}; catch_errors() {{ :; }}
-lxc_setup() {{ printf '%s\\n' "$@" > {q(c / 'arguments')}; var_cpu=1 var_ram=1; }}
+_lxc_setup() {{ shift 2; printf '%s\\n' "$@" > {q(c / 'arguments')}; var_cpu=1 var_ram=1; }}
 complete_install() {{ printf complete > {q(c / 'complete')}; }}
 execute_optional_hook() {{ printf '%s\\n' "$*" >> {q(c / 'prebuild')}; }}
 msg_info() {{ :; }}; msg_ok() {{ :; }}; msg_error() {{ :; }}; msg_debug() {{ :; }}
@@ -340,6 +340,68 @@ exec /bin/bash {q(consumer)}''', answer)
           (c / 'captured').read_text() if (c / 'captured').exists() else '')
     check(label + ' actual app configuration unchanged', 'operator-config: retained\n', (c / 'app-data/config.json').read_text())
     check(label + ' requirement expression never executes', False, (c / 'BAD').exists())
+
+# Actual maintained source/footer/bootstrap/setup/runner, including profile input
+# mutation. Only context detection, profile and package/service APIs are modeled.
+for mode in ('silent', 'menu'):
+    for label, supplied, answer, expected, prompt in [
+        ('no', '', b'no\n', 1, True), ('eof', '', b'', 1, True),
+        ('yes', '', b'yes\n', 0, True), ('unknown-no', 'unset var_cpu var_ram', b'no\n', 1, True),
+        ('unknown-eof', 'unset var_cpu var_ram', b'', 1, True),
+        ('unknown-yes', 'unset var_cpu var_ram', b'yes\n', 0, True),
+        ('zero', 'var_cpu=0 var_ram=0', b'', 0, False), ('busy', '', b'yes\n', 75, False)]:
+        c = case('source-entry-' + mode + '-' + label)
+        core = (S / 'misc/core.func').read_text().replace('/var/lib/scripts-underground/update-pending', str(c / 'pending')).replace('/var/lib/scripts-underground/maintenance-locks', str(c / 'locks'))
+        (c / 'core.func').write_text(core)
+        setup = '\n'.join(function(build, n) for n in ('_lxc_bootstrap', 'lxc_setup', '_lxc_setup'))
+        (c / 'module').write_text(f'''source {q(c / 'core.func')}
+source {q(S / 'misc/error_handler.func')}
+source {q(S / 'misc/bundle.func')}
+load_functions
+{setup}
+variables() {{ NSAPP=alpine-grafana; var_cpu=99 var_ram=99999; }}
+color() {{ :; }}; render_header() {{ :; }}; header_info() {{ :; }}; cleanup_lxc() {{ :; }}
+msg_info() {{ :; }}; msg_ok() {{ :; }}; msg_warn() {{ :; }}
+ensure_profile_loaded() {{ var_cpu=0 var_ram=0 LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0; printf loaded > "$HOME/profile"; }}
+whiptail() {{ printf 1 >&3; }}
+nproc() {{ printf cpu >> "$HOME/probes"; printf '1\\n'; }}
+free() {{ printf ram >> "$HOME/probes"; printf 'total used free\\nMem: 8192 0 0\\n'; }}
+apk() {{ printf package >> "$HOME/software"; }}; rc-service() {{ printf service >> "$HOME/software"; }}
+''')
+        # Keep native shell/tool semantics. Model container context by omitting
+        # pveversion from a private PATH, as the native lock fixture does.
+        (c / 'bin').mkdir()
+        for name in ('bash', 'stat', 'flock', 'mkdir', 'rm', 'date', 'awk', 'grep',
+                     'sed', 'tr', 'dirname', 'basename', 'mktemp', 'tee', 'stty',
+                     'tput', 'hostname', 'ip', 'find', 'du', 'tail', 'cat', 'ps',
+                     'readlink', 'df'):
+            p = Path('/usr/bin') / name
+            if p.is_file():
+                (c / 'bin' / name).symlink_to(p)
+        declarations = (S / 'scripts/lxc/alpine-grafana.sh').read_text()
+        declarations = declarations[:declarations.index('function install_script() {')]
+        hook = function((S / 'scripts/lxc/alpine-grafana.sh').read_text(), 'update_script')
+        busy = f'''umask 077; mkdir -p {q(c / 'locks')}; exec {{held}}> {q(c / 'locks/alpine-grafana.lock')}; builtin command flock -n "$held";''' if label == 'busy' else ''
+        footer, = [line for line in (S / 'scripts/lxc/alpine-grafana.sh').read_text().splitlines() if line.startswith('source ') and '/misc/bootstrap/lxc' in line]
+        code = f'''set -euo pipefail
+{declarations}
+{supplied}
+{hook}
+curl() {{ case "${{!#}}" in */misc/bootstrap/lxc) /bin/cat {q(S / 'misc/bootstrap/lxc')};; */misc/build.func) /bin/cat {q(c / 'module')};; *) :;; esac; }}
+{('PHS_SILENT=1' if mode == 'silent' else 'unset PHS_SILENT')}
+export PATH={q(c / 'bin')}
+{busy}
+{footer}
+'''
+        # The same curl transport used by the actual footer loads our source-only
+        # module; the bootstrap file itself is literal repository content.
+        r = run(c, 'source-flow', code, answer)
+        check(mode + '/' + label + ' actual source entry status', expected, r.returncode)
+        check(mode + '/' + label + ' no package/service before source consent', expected == 0, (c / 'software').exists())
+        check(mode + '/' + label + ' source consent prompt', int(prompt), (r.stdout + r.stderr).count(b'Continue update'))
+        check(mode + '/' + label + ' profile path reached', True, (c / 'profile').exists())
+        if label == 'busy':
+            check(mode + '/busy fresh owner precedes any resource probe', False, (c / 'probes').exists())
 
 (W / 'checks.json').write_text(json.dumps(checks, sort_keys=True, indent=2))
 failures = sum(not d['passed'] for d in checks)

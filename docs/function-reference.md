@@ -94,6 +94,11 @@ framework descendant cannot inherit cleanup or another live pending obligation.
 It locally captures the optional fixed `--script-id <id> --` producer tuple
 before defaults; invalid/duplicate explicit tuples return 65 before setup.
 Legacy no-tuple calls retain their arguments and unknown identity.
+The entry also captures app CPU/RAM before defaults and passes the pair explicitly
+to internal `_lxc_setup`. Its compatible `lxc_setup` wrapper supplies current
+caller declarations. After profile loading, both source-update modes bind local
+LXC_REQUIRED_CPU/RAM from those inputs before the public update runner; imported
+fields and mutated defaults do not replace the captured pair.
 
 The public LXC `run_update_script` supplies literal `check_container_resources`
 preparation to `_run_update_script`. Option/key/fresh-lock admission precedes it;

@@ -122,14 +122,127 @@ function header_info {
 EOF
 }
 
-# Recovery is one checked sequence. A later successful command cannot hide an
-# earlier failure; backup selection remains the existing literal glob policy.
+# Parser operation is a closed literal mode, separate from all identity data.
+# Selection requires one new owned volume, not the newest matching filename.
+function backup_inventory_volid() {
+  perl -MJSON -e '
+use strict; use warnings;
+my $mode = shift @ARGV;
+eval {
+    my %arity = ("inventory" => 3, "select-new" => 5, "verify-exact" => 5);
+    die "invalid parser mode/arity" unless defined($mode) && exists($arity{$mode}) && @ARGV == $arity{$mode};
+    my ($before, $after, $store, $ct, $notes, $expected);
+    if ($mode eq "inventory") {
+        ($before, $store, $ct) = @ARGV; $after = $before;
+    } elsif ($mode eq "select-new") {
+        ($before, $after, $store, $ct, $notes) = @ARGV;
+    } else {
+        ($before, $store, $ct, $notes, $expected) = @ARGV; $after = $before;
+    }
+    my $load = sub {
+        my ($path) = @_;
+        open my $fh, "<", $path or die "cannot read inventory: $!";
+        local $/; my $data = decode_json(<$fh>); close $fh or die "inventory close: $!";
+        die "inventory is not an array" unless ref($data) eq "ARRAY";
+        my %rows;
+        for my $row (@$data) {
+            die "invalid inventory row" unless ref($row) eq "HASH";
+            for my $key (qw(volid vmid format content subtype)) {
+                die "missing/scalar inventory field $key" unless defined($row->{$key}) && !ref($row->{$key});
+            }
+            my $id = $row->{volid};
+            die "foreign or malformed volume" unless index($id, "$store:backup/") == 0 && $id !~ /[\s\x00-\x1f\x7f]/;
+            die "foreign CT/content" unless $row->{vmid} =~ /\A[1-9][0-9]*\z/ && $row->{vmid} eq $ct && $row->{content} eq "backup";
+            die "duplicate volume" if exists($rows{$id});
+            $rows{$id} = $row;
+        }
+        return \%rows;
+    };
+    my $old = $load->($before); my $new = $load->($after);
+    exit 0 if $mode eq "inventory";
+    my @ids = $mode eq "select-new" ? (grep { !exists($old->{$_}) } keys %$new) : ($expected);
+    die "expected exactly one newly created backup" unless @ids == 1;
+    my $id = $ids[0]; my $row = $new->{$id};
+    die "missing/foreign producer receipt" unless $row && $row->{subtype} eq "lxc" && defined($row->{notes}) && !ref($row->{notes}) && $row->{notes} eq $notes;
+    my $file = $id =~ /\A\Q$store\E:backup\/vzdump-lxc-\Q$ct\E-[0-9]{4}_[0-9]{2}_[0-9]{2}-[0-9]{2}_[0-9]{2}_[0-9]{2}\.tar\.zst\z/ && $row->{format} eq "tar.zst";
+    my $pbs = $id =~ /\A\Q$store\E:backup\/ct\/\Q$ct\E\/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z/ && $row->{format} eq "pbs-ct";
+    die "wrong CT backup type" unless $file || $pbs;
+    print $id;
+};
+if ($@) { print STDERR "Invalid backup receipt: $@\n"; exit 65; }
+' -- "$@"
+}
+
+function read_backup_inventory() {
+  pvesh get "/nodes/$NODE/storage/$1/content" --content backup --vmid "$2" --output-format json
+}
+
+function create_backup_receipt() {
+  local _cb_ct=$1 _cb_store=$2 _cb_stage=$3 _cb_notes=$4
+  read_backup_inventory "$_cb_store" "$_cb_ct" > "$_cb_stage/before" || return $?
+  backup_inventory_volid inventory "$_cb_stage/before" "$_cb_store" "$_cb_ct" > /dev/null || return $?
+  vzdump "$_cb_ct" --compress zstd --storage "$_cb_store" --notes-template "$_cb_notes" > "$_cb_stage/vzdump.log" 2>&1 || return $?
+  read_backup_inventory "$_cb_store" "$_cb_ct" > "$_cb_stage/after" || return $?
+  backup_inventory_volid select-new "$_cb_stage/before" "$_cb_stage/after" "$_cb_store" "$_cb_ct" "$_cb_notes"
+}
+
+function revalidate_backup_receipt() {
+  local _vr_ct=$1 _vr_stage _vr_status=0 _vr_cleanup
+  [[ "${batch_backup_ct:-}" == "$_vr_ct" && "${batch_backup_store:-}" == "$STORAGE_CHOICE" &&
+    -n "${batch_backup_volid:-}" && -n "${batch_backup_notes:-}" ]] || return 65
+  _vr_stage=$(mktemp -d "${TMPDIR:-/tmp}/update-apps-receipt.XXXXXXXX") || return $?
+  read_backup_inventory "$batch_backup_store" "$_vr_ct" > "$_vr_stage/current" || _vr_status=$?
+  if [[ "$_vr_status" == 0 ]]; then
+    backup_inventory_volid verify-exact "$_vr_stage/current" "$batch_backup_store" "$_vr_ct" "$batch_backup_notes" "$batch_backup_volid" > /dev/null || _vr_status=$?
+  fi
+  if rm -rf -- "$_vr_stage"; then :; else
+    _vr_cleanup=$?
+    [[ "$_vr_status" != 0 ]] || _vr_status=$_vr_cleanup
+  fi
+  return "$_vr_status"
+}
+
+function read_batch_state() {
+  local _rs_state
+  _rs_state=$(pct status "$1") || return $?
+  case "$_rs_state" in
+    'status: running') printf running ;;
+    'status: stopped') printf stopped ;;
+    *)
+      printf 'Unknown state for container %s: %s\n' "$1" "$_rs_state" >&2
+      return 69
+      ;;
+  esac
+}
+
+# Recovery consumes only this run's receipt, with checked ordered power effects.
 function restore_container_backup() {
-  local _rb_ct=$1 _rb_config _rb_storage _rb_status
-  if pct stop "$_rb_ct"; then :; else
+  local _rb_ct=$1 _rb_config _rb_storage _rb_status _rb_state
+  if revalidate_backup_receipt "$_rb_ct"; then :; else
     _rb_status=$?
-    printf 'Container %s backup recovery failed at stop (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    printf 'Container %s backup recovery failed at receipt (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
     return "$_rb_status"
+  fi
+  if _rb_state=$(read_batch_state "$_rb_ct"); then :; else
+    _rb_status=$?
+    printf 'Container %s backup recovery failed at state (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+    return "$_rb_status"
+  fi
+  if [[ "$_rb_state" == running ]]; then
+    if pct stop "$_rb_ct"; then :; else
+      _rb_status=$?
+      printf 'Container %s backup recovery failed at stop (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+      return "$_rb_status"
+    fi
+    if _rb_state=$(read_batch_state "$_rb_ct"); then :; else
+      _rb_status=$?
+      printf 'Container %s backup recovery failed at state (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
+      return "$_rb_status"
+    fi
+    [[ "$_rb_state" == stopped ]] || {
+      printf 'Container %s backup recovery failed at stopped readback (status 69).\n' "$_rb_ct" >&2
+      return 69
+    }
   fi
   if _rb_config=$(pct config "$_rb_ct"); then :; else
     _rb_status=$?
@@ -145,7 +258,7 @@ function restore_container_backup() {
     printf 'Container %s backup recovery failed at storage (status 65); inspect actual state.\n' "$_rb_ct" >&2
     return 65
   fi
-  if pct restore "$_rb_ct" /var/lib/vz/dump/vzdump-lxc-"${_rb_ct}"-*.tar.zst --storage "$_rb_storage" --force > /dev/null 2>&1; then :; else
+  if pct restore "$_rb_ct" "$batch_backup_volid" --storage "$_rb_storage" --force > /dev/null 2>&1; then :; else
     _rb_status=$?
     printf 'Container %s backup recovery failed at restore (status %s); inspect actual state.\n' "$_rb_ct" "$_rb_status" >&2
     return "$_rb_status"
@@ -273,14 +386,16 @@ function admit_batch_update() {
   fi
 }
 
-# Only a successfully owned pre-update start may be restored on admission refusal.
+# Only a successfully owned start may be restored on refusal or after an outcome.
 function restore_batch_start() {
-  local _bs_status
+  local _bs_state
   [[ "$batch_started" == 1 ]] || return 0
-  printf 'Restoring batch-started container %s to stopped state before update.\n' "$container" >&2
+  _bs_state=$(read_batch_state "$container") || return $?
+  [[ "$_bs_state" != stopped ]] || return 0
+  printf 'Restoring batch-started container %s to stopped state.\n' "$container" >&2
   pct shutdown "$container" --timeout 60 || return $?
-  _bs_status=$(pct status "$container") || return $?
-  [[ "$_bs_status" == 'status: stopped' ]] || return 69
+  _bs_state=$(read_batch_state "$container") || return $?
+  [[ "$_bs_state" == stopped ]] || return 69
 }
 
 function continue_batch_updates() {
@@ -309,16 +424,27 @@ function exit_batch_update() {
 }
 
 function backup_container() {
+  local _bc_ct=$1 _bc_store=$STORAGE_CHOICE _bc_stage _bc_token='' _bc_notes _bc_volid _bc_status=0 _bc_cleanup
+  batch_backup_ct='' batch_backup_store='' batch_backup_notes='' batch_backup_volid=''
   msg_info "Creating backup for container $1"
-  vzdump $1 --compress zstd --storage $STORAGE_CHOICE -notes-template "scripts-underground backup updater" > /dev/null 2>&1
-  status=$?
-
-  if [ $status -eq 0 ]; then
-    msg_ok "Backup created"
-  else
-    msg_error "Backup failed for container $1"
+  _bc_stage=$(mktemp -d "${TMPDIR:-/tmp}/update-apps-backup.XXXXXXXX") || _bc_status=$?
+  if [[ "$_bc_status" == 0 ]]; then
+    IFS= read -r _bc_token < /proc/sys/kernel/random/uuid || _bc_status=$?
+    _bc_notes="scripts-underground backup updater ct=$_bc_ct receipt=$_bc_token"
+    if [[ "$_bc_status" == 0 ]]; then
+      _bc_volid=$(create_backup_receipt "$_bc_ct" "$_bc_store" "$_bc_stage" "$_bc_notes") || _bc_status=$?
+    fi
+    if rm -rf -- "$_bc_stage"; then :; else
+      _bc_cleanup=$?
+      [[ "$_bc_status" != 0 ]] || _bc_status=$_bc_cleanup
+    fi
+  fi
+  if [[ "$_bc_status" != 0 ]]; then
+    msg_error "Backup failed for container $1 (status $_bc_status)"
     exit_batch_update 1 abort
   fi
+  batch_backup_ct=$_bc_ct batch_backup_store=$_bc_store batch_backup_notes=$_bc_notes batch_backup_volid=$_bc_volid
+  msg_ok "Backup created"
 }
 
 function get_backup_storages() {
@@ -502,6 +628,8 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
   batch_started=0
   admission_status=0
   admission_declined=0
+  batch_backup_ct='' batch_backup_store='' batch_backup_notes='' batch_backup_volid=''
+  abort_after_cleanup=0
   echo -e "${BL}[INFO]${CL} Updating container $container"
 
   if [ "$BACKUP_CHOICE" == "yes" ]; then
@@ -510,10 +638,10 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
 
   config=$(pct config "$container") || admission_status=$?
   os=$(awk '/^ostype/ {print $2}' <<< "$config")
-  status=$(pct status "$container") || admission_status=$?
+  status=$(read_batch_state "$container") || admission_status=$?
   template=false
   [[ "$config" != *'template:'* ]] || template=true
-  if [[ "$admission_status" == 0 && "$template" == false && "$status" == 'status: stopped' ]]; then
+  if [[ "$admission_status" == 0 && "$template" == false && "$status" == stopped ]]; then
     echo -e "${BL}[Info]${GN} Starting${BL} $container ${CL} \n"
     if pct start "$container"; then batch_started=1; else admission_status=$?; fi
     echo -e "${BL}[Info]${GN} Waiting For${BL} $container${CL}${GN} To Start ${CL} \n"
@@ -566,11 +694,6 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
     continue
   fi
 
-  if [ "$template" == "false" ] && [ "$status" == "status: stopped" ]; then
-    echo -e "${BL}[Info]${GN} Shutting down${BL} $container ${CL} \n"
-    pct shutdown $container &
-  fi
-
   if pct exec "$container" -- [ -e "/var/run/reboot-required" ]; then
     container_hostname=$(pct exec "$container" hostname)
     containers_needing_reboot+=("$container ($container_hostname)")
@@ -593,11 +716,15 @@ for ((batch_index = 0; batch_index < ${#batch_targets[@]}; batch_index++)); do
     normal_result=1
     msg_error "Update failed for container $container. Stopping"
     containers_not_attempted+=("${batch_targets[@]:batch_index+1}")
+    abort_after_cleanup=1
+  fi
+  if restore_batch_start; then :; else
+    cleanup_status=$?
+    printf 'Container %s: unable to restore batch-owned start (status %s); inspect its actual state.\n' "$container" "$cleanup_status" >&2
     exit_batch_update 1 abort
   fi
+  [[ "$abort_after_cleanup" != 1 ]] || exit_batch_update 1 abort
 done
-
-wait
 header_info
 if [[ "${#containers_skipped_temporary[@]}" -gt 0 || "$first_admission_status" != 0 || "$normal_result" != 0 ]]; then
   printf 'Batch partially complete; temporary/busy skips (not updated): %s; declined: %s; failed admission: %s; failed updates: %s; not attempted: %s.\n' "${containers_skipped_temporary[*]:-none}" "${containers_declined[*]:-none}" "${containers_admission_failed[*]:-none}" "${containers_update_failed[*]:-none}" "${containers_not_attempted[*]:-none}"

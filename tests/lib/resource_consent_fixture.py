@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shlex
 import subprocess
@@ -80,7 +81,7 @@ def case(name):
 bin_dir = W / 'bin'
 bin_dir.mkdir()
 model = '''#!/usr/bin/python3
-import json,os,pathlib,sys
+import json,os,pathlib,sys,time
 c=pathlib.Path(os.environ['CASE_ROOT']); a=sys.argv[1:]; tool=pathlib.Path(sys.argv[0]).name
 with (c/'calls').open('a') as f: f.write(json.dumps([tool,*a])+'\\n')
 s=json.loads((c/'state').read_text()) if (c/'state').exists() else {}
@@ -98,6 +99,8 @@ elif tool=='pct':
   print('ostype: debian\\ntags: community-script\\n'+('' if ct.get('recovery') and ct.get('restore_storage_missing') else 'rootfs: local:fixture\\n')+ct.get('config','cores: 1\\nmemory: 1024\\n'))
  elif op=='status':
   if ct.get('status_fail'): sys.exit(49)
+  if ct.get('update_done') and ct.get('recovery_state_fail'): sys.exit(56)
+  if ct.get('update_done') and ct.get('recovery_state_unknown'): print('status: unknown');sys.exit(0)
   print('status: '+ct['status'])
  elif op=='start':
   if ct.get('restoring') and ct.get('restore_start_fail'): sys.exit(51)
@@ -105,7 +108,11 @@ elif tool=='pct':
   ct['status']='running'; save()
  elif op=='shutdown':
   if ct.get('shutdown_fail'): sys.exit(50)
-  ct['status']='stopped'; save()
+  (c/'shutdown-inflight').write_text(cid)
+  if ct.get('delayed_shutdown'): time.sleep(.15)
+  s=json.loads((c/'state').read_text());ct=s[cid]
+  if not ct.get('shutdown_no_effect'): ct['status']='stopped'
+  save();(c/'shutdown-inflight').unlink()
  elif op=='pull': pathlib.Path(a[-1]).write_bytes((c/'bundle').read_bytes())
  elif op=='set': ct['config']='MUTATED '+repr(a); save()
  elif op=='exec':
@@ -118,6 +125,9 @@ elif tool=='pct':
    print('              total used free\\nMem: '+str(ct['ram'])+' 0 0')
   elif '-c' in cmd:
    with (c/'software').open('a') as f: f.write(cid+'\\n')
+   ct['update_done']=True
+   if ct.get('update_stops'):ct['status']='stopped'
+   save()
    sys.exit(ct.get('result',0))
   elif cmd and cmd[0]=='[': sys.exit(0 if ct.get('reboot_required') else 1)
   elif cmd==['hostname']: print('fixture')
@@ -125,17 +135,55 @@ elif tool=='pct':
  elif op=='stop':
   ct['recovery']=True; save()
   if ct.get('restore_stop_fail'):sys.exit(52)
-  ct['status']='stopped'; save()
+  if ct['status']=='stopped':sys.exit(57)
+  if not ct.get('stop_no_effect'):ct['status']='stopped'
+  save()
  elif op=='restore':
   if ct.get('restore_fail'):sys.exit(54)
+  if (c/'shutdown-inflight').exists():(c/'restore-raced-shutdown').write_text(cid)
+  rows=json.loads((c/'backups').read_text()) if (c/'backups').exists() else []
+  row=next((r for r in rows if r['volid']==a[2]),None)
+  path=c/('created-'+cid if row else 'old-local-data')
+  if path.exists():(c/'restored-data').write_bytes(path.read_bytes())
   ct['restoring']=True; save()
  elif op=='reboot': pass
  else: sys.exit(98)
 elif tool=='vzdump':
- if s.get(a[0],{}).get('backup_fail'): sys.exit(44)
+ cid=a[0];ct=s[cid]
+ if ct.get('backup_fail'): sys.exit(44)
  (c/'backup').write_text('retained')
+ store=a[a.index('--storage')+1];notes=a[a.index('--notes-template')+1] if '--notes-template' in a else 'legacy backup'
+ rows=json.loads((c/'backups').read_text()) if (c/'backups').exists() else []
+ old=dict(volid=store+':backup/vzdump-lxc-'+cid+'-2026_01_01-00_00_00.tar.zst',vmid=int(cid),format='tar.zst',content='backup',subtype='lxc',notes='old')
+ if not any(r['volid']==old['volid'] for r in rows):rows.append(old)
+ row=dict(old,volid=store+(':backup/ct/'+cid+'/2026-11-07T18:00:00Z' if store=='pbs' else ':backup/vzdump-lxc-'+cid+'-2026_11_07-18_00_00.tar.zst'),notes=notes,format='pbs-ct' if store=='pbs' else 'tar.zst')
+ fault=ct.get('backup_fault')
+ if fault=='reuse':row['volid']=old['volid'];rows=[r for r in rows if r['volid']!=old['volid']]
+ if fault in ('no-note','foreign-note'):row['notes']='' if fault=='no-note' else 'other producer'
+ if fault=='wrong-store':row['volid']='foreign:'+row['volid'].split(':',1)[1]
+ if fault=='wrong-ct':row['vmid']=int(cid)+1
+ if fault=='wrong-type':row['subtype']='qemu';row['format']='vma.zst'
+ if fault=='prune':rows=[]
+ if fault not in ('zero','pruned-new'):rows.append(row)
+ if fault=='multiple':rows.append(dict(row,volid=row['volid']+'-other'))
+ if fault=='duplicate':rows.append(dict(row))
+ (c/'backups').write_text(json.dumps(rows));(c/('created-'+cid)).write_text('NEW SELECTED BACKUP '+cid);(c/'old-local-data').write_text('OLD WRONG LOCAL BACKUP')
+elif tool=='pvesh':
+ cid=a[a.index('--vmid')+1];ct=s[cid];store=a[1].split('/storage/',1)[1].split('/')[0]
+ count=ct['inventory_calls']=ct.get('inventory_calls',0)+1;save()
+ if ct.get('inventory_fail')==count:sys.exit(55)
+ if ct.get('inventory_bad')==count:print('{');sys.exit(0)
+ rows=json.loads((c/'backups').read_text()) if (c/'backups').exists() else []
+ if count==1:
+  old=dict(volid=store+':backup/vzdump-lxc-'+cid+'-2026_01_01-00_00_00.tar.zst',vmid=int(cid),format='tar.zst',content='backup',subtype='lxc',notes='old')
+  if not any(r['volid']==old['volid'] for r in rows):rows.append(old)
+  (c/'backups').write_text(json.dumps(rows))
+ rows=[r for r in rows if r['vmid']==int(cid) or ct.get('backup_fault')=='wrong-ct']
+ if ct.get('update_done') and ct.get('receipt_removed'):rows=[]
+ if ct.get('update_done') and ct.get('receipt_changed'):rows=[dict(r,notes='changed') for r in rows]
+ print(json.dumps(rows))
 elif tool=='awk':
- if '/etc/pve/storage.cfg' in a: print('local')
+ if '/etc/pve/storage.cfg' in a: print('local\\nremote\\npbs')
  else: os.execv('/usr/bin/awk',['/usr/bin/awk',*a])
 elif tool in ['sleep','clear']: pass
 elif tool=='nproc':
@@ -146,7 +194,7 @@ elif tool=='free':
  print('              total used free\\nMem: '+os.environ.get('ACTUAL_RAM','1024')+' 0 0')
 else: sys.exit(98)
 '''
-for name in ('curl', 'pct', 'vzdump', 'sleep', 'clear', 'nproc', 'free', 'awk'):
+for name in ('curl', 'pct', 'vzdump', 'pvesh', 'sleep', 'clear', 'nproc', 'free', 'awk'):
     p = bin_dir / name
     p.write_text(model)
     p.chmod(0o755)
@@ -337,7 +385,7 @@ batch('pty-decline-continue', b'', (1, ['501'], 'stopped'), second=True,
       dialog=[(b'Continue update', b'no\n'), (b'Continue with the remaining', b'yes\n')])
 
 
-def priority_case(label, overrides, expected_status, expected_updates, answer=b'', backup='yes'):
+def priority_case(label, overrides, expected_status, expected_updates, answer=b'', backup='yes', storage='local', targets='500,501,502,503'):
     c = case('priority-' + label)
     state = {str(cid): dict(cpu=8, ram=8192, status='running',
                            config=f'operator-config: {cid}\n') for cid in (500, 501, 502, 503)}
@@ -348,7 +396,7 @@ def priority_case(label, overrides, expected_status, expected_updates, answer=b'
     (c / 'metadata').write_text(metadata)
     (c / 'bundle').write_bytes(identity_bundle.read_bytes())
     r = run(c, f'exec /bin/bash {q(S / "scripts/pve/update-apps.sh")}', answer,
-            dict(var_backup=backup, var_backup_storage='local', var_container='500,501,502,503',
+            dict(var_backup=backup, var_backup_storage=storage, var_container=targets,
                  var_unattended='yes', var_skip_confirm='yes', var_auto_reboot='yes',
                  REPO_BASE='https://fixture.invalid/batch'))
     calls = [json.loads(v) for v in (c / 'calls').read_text().splitlines()]
@@ -415,6 +463,91 @@ for step, fault, native in [('stop', 'restore_stop_fail', 52), ('config', 'resto
         selected = [v for v in calls if v[:2] in (['pct', 'stop'], ['pct', 'restore'], ['pct', 'start']) and v[2] == target]
         expected_ops = ['stop'] + (['restore'] if step in ('restore', 'start') else []) + (['start'] if step == 'start' else [])
         check(step + '/' + prior + ' exact recovery effects frontier', expected_ops, [v[1] for v in selected])
+
+# Exact producer association and an actual filesystem data consumer behind the
+# modeled PVE restore boundary. No native PVE archive/restore claim is made.
+for store, faults in [('remote', {}), ('pbs', {}), ('remote', {'backup_fault': 'prune'}),
+                      ('remote', {'status': 'stopped', 'delayed_shutdown': True}),
+                      ('remote', {'update_stops': True})]:
+    label = 'owned-' + store + '-' + ('-'.join(faults) or 'normal')
+    c, r, calls = priority_case(label, {'500': dict(result=41, **faults)}, 1, ['500'], storage=store, targets='500')
+    check(label + ' restore consumer reads newly created selected backup data', 'NEW SELECTED BACKUP 500',
+          (c / 'restored-data').read_text() if (c / 'restored-data').exists() else None)
+    restores = [v for v in calls if v[:2] == ['pct', 'restore']]
+    wanted = store + (':backup/ct/500/2026-11-07T18:00:00Z' if store == 'pbs' else ':backup/vzdump-lxc-500-2026_11_07-18_00_00.tar.zst')
+    check(label + ' literal exact typed backup argument', [wanted], [v[3] for v in restores])
+    check(label + ' no in-flight shutdown crosses restore', False, (c / 'restore-raced-shutdown').exists())
+    check(label + ' final initially owned state', 'stopped' if faults.get('status') == 'stopped' else 'running',
+          json.loads((c / 'state').read_text())['500']['status'])
+    if faults.get('update_stops'):
+        check(label + ' verified stopped skips native stop', [], [v for v in calls if v[:2] == ['pct', 'stop']])
+    check(label + ' backup hook and pruning options not overridden', [],
+          [a for v in calls if v[0] == 'vzdump' for a in v if a in ('--script', '--remove', '--prune-backups')])
+
+for fault in ('zero', 'pruned-new', 'reuse', 'no-note', 'foreign-note', 'wrong-store', 'wrong-ct', 'wrong-type', 'multiple', 'duplicate'):
+    c, r, calls = priority_case('receipt-' + fault, {'500': dict(backup_fault=fault)}, 1, [], storage='remote')
+    check(fault + ' invalid producer receipt precedes every CT mutation', [],
+          [v for v in calls if v[:2] in (['pct', 'start'], ['pct', 'stop'], ['pct', 'restore'], ['pct', 'shutdown'])])
+for field, count in [('inventory_fail', 1), ('inventory_fail', 2), ('inventory_bad', 1), ('inventory_bad', 2)]:
+    c, r, calls = priority_case(field + '-' + str(count), {'500': {field: count}}, 1, [], storage='remote')
+    check(field + str(count) + ' query/JSON failure prevents software', False, (c / 'software').exists())
+for field in ('receipt_removed', 'receipt_changed', 'recovery_state_fail', 'recovery_state_unknown'):
+    c, r, calls = priority_case(field, {'500': dict(result=41, **{field: True})}, 1, ['500'], storage='remote')
+    check(field + ' revalidation/query refusal before destructive effects', [],
+          [v for v in calls if v[:2] in (['pct', 'stop'], ['pct', 'restore'], ['pct', 'start'])])
+c, r, calls = priority_case('stop-not-stopped', {'500': dict(result=41, stop_no_effect=True)}, 1, ['500'], storage='remote')
+check('successful stop without stopped readback never restores', [], [v for v in calls if v[:2] == ['pct', 'restore']])
+c, r, calls = priority_case('shutdown-not-stopped', {'500': dict(status='stopped', shutdown_no_effect=True)}, 1, ['500'], storage='remote')
+check('successful shutdown without stopped readback aborts later targets', ['500'],
+      (c / 'software').read_text().splitlines() if (c / 'software').exists() else [])
+c, r, calls = priority_case('backup-stale-next', {'500': dict(result=41), '501': dict(backup_fault='zero')}, 1, ['500'], storage='remote')
+check('next CT cannot inherit previous successful receipt', ['500'], [v[2] for v in calls if v[:2] == ['pct', 'restore']])
+
+# Exercise the actual recovery/revalidation boundary with healthy backend rows
+# but a malformed expected identity. Identity bytes must never choose parser mode.
+batch_source = (S / 'scripts/pve/update-apps.sh').read_text()
+recovery_helpers = '\n'.join(re.search(r'(?ms)^function ' + name + r'\(\) \{\n.*?^\}$', batch_source).group()
+                             for name in ('backup_inventory_volid', 'read_backup_inventory', 'revalidate_backup_receipt', 'read_batch_state', 'restore_container_backup'))
+for identity in ('inventory-only', 'inventory', 'select-new', 'verify-exact'):
+    c = case('expected-identity-' + identity)
+    (c / 'state').write_text(json.dumps({'500': dict(cpu=8, ram=8192, status='running')}))
+    volid = 'remote:backup/vzdump-lxc-500-2026_11_07-18_00_00.tar.zst'
+    row = dict(volid=volid, vmid=500, format='tar.zst', content='backup', subtype='lxc', notes='fixture owned token')
+    (c / 'backups').write_text(json.dumps([row]))
+    code = prefix + recovery_helpers + f'''
+NODE=fixture STORAGE_CHOICE=remote
+batch_backup_ct=500 batch_backup_store=remote batch_backup_notes='fixture owned token'
+batch_backup_volid={q(identity)}
+if restore_container_backup 500; then rc=0; else rc=$?; fi
+exit "$rc"
+'''
+    r = run(c, code)
+    calls = [json.loads(v) for v in (c / 'calls').read_text().splitlines()]
+    check(identity + ' malformed expected identity returns65 through actual recovery', 65, r.returncode)
+    check(identity + ' malformed expected identity has no destructive frontier', [],
+          [v for v in calls if v[:2] in (['pct', 'stop'], ['pct', 'restore'], ['pct', 'start'])])
+    check(identity + ' malformed identity retains initial running state', 'running', json.loads((c / 'state').read_text())['500']['status'])
+
+c = case('parser-mode-contract')
+volid = 'remote:backup/vzdump-lxc-500-2026_11_07-18_00_00.tar.zst'
+(c / 'before').write_text('[]')
+(c / 'current').write_text(json.dumps([dict(volid=volid, vmid=500, format='tar.zst', content='backup', subtype='lxc', notes='token')]))
+for mode, args, output in [
+    ('inventory', [c / 'current', 'remote', '500'], ''),
+    ('select-new', [c / 'before', c / 'current', 'remote', '500', 'token'], volid),
+    ('verify-exact', [c / 'current', 'remote', '500', 'token', volid], volid),
+]:
+    command = 'backup_inventory_volid ' + ' '.join(q(v) for v in [mode, *args])
+    r = run(case('parser-mode-' + mode), prefix + recovery_helpers + '\n' + command)
+    check(mode + ' explicit parser mode native status', 0, r.returncode)
+    check(mode + ' explicit parser mode data output', output, r.stdout.decode())
+for index, args in enumerate([[], ['inventory-only', c / 'current', 'remote', '500'],
+             ['inventory', c / 'current', 'remote'], ['inventory', c / 'current', 'remote', '500', 'extra'],
+             ['select-new', c / 'before', c / 'current', 'remote', '500'],
+             ['verify-exact', c / 'current', 'remote', '500', 'token'],
+             ['verify-exact', c / 'current', 'remote', '500', 'token', volid, 'extra']]):
+    r = run(case('parser-invalid-' + str(index)), prefix + recovery_helpers + '\nbackup_inventory_volid ' + ' '.join(q(v) for v in args))
+    check('closed parser mode/arity refusal ' + repr(args), 65, r.returncode)
 
 (W / 'checks.json').write_text(json.dumps(checks, indent=2))
 failures = sum(not v['passed'] for v in checks)

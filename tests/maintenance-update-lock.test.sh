@@ -177,6 +177,7 @@ if [[ "${1:-}" == --worker ]]; then
       source "$CASE_ROOT/lxc-setup.func"
       curl() { :; }
       ensure_profile_loaded() { :; }
+      export var_cpu=0 var_ram=0
       whiptail() { printf 1 >&3; }
       [[ "$ROLE" != lxc-silent ]] || export PHS_SILENT=1
       lxc_setup "${@:2}"
@@ -340,8 +341,11 @@ check(run(c,role='prepare',action='prepare-exit0',extra={'_UPDATE_PENDING_FLAG':
 check(finish(a,True)==0,'foreign-refusal outer owner completes normally')
 
 # Real lxc_setup dispatch, extracted without its source-time host bootstrap.
-c=case('dispatch');text=(root/'misc/build.func').read_text();start_at=text.index('lxc_setup() {\n');end=text.index('\n}\n',start_at)+3
-(c/'lxc-setup.func').write_text(text[start_at:end])
+c=case('dispatch');text=(root/'misc/build.func').read_text();parts=[]
+for name in ('lxc_setup','_lxc_setup'):
+ if name+'() {\n' in text:
+  start_at=text.index(name+'() {\n');end=text.index('\n}\n',start_at)+3;parts.append(text[start_at:end])
+(c/'lxc-setup.func').write_text('\n'.join(parts))
 context_bin=c/'lxc-bin';context_bin.mkdir()
 for name in ('flock','stat','mkdir','date','tput','stty','bash','grep','tr','awk','hostname','ip'):
  target=command(['/bin/bash','-c','type -P "$1"','_',name]).stdout.decode().strip()
@@ -450,7 +454,7 @@ case "$tool:${1:-}" in
     *) [[ "${METADATA_FAIL:-0}" != 1 ]] || exit 47; if [[ -f "$CASE_ROOT/resource-source" ]]; then cat "$CASE_ROOT/resource-source"; else printf 'var_cpu="4"\\nvar_ram="4096"\\n'; fi ;;
   esac ;;
  pct:list) printf 'VMID Status Lock Name\\n500 stopped fixture\\n' ;;
- pct:status) printf 'status: stopped\\n' ;;
+ pct:status) printf 'status: %s\\n' "$(cat "$CASE_ROOT/power-$2" 2>/dev/null || printf stopped)" ;;
  pct:config)
   fixture_cpu=2 fixture_ram=1024
   [[ ! -f "$CASE_ROOT/resource-config" ]] || read -r fixture_cpu fixture_ram < "$CASE_ROOT/resource-config"
@@ -477,16 +481,33 @@ case "$tool:${1:-}" in
   fi
   [[ "${!#}" != hostname ]] || printf 'fixture\\n'
   ;;
- vzdump:*) printf 'backup retained\\n' > "$CASE_ROOT/backup" ;;
+ vzdump:*)
+   cid=$1; printf 'backup retained\\n' > "$CASE_ROOT/backup"
+   while (($#)); do
+    if [[ "$1" == --notes-template || "$1" == -notes-template ]]; then printf '%s' "$2" > "$CASE_ROOT/backup-note-$cid"; break; fi
+    shift
+   done
+   ;;
+ pvesh:*)
+   python3 - "$CASE_ROOT" "$@" <<'INVENTORY'
+import json,pathlib,sys
+c=pathlib.Path(sys.argv[1]);a=sys.argv[2:];cid=a[a.index('--vmid')+1]
+rows=[dict(volid='local:backup/vzdump-lxc-'+cid+'-2026_01_01-00_00_00.tar.zst',vmid=int(cid),format='tar.zst',content='backup',subtype='lxc',notes='old')]
+p=c/('backup-note-'+cid)
+if p.exists():rows.append(dict(rows[0],volid='local:backup/vzdump-lxc-'+cid+'-2026_11_07-18_00_00.tar.zst',notes=p.read_text()))
+print(json.dumps(rows))
+INVENTORY
+   ;;
  pct:set)
   [[ "${FAIL_SET:-0}" != 1 ]] || exit 47
   if [[ -f "$CASE_ROOT/resource-config" ]]; then printf '%s %s\\n' "$4" "$6" > "$CASE_ROOT/resource-config"; printf '%s %s\\n' "$4" "$6" >> "$CASE_ROOT/resource-sets"; fi ;;
- pct:start) [[ "${FAIL_START:-0}" != 1 ]] || exit 48 ;;
+ pct:start) [[ "${FAIL_START:-0}" != 1 ]] || exit 48; printf running > "$CASE_ROOT/power-$2" ;;
+ pct:stop | pct:shutdown) printf stopped > "$CASE_ROOT/power-$2" ;;
  pct:* | sleep:* | clear:*) : ;;
  *) exit 97 ;;
 esac
 '''
-for name in ('pct','vzdump','curl','sleep','clear'):(batch_bin/name).write_text(model);(batch_bin/name).chmod(0o700)
+for name in ('pct','vzdump','pvesh','curl','sleep','clear'):(batch_bin/name).write_text(model);(batch_bin/name).chmod(0o700)
 for result in ('busy','75','75-no-backup','mixed','41','0'):
  c=case('batch-'+result);(c/'commands').touch();a=None
  if result=='busy':a=start(c,action='hold-return');line(a[1])
