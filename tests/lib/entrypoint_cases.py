@@ -23,6 +23,8 @@ DIRECT = {
     'maintenance-current-hardening': [[]],
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
+    'migration-dragonfly': [[]],
+    'migration-dragonfly-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
     'romm-player-serving': [[], ['--setup']],
     'romm-live-verification': [[]],
@@ -54,7 +56,8 @@ class Entrypoints(unittest.TestCase):
         self.assertEqual(actual, declared)
         additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh',
                      'tests/maintenance-current-hardening.test.sh', 'tests/maintenance-cron-update.test.sh',
-                     'tests/maintenance-package-force.test.sh'}
+                     'tests/maintenance-package-force.test.sh',
+                     'tests/migration-dragonfly.test.sh', 'tests/migration-dragonfly-native.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -66,7 +69,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=5 shell=76 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=7 shell=78 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -107,7 +110,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
-        self.assertEqual(cases,97)
+        self.assertEqual(cases,99)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):
@@ -752,9 +755,27 @@ for i in range(2):
             try:return cli['main']()
             except AdmissionError:return 65
 
+    def test_dragonfly_delegation_requires_exact_native_scope(self):
+        from test_pve import admit_delegated,admit_scope
+        c,_,_=self.review_context('migration-dragonfly-native','live-runtime')
+        original=c.document;op=c.operation;root=Path('/').stat()
+        delegated=self.run_owner.directory/'dragonfly-delegation-model.json'
+        d=dict(schema=1,context_sha256=sha(self.context.path.read_bytes()),suite=op['suite'],mode=op['mode'],resource=op['nested'][0],
+               namespaces={k:os.readlink('/proc/self/ns/'+k) for k in ('mnt','pid','user')},root=[root.st_dev,root.st_ino],source=original['source']['tree_sha256'])
+        lineage=json.loads(Path(op['native']['lineage']).read_bytes())
+        def read(path):return {str(delegated):d,str(self.context.path):original,op['native']['lineage']:lineage}[str(path)]
+        with patch('test_pve.read_custody',side_effect=read),patch.dict(os.environ,SU_TEST_DELEGATION=str(delegated),TMPDIR=op['native']['receiver_tmpdir']):
+            admitted=admit_delegated(self.context.path,op['suite'],op['mode']);admit_scope(admitted,'delegated')
+            for key,value in [('suite','maintenance-kosmozoo-native'),('source','0'*64),('root',[0,0]),('namespaces',{})]:
+                saved=d[key];d[key]=value
+                with self.assertRaises(AdmissionError):admit_delegated(self.context.path,op['suite'],op['mode'])
+                d[key]=saved
+        print('DRAGONFLY_DELEGATION actual_source_namespace_root checks=5 custody=recording no_native_effects=1',flush=True)
+
     def test_review_actual_public_execution_routes(self):
         cases=[('codeberg-release','live','runtime'),('codeberg-release','bundle','runtime'),
                ('maintenance-kosmozoo-native','live-runtime','runtime'),
+               ('migration-dragonfly-native','live-runtime','runtime'),
                ('github-force-deploy','live-runtime','runtime'),('uv-project-version','live-runtime','runtime'),
                ('romm-player-serving','live-runtime','runtime'),('romm-player-serving','setup','runtime'),
                ('romm-live-verification','installed-probe','installed'),
@@ -779,12 +800,12 @@ for i in range(2):
                 with patch('entrypoint.command_for',return_value=['/bin/bash',str(self.source/REGISTRY[suite].path)]),patch('test_pve.admit_scope'),patch('test_pve.runtime_dispatch',side_effect=runtime),patch('test_pve.installed_dispatch',side_effect=installed),patch('subprocess.run',side_effect=process),patch.object(Context,'validate',return_value=c):
                     self.assertEqual(self.public_main(c),0)
                 self.assertEqual(events,[expected], 'public route escaped the source-owned effect owner')
-        print('PUBLIC_EXECUTION_ROUTES cases=15 codeberg_live=owned-runtime kosmozoo_native=owned-runtime effects=recording',flush=True)
+        print('PUBLIC_EXECUTION_ROUTES cases=16 codeberg_live=owned-runtime kosmozoo_native=owned-runtime dragonfly_native=owned-runtime effects=recording',flush=True)
 
     def test_review_preflight_precedes_run_and_public_check(self):
         from test_context import Resource
         from test_pve import runtime_dispatch,installed_dispatch
-        for suite,mode,consumer in [('maintenance-kosmozoo-native','live-runtime',runtime_dispatch),('github-force-deploy','live-runtime',runtime_dispatch),('codeberg-release','bundle',runtime_dispatch),('romm-live-verification','installed-probe',installed_dispatch)]:
+        for suite,mode,consumer in [('migration-dragonfly-native','live-runtime',runtime_dispatch),('maintenance-kosmozoo-native','live-runtime',runtime_dispatch),('github-force-deploy','live-runtime',runtime_dispatch),('codeberg-release','bundle',runtime_dispatch),('romm-live-verification','installed-probe',installed_dispatch)]:
             for action in ('consumer','public-run','public-check'):
                 with self.subTest(suite=suite,action=action):
                     c,parent,observed=self.review_context(suite,mode)
@@ -801,7 +822,7 @@ for i in range(2):
                     after=self.tree_state(parent)
                     self.assertEqual(before,after,'refusal created run lock/directory/receipt before native ownership preflight')
                     self.assertNotIn('CONTEXT_OK',out.getvalue())
-        print('NATIVE_BEFORE_EFFECTS cases=12 direct_publicrun_publiccheck locks_runs_publishers=0',flush=True)
+        print('NATIVE_BEFORE_EFFECTS cases=15 direct_publicrun_publiccheck locks_runs_publishers=0',flush=True)
 
     def test_review_bundle_bootstrap_and_publisher_phases_are_distinct(self):
         from test_context import Resource
