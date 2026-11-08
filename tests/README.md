@@ -230,6 +230,23 @@ Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
 inside the admitted project workspace before launching a test. Use the registered
 fixture route described above.
 
+The maintenance-silent NVIDIA child fixture executes the manual
+hardware tool's real startup, dispatch and helper bodies. It covers checked
+versions/consent, sparse device minors, selection refusal, device metadata,
+idempotent active config and truthful partial/reboot reporting. Installed native
+PVE parsing/serialization and config locking execute only after private binds
+cover `/etc/pve` and `/run/lock/lxc`. NVIDIA CLI/dialog outputs, CFS version/IPC and
+publication faults are models; private character nodes are never opened. Native
+roundtrips retain foreign pairs, pending and snapshots, and refuse parser-discarded
+or serializer-lost data before publication. This proves private config consumers,
+not physical GPU operation, real pmxcfs writes or PVE 8 runtime compatibility.
+One real operator-input path runs the actual feature/container prompts with sparse
+NVIDIA nodes and modeled pct list. Stateful reboot controls preserve stopped CTs,
+require positively running status, and observe the modeled reboot effect rather
+than only its request. A private space/glob TMPDIR canary preserves existing
+lookalikes, checks that startup adds no scratch artifacts, and traces the actual
+framework spinner EXIT cleanup without replacing it.
+
 The maintenance-silent source-identity fixture executes actual literal LXC
 footers, the bootstrap entry, initial/repair preparation, checked bundle writer
 and data-only batch reader. It observes llama-cpp/netvisor/scanopy source lookups

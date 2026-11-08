@@ -30,9 +30,6 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 set -euo pipefail
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf $TEMP_DIR' EXIT
-
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
 source <(wget -qO- "$REPO_BASE/tools/pve/gpu-nvidia.func")
@@ -78,7 +75,7 @@ function prompt_features() {
     echo " [2] Intel iGPU (VAAPI)"
     features+=("intel")
   fi
-  if [[ -e /dev/nvidia0 ]]; then
+  if nvidia_gpu_available; then
     echo " [3] NVIDIA GPU"
     features+=("nvidia")
   fi
@@ -151,59 +148,108 @@ EOF
 }
 
 function main() {
+  local api
+  for api in nvidia_gpu_available nvidia_validate_driver_version nvidia_validate_cuda_version nvidia_select_gpu_minor nvidia_lxc_passthrough; do
+    if ! declare -F "$api" > /dev/null; then
+      msg err "NVIDIA helper API unavailable: $api"
+      return 127
+    fi
+  done
   header_info
   prompt_features
   select_lxc_cts
 
-  local updated_cts=()
+  local updated_cts=() partial_cts=() failed_cts=() result=0 gpu_minor restart='' rc state
 
   for ctid in $SELECTED_CTIDS; do
     local conf="/etc/pve/lxc/${ctid}.conf"
     local updated=0
+    local failed=0
 
     for feature in "${SELECTED_FEATURES[@]}"; do
       case "$feature" in
         usb)
           msg info "Applying USB passthrough to CT $ctid..."
-          apply_usb_passthrough "$conf" && updated=1
+          if apply_usb_passthrough "$conf"; then updated=1; else failed=1; fi
           ;;
         intel)
           msg info "Applying Intel VAAPI passthrough to CT $ctid..."
-          passthrough_intel_to_lxc "$ctid" && install_intel_tools_in_ct "$ctid" && updated=1
+          if passthrough_intel_to_lxc "$ctid" && install_intel_tools_in_ct "$ctid"; then updated=1; else failed=1; fi
           ;;
         amd)
           msg info "Applying AMD GPU passthrough to CT $ctid..."
-          passthrough_amd_to_lxc "$ctid" && install_amd_tools_in_ct "$ctid" && updated=1
+          if passthrough_amd_to_lxc "$ctid" && install_amd_tools_in_ct "$ctid"; then updated=1; else failed=1; fi
           ;;
         nvidia)
           msg info "Checking NVIDIA GPU on host..."
-          check_nvidia_driver_status && check_cuda_version
-          gpu_minor=$(select_nvidia_gpu) || continue
-          passthrough_nvidia_to_lxc "$ctid" "$gpu_minor" && updated=1
+          if ! nvidia_validate_driver_version; then
+            failed=1
+          elif ! nvidia_validate_cuda_version; then
+            failed=1
+          elif ! gpu_minor=$(nvidia_select_gpu_minor); then
+            failed=1
+          elif nvidia_lxc_passthrough "$ctid" "$gpu_minor"; then
+            updated=1
+          else
+            failed=1
+          fi
           ;;
       esac
     done
 
-    if [[ "$updated" -eq 1 ]]; then
+    if [[ "$failed" == 1 ]]; then
+      result=1
+      failed_cts+=("$ctid")
+      [[ "$updated" == 0 ]] || partial_cts+=("$ctid")
+    elif [[ "$updated" -eq 1 ]]; then
       updated_cts+=("$ctid")
     fi
   done
 
   echo
+  if [[ ${#failed_cts[@]} -gt 0 ]]; then
+    msg warn "Failed or declined hardware integration: ${failed_cts[*]}"
+  fi
+  if [[ ${#partial_cts[@]} -gt 0 ]]; then
+    msg warn "Partial changes retained; automatic restart skipped: ${partial_cts[*]}"
+  fi
   if [[ ${#updated_cts[@]} -gt 0 ]]; then
     msg ok "Updated: ${updated_cts[*]}"
-    read -rp "Restart updated container(s)? [y/N]: " restart
+    read -rp "Restart updated container(s)? [y/N]: " restart || restart=''
     if [[ "${restart,,}" == "y" ]]; then
       for ctid in "${updated_cts[@]}"; do
-        pct reboot "$ctid"
-        msg ok "Restarted container $ctid"
+        if state=$(pct status "$ctid"); then
+          case "$state" in
+            'status: running')
+              if pct reboot "$ctid"; then
+                msg ok "Restarted container $ctid"
+              else
+                rc=$?
+                msg err "Restart failed for container $ctid (status $rc)"
+                [[ "$result" != 0 ]] || result=$rc
+              fi
+              ;;
+            'status: stopped')
+              msg info "Container $ctid is stopped; configuration applies on next start."
+              ;;
+            *)
+              msg err "Unknown state for container $ctid; restart skipped"
+              [[ "$result" != 0 ]] || result=65
+              ;;
+          esac
+        else
+          rc=$?
+          msg err "State query failed for container $ctid (status $rc); restart skipped"
+          [[ "$result" != 0 ]] || result=$rc
+        fi
       done
     else
-      msg info "Manual restart required for: ${updated_cts[*]}"
+      msg info "Configuration applies on the next start or restart for: ${updated_cts[*]}"
     fi
   else
-    msg warn "No passthrough applied."
+    msg warn "No container completed hardware integration."
   fi
+  return "$result"
 }
 
 # framework bootstrap

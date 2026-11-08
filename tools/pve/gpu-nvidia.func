@@ -27,41 +27,73 @@ function nvidia_check_driver_installed() {
 }
 
 function nvidia_get_driver_version() {
-  nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2> /dev/null | head -n1
+  local output line version=''
+  if output=$(LC_ALL=C nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits); then :; else return $?; fi
+  while IFS= read -r line; do
+    if [[ ! "$line" =~ ^[[:space:]]*([0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?)[[:space:]]*$ ]]; then
+      msg err "Invalid NVIDIA driver version output"
+      return 65
+    fi
+    line=${BASH_REMATCH[1]}
+    if [[ -n "$version" && "$version" != "$line" ]]; then
+      msg err "Ambiguous NVIDIA driver versions"
+      return 65
+    fi
+    version=$line
+  done <<< "$output"
+  printf '%s' "$version"
 }
 
 function nvidia_get_cuda_version() {
-  nvidia-smi --query-gpu=cuda_version --format=csv,noheader,nounits 2> /dev/null | head -n1
+  local output line version='' count=0
+  if output=$(LC_ALL=C nvidia-smi -q); then :; else return $?; fi
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*CUDA[[:space:]]+(UMD[[:space:]]+)?Version[[:space:]]*:[[:space:]]*(.*)$ ]] || continue
+    line=${BASH_REMATCH[2]}
+    if [[ ! "$line" =~ ^([0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?)[[:space:]]*$ ]]; then
+      msg err "Invalid NVIDIA CUDA driver capability"
+      return 65
+    fi
+    version=${BASH_REMATCH[1]}
+    count=$((count + 1))
+  done <<< "$output"
+  if [[ "$count" != 1 ]]; then
+    msg err "Missing or ambiguous NVIDIA CUDA driver capability"
+    return 65
+  fi
+  printf '%s' "$version"
 }
 
 function nvidia_validate_driver_version() {
   if ! nvidia_check_driver_installed; then
-    msg err "NVIDIA drivers not found"
-    nvidia_exit
+    msg err "nvidia-smi not found; install host drivers separately"
+    return 127
   fi
-  local ver major
-  ver=$(nvidia_get_driver_version)
+  local ver major confirm=''
+  if ver=$(nvidia_get_driver_version); then :; else return $?; fi
   major=${ver%%.*}
-  if ((major < 500)); then
+  if ((10#$major < 500)); then
     msg warn "Detected old NVIDIA driver version: $ver"
-    read -rp "Continue anyway? [y/N]: " confirm
-    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || nvidia_exit
+    read -rp "Continue anyway? [y/N]: " confirm || confirm=''
+    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || return 1
   fi
+  return 0
 }
 
 function nvidia_validate_cuda_version() {
   if ! nvidia_check_driver_installed; then
-    msg err "NVIDIA drivers not found"
-    nvidia_exit
+    msg err "nvidia-smi not found; install host drivers separately"
+    return 127
   fi
-  local ver major
-  ver=$(nvidia_get_cuda_version)
+  local ver major confirm=''
+  if ver=$(nvidia_get_cuda_version); then :; else return $?; fi
   major=${ver%%.*}
-  if ((major < 11)); then
-    msg warn "Detected old CUDA version: $ver"
-    read -rp "Continue anyway? [y/N]: " confirm
-    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || nvidia_exit
+  if ((10#$major < 11)); then
+    msg warn "Detected old CUDA driver capability: $ver (not an installed toolkit)"
+    read -rp "Continue anyway? [y/N]: " confirm || confirm=''
+    [[ "${confirm,,}" =~ ^(y|yes)$ ]] || return 1
   fi
+  return 0
 }
 
 function nvidia_setup_kernel_modules() {
@@ -79,30 +111,75 @@ EOF
   msg warn "Reboot the host to apply kernel changes"
 }
 
+function nvidia_valid_minor() {
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,6})$ ]] && ((10#$1 <= 1048575))
+}
+
+function nvidia_gpu_available() {
+  local device
+  for device in /dev/nvidia[0-9]*; do
+    [[ "$device" =~ ^/dev/nvidia[0-9]+$ && -c "$device" ]] && return 0
+  done
+  return 1
+}
+
 function nvidia_select_gpu_minor() {
-  local menu=() max=0
-  while IFS= read -r path; do
-    local dev="${path##*/}"
-    local info="/proc/driver/nvidia/gpus/${dev}/information"
-    [[ -f "$info" ]] || continue
-    local model minor
-    model=$(awk -F': ' '/Model:/ {print $2}' "$info")
-    minor=$(awk '/Device Minor/ {print $NF}' "$info")
+  local menu=() max=0 info record line model minor selected rc models minors
+  local -A seen=()
+  if [[ ! -d /proc/driver/nvidia/gpus || ! -r /proc/driver/nvidia/gpus || ! -x /proc/driver/nvidia/gpus ]]; then
+    msg err "NVIDIA GPU inventory is unavailable"
+    return 1
+  fi
+  # Directory/record enumeration is shell-owned: no unchecked process substitution.
+  for info in /proc/driver/nvidia/gpus/*; do
+    [[ -e "$info" || -L "$info" ]] || continue
+    [[ -d "$info" ]] || continue
+    if record=$(cat "$info/information"); then :; else return $?; fi
+    model='' minor='' models=0 minors=0
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^Model:[[:space:]]*(.+)$ ]]; then
+        model=${BASH_REMATCH[1]} models=$((models + 1))
+      elif [[ "$line" =~ ^Device[[:space:]]Minor:[[:space:]]*(.*)$ ]]; then
+        minor=${BASH_REMATCH[1]} minors=$((minors + 1))
+      fi
+    done <<< "$record"
+    if [[ "$models" != 1 || "$minors" != 1 ]] || ! nvidia_valid_minor "$minor" || [[ -n "${seen[$minor]:-}" ]]; then
+      msg err "Invalid or duplicate NVIDIA GPU record: $info/information"
+      return 65
+    fi
+    seen[$minor]=1
     menu+=("$minor" "$model" "OFF")
-    ((${#model} > max)) && max=${#model}
-  done < <(find /proc/driver/nvidia/gpus -mindepth 1 -type d)
-
-  [[ ${#menu[@]} -eq 0 ]] && msg err "No NVIDIA GPU found" && return 1
-  [[ ${#menu[@]} -eq 3 ]] && printf "%s" "${menu[0]}" && return
-
-  whiptail --title "NVIDIA GPU Selection" --radiolist \
-    "Select GPU for passthrough:" 15 $((max + 40)) 6 \
-    "${menu[@]}" 3>&1 1>&2 2>&3
+    ((${#model} <= max)) || max=${#model}
+  done
+  if [[ ${#menu[@]} == 0 ]]; then
+    msg err "No NVIDIA GPU found"
+    return 1
+  elif [[ ${#menu[@]} == 3 ]]; then
+    selected=${menu[0]}
+  elif selected=$(whiptail --title "NVIDIA GPU Selection" --radiolist \
+    "Select GPU for passthrough:" 15 $((max + 40)) 6 "${menu[@]}" 3>&1 1>&2 2>&3); then
+    :
+  else
+    rc=$?
+    if [[ "$rc" == 1 || "$rc" == 255 ]]; then
+      msg warn "NVIDIA GPU selection cancelled"
+      return 1
+    fi
+    return "$rc"
+  fi
+  if ! nvidia_valid_minor "$selected" || [[ -z "${seen[$selected]:-}" ]]; then
+    msg err "Invalid NVIDIA GPU selection"
+    return 65
+  fi
+  printf '%s' "$selected"
 }
 
 function nvidia_lxc_passthrough() {
-  local ctid="$1" minor="$2"
-  local conf="/etc/pve/lxc/${ctid}.conf"
+  if [[ $# != 2 || ! "$1" =~ ^[1-9][0-9]{2,8}$ ]] || ! nvidia_valid_minor "${2:-}"; then
+    msg err "Invalid NVIDIA container ID or device minor"
+    return 65
+  fi
+  local ctid="$1" minor="$2" dev numbers major_hex minor_hex major rc n
   local devices=(
     "/dev/nvidia${minor}"
     "/dev/nvidiactl"
@@ -110,19 +187,174 @@ function nvidia_lxc_passthrough() {
     "/dev/nvidia-uvm-tools"
   )
 
-  local devnums=()
+  local entries=() devnums=()
   for dev in "${devices[@]}"; do
-    [[ -e "$dev" ]] || continue
-    local major_hex
-    major_hex=$(stat -c '%t' "$dev")
-    devnums+=($((16#$major_hex)))
-    echo "lxc.mount.entry: $dev ${dev##*/} none bind,optional,create=file" >> "$conf"
+    if [[ ! -e "$dev" && ! -L "$dev" && "$dev" == /dev/nvidia-uvm* ]]; then continue; fi
+    if [[ ! -c "$dev" ]]; then
+      msg err "NVIDIA character device unavailable: $dev"
+      return 69
+    fi
+    if numbers=$(stat -Lc '%t:%T' "$dev"); then :; else return $?; fi
+    if [[ ! "$numbers" =~ ^([[:xdigit:]]{1,8}):([[:xdigit:]]{1,8})$ ]]; then
+      msg err "Invalid NVIDIA device numbers: $dev"
+      return 65
+    fi
+    major_hex=${BASH_REMATCH[1]} minor_hex=${BASH_REMATCH[2]}
+    major=$((16#$major_hex))
+    if ((major == 0 || major > 4095 || 16#$minor_hex > 1048575)); then
+      msg err "Out-of-range NVIDIA device numbers: $dev"
+      return 65
+    fi
+    if [[ "$dev" == "/dev/nvidia${minor}" ]] && ((16#$minor_hex != 10#$minor)); then
+      msg err "NVIDIA device minor changed: $dev"
+      return 65
+    fi
+    devnums+=("$major")
+    entries+=("lxc.mount.entry" "$dev dev/${dev##*/} none bind,optional,create=file")
   done
-
-  echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir" >> "$conf"
-
+  entries+=("lxc.mount.entry" "/dev/dri dev/dri none bind,optional,create=dir")
   for n in "${devnums[@]}"; do
-    echo "lxc.cgroup2.devices.allow: c ${n}:* rwm" >> "$conf"
+    entries+=("lxc.cgroup2.devices.allow" "c ${n}:* rwm")
   done
-  msg ok "Installed NVIDIA GPU tools in $ctid"
+
+  # Native PVE owns locking, parsing and publication. Never append after snapshots.
+  if perl -MPVE::LXC::Config -MPVE::Cluster -MPVE::Tools -MStorable=dclone - "$ctid" "${entries[@]}" << 'PERL'; then
+use strict;
+use warnings;
+my $ctid = shift @ARGV;
+my @wanted;
+while (@ARGV) { push @wanted, [shift @ARGV, shift @ARGV]; }
+my $attempted = 0;
+sub difference {
+    my ($a, $b, $path) = @_;
+    return $path if ref($a) ne ref($b);
+    if (ref($a) eq 'HASH') {
+        my %keys = map { $_ => 1 } (keys %$a, keys %$b);
+        for my $key (sort keys %keys) {
+            return "$path/$key" if !exists($a->{$key}) || !exists($b->{$key});
+            my $bad = difference($a->{$key}, $b->{$key}, "$path/$key");
+            return $bad if defined($bad);
+        }
+    } elsif (ref($a) eq 'ARRAY') {
+        return $path if @$a != @$b;
+        for my $i (0 .. $#$a) {
+            my $bad = difference($a->[$i], $b->[$i], "$path/$i");
+            return $bad if defined($bad);
+        }
+    } else {
+        return $path if defined($a) != defined($b) || (defined($a) && "$a" ne "$b");
+    }
+    return undef;
+}
+sub semantic {
+    my ($conf) = @_;
+    my $copy = dclone($conf);
+    delete $copy->{digest};
+    return $copy;
+}
+sub same {
+    my ($expected, $actual, $label) = @_;
+    my $bad = difference(semantic($expected), semantic($actual), 'config');
+    die "$label would change $bad\n" if defined($bad);
+}
+sub strict_config {
+    my ($file, $raw) = @_;
+    # Audit only constructs the native parser discards; native parsing owns meaning.
+    my ($section, %headers, %singletons) = ('');
+    for my $line (split /\n/, $raw) {
+        next if $line =~ /^\s*$/ || $line =~ /^#/;
+        if ($line =~ /^\[([^\]]+)\]\s*$/) {
+            $section = lc($1) eq 'pve:pending' ? 'pve:pending' : $1;
+            die "Duplicate config section $section\n" if $headers{$section}++;
+        } elsif ($line =~ /snapstate:\s*(prepare|delete)\s*$/ && $section eq '') {
+            die "Active snapstate cannot be preserved by the native parser\n";
+        } elsif ($line =~ /^([a-z][a-z_]*\d*):/ && $1 ne 'description') {
+            die "Duplicate setting $section/$1\n" if $singletons{$section}{$1}++;
+        }
+    }
+    return PVE::LXC::Config::parse_pct_config($file, $raw, 1);
+}
+sub roundtrip {
+    my ($file, $conf) = @_;
+    my $copy = dclone($conf);
+    my $raw = PVE::LXC::Config::write_pct_config($file, $copy);
+    same($conf, $copy, 'Native serializer');
+    same($conf, strict_config($file, $raw), 'Native roundtrip');
+}
+sub mount_key {
+    my ($value) = @_;
+    my @fields = split /\s+/, $value;
+    return '' if @fields < 4;
+    my $extra = join ' ', @fields[4 .. $#fields];
+    return '' if @fields > 4 && $extra !~ /^0(?: 0)?$/;
+    return join ' ', @fields[0 .. 2], join(',', sort split /,/, $fields[3]);
+}
+eval {
+    PVE::LXC::Config->lock_config($ctid, sub {
+        PVE::Cluster::cfs_update(1);
+        my $file = '/etc/pve/' . PVE::LXC::Config->cfs_config_path($ctid);
+        my $raw = PVE::Tools::file_get_contents($file);
+        my $conf = strict_config($file, $raw);
+        my $loaded = PVE::LXC::Config->load_config($ctid);
+        die "CFS/raw config digest mismatch\n" if $loaded->{digest} ne $conf->{digest};
+        same($conf, $loaded, 'CFS load');
+        PVE::LXC::Config->check_lock($conf);
+        die "NVIDIA passthrough supports only privileged CTs\n" if $conf->{unprivileged};
+        roundtrip($file, $conf);
+        my $candidate = dclone($conf);
+        my $changed = 0;
+        for my $want (@wanted) {
+            my ($key, $value) = @$want;
+            my $found = 0;
+            for my $old (@{$candidate->{lxc} // []}) {
+                next if $old->[0] ne $key;
+                if ($key eq 'lxc.mount.entry') {
+                    my @a = split /\s+/, $old->[1];
+                    my @b = split /\s+/, $value;
+                    die "Noncanonical mount destination $a[1] conflicts with $b[1]\n"
+                        if @a >= 2 && ($a[1] eq "/$b[1]" || $a[1] eq "./$b[1]");
+                    next if @a < 2 || $a[1] ne $b[1];
+                    die "Conflicting mount destination $b[1]\n" if mount_key($old->[1]) ne mount_key($value);
+                    $found = 1;
+                } else {
+                    my $normalized = $old->[1];
+                    $normalized =~ s/\s+/ /g;
+                    $normalized =~ s/^ | $//g;
+                    if ($normalized =~ /^c ([0-9]{1,10}):\* ([rwm]+)$/) {
+                        my ($major, $permissions) = (0 + $1, $2);
+                        my %permissions = map { $_ => 1 } split //, $permissions;
+                        $normalized = "c $major:* " . join('', grep { $permissions{$_} } qw(r w m));
+                    }
+                    $found = 1 if $normalized eq $value;
+                }
+            }
+            if (!$found) { push @{$candidate->{lxc}}, $want; $changed = 1; }
+        }
+        roundtrip($file, $candidate);
+        die "Config changed before publication\n" if PVE::Tools::file_get_contents($file) ne $raw;
+        if ($changed) {
+            $attempted = 1;
+            PVE::LXC::Config->write_config($ctid, dclone($candidate));
+        }
+        PVE::Cluster::cfs_update(1);
+        my $readback = strict_config($file, PVE::Tools::file_get_contents($file));
+        same($candidate, $readback, 'Config readback');
+        $loaded = PVE::LXC::Config->load_config($ctid);
+        die "CFS readback digest mismatch\n" if $loaded->{digest} ne $readback->{digest};
+        same($candidate, $loaded, 'CFS readback');
+    });
+    1;
+} or do {
+    my $error = $@ || "Unknown native config error\n";
+    die "NVIDIA CT $ctid: " . ($attempted ? 'publication/readback failed; config may have changed: ' : 'not published: ') . $error;
+};
+PERL
+    :
+  else
+    rc=$?
+    msg err "NVIDIA passthrough configuration failed for CT $ctid"
+    return "$rc"
+  fi
+  msg ok "NVIDIA passthrough configured for CT $ctid"
+  return 0
 }

@@ -390,7 +390,7 @@ print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in
 child_failed = False
 if all(v['passed'] for v in CHECKS):
     for name, seconds in [('batch_metadata_fixture.py', 120), ('resource_consent_fixture.py', 240),
-                          ('source_script_identity_fixture.py', 240)]:
+                          ('source_script_identity_fixture.py', 240), ('nvidia_integration_fixture.py', 240)]:
         result = subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib' / name), str(SOURCE)], timeout=seconds)
         child_failed |= result.returncode != 0
 raise SystemExit(any(not v['passed'] for v in CHECKS) or child_failed)

@@ -325,6 +325,31 @@ steps log directly to the active log and warn on failure rather than using
 `silent()`. Intel OpenCL uses the IGC tag in compute-runtime's release
 notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
 
+The separate manual PVE hardware tool uses `tools/pve/gpu-nvidia.func` for its
+NVIDIA branch. Checked driver/CUDA-capability reads, proc records, dialog membership
+and character-device metadata precede config effects. Its existing 500/11 warning
+thresholds require explicit consent for known older versions; unknown data fails.
+CUDA capability does not establish an installed toolkit. The selected device minor
+is independent of menu position, and sparse numbered nodes are eligible.
+
+The manual helper publishes active `lxc` pairs through native PVE config
+lock/load/check/write APIs. Strict parsing, loss audits and native serializer
+roundtrips must preserve unrelated active fields, foreign pair order, pending and
+snapshots before publication. Duplicate singleton/section input, discarded active
+snapstate, normalization loss (including referenced `unusedX`) and conflicting
+mount destinations refuse specifically. Mount targets are rootfs-relative
+`dev/nvidia*`; equivalent existing entries are reused. Checked CFS refresh and
+raw/cached digest/semantic readback remain inside the lock. Write/readback failure
+reports uncertainty without rollback. Failed/declined NVIDIA targets, including
+mixed-feature partial changes, never enter automatic reboot eligibility.
+Requested reboots require a checked, positively running `pct status`; stopped CTs
+stay stopped and apply configuration on their next start. Unknown/failed queries
+and reboot failures remain errors without Restarted success. No/EOF requests no
+lifecycle effect. The manual utility needs no scratch allocation or local EXIT
+owner; the loaded framework retains its existing spinner cleanup.
+This config outcome does not prove GPU operation, toolkit availability or per-card
+security isolation; existing major-wide/DRM compatibility policy is retained.
+
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,
 before `catch_errors`). If the script defines `header_info()`, the
