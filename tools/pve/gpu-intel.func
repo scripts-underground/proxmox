@@ -27,27 +27,53 @@ function intel_gpu_available() {
 }
 
 function is_alpine_ct() {
-  local ctid="$1"
-  pct exec "$ctid" -- sh -c 'grep -qi alpine /etc/os-release' > /dev/null 2>&1
+  local kind
+  if kind=$(_intel_ct_os "$1"); then :; else return $?; fi
+  [[ "$kind" == alpine ]]
+}
+
+function _intel_ct_os() {
+  local kind
+  if kind=$(pct exec "$1" -- sh -c '
+    if grep -qi alpine /etc/os-release; then printf alpine; else
+      rc=$?; [ "$rc" -eq 1 ] || exit "$rc"; printf other
+    fi
+  '); then :; else return $?; fi
+  case "$kind" in alpine | other) printf '%s' "$kind" ;; *)
+    msg err "Invalid container OS probe output"
+    return 65
+    ;;
+  esac
 }
 
 function passthrough_intel_to_lxc() {
   local ctid="$1"
-  local conf="/etc/pve/lxc/${ctid}.conf"
+  local dev numbers major minor
+  local required=() entries=()
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
+  if ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable"
+    return 127
+  fi
 
   if ! intel_gpu_available; then
     msg warn "No Intel iGPU detected on host"
     return 1
   fi
 
-  {
-    echo "# Intel iGPU (VAAPI)"
-    echo "lxc.cgroup2.devices.allow: c 226:* rwm"
-    echo "lxc.cgroup2.devices.allow: c 29:0 rwm"
-    echo "lxc.mount.entry: /dev/fb0 dev/fb0 none bind,optional,create=file"
-    echo "lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir"
-    echo "lxc.mount.entry: /dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file"
-  } >> "$conf"
+  for dev in /dev/dri/renderD128 /dev/fb0; do
+    if [[ "$dev" == /dev/fb0 && ! -e "$dev" && ! -L "$dev" ]]; then continue; fi
+    if numbers=$(gpu_config_node "$dev"); then :; else return $?; fi
+    major=${numbers%%:*} minor=${numbers#*:}
+    required+=("$dev:$major:$minor")
+    if [[ "$dev" == /dev/fb0 ]]; then
+      entries+=("lxc.cgroup2.devices.allow" "c $major:$minor rwm")
+    else entries+=("lxc.cgroup2.devices.allow" "c $major:* rwm"); fi
+  done
+  entries+=("lxc.mount.entry" "/dev/fb0 dev/fb0 none bind,optional,create=file"
+    "lxc.mount.entry" "/dev/dri dev/dri none bind,optional,create=dir"
+    "lxc.mount.entry" "/dev/dri/renderD128 dev/dri/renderD128 none bind,optional,create=file")
+  if gpu_write_lxc_config "$ctid" "${#required[@]}" "${required[@]}" "${entries[@]}"; then :; else return $?; fi
 
   msg ok "Intel VAAPI passthrough applied to CT $ctid"
   return 0
@@ -56,8 +82,11 @@ function passthrough_intel_to_lxc() {
 function install_intel_tools_in_ct() {
   local ctid="$1"
   local install_nonfree="yes"
+  local kind
+  [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]] || return 65
 
-  if is_alpine_ct "$ctid"; then
+  if kind=$(_intel_ct_os "$ctid"); then :; else return $?; fi
+  if [[ "$kind" == alpine ]]; then
     msg warn "Skipping Intel tool install for Alpine CT $ctid"
     return 0
   fi
@@ -65,26 +94,32 @@ function install_intel_tools_in_ct() {
   if [[ "$install_nonfree" == "yes" ]]; then
     msg info "Enabling non-free sources in $ctid..."
 
-    pct exec "$ctid" -- bash -c '
-      grep -q "non-free" /etc/apt/sources.list && exit 0
+    if pct exec "$ctid" -- bash -c '
+      if grep -q "non-free" /etc/apt/sources.list; then exit 0; else
+        rc=$?; [[ "$rc" == 1 ]] || exit "$rc"
+      fi
 
       cat <<EOF > /etc/apt/sources.list.d/non-free.list
 deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
 EOF
-    '
+    '; then :; else return $?; fi
   fi
 
   msg info "Installing Intel tools in CT $ctid..."
 
-  pct exec "$ctid" -- bash -c "
-      apt-get update -qq
+  if pct exec "$ctid" -- bash -c '
+      apt-get update -qq || exit $?
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free >/dev/null 2>&1
-      adduser root video >/dev/null 2>&1 || true
-      adduser root render >/dev/null 2>&1 || true
-    "
+        va-driver-all vainfo intel-gpu-tools ocl-icd-libopencl1 intel-opencl-icd intel-media-va-driver-non-free >/dev/null 2>&1 || exit $?
+      for group in video render; do
+        if adduser root "$group" >/dev/null 2>&1; then :; else
+          rc=$?; printf "Optional Intel membership failed for %s (status %s)\n" "$group" "$rc" >&2
+        fi
+      done
+      exit 0
+    '; then :; else return $?; fi
 
   msg ok "Installed Intel VAAPI tools in $ctid"
 }

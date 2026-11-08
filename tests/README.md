@@ -259,6 +259,16 @@ production validator is not its own oracle. Version/controller and CFS boundarie
 are models around installed native PVE parsing/serialization, not PVE 8 runtime or
 kernel BPF execution. Optional NVIDIA load/API/probe failures and successful
 Intel/AMD passthrough followed by returned tool failure exercise real caller paths.
+The shared GPU-contract child additionally executes actual Intel/AMD provider
+bodies and the common native config owner. Only hardware availability and lower
+pct/package effects are modeled; child shell payloads run with private /etc/apt
+and fake package/group executables. Native active readback, snapshot placement,
+idempotency, actual KFD metadata, config publication failures, typed OS errors,
+setup/update/install and required/optional group outcomes reach the consumer.
+Real-provider main cases verify retained config plus partial/no-reboot reporting,
+and common-owner load failures stop selected GPUs without blocking USB.
+Pending lxc/devN changes and native deletion forms refuse before publication;
+unrelated pending and proven logical/default no-ops are preserved.
 Activation cases distinguish an empty native list (no attached device program)
 from nonempty ineffectual entries and compare directory orders across that
 boundary. Source references are LXC 5/6/7 `cgfsng_devices_activate`, `parse.c`

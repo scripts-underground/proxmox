@@ -30,6 +30,29 @@ REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/pr
 
 set -euo pipefail
 
+# All GPU providers use one native configuration owner. A failed optional load
+# must not terminate USB selection or leave stale public definitions usable.
+_GPU_CONFIG_READY=0
+unset -f gpu_config_contents gpu_config_node gpu_write_lxc_config
+if _gpu_source=$(wget -qO- "$REPO_BASE/tools/pve/gpu-config.func"); then
+  if _gpu_functions=$(BASH_ENV=/dev/null /bin/bash -euo pipefail -c '
+    source /dev/stdin >&2
+    declare -F gpu_config_contents >/dev/null
+    gpu_config_contents
+    printf "\n# GPU_CONFIG_DECLARATIONS_COMPLETE\n"
+  ' <<< "$_gpu_source"); then
+    if [[ "$_gpu_functions" == *$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE' && -n "${_gpu_functions%$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE'}" ]]; then
+      # shellcheck disable=SC1090
+      if source /dev/stdin <<< "${_gpu_functions%$'\n# GPU_CONFIG_DECLARATIONS_COMPLETE'}"; then
+        if declare -F gpu_config_node > /dev/null && declare -F gpu_write_lxc_config > /dev/null; then
+          _GPU_CONFIG_READY=1
+        fi
+      fi
+    fi
+  fi
+fi
+unset _gpu_source _gpu_functions
+
 # NVIDIA is optional. Load declarations once in a fresh strict shell so a failed
 # source (including an explicit exit) cannot terminate unrelated feature paths.
 _NVIDIA_HELPERS_READY=0
@@ -165,6 +188,13 @@ lxc.mount.entry: /dev/ttyACM1       dev/ttyACM1       none bind,optional,create=
 EOF
 }
 
+function gpu_config_support_available() {
+  if [[ "$_GPU_CONFIG_READY" != 1 ]] || ! declare -F gpu_config_node > /dev/null || ! declare -F gpu_write_lxc_config > /dev/null; then
+    msg err "Shared GPU configuration support unavailable; no GPU effects applied"
+    return 1
+  fi
+}
+
 function nvidia_support_available() {
   local api
   if [[ "$_NVIDIA_HELPERS_READY" != 1 ]]; then
@@ -196,6 +226,14 @@ function main() {
     local failed=0
 
     for feature in "${SELECTED_FEATURES[@]}"; do
+      case "$feature" in
+        intel | amd | nvidia)
+          if ! gpu_config_support_available; then
+            failed=1
+            continue
+          fi
+          ;;
+      esac
       case "$feature" in
         usb)
           msg info "Applying USB passthrough to CT $ctid..."

@@ -123,7 +123,7 @@ base = ('arch: amd64\nostype: debian\nhostname: fixture\nmemory: 512\nswap: 512\
         'rootfs: owned:vm-987654-disk-0,size=4G\n'
         'lxc.mount.entry: /dev/foreign dev/foreign none bind,optional,create=file\n'
         'lxc.cgroup2.devices.allow: c 42:* rwm\n')
-sections = ('\n[pve:pending]\nmemory: 1024\nlxc.mount.entry: /dev/pending dev/pending none bind\n'
+sections = ('\n[pve:pending]\nmemory: 1024\n'
             '\n[saved]\nhostname: snapshot\nmemory: 256\nsnaptime: 1234\n'
             'rootfs: owned:vm-987654-disk-0,size=4G\n'
             'lxc.mount.entry: /dev/snapshot dev/snapshot none bind\n')
@@ -185,7 +185,9 @@ def run(name, code, text=base + sections, answer='', scenario='ok', conditional=
     (WORK / 'cfs.calls').unlink(missing_ok=True)
     env = dict(os.environ, NVIDIA_CASE=scenario, NVIDIA_LXC_MAJOR=str(major), TMPDIR=os.environ['TMPDIR'], TERM='dumb')
     call = ('if ' + code + '; then rc=0; else rc=$?; fi; exit "$rc"') if conditional else code
-    result = subprocess.run(['/bin/bash', '-c', prefix + f'\nsource {quote(helper)}\n' + call],
+    common = SOURCE / 'tools/pve/gpu-config.func'
+    common_source = f'\nsource {quote(common)}\n' if common.is_file() else '\n'
+    result = subprocess.run(['/bin/bash', '-c', prefix + common_source + f'\nsource {quote(helper)}\n' + call],
                             input=answer, text=True, capture_output=True, env=env, timeout=15)
     facts = dict(status=result.returncode, stdout=result.stdout, stderr=result.stderr,
                   before=text, after=conf.read_bytes().decode() if conf.exists() else None, calls=(WORK / 'cfs.calls').read_text()
@@ -324,7 +326,7 @@ for name, text, scenario in [
         check('native installed parser status', 0, native.returncode)
         if native.returncode == 0:
             parsed = json.loads(native.stdout)
-            check('native pending unchanged', {'memory': 1024, 'lxc': [['lxc.mount.entry', '/dev/pending dev/pending none bind']]}, parsed['pending'])
+            check('native pending unchanged', {'memory': 1024}, parsed['pending'])
             check('native snapshot unchanged', {'hostname': 'snapshot', 'memory': 256, 'snaptime': 1234,
                   'rootfs': 'owned:vm-987654-disk-0,size=4G',
                   'lxc': [['lxc.mount.entry', '/dev/snapshot dev/snapshot none bind']]}, parsed['snapshots']['saved'])
@@ -356,6 +358,8 @@ check('equivalent permission set is not duplicated', 1, len(re.findall(r'c 195:\
 sys.path.insert(0, str(SOURCE / 'tests/lib'))
 from nvidia_policy_cases import exercise_policy
 exercise_policy(WORK, run, check, base, sections)
+from gpu_contract_fixture import exercise_gpu_contract
+exercise_gpu_contract(SOURCE, WORK, run, check, base, sections)
 
 # The full real startup/dispatch remains the consumer; only operator inputs and
 # external hardware/service tools are replaced. Real helper bodies stay loaded.
@@ -404,6 +408,22 @@ for name, scenario, features, answer in [
     ('main-emitter-exit-intel', 'emitter-exit', 'intel', 'n\n'),
     ('main-emitter-empty-selected', 'emitter-empty', 'nvidia', 'y\n'),
     ('main-emitter-partial-selected', 'emitter-partial', 'nvidia', 'y\n'),
+    ('main-common-missing-usb', 'common-missing', 'usb', 'n\n'),
+    ('main-common-missing-intel', 'common-missing', 'intel', 'y\n'),
+    ('main-common-missing-amd', 'common-missing', 'amd', 'y\n'),
+    ('main-common-missing-nvidia', 'common-missing', 'nvidia', 'y\n'),
+    ('main-common-partial-intel', 'common-partial', 'intel', 'y\n'),
+    ('main-common-exit-amd', 'common-exit', 'amd', 'y\n'),
+    ('main-common-emitter-fail-nvidia', 'common-emitter-fail', 'nvidia', 'y\n'),
+    ('main-common-emitter-partial-intel', 'common-emitter-partial', 'intel', 'y\n'),
+    ('main-real-intel-tools-fail', 'real-intel-install', 'intel', 'y\n'),
+    ('main-real-amd-tools-fail', 'real-amd-install', 'amd', 'y\n'),
+    ('main-real-intel-config-fail', 'write-fail', 'intel', 'y\n'),
+    ('main-real-amd-config-fail', 'write-fail', 'amd', 'y\n'),
+    ('main-real-intel-os-fail', 'real-os-fail', 'intel', 'y\n'),
+    ('main-real-amd-group-fail', 'real-group-fail', 'amd', 'y\n'),
+    ('main-real-intel-optional-group', 'real-optional-group', 'intel', 'n\n'),
+    ('main-real-amd-without-nvidia', 'library-missing', 'amd', 'n\n'),
     ('main-probe-nv-usb', 'availability-exit', 'usb', '1\n987654\nn\n'),
     ('main-intel-tools-fail', 'ok', 'intel', 'y\n'),
     ('main-amd-tools-fail', 'ok', 'amd', 'y\n'),
@@ -431,6 +451,24 @@ header_info() {{ :; }}
 prompt_features() {{ SELECTED_FEATURES=({features}); }}
 select_lxc_cts() {{ SELECTED_CTIDS={'"987654 987655"' if name == 'main-multi' else '987654'}; }}
 '''
+    common_stale = ('gpu_config_node() { return 0; }; gpu_write_lxc_config() { printf "stale-common\\n" >> "$NVIDIA_WORK/events"; }'
+                    if scenario.startswith('common-') else ':')
+    real_setup = ''
+    if name.startswith('main-real-'):
+        settings = {'ROOT': str(WORK / 'provider-models')}
+        if scenario in ('real-intel-install', 'real-amd-install'):
+            settings['INSTALL_RC'] = '42'
+        elif scenario == 'real-os-fail':
+            settings['OS_RC'] = '43'
+        elif scenario in ('real-group-fail', 'real-optional-group'):
+            settings.update(GROUP='render', GROUP_RC='46')
+        # Replace the isolated returned-status stubs with the actual providers.
+        real_setup = (f'source {quote(SOURCE / "tools/pve/gpu-intel.func")}\n' +
+                      f'source {quote(SOURCE / "tools/pve/gpu-amd.func")}\n' +
+                      'intel_gpu_available() { return 0; }; amd_gpu_available() { return 0; }\n' +
+                      'export ' + ' '.join('GPU_TEST_' + key + '=' + quote(value) for key, value in settings.items()) +
+                      f' PATH={quote(WORK / "provider-models/bin")}:"$PATH"\n' +
+                      f'source {quote(WORK / "provider-models/transport.func")}\n')
     code = prefix + f'''
 REPO_BASE=offline
 curl() {{ case "${{!#}}" in
@@ -438,6 +476,14 @@ curl() {{ case "${{!#}}" in
  */core.func) /bin/cat {quote(SOURCE / 'misc/core.func')};;
  */error_handler.func) /bin/cat {quote(SOURCE / 'misc/error_handler.func')};; *) return 89;; esac; }}
 wget() {{ case "${{!#}}" in
+ */gpu-config.func)
+  case "$NVIDIA_CASE" in
+   common-missing) return 22;;
+   common-partial) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')}; printf '\nreturn 1\n';;
+   common-exit) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')}; printf '\nexit 0\n';;
+   common-emitter-fail) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')}; printf '\ngpu_config_contents() {{ declare -f gpu_config_node; return 37; }}\n';;
+   common-emitter-partial) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')}; printf '\ngpu_config_contents() {{ declare -f gpu_config_node; }}\n';;
+   *) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')};; esac;;
  */gpu-nvidia.func)
    case "$NVIDIA_CASE" in
     private-component) /bin/cat {quote(WORK / 'private-component.func')};;
@@ -458,6 +504,7 @@ wget() {{ case "${{!#}}" in
  */gpu-amd.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-amd.func')};; *) return 89;; esac; }}
 pveversion() {{ :; }}
 {'nvidia_validate_driver_version() { printf "stale-public\\n" >> "$NVIDIA_WORK/events"; }; nvidia_validate_cuda_version() { return 0; }; nvidia_select_gpu_minor() { printf 7; }; nvidia_lxc_passthrough() { return 0; }' if scenario.startswith('emitter-') else ':'}
+{common_stale}
 {startup}
 {operator_overrides}
 apply_usb_passthrough() {{ printf 'usb\\n' >> {quote(calls)}; }}
@@ -465,9 +512,11 @@ passthrough_intel_to_lxc() {{ printf 'intel %s\\n' "$*" >> {quote(calls)}; }}
 install_intel_tools_in_ct() {{ printf 'intel-tools %s\\n' "$*" >> {quote(calls)}; {'return 45' if name == 'main-intel-tools-fail' else ':'}; }}
 passthrough_amd_to_lxc() {{ printf 'amd %s\\n' "$*" >> {quote(calls)}; }}
 install_amd_tools_in_ct() {{ printf 'amd-tools %s\\n' "$*" >> {quote(calls)}; {'return 46' if name == 'main-amd-tools-fail' else ':'}; }}
+{real_setup}
 pct() {{
  printf '%s\\n' "$*" >> {quote(calls)}
- case "$1" in
+  case "$1" in
+   exec) gpu_test_pct "$@";;
   list) printf 'VMID Status Lock Name\\n987654 running - fixture\\n987655 running - sibling\\n';;
   status)
    {'printf "status: running\\n"; return 1' if name == 'main-status-failed' else ':'}
@@ -497,17 +546,42 @@ printf 'operator-selection:%s:%s\\n' "${{SELECTED_FEATURES[*]}}" "$SELECTED_CTID
     reboot_count = int((states / '987654.reboots').read_text())
     (WORK / (name + '.json')).write_text(json.dumps(dict(status=result.returncode, stdout=result.stdout,
                                                         stderr=result.stderr, effects=effects,
-                                                        actual_reboots=actual_reboots,
+                                                         actual_reboots=actual_reboots,
+                                                         config=conf.read_bytes().decode(),
                                                         state=final_state, reboot_count=reboot_count), indent=2))
     expected_status = 0 if name in ('main-ok', 'main-restart-eof', 'main-siblings', 'main-operator',
                                    'main-missing-nv-usb', 'main-missing-nv-intel', 'main-partial-nv-amd',
                                     'main-old-api-amd', 'main-exit-zero-intel',
                                     'main-private-component', 'main-no-emitter-intel',
-                                    'main-emitter-fail-usb', 'main-emitter-exit-intel',
+                                     'main-emitter-fail-usb', 'main-emitter-exit-intel',
+                                     'main-common-missing-usb', 'main-real-intel-optional-group',
+                                     'main-real-amd-without-nvidia',
                                    'main-malformed-nv-usb', 'main-exit-nv-intel', 'main-probe-nv-usb',
                                    'main-running-requested', 'main-stopped-requested') else {
         'main-reboot-fail': 43, 'main-status-unknown': 65}.get(name, 1)
     check(name + ' status', expected_status, result.returncode)
+    if scenario.startswith('common-') and features != 'usb':
+        check(name + ' no GPU producer effects', False, (WORK / 'events').exists())
+        check(name + ' no config or CT effects', (base + sections, ''), (conf.read_text(), effects))
+        check(name + ' precise missing common-owner diagnostic', True,
+              'Shared GPU configuration support unavailable' in result.stderr)
+    if name.startswith('main-real-'):
+        marker = '/dev/dri/renderD128 dev/dri/renderD128 ' if features == 'intel' else '/dev/kfd dev/kfd '
+        if 'config-fail' in name:
+            check(name + ' refusal retains original bytes', base + sections, conf.read_text())
+            check(name + ' config failure stops tools', False, 'exec ' in effects)
+        else:
+            check(name + ' actual native active consumer', True, marker in conf.read_text().split('[pve:pending]')[0])
+            if name not in ('main-real-intel-optional-group', 'main-real-amd-without-nvidia'):
+                check(name + ' actual failure retains known partial', True, 'Partial changes retained' in result.stderr)
+                check(name + ' no false Updated or Installed', False,
+                      'Updated:' in result.stdout or 'Installed' in result.stdout)
+            elif name == 'main-real-intel-optional-group':
+                check(name + ' optional membership warning', True, '46' in result.stderr)
+            else:
+                check(name + ' actual unrelated vendor completes', True, 'Updated:' in result.stdout and 'Installed ROCm' in result.stdout)
+        check(name + ' actual failed stage never reboots', False,
+              bool(re.search(r'^(?:status|reboot) ', effects, re.M)))
     if name == 'main-private-component':
         check(name + ' public function consumes private dependency/data', 'private-closure:owned-data\n',
               (WORK / 'events').read_text() if (WORK / 'events').exists() else '')
@@ -585,6 +659,7 @@ curl() {{ case "${{!#}}" in
  */core.func) /bin/cat {quote(SOURCE / 'misc/core.func')};;
  */error_handler.func) /bin/cat {quote(SOURCE / 'misc/error_handler.func')};; *) return 89;; esac; }}
 wget() {{ case "${{!#}}" in
+ */gpu-config.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-config.func')};;
  */gpu-nvidia.func) /bin/cat {quote(helper)};;
  */gpu-intel.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-intel.func')};;
  */gpu-amd.func) /bin/cat {quote(SOURCE / 'tools/pve/gpu-amd.func')};; *) return 89;; esac; }}

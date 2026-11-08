@@ -332,15 +332,21 @@ thresholds require explicit consent for known older versions; unknown data fails
 CUDA capability does not establish an installed toolkit. The selected device minor
 is independent of menu position, and sparse numbered nodes are eligible.
 
-The manual helper publishes active `lxc` pairs through native PVE config
+All three manual GPU providers use `tools/pve/gpu-config.func`, one vendor-neutral
+configuration owner. Its checked `gpu_config_contents` emitter owns the writer
+and character-metadata closure. Providers retain their public APIs; NVIDIA's
+`nvidia_write_lxc_config` is a compatibility adapter, not another writer. The
+caller separately checked-loads the common owner before selected GPU effects;
+missing/partial support fails that GPU while USB remains independent.
+The shared owner publishes active `lxc` pairs through native PVE config
 lock/load/check/write APIs. Strict parsing, loss audits and native serializer
 roundtrips must preserve unrelated active fields, foreign pair order, pending and
 snapshots before publication. Duplicate singleton/section input, discarded active
 snapstate, normalization loss (including referenced `unusedX`) and conflicting
 mount destinations refuse specifically. Mount targets are rootfs-relative
-`dev/nvidia*`; equivalent existing entries are reused. Checked CFS refresh and
+`dev/*`; equivalent existing entries are reused. Checked CFS refresh and
 raw/cached digest/semantic readback remain inside the lock. Write/readback failure
-reports uncertainty without rollback. Failed/declined NVIDIA targets, including
+reports uncertainty without rollback. Failed/declined GPU targets, including
 mixed-feature partial changes, never enter automatic reboot eligibility.
 Requested reboots require a checked, positively running `pct status`; stopped CTs
 stay stopped and apply configuration on their next start. Unknown/failed queries
@@ -350,7 +356,7 @@ owner; the loaded framework retains its existing spinner cleanup.
 This config outcome does not prove GPU operation, toolkit availability or per-card
 security isolation; existing major-wide/DRM compatibility policy is retained.
 
-The same manual NVIDIA owner checks the configured unified device program rather
+The same shared GPU owner checks the configured unified device program rather
 than the presence of an allow string. Its helper-local source-characterized
 LXC 5/6/7 model resolves the PVE OS/common prelude, generated device/console rules
 and ordered active suffix, including include and controller-clear behavior.
@@ -394,6 +400,14 @@ is classified without a suffix boundary; unsupported surviving controllers refus
 specifically. Control bytes in rendered active LXC pairs refuse before publication
 instead of bypassing the device projection.
 
+Native PVE startup applies pending deletions and whole-value replacements before
+generating LXC config. Under the same lock, the owner compares the candidate's
+consumed logical lxc/devN/ostype/unprivileged/console inputs with that pending
+result. A material change refuses with the exact key; unrelated pending, proven
+no-ops/defaults and snapshots remain unchanged. Comparison uses the candidate:
+adding lxc can make a previously vacuous pending deletion effective. The owner
+never invokes side-effecting apply-pending or edits the pending section.
+
 Optional NVIDIA helper transport/source failure is isolated from other features.
 The component-owned checked `nvidia_helper_contents` emitter supplies its complete
 runtime function/dependency closure, including `msg`, rather than caller prefix
@@ -407,6 +421,13 @@ borrow them. NVIDIA availability is guarded and its required API is checked when
 selected. Intel/AMD passthrough success is
 recorded before the returned tool-stage result, so a tool failure retains known
 partial changes and excludes that CT from automatic restart.
+Intel/AMD now submit active config requests to the common owner with checked
+actual character tuples. AMD does not infer KFD major238; Intel keeps its exact
+framebuffer-minor and DRM major-wide shape. Their actual providers explicitly
+return config, transport and required child package failures even under conditional
+callers. A typed OS-probe value is separate from pct status: transport/grep errors
+are not non-Alpine. Intel's intentionally optional group failures warn; AMD's
+required group failures return nonzero. Package/repository contents are unchanged.
 
 `header_info` is not a lifecycle hook — it's a display hook invoked by
 `render_header()` early in the bootstrap (after `color` / `vm_init_colors`,

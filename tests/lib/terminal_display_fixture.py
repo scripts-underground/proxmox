@@ -324,9 +324,9 @@ for slug in ('pve-privilege-converter', 'hw-acceleration'):
         loaded = 'declare -F load_functions header_info terminal_clear >/dev/null'
     else:
         startup = text[:re.search(r'(?m)^main\s*$', text).start()]
-        paths = ['tools/pve/gpu-' + vendor + '.func' for vendor in ('nvidia', 'intel', 'amd')]
+        paths = ['tools/pve/gpu-' + vendor + '.func' for vendor in ('config', 'nvidia', 'intel', 'amd')]
         paths += ['misc/bootstrap/pve', 'misc/core.func', 'misc/error_handler.func']
-        loaded = 'declare -F nvidia_check_driver_installed intel_gpu_available amd_gpu_available terminal_clear >/dev/null'
+        loaded = 'declare -F gpu_config_node gpu_write_lxc_config nvidia_check_driver_installed intel_gpu_available amd_gpu_available terminal_clear >/dev/null'
     for kind, value in [('unset', None), ('empty', ''), ('custom', 'https://fixture.invalid/owned/ref')]:
         expected = value or default_repo
         requested = WORK / ('startup-' + slug + '-' + kind + '.calls')
