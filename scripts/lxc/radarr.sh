@@ -24,7 +24,7 @@ function install_script() {
   $STD apt install -y sqlite3 libicu-dev
   msg_ok "Installed Dependencies"
 
-  fetch_and_deploy_gh_release "Radarr" "Radarr/Radarr" "prebuild" "latest" "/opt/Radarr" "Radarr.master.*.linux-core-$(get_system_arch).tar.gz"
+  fetch_and_deploy_gh_release "Radarr" "Radarr/Radarr" "prebuild" "latest" "/opt/Radarr" "Radarr.master.*.linux-core-$(get_system_arch both x64 arm64).tar.gz"
 
   msg_info "Configuring Radarr"
   mkdir -p /var/lib/radarr/
@@ -74,7 +74,7 @@ function update_script() {
     systemctl stop radarr
     msg_ok "Stopped Service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Radarr" "Radarr/Radarr" "prebuild" "latest" "/opt/Radarr" "Radarr.master.*.linux-core-$(get_system_arch).tar.gz"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Radarr" "Radarr/Radarr" "prebuild" "latest" "/opt/Radarr" "Radarr.master.*.linux-core-$(get_system_arch both x64 arm64).tar.gz"
     chmod 775 /opt/Radarr
 
     msg_info "Starting Service"
