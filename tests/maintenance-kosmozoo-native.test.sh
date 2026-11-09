@@ -38,7 +38,7 @@ unset -f curl
 source "$ROOT/misc/bundle.func"
 export APP=Kosmozoo NSAPP=kosmozoo REPO_BASE="$publisher"
 export var_lxc_tmpdir="$TMPDIR" var_lxc_kosmozoo_hosts='local=folder:/sources/images'
-export var_lxc_kosmozoo_initial_release=v0.3.0
+export var_lxc_kosmozoo_initial_release=v0.4.1
 _write_bundle install install_script "$ROOT/misc" 'install_script' > "$work/install.sh"
 _write_bundle update update_script "$ROOT/misc" --requirements "${var_cpu-}" "${var_ram-}" -- 'run_update_script "$@"' > "$work/update.sh"
 timeout --signal=TERM --kill-after=30 1200 bash "$work/install.sh" > "$work/install.log" 2>&1
@@ -142,7 +142,7 @@ def api(path,method='GET',body=None,raw=False,request_origin=None):
     return content if raw else json.loads(content)
 def process_birth(pid):return pathlib.Path('/proc/'+str(pid)+'/stat').read_text().split(') ',1)[1].split()[19]
 def sqlite_mapping(pid,env,mappings):
- # v0.3.0 packaging/linux/inputs.json authenticates these complete SQLite bytes.
+ # v0.4.1 packaging/linux/inputs.json authenticates these complete SQLite bytes.
  # Deno names its extracted file from the executable and hashes, not "sqlite".
  expected='2e6eef9a727f081f0d453b4e5e6cbd8b9ef8b6f86cbf7681cbad444d3b0b55c8'
  tmp=env[b'TMPDIR'].decode();candidates=[]
@@ -186,7 +186,7 @@ def ready():
             private=pathlib.Path('/data/state/engine-instance.json');s=private.stat();p=json.loads(private.read_bytes());socket=command('ss','-H','-lntp','sport = :80')
             (w/('ready-raw-'+str(pid)+'-'+str(time.time_ns())+'.json')).write_text(json.dumps(dict(pid=pid,birth=birth,runtime=r,private=p,private_stat=dict(uid=s.st_uid,gid=s.st_gid,mode=s.st_mode&0o777,inode=s.st_ino),maps=mappings,status=status_raw,environ_base64=base64.b64encode(env_raw).decode(),exe=os.readlink(proc/'exe'),socket=socket),sort_keys=True,indent=2))
             assert uid!=0 and gid!=0
-            assert hashlib.sha256(pathlib.Path('/opt/kosmozoo/kosmozoo').read_bytes()).hexdigest()=='ff2486bfd42f0c50c0e48eb08a52ac9ec8eee826f873629e6e4cad90d0179d34'
+            assert hashlib.sha256(pathlib.Path('/opt/kosmozoo/kosmozoo').read_bytes()).hexdigest()=='b116a32e4b093d4c422277f37cfdfd3eea85d417158ec03dd409cd3f5025f88c'
             assert r['protocol']=='kosmozoo-runtime' and r['version']==1 and r['status']=='ready' and r['mode']=='serve'
             assert r['binding']=={'hostname':'0.0.0.0','port':80} and r['configuredBind']=='0.0.0.0'
             assert pathlib.Path('/proc/'+str(pid)+'/exe').resolve()==pathlib.Path('/opt/kosmozoo/kosmozoo')
@@ -195,7 +195,7 @@ def ready():
             assert list(map(int,status['Uid'].split()))==[uid]*4 and list(map(int,status['Gid'].split()))==[gid]*4
             assert set(map(int,status['Groups'].split()))==set(os.getgrouplist('kosmozoo',gid))
             assert all(int(status[k].strip(),16)==1<<10 for k in ('CapEff','CapPrm','CapBnd','CapAmb'))
-            assert r['app']['version']=='0.3.0'
+            assert r['app']['version']=='0.4.1'
             assert p['ownerPid']==pid and all(p[k]==r[k] for k in ('instance','sourceVersion','binding'))
             env=dict(v.split(b'=',1) for v in env_raw.split(b'\0') if v)
             assert env[b'PATH']==b'/nonexistent' and env[b'TMPDIR']==b'/data/operator-tmp' and env[b'KOZMOZOO_PORT']==b'080'
