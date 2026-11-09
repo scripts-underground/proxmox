@@ -13,3 +13,8 @@ ram: 1024
 disk: 4
 maintainer: tteck
 ---
+
+Initial installation clones the upstream default branch and installs into the
+app's Python3.12 `venv`, using its interpreter explicitly. Updates retain that
+interpreter and pull `origin master`; they do not preserve an operator's detached
+source pin. The installer does not add a source or uv version pin.

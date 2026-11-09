@@ -35,7 +35,7 @@ function install_script() {
   $STD git clone https://gitlab.com/LazyLibrarian/LazyLibrarian /opt/LazyLibrarian
   $STD uv venv --clear /opt/LazyLibrarian/venv --python 3.12
   cd /opt/LazyLibrarian || exit
-  $STD uv pip install .
+  $STD uv pip install . --python /opt/LazyLibrarian/venv/bin/python3
   msg_ok "Installed LazyLibrarian"
 
   msg_info "Creating Service"
