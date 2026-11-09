@@ -41,10 +41,17 @@ check() {
     failures=$((failures + 1))
   fi
 }
-for slug in radarr prowlarr; do
+for slug in radarr prowlarr lidarr; do
+  dependencies='install -y sqlite3 libicu-dev'
+  update_clean=1
   case "$slug" in
     radarr) app=Radarr key=Radarr version=6.4.4.10685 ;;
     prowlarr) app=Prowlarr key=prowlarr version=2.7.0.5723 ;;
+    lidarr)
+      app=Lidarr key=lidarr version=3.1.6.5079
+      dependencies='install -y sqlite3 libchromaprint-tools libicu-dev mediainfo'
+      update_clean='unset'
+      ;;
   esac
   for arch in amd64 arm64; do
     alias=x64
@@ -100,11 +107,11 @@ MODELS
       check "$(cat "$c/default-arch")" "$arch" "$label unaliased helper stays dpkg-compatible"
       check "$(cat "$c/pattern")" "$app.master.*.linux-core-$alias.tar.gz" "$label release pattern reaches deployer"
       check "$(cat "$c/opt/$app/selected-asset" 2> /dev/null || true)" "$app.master.$version.linux-core-$alias.tar.gz" "$label selects published asset"
-      clean=1
+      clean="$update_clean"
       [[ "$role" != install ]] || clean='unset'
       check "$(cat "$c/clean")" "$clean" "$label CLEAN_INSTALL contract"
       if [[ "$role" == install ]]; then
-        check "$(cat "$c/packages")" 'install -y sqlite3 libicu-dev' "$label dependency call unchanged"
+        check "$(cat "$c/packages")" "$dependencies" "$label dependency call unchanged"
         check "$(cat "$c/services" 2> /dev/null || true)" "enable -q --now $slug" "$label service call unchanged"
       else
         check "$(cat "$c/services")" "$(printf 'stop %s\nstart %s' "$slug" "$slug")" "$label service sequence unchanged"
@@ -117,5 +124,5 @@ MODELS
     done
   done
 done
-printf '%s failure(s); actual Radarr/Prowlarr cold hooks/written updater; release/package/service/detection modeled\n' "$failures"
+printf '%s failure(s); actual Radarr/Prowlarr/Lidarr cold hooks/written updater; release/package/service/detection modeled\n' "$failures"
 [[ "$failures" == 0 ]]

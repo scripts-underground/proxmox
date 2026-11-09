@@ -28,7 +28,7 @@ function install_script() {
     mediainfo
   msg_ok "Installed Dependencies"
 
-  fetch_and_deploy_gh_release "lidarr" "Lidarr/Lidarr" "prebuild" "latest" "/opt/Lidarr" "Lidarr.master.*.linux-core-$(get_system_arch).tar.gz"
+  fetch_and_deploy_gh_release "lidarr" "Lidarr/Lidarr" "prebuild" "latest" "/opt/Lidarr" "Lidarr.master.*.linux-core-$(get_system_arch both x64 arm64).tar.gz"
 
   msg_info "Configuring Lidarr"
   mkdir -p /var/lib/lidarr/
@@ -79,7 +79,7 @@ function update_script() {
     systemctl stop lidarr
     msg_ok "Stopped Service"
 
-    fetch_and_deploy_gh_release "lidarr" "Lidarr/Lidarr" "prebuild" "latest" "/opt/Lidarr" "Lidarr.master.*.linux-core-$(get_system_arch).tar.gz"
+    fetch_and_deploy_gh_release "lidarr" "Lidarr/Lidarr" "prebuild" "latest" "/opt/Lidarr" "Lidarr.master.*.linux-core-$(get_system_arch both x64 arm64).tar.gz"
     chmod 775 /opt/Lidarr
 
     msg_info "Starting Service"
