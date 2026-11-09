@@ -249,6 +249,17 @@ logs/records are included in the owner-recorded stdout for external preservation
 Guard-only or syntax evidence proves admission/load only; the full native consumer
 must succeed on the final combined source before native acceptance is claimed.
 
+`maintenance-runtime-hooks/fixture` also invokes its private LazyLibrarian venv
+fixture. The assigned guest needs real `uv` and `python3.12` on PATH, staged by
+its owner before the offline run. Actual cold install/update hooks create the
+`venv` directory with no VIRTUAL_ENV, CONDA_PREFIX or discoverable `.venv`, build
+and install a tiny owned dependency-free package, then run the generated unit's
+ExecStart interpreter. Assertions observe Python3.12, the app venv prefix,
+installed site-packages import and changed package after update; the existing
+interpreter/unit remain unchanged and the outer interpreters stay uncontaminated.
+OS packages, source clone/pull, setup_uv provisioning and systemctl are models.
+This does not run LazyLibrarian itself or prove actual systemd service behavior.
+
 These plain Bash tests run inside an isolated Linux VM with an existing writable
 disk-backed `TMPDIR`; the guest's `/tmp`/tmpfs is not a fixture destination.
 Native bind-fixture modes require root and a private mount namespace. Set TMPDIR
@@ -385,7 +396,7 @@ poison, independent invocations and refusal before pending/FORCE/cleanup.
 | 26 | `maintenance-replacement-review.test.sh` | Native GNU/Alpine merge-type and destination-symlink refusal; planned-partial rollback versus unrelated root/nested writers; source hardlink/independent-directory metadata; checked partial-link/full-copy failure and actual loop-backed ext4 cross-device fallback; lossless array and invalid-path controls; populated-tree bytes and bounded operation counts. Requires root/private mount namespace and `ALPINE_BUSYBOX`; large50k proof uses `REPLACEMENT_LARGE_SIZE=50000`, freshly admitted `REPLACEMENT_TASK_WORKSPACE` and explicit `REPLACEMENT_TASK_BUDGET_BYTES` (account for any task data outside that workspace before supplying it), with every fixture under disk-backed TMPDIR and the existing8GiB root reserve retained |
 | 27 | `maintenance-merge-inplace.test.sh` | Native populated old-only directory/file/hardlink identity and actual copy-byte accounting, independent SUCCESS writer in merge/dot-merge, conflicting restore aside retention/no nesting, and newly appearing native bind mounts inside stage/aside before cleanup |
 | 28 | `maintenance-go-minimum.test.sh` | Actual source minimum/toolchain parsing, installed-satisfying/no-downgrade, checked minor-patch/legacy tag selection, explicit pin priority, duplicate/malformed/failed-producer/no-match/download negatives and installed executable consumer; tiny downloaded artifact executables are explicitly models |
-| 29 | `maintenance-runtime-hooks.test.sh` | Cold Radicale/Discourse/ThingsBoard/AliasVault fresh/update/failure/retry hooks, native TOML/INI parsing, both STD modes and actual persistent files/units/pending owner. Compilers, runtime/database provisioning and service controls are explicit models |
+| 29 | `maintenance-runtime-hooks.test.sh` | Cold Radicale/Discourse/ThingsBoard/AliasVault fresh/update/failure/retry hooks, native TOML/INI parsing, both STD modes and actual persistent files/units/pending owner. Private LazyLibrarian real offline uv/Python3.12/venv/install/import and generated ExecStart interpreter consumers cover initial and unchanged update selection. App source, compilers, OS/runtime/database provisioning and service controls are models, not full app/systemd acceptance |
 | 30 | `maintenance-build-hooks.test.sh` | Cold Tracearr/Twenty/Kima/Paperclip/Paperless fresh/update/failure/retry paths. Native Node shared/emails/logo and migration-environment consumers; native Dotenv/JSON and actual v2/v3 Paperless filters; exact pnpm diagnosis, preservation, restart overrides and before-effects refusals. Neural artifacts/checksums, compilers, database and services are explicitly modeled |
 | 31 | `maintenance-node24-vite.test.sh` | Native Node24 checks every declared engine range in the supplied AliasVault lockfile using npm's semver implementation, installs the resolved Vite with strict engines and observes generated HTML/JS from a bounded compiler fixture. Requires admitted `RUNTIME_NODE`, `RUNTIME_NPM` and immutable `RUNTIME_EXTRA_REFERENCES`; not the whole app build |
 | 32 | `maintenance-paperless-format-source.test.sh` | Actual immutable v2 function and v3 ConsumerFilter/watchfiles demonstrate wildcard-directory and absolute-root counterexamples. Native Dotenv parses JSON and quoted secrets; these expected capability differences support checked refusal, not an approximate conversion |

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Actual cold hooks/release helper/update owner/files/native config readers.
-# Package/runtime provisioning, compilers, database and services are explicit models.
+# Actual cold hooks/helpers/files/config readers, plus real LazyLibrarian venv proof.
+# OS/runtime provisioning, app source/builds, database and service controls are models;
+# the bounded LazyLibrarian fixture uses real uv/Python/install/import/ExecStart.
 set -euo pipefail
 systemd-detect-virt --vm --quiet || exit 1
 : "${TMPDIR:?disk-backed TMPDIR required}" "${MAINTENANCE_REFERENCES:?immutable source metadata required}"
@@ -318,5 +319,6 @@ PY
     done
   done
 done
-printf '%s failure(s); actual cold hooks/helpers/files/config readers; external build/runtime/DB/service models\n' "$failures"
+printf '%s failure(s); original cold hooks/helpers/files/config readers; external build/runtime/DB/service models\n' "$failures"
 [[ "$failures" == 0 ]]
+bash "$ROOT/tests/lib/lazylibrarian-venv.fixture.sh"
