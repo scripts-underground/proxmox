@@ -241,7 +241,7 @@ network or lifecycle owner. Its cold-generated native install/update bundles run
 the actual published ELF/service. The consumer checks local image bytes/SHA256,
 saved judgment/settings in HTTP and SQLite/files/cache, runtime/private identity,
 operator overrides, restart and an explicit same-version no-op update. Native
-v0.3.0 acceptance also requires the selected executable SHA256, real non-root
+v0.4.1 acceptance also requires the selected executable SHA256, real non-root
 port80 binding with only the systemd bind capability, disk TMPDIR SQLite executable
 mapping, matching-Origin saves, foreign-Origin403 without mutation and origin-less
 API saves. These assertions are not established by the modeled fixture. Native
