@@ -24,7 +24,7 @@ maintenance-release-boundaries maintenance-release-metadata maintenance-replacem
 maintenance-retry-callers maintenance-retry-preservation maintenance-runtime-hooks
 maintenance-service-edges maintenance-service-uninstall maintenance-silent
 maintenance-uninstall maintenance-uv-range maintenance-webtrees maintenance-zigbee2mqtt
-nvidia-userspace ollama-keep-install release-check-errors requested-release
+migration-dragonfly nvidia-userspace ollama-keep-install release-check-errors requested-release
 restore-backup ssh-default-keys strata tools-retry-timer update-pending
 wanderer-plugin-dirs'''.split()
 REGISTRY = {name: Suite(f'tests/{name}.test.sh', ('fixture',)) for name in FIXTURES}
@@ -34,6 +34,7 @@ REGISTRY.update({
     'codeberg-release': Suite('tests/codeberg-release.test.sh', ('fixture', 'live', 'bundle'), 'mode-specific', (('live', '--live'), ('bundle', '--bundle'))),
     'github-force-deploy': Suite('tests/github-force-deploy.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-kosmozoo-native': Suite('tests/maintenance-kosmozoo-native.test.sh', ('live-runtime',), 'live-runtime'),
+    'migration-dragonfly-native': Suite('tests/migration-dragonfly-native.test.sh', ('live-runtime',), 'live-runtime'),
     'uv-project-version': Suite('tests/uv-project-version.test.sh', ('live-runtime',), 'live-runtime'),
     'romm-player-serving': Suite('tests/romm-player-serving.test.sh', ('live-runtime', 'setup'), 'live-runtime', (('setup', '--setup'),)),
     'romm-live-verification': Suite('tests/romm-live-verification.test.sh', ('installed-probe',), 'installed-probe'),
