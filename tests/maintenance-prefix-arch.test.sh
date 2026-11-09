@@ -126,5 +126,6 @@ done
 dpkg() { return 1; }
 uname() { printf 'x86_64\n'; }
 check "$(get_system_arch both)" amd64 'both retains uname fallback'
+bash "$ROOT/tests/lib/radarr-release.fixture.sh"
 printf '%s failure(s); actual checker/deployer/architecture outcomes; responses modeled\n' "$failed"
 [[ "$failed" == 0 ]]
