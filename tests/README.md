@@ -268,6 +268,18 @@ bytes and inode ownership, refusal before effects, publication/race/failure and
 ordinary retry. Systemctl is explicitly modeled; this is not native app proof.
 All original runtime-hook and real venv/package/interpreter assertions remain.
 
+Its private Readarr fixture executes cold hooks, the actual release helper and
+writer-generated APT-only updater with immutable, actual official GNU
+v0.4.18.2805 x64/arm64 archives in `maintenance_references/readarr/`. Real SHA256,
+tar and extracted ELF headers cover both STD modes, owned-stage cleanup, caller
+traps, corruption before extraction, failed download/extraction and unsupported
+architectures. Transport, architecture detection, packages and systemctl are
+models. This does not execute Readarr or qualify native ARM or metadata service
+behavior. The old-code RED maps only its forbidden temporary literals to disk.
+Actual writer-generated install cases also consume the source-declared receiver
+directory with absent/foreign creator TMPDIR, preserve explicit disk overrides,
+and refuse invalid receivers before library/package/download/service effects.
+
 `maintenance-lazylibrarian-native/bundle` uses the existing outer runtime owner,
 publisher and typed pct broker. It qualifies receiver strace attach/thread/path/
 open-exit-delay behavior before installation, executes actual cold hooks and the
