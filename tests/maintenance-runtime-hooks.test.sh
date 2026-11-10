@@ -323,3 +323,4 @@ printf '%s failure(s); original cold hooks/helpers/files/config readers; externa
 [[ "$failures" == 0 ]]
 bash "$ROOT/tests/lib/lazylibrarian-venv.fixture.sh"
 bash "$ROOT/tests/lib/lazylibrarian-privacy.fixture.sh"
+bash "$ROOT/tests/lib/readarr-release.fixture.sh"
