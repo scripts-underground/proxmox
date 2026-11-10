@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Actual release helper/cold hooks/checksum/tar/ELF and writer-generated updater.
+# Actual release helper/cold hooks/checksum/tar/ELF and writer-generated bundles.
 # HTTP transport, architecture detection, APT and service effects are models.
 set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
@@ -11,10 +11,17 @@ if [[ "${1:-}" == --child ]]; then
   mount --rbind "$c/state" /var/lib
   source "$ROOT/misc/tools.func"
   source "$c/hooks.sh"
-  if [[ "$ROLE" == bundle ]]; then
+  if [[ "$ROLE" == bundle || "$ROLE" == install-bundle ]]; then
     source "$ROOT/misc/bundle.func"
     # shellcheck disable=SC2034
-    NSAPP=readarr var_lxc_tmpdir="$TMPDIR"
+    NSAPP=readarr
+    if [[ "$ROLE" == install-bundle ]]; then
+      _write_bundle install install_script "$c/cache" --script-id readarr -- --requirements 2 1024 -- \
+        'source "$CASE_ROOT/install-before.sh"' install_script 'source "$CASE_ROOT/install-after.sh"' > "$c/install"
+      exec bash "$c/install"
+    fi
+    # The pre-existing updater model supplies its receiving path explicitly.
+    export var_lxc_tmpdir="$TMPDIR"
     _write_bundle update update_script "$c/cache" --script-id readarr -- --requirements 2 1024 -- 'run_update_script "$@"' > "$c/update"
     exec bash "$c/update"
   fi
@@ -43,9 +50,9 @@ check() {
   fi
 }
 for mode in no yes; do
-  for variant in x64 arm64 corrupt download extract unsupported bundle; do
+  for variant in x64 arm64 corrupt download extract unsupported bundle receiver-default receiver-absent receiver-override receiver-invalid; do
     arch=amd64
-    [[ "$variant" != arm64 ]] || arch=arm64
+    [[ "$variant" != arm64 && "$variant" != receiver-override ]] || arch=arm64
     [[ "$variant" != unsupported ]] || arch=riscv64
     c="$work/$mode-$variant"
     mkdir -p "$c/"{opt,units,state/scripts-underground,cache,home,tmp,legacy}
@@ -94,6 +101,7 @@ curl() {
 curl_download() {
   printf 'download\n' >> "$CASE_ROOT/events"
   printf '%s\n' "$2" >> "$CASE_ROOT/downloads"
+  printf '%s|%s|%s\n' "$TMPDIR" "$HOME" "$1" >> "$CASE_ROOT/transport-context"
   [[ "$VARIANT" != download ]] || return 22
   cp -- "$MAINTENANCE_REFERENCES/readarr/${2##*/}" "$1"
   [[ "$VARIANT" != corrupt ]] || printf CORRUPT >> "$1"
@@ -116,15 +124,38 @@ MODELS
       role=bundle
       mkdir -p "$c/state/readarr" "$c/opt/Readarr"
       printf existing-app > "$c/opt/Readarr/Readarr"
+    elif [[ "$variant" == receiver-* ]]; then
+      role=install-bundle
+      # Observe source-time receiving state after the real writer's unmodified
+      # validation/preparation prelude, before models or application effects.
+      printf 'printf "%%s\\n" "${TMPDIR-unset}" > "$CASE_ROOT/prelude-receiver"\nsetup_lxc() { :; }\n' > "$c/cache/install.func"
+      printf 'printf "%%s\\n" "$TMPDIR" > "$CASE_ROOT/hook-receiver"\ntrap -p EXIT ERR RETURN > "$CASE_ROOT/traps-before"\n' > "$c/install-before.sh"
+      printf 'trap -p EXIT ERR RETURN > "$CASE_ROOT/traps-after"\ncmp "$CASE_ROOT/traps-before" "$CASE_ROOT/traps-after"\nprintf retained > "$CASE_ROOT/traps"\n' > "$c/install-after.sh"
     fi
     rc=0
-    env -i PATH="$PATH" ROOT="$ROOT" HOME="$c/home" TMPDIR="$c/tmp" MAINTENANCE_REFERENCES="$MAINTENANCE_REFERENCES" CASE_ROOT="$c" ROLE="$role" VARIANT="$variant" TEST_ARCH="$arch" VERBOSE="$mode" BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/errors.log" \
-      timeout 90s unshare -mn --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
+    receiving=()
+    case "$variant" in
+      receiver-override) receiving=("var_lxc_tmpdir=$c/receiving space") ;;
+      receiver-invalid) receiving=(var_lxc_tmpdir=relative) ;;
+    esac
+    creator=("TMPDIR=$c/tmp")
+    [[ "$variant" != receiver-absent ]] || creator=()
+    env -i PATH="$PATH" ROOT="$ROOT" HOME="$c/home" MAINTENANCE_REFERENCES="$MAINTENANCE_REFERENCES" CASE_ROOT="$c" ROLE="$role" VARIANT="$variant" TEST_ARCH="$arch" VERBOSE="$mode" BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/errors.log" \
+      "${receiving[@]}" "${creator[@]}" timeout 90s unshare -mn --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
     expected=0
-    case "$variant" in corrupt) expected=1 ;; download) expected=250 ;; extract) expected=73 ;; unsupported) expected=65 ;; esac
+    case "$variant" in corrupt) expected=1 ;; download) expected=250 ;; extract) expected=73 ;; unsupported | receiver-invalid) expected=65 ;; esac
     label="Readarr/$mode/$variant"
     check "$rc" "$expected" "$label cold status"
     if [[ "$rc" != "$expected" ]]; then tail -n 5 "$c/output"; fi
+    if [[ "$variant" == receiver-invalid ]]; then
+      check "$(test -e "$c/prelude-receiver" && printf reached || printf absent)" absent "$label refuses before library source effects"
+      check "$(stat -c %s "$c/packages")" 0 "$label refuses before package effects"
+      check "$(stat -c %s "$c/downloads")" 0 "$label refuses before download"
+      check "$(stat -c %s "$c/services")" 0 "$label refuses before service"
+      check "$(test -e "$c/opt/Readarr" && printf present || printf absent)" absent "$label refuses before deployment"
+      rm -rf -- "$c"
+      continue
+    fi
     check "$(cat "$c/default-arch")" "$arch" "$label generic dpkg default retained"
     check "$(cat "$c/tmp/readarr-existing")" lookalike "$label caller temporary data retained"
     check "$(find "$c/tmp" -mindepth 1 -maxdepth 1 ! -name readarr-existing | wc -l)" 0 "$label owned stages cleaned"
@@ -136,7 +167,26 @@ MODELS
       check "$(grep -c 'does not update Readarr' "$c/messages" || true)" 2 "$label truthful updater messages"
     else
       check "$(cat "$c/traps" 2> /dev/null || true)" retained "$label caller traps unchanged"
-      check "$(cat "$c/exit-trap" 2> /dev/null || true)" retained "$label original EXIT trap executes"
+      if [[ "$role" == install-bundle ]]; then
+        receiver=/var/lib/readarr/tmp physical="$c/state/readarr/tmp"
+        [[ "$variant" != receiver-override ]] || {
+          receiver="$c/receiving space"
+          physical="$receiver"
+        }
+        check "$(cat "$c/prelude-receiver" 2> /dev/null || true)" "$receiver" "$label source declaration reaches pre-library context"
+        check "$(cat "$c/hook-receiver" 2> /dev/null || true)" "$receiver" "$label actual hook consumes receiver path"
+        check "$(stat -c %a "$physical" 2> /dev/null || true)" 1777 "$label real framework prepares sticky receiver"
+        check "$(find "$physical" -mindepth 1 -maxdepth 1 2> /dev/null | wc -l)" 0 "$label helper and archive stages cleaned on receiver"
+        check "$(test -e "$c/install" && printf present || printf absent)" absent "$label generated install EXIT trap self-removes"
+        context_ok=no
+        if [[ -s "$c/transport-context" ]]; then
+          IFS='|' read -r temporary home destination < "$c/transport-context"
+          [[ "$temporary" == "$receiver"/readarr.* && "$home" == "$temporary" && "$destination" == "$temporary"/download/* ]] && context_ok=yes
+        fi
+        check "$context_ok" yes "$label real helper staging is receiver-owned"
+      else
+        check "$(cat "$c/exit-trap" 2> /dev/null || true)" retained "$label original EXIT trap executes"
+      fi
       check "$(cat "$c/packages")" 'install -y sqlite3 libicu-dev' "$label dependencies unchanged"
       if [[ "$expected" == 0 ]]; then
         alias=x64 machine=62

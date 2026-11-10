@@ -18,6 +18,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
+var_lxc_tmpdir="${var_lxc_tmpdir:-/var/lib/readarr/tmp}"
 
 function install_script() {
   msg_info "Installing Dependencies"

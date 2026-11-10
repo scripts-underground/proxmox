@@ -276,6 +276,9 @@ traps, corruption before extraction, failed download/extraction and unsupported
 architectures. Transport, architecture detection, packages and systemctl are
 models. This does not execute Readarr or qualify native ARM or metadata service
 behavior. The old-code RED maps only its forbidden temporary literals to disk.
+Actual writer-generated install cases also consume the source-declared receiver
+directory with absent/foreign creator TMPDIR, preserve explicit disk overrides,
+and refuse invalid receivers before library/package/download/service effects.
 
 `maintenance-lazylibrarian-native/bundle` uses the existing outer runtime owner,
 publisher and typed pct broker. It qualifies receiver strace attach/thread/path/
