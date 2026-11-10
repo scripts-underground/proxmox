@@ -34,9 +34,9 @@ revisions instead of silently refreshing admission.
 
 The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
 current-hardening, cron-update and package-force fixtures, Dragonfly fixture/native
-consumers, two workflow regressions, browser and contribution
+consumers, the LazyLibrarian native bundle consumer, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 99 public suite/mode combinations. The
+suite/mode/options refuse. There are 100 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -113,6 +113,7 @@ environment maps, PATH, BASH_ENV, loader variables and credentials are not input
 | 9 | maintenance-node24-vite, maintenance-build-hooks, maintenance-immich / fixture | `runtime_node` executable -> RUNTIME_NODE; node24-vite additionally requires `runtime_npm` file -> RUNTIME_NPM |
 | 10 | maintenance-webtrees, maintenance-zigbee2mqtt, maintenance-immich / fixture | `maintenance_next_references` tree -> MAINTENANCE_NEXT_REFERENCES; webtrees additionally requires `maintenance_caddy` executable -> MAINTENANCE_CADDY |
 | 11 | maintenance-replacement-review / fixture | Optional `replacement_tools` file, `large_size` integer, `budget_workspace` path, `budget_bytes` integer -> REPLACEMENT_TOOLS, REPLACEMENT_LARGE_SIZE, REPLACEMENT_TASK_WORKSPACE, REPLACEMENT_TASK_BUDGET_BYTES |
+| 12 | maintenance-lazylibrarian-native / bundle | Required `lazylibrarian_fixture` tree of immutable first-party source/Git and uv/Python archives -> app-owned outer consumer reads the checked LAZYLIBRARIAN_FIXTURE binding |
 
 All other registered modes have an empty named-input contract. File/executable
 values are `{ "path": "/absolute/guest/file", "sha256": "<64 lowercase hex>" }`.
@@ -259,6 +260,29 @@ installed site-packages import and changed package after update; the existing
 interpreter/unit remain unchanged and the outer interpreters stay uncontaminated.
 OS packages, source clone/pull, setup_uv provisioning and systemctl are models.
 This does not run LazyLibrarian itself or prove actual systemd service behavior.
+
+The same runtime-hook suite also executes the exact marked operator block from
+`docs/lazylibrarian-private-config.md` through a shared strict extractor. Private
+mount/PID fixtures observe native files, descriptor-pinned chmod, ACLs, modes,
+bytes and inode ownership, refusal before effects, publication/race/failure and
+ordinary retry. Systemctl is explicitly modeled; this is not native app proof.
+All original runtime-hook and real venv/package/interpreter assertions remain.
+
+`maintenance-lazylibrarian-native/bundle` uses the existing outer runtime owner,
+publisher and typed pct broker. It qualifies receiver strace attach/thread/path/
+open-exit-delay behavior before installation, executes actual cold hooks and the
+native root service, and runs the extracted guide against legacy default and
+explicit custom config paths. Native API saves observe .new0600 before open
+returns, two backup rotations, harmless setting and in-CT-only key equality.
+Startup pre-load creation, detached ordinary saves, service restart, actual owned
+CT stop/start, root data/UI/API, a writer-open failure/retry, operator override
+refusal and the unchanged cold updater retain separate assertions. Input archives
+explicitly bind first-party commit8b6ba44398f6c74c4dd29b13dc2047b771e27488,
+uv0.13.7 and Python3.12.16. Controlled Git transport proves a same-commit update,
+not a product pin, detached-pin preservation or release transition. No raw config,
+key/key digest, environment dump or app log is exported. This does not qualify
+metadata providers, downloading or shared-media access. Native pending75 requires
+independent external redacted-byte custody and ACK/public finalize as above.
 
 These plain Bash tests run inside an isolated Linux VM with an existing writable
 disk-backed `TMPDIR`; the guest's `/tmp`/tmpfs is not a fixture destination.

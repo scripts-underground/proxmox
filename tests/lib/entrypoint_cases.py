@@ -23,6 +23,7 @@ DIRECT = {
     'maintenance-current-hardening': [[]],
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
+    'maintenance-lazylibrarian-native': [[]],
     'migration-dragonfly': [[]],
     'migration-dragonfly-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
@@ -57,7 +58,8 @@ class Entrypoints(unittest.TestCase):
         additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh',
                      'tests/maintenance-current-hardening.test.sh', 'tests/maintenance-cron-update.test.sh',
                      'tests/maintenance-package-force.test.sh',
-                     'tests/migration-dragonfly.test.sh', 'tests/migration-dragonfly-native.test.sh'}
+                      'tests/migration-dragonfly.test.sh', 'tests/migration-dragonfly-native.test.sh',
+                      'tests/maintenance-lazylibrarian-native.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -69,7 +71,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=7 shell=78 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=8 shell=79 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -110,7 +112,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
-        self.assertEqual(cases,99)
+        self.assertEqual(cases,100)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):
@@ -221,7 +223,8 @@ class Entrypoints(unittest.TestCase):
         from entrypoint import dispatch
         for suite,mode,name in [('maintenance-template-lock','baseline','baseline'),
                                ('maintenance-gpg-key','fixture','gpg_fixture'),
-                               ('maintenance-node24-vite','fixture','runtime_extra_references')]:
+                                ('maintenance-node24-vite','fixture','runtime_extra_references'),
+                                ('maintenance-lazylibrarian-native','bundle','lazylibrarian_fixture')]:
             document,path,op=self.input_context(suite,mode,{})
             del op['parameters']
             path.write_text(json.dumps(document));path.chmod(0o400)

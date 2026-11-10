@@ -322,3 +322,4 @@ done
 printf '%s failure(s); original cold hooks/helpers/files/config readers; external build/runtime/DB/service models\n' "$failures"
 [[ "$failures" == 0 ]]
 bash "$ROOT/tests/lib/lazylibrarian-venv.fixture.sh"
+bash "$ROOT/tests/lib/lazylibrarian-privacy.fixture.sh"
