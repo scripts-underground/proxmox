@@ -34,6 +34,7 @@ REGISTRY.update({
     'codeberg-release': Suite('tests/codeberg-release.test.sh', ('fixture', 'live', 'bundle'), 'mode-specific', (('live', '--live'), ('bundle', '--bundle'))),
     'github-force-deploy': Suite('tests/github-force-deploy.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-kosmozoo-native': Suite('tests/maintenance-kosmozoo-native.test.sh', ('live-runtime',), 'live-runtime'),
+    'maintenance-lazylibrarian-native': Suite('tests/maintenance-lazylibrarian-native.test.sh', ('bundle',), 'bundle'),
     'migration-dragonfly-native': Suite('tests/migration-dragonfly-native.test.sh', ('live-runtime',), 'live-runtime'),
     'uv-project-version': Suite('tests/uv-project-version.test.sh', ('live-runtime',), 'live-runtime'),
     'romm-player-serving': Suite('tests/romm-player-serving.test.sh', ('live-runtime', 'setup'), 'live-runtime', (('setup', '--setup'),)),
@@ -71,6 +72,7 @@ class Input:
 # Targets are fixed argv slots or test-process environment keys, never receiving
 # framework exports. Tree values name a hashed immutable directory manifest.
 INPUT_BINDINGS = {(suite,mode): {} for suite,row in REGISTRY.items() for mode in row.modes}
+INPUT_BINDINGS['maintenance-lazylibrarian-native','bundle'] = {'lazylibrarian_fixture': Input('tree','LAZYLIBRARIAN_FIXTURE')}
 for mode in REGISTRY['maintenance-globnotes'].modes:
     INPUT_BINDINGS['maintenance-globnotes',mode] = {'subject': Input('file','argv',False)}
 for suite,modes,kind in [

@@ -45,7 +45,7 @@ Description=LazyLibrarian Daemon
 After=syslog.target network.target
 
 [Service]
-UMask=0002
+UMask=0077
 Type=simple
 ExecStart=/opt/LazyLibrarian/venv/bin/python3 /opt/LazyLibrarian/LazyLibrarian.py
 TimeoutStopSec=20
