@@ -24,6 +24,7 @@ DIRECT = {
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
     'maintenance-lazylibrarian-native': [[]],
+    'maintenance-edit-mind-native': [[]],
     'migration-dragonfly': [[]],
     'migration-dragonfly-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
@@ -57,9 +58,10 @@ class Entrypoints(unittest.TestCase):
         self.assertEqual(actual, declared)
         additions = {'tests/maintenance-kosmozoo-current.test.sh', 'tests/maintenance-kosmozoo-native.test.sh',
                      'tests/maintenance-current-hardening.test.sh', 'tests/maintenance-cron-update.test.sh',
-                     'tests/maintenance-package-force.test.sh',
+                      'tests/maintenance-package-force.test.sh', 'tests/maintenance-edit-mind.test.sh',
                       'tests/migration-dragonfly.test.sh', 'tests/migration-dragonfly-native.test.sh',
-                      'tests/maintenance-lazylibrarian-native.test.sh'}
+                       'tests/maintenance-lazylibrarian-native.test.sh',
+                       'tests/maintenance-edit-mind-native.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -71,7 +73,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=8 shell=79 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions='+str(len(additions))+' shell='+str(len(actual))+' roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -112,7 +114,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
-        self.assertEqual(cases,100)
+        self.assertEqual(cases,102)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):
@@ -185,6 +187,80 @@ class Entrypoints(unittest.TestCase):
         self.assertIn('ENTRYPOINT_ADMITTED maintenance-package-force fixture', result.stdout)
         print('PACKAGE_FORCE_DIRECT_GUARD admitted=1 consumer_body=0 effects=0', flush=True)
 
+    def test_edit_mind_native_closed_guard_contract(self):
+        from edit_mind_native_guard import Guard, TrialStopped
+        from test_inputs import bindings
+        moment=[0.0]
+        native=SimpleNamespace(owner=SimpleNamespace(current=None))
+        guard=Guard(native,clock=lambda:moment[0])
+        guard.observe(1024)
+        self.assertIsNone(guard.reason)
+        guard.observe(Guard.STOP_RX)
+        self.assertEqual(guard.reason,'RX-soft-threshold')
+        self.assertEqual(Guard.CEILING-Guard.STOP_RX,2*1024**3)
+        guard=Guard(native,clock=lambda:moment[0]);guard.observe(100);guard.observe(99)
+        self.assertEqual(guard.reason,'RX-counter-reset')
+        guard=Guard(native,clock=lambda:moment[0]);moment[0]=3600;guard.observe(0)
+        self.assertEqual(guard.reason,'operation-deadline')
+        def unavailable():raise OSError('counter unavailable')
+        guard=Guard(native,clock=lambda:moment[0]);guard.counter=unavailable
+        with self.assertRaises(TrialStopped):guard.check()
+        # Real finite process-group cancellation in this VM; no CT or download.
+        events=[]
+        child_native=SimpleNamespace(PROGRAMS={'pct':sys.executable},run=SimpleNamespace(
+            context=SimpleNamespace(operation={'tmpdir':os.environ['TMPDIR']}),
+            record=lambda label,row:events.append((label,row))))
+        child_guard=Guard(child_native);samples=[0]
+        def budget_sample():
+            samples[0]+=1
+            return 0 if samples[0]==1 else Guard.STOP_RX
+        child_guard.counter=budget_sample
+        result=child_guard.process('pct',['-c','import time;time.sleep(10)'])
+        self.assertEqual(result.returncode,125)
+        self.assertEqual(child_guard.reason,'RX-soft-threshold')
+        ordinary=Guard(child_native);ordinary.counter=lambda:0
+        self.assertEqual(ordinary.process('pct',['-c','raise SystemExit(42)']).returncode,42)
+        owned,calls,argv=self.native_fixture()
+        original=owned.call
+        self.assertEqual(owned.dispatch('pct',argv).returncode,0)
+        controlled=Guard(owned);controlled.reason='RX-soft-threshold';commands=[]
+        owned.call=controlled.call
+        def containment(argv,**kwargs):
+            commands.append(argv)
+            self.assertEqual(kwargs['timeout'],4)
+            return subprocess.CompletedProcess(argv,0,'','')
+        with patch('edit_mind_native_guard.subprocess',SimpleNamespace(run=containment)):
+            self.assertEqual(controlled.contain(),0)
+            self.assertEqual(controlled.contain(),0)
+        self.assertEqual(len(commands),1)
+        self.assertEqual(commands[0][-8:],['/usr/bin/timeout','2s','/usr/sbin/ip','link','set','dev','eth0','down'])
+        owned.call=original
+        owned._process=original
+        finishing=Guard(owned);owned.call=finishing.call
+        with finishing:self.assertEqual(finishing.finish(125),125)
+        self.assertTrue(any(argv[:2]==['shutdown','2012'] for _,argv in calls))
+        # Actual closed binder, before Run/CT effects, for both required inputs.
+        for missing in ('edit_mind_reference','edit_mind_models'):
+            data,path,op=self.input_context('maintenance-edit-mind-native','nested-install',{})
+            if missing=='edit_mind_models':
+                root=self.run_owner.directory/'edit-mind-reference';root.mkdir()
+                (root/'file').write_text('closed input')
+                from test_context import source_files
+                manifest=self.run_owner.directory/'edit-mind-reference.json'
+                manifest.write_text(json.dumps(dict(root=str(root),files=source_files(root))))
+                op['parameters']['edit_mind_reference']=dict(path=str(manifest),sha256=sha(manifest.read_bytes()))
+            with self.assertRaisesRegex(AdmissionError,'required input '+missing):
+                Context.validate(data,path,'maintenance-edit-mind-native','nested-install')
+        print('EDIT_MIND_NATIVE_CLOSED_GUARD threshold14GiB margin2GiB deadline3600 reset_unknown_refused inputs2 actual_child_cancel125=1 actual_child_error42=1 typed_containment_once=1 original125_preserved=1 native_effects=recording soft_not_hard_cap=1',flush=True)
+        self.edit_mind_routing_overlap()
+
+    def edit_mind_routing_overlap(self):
+        from edit_mind_native_cases import creator_baseline, retention
+        creator_baseline(self,self.source)
+        retention(self)
+        from edit_mind_readiness_cases import readiness
+        readiness(self,self.source)
+
     def test_valid_fixed_dispatch(self):
         from entrypoint import dispatch
         calls = []
@@ -224,7 +300,7 @@ class Entrypoints(unittest.TestCase):
         for suite,mode,name in [('maintenance-template-lock','baseline','baseline'),
                                ('maintenance-gpg-key','fixture','gpg_fixture'),
                                 ('maintenance-node24-vite','fixture','runtime_extra_references'),
-                                ('maintenance-lazylibrarian-native','bundle','lazylibrarian_fixture')]:
+                                 ('maintenance-lazylibrarian-native','bundle','lazylibrarian_fixture')]:
             document,path,op=self.input_context(suite,mode,{})
             del op['parameters']
             path.write_text(json.dumps(document));path.chmod(0o400)

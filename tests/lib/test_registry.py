@@ -14,7 +14,7 @@ class Suite:
 FIXTURES = '''autocaliweb-update container-install-failure deploy-replace-contents
 endurain-github filebrowser-retry-install gpu-passthrough gpu-userspace
 invidious-companion-update jellyfin-ffmpeg keycloak-keep-install legacy-version-marker
-llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preservation
+llama-cpp maintenance-addon-writer maintenance-app-compat maintenance-app-preservation maintenance-edit-mind
 maintenance-build-hooks maintenance-build-temp maintenance-bundle-bootstrap maintenance-current-hardening
 maintenance-bundle-writer maintenance-consumers maintenance-cron-update maintenance-go-minimum
 maintenance-gpg-key maintenance-immich maintenance-keep maintenance-kosmozoo-current maintenance-merge-inplace
@@ -35,6 +35,7 @@ REGISTRY.update({
     'github-force-deploy': Suite('tests/github-force-deploy.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-kosmozoo-native': Suite('tests/maintenance-kosmozoo-native.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-lazylibrarian-native': Suite('tests/maintenance-lazylibrarian-native.test.sh', ('bundle',), 'bundle'),
+    'maintenance-edit-mind-native': Suite('tests/maintenance-edit-mind-native.test.sh', ('nested-install',), 'nested-install'),
     'migration-dragonfly-native': Suite('tests/migration-dragonfly-native.test.sh', ('live-runtime',), 'live-runtime'),
     'uv-project-version': Suite('tests/uv-project-version.test.sh', ('live-runtime',), 'live-runtime'),
     'romm-player-serving': Suite('tests/romm-player-serving.test.sh', ('live-runtime', 'setup'), 'live-runtime', (('setup', '--setup'),)),
@@ -73,6 +74,16 @@ class Input:
 # framework exports. Tree values name a hashed immutable directory manifest.
 INPUT_BINDINGS = {(suite,mode): {} for suite,row in REGISTRY.items() for mode in row.modes}
 INPUT_BINDINGS['maintenance-lazylibrarian-native','bundle'] = {'lazylibrarian_fixture': Input('tree','LAZYLIBRARIAN_FIXTURE')}
+INPUT_BINDINGS['maintenance-edit-mind','fixture'] = {
+    'edit_mind_reference': Input('tree','EDIT_MIND_REFERENCE'),
+    'edit_mind_baseline': Input('file','EDIT_MIND_BASELINE'),
+    'edit_mind_pg_tools': Input('tree','EDIT_MIND_PG_TOOLS'),
+    'edit_mind_node': Input('executable','EDIT_MIND_NODE'),
+}
+INPUT_BINDINGS['maintenance-edit-mind-native','nested-install'] = {
+    'edit_mind_reference': Input('tree','EDIT_MIND_REFERENCE'),
+    'edit_mind_models': Input('file','EDIT_MIND_MODELS'),
+}
 for mode in REGISTRY['maintenance-globnotes'].modes:
     INPUT_BINDINGS['maintenance-globnotes',mode] = {'subject': Input('file','argv',False)}
 for suite,modes,kind in [
