@@ -486,6 +486,13 @@ not rotate keys, alter operator units/ports or change PostgreSQL major versions.
 Fresh and update paths build only frozen client/server dependency closures while
 retaining upstream prebuild hooks. Modeled preservation assertions and the separate
 native BookOrbit consumer have different proof scopes, documented in tests/README.md.
+BookOrbit keeps the literal service entry root distinct from its physical directory.
+Discovery captures physical path/device/inode and lexical entry identity before
+configuration/query work, then transports that identity separately from relative
+keeps. Both normalized paths and existing referents are classified against both
+anchors, including caller keeps and reserved-code conflicts. A root remap or changed
+keep set after quiescence refuses before replacement, retaining pending state and
+the stopped-service diagnostic; it does not relocate data or rewrite units.
 
 ### 3.2 Addon — `misc/bootstrap/addon_lxc`
 

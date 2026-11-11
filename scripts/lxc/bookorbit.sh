@@ -129,8 +129,8 @@ function update_script() {
   # Discovery belongs to this cold hook, before runtime/service/source effects.
   # The systemd EnvironmentFile and Nest's optional cwd .env accept only the
   # characterized common grammar below; unsupported inputs fail, never guess.
-  local preflight status declaration
-  local -a inherited=() legacy=() discovered=()
+  local preflight status declaration root_identity
+  local -a inherited=() legacy=() discovered=() discovery_plan=()
   if declaration=$(declare -p CLEAN_INSTALL_KEEP_PATHS 2> /dev/null); then
     [[ "$declaration" == 'declare -a '* ]] || exit 65
     inherited+=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
@@ -218,6 +218,18 @@ function databaseEnvironment(e){
   return env;
 }
 (async()=>{
+  stage='root-identity';
+  function rootIdentity(){
+    const physical=fs.realpathSync(root);
+    if(physical==='/'||root.startsWith(physical+'/')||/[\x00-\x1f\x7f]/.test(physical))fail();
+    const entry=fs.lstatSync(root,{bigint:true}),target=fs.statSync(root,{bigint:true});
+    if(!target.isDirectory())fail();
+    return {physical,device:String(target.dev),inode:String(target.ino),
+      entryDevice:String(entry.dev),entryInode:String(entry.ino),link:entry.isSymbolicLink()?fs.readlinkSync(root):null};
+  }
+  const identity=rootIdentity(),identityJSON=JSON.stringify(identity);
+  const anchors=[...new Set([root,identity.physical])];
+  stage='configuration';
   const config=root+'/.env';
   const metadata=fs.lstatSync(config);
   if(!metadata.isFile()||metadata.nlink!==1){
@@ -264,7 +276,7 @@ function databaseEnvironment(e){
     if(!relative||relative.split('/').some(v=>!v||v==='.'||v==='..')||/[\x00-\x1f\x7f*?\[]/.test(relative)||path.isAbsolute(relative)||reserved.some(r=>r===relative||r.startsWith(relative+'/')||relative.startsWith(r+'/')))fail();
     keep.add(relative);
   }
-  for(const value of process.argv.slice(2))admit(value);
+  for(const value of process.argv.slice(2)){admit(value);roots.push(path.join(root,value));}
   for(const value of roots){
     if(/[\x00-\x1f\x7f]/.test(value))fail();
     const normalized=path.resolve(value);
@@ -276,18 +288,25 @@ function databaseEnvironment(e){
     }
     const resolved=path.join(fs.realpathSync(ancestor),...suffix);
     for(const candidate of new Set([normalized,resolved])){
-      if(candidate==='/'||candidate===root||root.startsWith(candidate+'/'))fail();
-      if(candidate.startsWith(root+'/'))admit(path.relative(root,candidate));
+      for(const anchor of anchors){
+        if(candidate==='/'||candidate===anchor||anchor.startsWith(candidate+'/'))fail();
+        if(candidate.startsWith(anchor+'/'))admit(path.relative(anchor,candidate));
+      }
     }
   }
-  process.stdout.write([...keep].sort().join('\0')+'\0');
+  if(JSON.stringify(rootIdentity())!==identityJSON)fail();
+  // The identity record is plan metadata, never a relative replacement keep.
+  process.stdout.write(identityJSON+'\0'+[...keep].sort().join('\0')+'\0');
 })().catch(()=>{process.stderr.write('BookOrbit: installed configuration/library discovery refused at '+stage+'. Check service environment and database.\n');process.exitCode=65;});
 JS
   }
   preflight=$(mktemp) || exit $?
   if bookorbit_discover > "$preflight"; then
-    mapfile -d '' -t discovered < "$preflight"
+    mapfile -d '' -t discovery_plan < "$preflight"
     rm -f -- "$preflight"
+    ((${#discovery_plan[@]} >= 2)) || exit 65
+    root_identity=${discovery_plan[0]}
+    discovered=("${discovery_plan[@]:1}")
   else
     status=$?
     rm -f -- "$preflight"
@@ -304,16 +323,22 @@ JS
 
     # No API writer can add an unobserved in-tree library between discovery and
     # replacement. A changed selection is a retryable refusal, never data removal.
-    local -a stopped=()
+    local -a stopped=() stopped_plan=()
     preflight=$(mktemp) || exit $?
     if bookorbit_discover > "$preflight"; then
-      mapfile -d '' -t stopped < "$preflight"
+      mapfile -d '' -t stopped_plan < "$preflight"
       rm -f -- "$preflight"
+      ((${#stopped_plan[@]} >= 2)) || exit 65
+      stopped=("${stopped_plan[@]:1}")
     else
       status=$?
       rm -f -- "$preflight"
       msg_error "BookOrbit discovery failed after service stop; configuration/data retained and source not replaced. Service remains stopped; inspect the discovery error before retrying"
       exit "$status"
+    fi
+    if [[ "$root_identity" != "${stopped_plan[0]}" ]]; then
+      msg_error "BookOrbit application root changed during update; configuration/data retained, retry with the service stopped"
+      exit 65
     fi
     if [[ "$(printf '%s\n' "${discovered[@]}")" != "$(printf '%s\n' "${stopped[@]}")" ]]; then
       msg_error "BookOrbit configuration/library roots changed during update; retry with the service stopped"

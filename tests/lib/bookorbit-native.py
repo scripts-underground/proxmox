@@ -93,8 +93,14 @@ def upload(library,name,raw):
  return api('POST','libraries/'+str(library)+'/upload',raw=body,headers={'Content-Type':'multipart/form-data; boundary='+boundary})
 def filefacts(path):
  p=Path(path);s=p.stat();return dict(bytes=s.st_size,sha256=hashlib.sha256(p.read_bytes()).hexdigest(),inode=s.st_ino,uid=s.st_uid,gid=s.st_gid,mode=stat.S_IMODE(s.st_mode))
+def rootfacts():
+ link=APP.lstat();physical=APP.resolve(strict=True);target=physical.stat()
+ assert stat.S_ISLNK(link.st_mode) and physical==Path('/srv/bookorbit') and stat.S_ISDIR(target.st_mode)
+ return dict(alias=str(APP),link=os.readlink(APP),alias_dev=link.st_dev,alias_inode=link.st_ino,alias_mode=stat.S_IMODE(link.st_mode),alias_uid=link.st_uid,alias_gid=link.st_gid,
+  physical=str(physical),root_dev=target.st_dev,root_inode=target.st_ino,root_mode=stat.S_IMODE(target.st_mode),root_uid=target.st_uid,root_gid=target.st_gid)
 def observed(label):
  ready();login();s=state()
+ assert rootfacts()==s['root_facts']
  assert api('GET','auth/me')['username']==s['username']
  cards=api('POST','libraries/'+str(s['library'])+'/books',{})
  assert any(int(row['id'])==s['book'] for row in cards['items'])
@@ -104,14 +110,20 @@ def observed(label):
  assert api('GET','user-preferences/theme')['settings']==s['theme']
  progress=api('GET','reading-progress?fileId='+str(s['file']))['items'];assert len(progress)==1 and float(progress[0]['percentage'])==37 and progress[0]['text']['cfi']==s['cfi']
  rows=db('SELECT id, absolute_path FROM public.book_files WHERE book_id=$1 ORDER BY id',[s['book']]);assert len(rows)==1
+ libraries=db('SELECT path FROM public.library_folders ORDER BY path')
+ assert s['library_path'] in [row['path'] for row in libraries] and Path(s['library_path']).is_relative_to(APP.resolve())
+ assert Path(rows[0]['absolute_path']).is_relative_to(Path(s['library_path']))
  assert filefacts(rows[0]['absolute_path'])==s['book_fact']
  ledger=db('SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id');assert ledger==s['ledger'] and ledger
  if 'protected' in s:
   assert {name:filefacts(name) for name in s['protected']}==s['protected']
   current=env();assert all(current[k]==v for k,v in s['keys'].items())
+  assert {k:v for k,v in current.items() if k!='APP_VERSION'}==s['config_values']
+  config=(APP/'.env').stat();assert dict(mode=stat.S_IMODE(config.st_mode),uid=config.st_uid,gid=config.st_gid)==s['config_access']
   assert current['PORT']=='4555' and current['APP_URL']=='http://127.0.0.1:4555'
   assert (Path('/etc/systemd/system/bookorbit.service').read_bytes()==(P/'unit.before').read_bytes())
  emit(label,account=True,library=True,reader_owned_text=True,book_bytes_inode_metadata=True,preference=True,progress=37,migrations=len(ledger),keys_equal=True)
+ emit(label+'-root',root=s['root_facts'],physical_library=s['library_path'],physical_book=rows[0]['absolute_path'],book=s['book_fact'],config_inode_equality_claimed=False)
 def build(role):
  start=time.monotonic();free=[];done=threading.Event()
  def sample():
@@ -132,13 +144,26 @@ if action=='bootstrap':
  assert os.geteuid()==0 and os.environ['TMPDIR']=='/var/lib/scripts-underground-test/tmp';P.mkdir(mode=0o700)
 elif action in ('install','update'):build(action)
 elif action=='provenance':provenance(sys.argv[2])
+elif action=='relocate':
+ private('private-state.json',dict(port=80))
+ ready();target=Path('/srv/bookorbit');entry=APP.lstat()
+ assert stat.S_ISDIR(entry.st_mode) and not APP.is_symlink() and not target.exists() and not target.is_symlink()
+ assert APP.stat().st_dev==target.parent.stat().st_dev
+ unit=Path('/etc/systemd/system/bookorbit.service').read_bytes();(P/'relocate-unit.before').write_bytes(unit)
+ cmd('systemctl','stop','bookorbit');assert cmd('systemctl','show','bookorbit','-p','MainPID','--value')=='0'
+ APP.rename(target);APP.symlink_to(target,target_is_directory=True)
+ assert target.stat().st_dev==entry.st_dev and target.stat().st_ino==entry.st_ino
+ s=state();s['root_facts']=rootfacts();private('private-state.json',s)
+ cmd('systemctl','start','bookorbit');ready()
+ assert Path('/etc/systemd/system/bookorbit.service').read_bytes()==unit
+ emit('canonical-root-fixture',root=s['root_facts'],normal_unit_unchanged=True,same_filesystem_rename=True,source_copy=False)
 elif action=='setup':
- private('private-state.json',dict(port=80,username='su-bookorbit',password='OwnedNative9-'+secrets.token_hex(16)))
+ s=state();s.update(port=80,username='su-bookorbit',password='OwnedNative9-'+secrets.token_hex(16));private('private-state.json',s)
  ready();e=env();assert e['PORT']=='80'
  assert stat.S_IMODE((APP/'.env').stat().st_mode)==0o600 and stat.S_IMODE(Path('/root/bookorbit.creds').stat().st_mode)==0o600
  keys={k:e[k] for k in ('JWT_SECRET','SETUP_BOOTSTRAP_TOKEN','EMAIL_ENCRYPTION_KEY','MIGRATION_ENCRYPTION_KEY','BOOK_REQUEST_ENCRYPTION_KEY')};assert len(set(keys.values()))==5
  s=state();r=api('POST','auth/setup',dict(username=s['username'],password=s['password'],name='Owned native proof',email='native@example.invalid'),headers={'x-setup-token':e['SETUP_BOOTSTRAP_TOKEN']},auth=False);s['token']=r['accessToken'];private('private-state.json',s)
- library=APP/'custom library';library.mkdir();lib=api('POST','libraries',dict(name='Native proof',icon='book',folders=[str(library)],watch=False));s['library']=lib['id'];private('private-state.json',s)
+ library=APP.resolve()/'custom library';library.mkdir();lib=api('POST','libraries',dict(name='Native proof',icon='book',folders=[str(library)],watch=False));s['library']=lib['id'];s['library_path']=str(library);private('private-state.json',s)
  uploaded=upload(s['library'],'owned.epub',epub());s['book']=uploaded['bookId']
  rows=db('SELECT id, absolute_path FROM public.book_files WHERE book_id=$1 ORDER BY id',[s['book']]);assert len(rows)==1;s['file']=rows[0]['id'];s['book_fact']=filefacts(rows[0]['absolute_path']);s['ledger']=db('SELECT hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id')
  s['theme']=dict(theme='dark',accent='blue',radius='rounded',background='none',brightness=37);s['cfi']='epubcfi(/6/2!/4/2/1:7)';private('private-state.json',s)
@@ -151,6 +176,7 @@ elif action=='custom':
  e=env();e.update(PORT='4555',APP_URL='http://127.0.0.1:4555',CLIENT_URL='http://127.0.0.1:4555',APP_DATA_PATH=str(new),BOOK_DOCK_PATH=str(new/'book-bucket'),MIGRATION_IMPORT_ROOT=str(imports))
  (APP/'.env').write_text(''.join(k+'='+v+'\n' for k,v in e.items()))
  s=state();s['port']=4555;s['keys']={k:e[k] for k in ('JWT_SECRET','SETUP_BOOTSTRAP_TOKEN','EMAIL_ENCRYPTION_KEY','MIGRATION_ENCRYPTION_KEY','BOOK_REQUEST_ENCRYPTION_KEY')}
+ s['config_values']={k:v for k,v in e.items() if k!='APP_VERSION'};config=(APP/'.env').stat();s['config_access']=dict(mode=stat.S_IMODE(config.st_mode),uid=config.st_uid,gid=config.st_gid)
  (new/'owned').write_text('preserve data');s['protected']={str(p):filefacts(p) for p in (new/'owned',imports/'owned')};private('private-state.json',s)
  (P/'unit.before').write_bytes(Path('/etc/systemd/system/bookorbit.service').read_bytes())
  cmd('systemctl','start','bookorbit');observed('custom-before-update')
@@ -221,6 +247,8 @@ def main():
 set -euo pipefail
 ROOT="$1"
 P=/var/lib/bookorbit-native-proof
+# Read the selected script's defaults, not creator environment overrides.
+unset var_cpu var_ram var_disk
 curl() { :; }
 source "$ROOT/scripts/lxc/bookorbit.sh"
 unset -f curl
@@ -229,13 +257,55 @@ export APP=BookOrbit NSAPP=bookorbit REPO_BASE="$2"
 export var_lxc_tmpdir=/var/lib/scripts-underground-test/tmp
 # Reproduce the normal creator's identity at both finite cold entry points.
 prefix='export APPLICATION="$APP"; var_appversion=v3.7.0; '
-_write_bundle install install_script "$ROOT/misc" --script-id bookorbit -- --requirements 2 2048 -- "${prefix}install_script" > "$P/install.sh"
-_write_bundle update update_script "$ROOT/misc" --script-id bookorbit -- --requirements 2 2048 -- "${prefix}run_update_script --clean" > "$P/update.sh"
+printf -v install_requirements 'declare -- LXC_REQUIRED_CPU=%q\ndeclare -- LXC_REQUIRED_RAM=%q\n' "$var_cpu" "$var_ram"
+_write_bundle install install_script "$ROOT/misc" --script-id bookorbit -- --requirements "$var_cpu" "$var_ram" -- "${install_requirements}${prefix}install_script" > "$P/install.sh"
+_write_bundle update update_script "$ROOT/misc" --script-id bookorbit -- --requirements "$var_cpu" "$var_ram" -- "${prefix}run_update_script --clean" > "$P/update.sh"
 chmod 0700 "$P/install.sh" "$P/update.sh"
+python3 - "$P" "$var_cpu" "$var_ram" "$var_disk" "$ROOT/tests/lib/bookorbit-native.py" <<'PY'
+import ast,json,pathlib,re,sys
+p=pathlib.Path(sys.argv[1]);cpu,ram,disk=map(int,sys.argv[2:5])
+assert min(cpu,ram,disk)>0
+module=ast.parse(pathlib.Path(sys.argv[5]).read_text())
+main=next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+calls=[n.value for n in main.body if isinstance(n,(ast.Assign,ast.Expr)) and isinstance(n.value,ast.Call)]
+probes=[n.args[0].value for n in calls if isinstance(n.func,ast.Name) and n.func.id=='probe']
+assert probes.index('install')<probes.index('provenance')<probes.index('relocate')<probes.index('setup')
+for role in ('install','update'):
+ text=(p/(role+'.sh')).read_text()
+ for key,value in [('CPU',cpu),('RAM',ram)]:
+  assert re.findall(r'^declare -- LXC_REQUIRED_'+key+r'=([0-9]+)$',text,re.M)==[str(value)],'generated bundle requirement mismatch'
+print(json.dumps(dict(cpu=cpu,ram=ram,disk=disk,bundles_checked=['install','update']),sort_keys=True))
+PY
 '''
-    execute('/bin/bash', '-c', setup, '--', str(root), os.environ['SU_TEST_REPO_BASE'])
+    requirements = json.loads(execute('/bin/bash', '-c', setup, '--', str(root), os.environ['SU_TEST_REPO_BASE']))
+    selected = {key: context.operation['native'][key] for key in ('cpu', 'ram', 'disk')}
+    assert {key: requirements[key] for key in selected} == selected, 'selected native allocation must match published source defaults'
+    assert int(execute('/usr/bin/nproc')) == selected['cpu'], 'actual native CPU differs from selected allocation'
+    from dataclasses import asdict
+    from bookorbit_memory import observe
+    from test_pve import NativePVE
+    lineage_path = Path(context.operation['native']['lineage'])
+    lineage_bytes = lineage_path.read_bytes()
+    lineage = json.loads(lineage_bytes)
+    assert lineage['status'] == 0 and lineage['source'] == context.document['source']['tree_sha256']
+    assert lineage['requested'] == context.operation['nested'][0], 'native creation lineage mismatch'
+    receiving_root = list(map(int, execute('/usr/bin/stat', '-c', '%d %i', '/').split()))
+
+    def memory_owner():
+        # Existing read-only identity observer binds tag/name/MAC/config/LVID.
+        assert lineage_path.read_bytes() == lineage_bytes, 'native lineage changed'
+        current = NativePVE.observe_static(int(ctid), context.operation['native'])
+        assert current is not None and asdict(current) == lineage['observed'], 'native creation changed'
+        pid_text = subprocess.check_output(['/usr/bin/lxc-info', '-n', ctid, '-pH'], text=True, timeout=20).strip()
+        assert pid_text.isascii() and pid_text.isdecimal(), 'owned init PID unavailable'
+        return dict(pid=int(pid_text), root=receiving_root, creation=asdict(current),
+                    config_sha256=hashlib.sha256(Path('/etc/pve/lxc/' + ctid + '.conf').read_bytes()).hexdigest())
+
+    memory = observe(memory_owner, selected['ram'] * 1024**2)
+    print('BOOKORBIT_NATIVE_REQUIREMENTS ' + json.dumps(dict(requirements=requirements, selected=selected, actual_memory_max=memory['effective_memory_max'], memory_observation=memory), sort_keys=True), flush=True)
     install_records = probe('install', seconds=2450)
     probe('provenance', 'after-install-source-contract')
+    probe('relocate')
     probe('setup')
     probe('djvu')
     execute('systemctl', 'restart', 'bookorbit')
@@ -252,7 +322,7 @@ chmod 0700 "$P/install.sh" "$P/update.sh"
     remaining = 3600 - elapsed
     projected = 1.25 * duration + 180
     used = measured['root_total_bytes'] - measured['min_root_free_bytes']
-    unsafe = measured['cgroup_memory_peak'] > 2048 * 1024**2 or used > 10 * 1024**3
+    unsafe = measured['cgroup_memory_peak'] > selected['ram'] * 1024**2 or used > selected['disk'] * 1024**3
     print('BOOKORBIT_PRE_UPDATE_GATE ' + json.dumps(dict(install=measured,operation_elapsed_seconds=elapsed,remaining_seconds=remaining,projected_update_seconds=projected,formula='1.25 * install_seconds + 180',observed_peak_root_used_bytes=used,default_resource_issue=unsafe,defaults_safe_proven=False,cpu2_qualified=False),sort_keys=True),flush=True)
     assert remaining >= projected, 'insufficient original operation allowance for projected update; update not attempted'
     probe('custom')

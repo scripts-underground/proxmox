@@ -770,12 +770,33 @@ cold bundles, Node environment parsing and checked source replacement, with
 package/build/PostgreSQL/systemd producers modeled. Its immutable extra-reference
 tree includes BookOrbit v3.7.0 source contracts and the oldest published v2.0.1
 baseline, both of which define `library_folders`.
+Private mount namespaces isolate both `/opt` and `/srv` for relocated-root cases.
+The fixture checks logical/physical library paths, alias referents, code conflicts,
+root identity changes and successful changed keep sets after service stop. These
+are filesystem/parser/generated-updater checks, not an additional native deployment.
 
 `maintenance-bookorbit-native/bundle` uses the existing runtime/publisher/Broker
 and one admitted owned CT. It compiles the actual pinned release, migrates the
 database, onboards, uploads/reads owned EPUB text, persists preferences/progress
 through restart and forced cold update, and decodes a tiny owned DjVu. It retains
 secrets and application logs in the CT, exporting redacted outcome/peak records.
+Requirements come from the selected script defaults and are checked in both actual
+generated bundles against the admitted native allocation and observed CPU/RAM.
+Peak diagnostics compare that selected RAM/disk pair, not a historical provision
+constant; the separate 2GiB build heap remains unchanged.
+After a normal fresh install/provenance check, the native fixture renames its own
+stopped app to `/srv/bookorbit` on the same filesystem and keeps the normal unit
+through an `/opt/bookorbit` alias. Actual SQL libraries use the physical root.
+Reader/data/root identities are checked before and after forced clean update.
+Config values except derived `APP_VERSION` and access metadata are preserved;
+config inode equality is not claimed. Book/data/import inode equality is checked.
+The app-owned native RAM observer binds the creation lineage, config/LVID, init
+PID/birth and receiving root, maps its unified cgroup through the outer VM's actual
+full-root cgroup2 mount, and checks the minimum finite ancestor `memory.max`.
+An unlimited leaf is allowed only with a proven finite ancestor; all-max, missing,
+ambiguous, escaping or changing observations refuse before app install. Only the
+kernel root cgroup may lack `memory.max`. Deterministic full-observer tests live in
+`tests/lib/bookorbit_memory_test.py`; no requested-config substitution is used.
 Successful consumption stops at the normal preservation-pending boundary; external
 saved-byte verification and a bound acknowledgement precede public finalization.
 This is a core cold-bundle proof, not Proxmox menu/one-line transport, optional

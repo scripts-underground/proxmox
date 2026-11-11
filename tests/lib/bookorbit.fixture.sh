@@ -6,6 +6,7 @@ ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
 if [[ "${1:-}" == --child ]]; then
   c="$CASE_ROOT"
   mount --bind "$c/opt" /opt
+  mount --bind "$c/srv" /srv
   mount --bind "$c/units" /etc/systemd/system
   mount --bind "$c/local" /usr/local
   mount --bind "$c/cache" /var/cache
@@ -16,10 +17,18 @@ if [[ "${1:-}" == --child ]]; then
   mount --bind "$c/bin/systemctl" /usr/bin/systemctl
   source "$ROOT/misc/bundle.func"
   source "$c/hooks.sh"
+  : "${var_cpu:?source-selected CPU required}" "${var_ram:?source-selected RAM required}"
   export REPO_BASE=https://fixture.invalid
   export var_lxc_tmpdir="$TMPDIR"
-  _write_bundle "$ROLE" "${ROLE}_script" "$ROOT/misc" --script-id bookorbit -- --requirements 0 0 -- \
-    'source "$CASE_ROOT/models.sh"' "$(if [[ "$ROLE" == install ]]; then printf install_script; else printf run_update_script; fi)" > "$c/bundle"
+  requirement_prefix=''
+  if [[ "$ROLE" == install ]]; then
+    printf -v requirement_prefix 'declare -- LXC_REQUIRED_CPU=%q\ndeclare -- LXC_REQUIRED_RAM=%q\n' "$var_cpu" "$var_ram"
+  fi
+  _write_bundle "$ROLE" "${ROLE}_script" "$ROOT/misc" --script-id bookorbit -- --requirements "$var_cpu" "$var_ram" -- \
+    "${requirement_prefix}source \"\$CASE_ROOT/models.sh\"" "$(if [[ "$ROLE" == install ]]; then printf install_script; else printf run_update_script; fi)" > "$c/bundle"
+  [[ $(grep -xc "declare -- LXC_REQUIRED_CPU=$var_cpu" "$c/bundle") == 1 ]]
+  [[ $(grep -xc "declare -- LXC_REQUIRED_RAM=$var_ram" "$c/bundle") == 1 ]]
+  printf '%s:%s\n' "$var_cpu" "$var_ram" > "$c/bundle-requirements"
   exec bash "$c/bundle"
 fi
 : "${TMPDIR:?disk-backed scratch required}" "${RUNTIME_NODE:?}" "${RUNTIME_EXTRA_REFERENCES:?}"
@@ -38,9 +47,9 @@ check() {
   fi
 }
 for verbose in no yes; do
-  for variant in fresh fresh-caller update update-caller build download copy invalid missing db missing-table overlap alias override stopped whitespace inherited quoted relative external trailing env-symlink env-hardlink env-directory late-db url-encoded url-ipv6 url-duplicate url-unknown url-override url-escape url-readwrite url-tls url-missing url-reserved; do
+  for variant in fresh fresh-caller update update-caller build download copy invalid missing db missing-table overlap alias override stopped whitespace inherited quoted relative external trailing env-symlink env-hardlink env-directory late-db changed-set root-logical root-physical root-alias root-code-alias root-caller-code root-remap url-encoded url-ipv6 url-duplicate url-unknown url-override url-escape url-readwrite url-tls url-missing url-reserved; do
     c="$work/$verbose-$variant"
-    mkdir -p "$c/"{opt,units,local,cache,state/scripts-underground,pending,locks,home,bin,external,payload/server/src/db/migrations/meta,payload/server/bin/kepubify,payload/server/requirements,payload/client/dist}
+    mkdir -p "$c/"{opt,srv,units,local,cache,state/scripts-underground,pending,locks,home,bin,external,payload/server/src/db/migrations/meta,payload/server/bin/kepubify,payload/server/requirements,payload/client/dist}
     chmod 0700 "$c/locks" "$c/pending"
     mkdir -p "$c/local/bin"
     for n in effects services pnpm packages db build-node caller-node; do : > "$c/$n"; done
@@ -62,6 +71,7 @@ for verbose in no yes; do
     printf 'USER code\n' > "$c/opt/bookorbit/code"
     printf 'USER persistent bytes\n' > "$c/opt/bookorbit/custom data/row"
     printf 'USER book bytes\n' > "$c/opt/bookorbit/custom library/book.epub"
+    chmod 0640 "$c/opt/bookorbit/custom library/book.epub" "$c/opt/bookorbit/custom data/row"
     printf 'USER caller\n' > "$c/opt/bookorbit/caller keep/row"
     printf 'USER legacy\n' > "$c/opt/bookorbit/legacy/row"
     printf 'USER outside\n' > "$c/external/row"
@@ -85,6 +95,7 @@ BOOK_DOCK_PATH=/opt/bookorbit/custom data/dock
 MIGRATION_IMPORT_ROOT=/opt/bookorbit/custom data/import
 APP_VERSION=vold
 ENV
+    chmod 0600 "$c/opt/bookorbit/.env"
     printf '%s\n' "$variant" > "$c/variant"
     cat > "$c/local/bin/psql" << SH
 #!/usr/bin/env bash
@@ -100,7 +111,14 @@ ENV
 [[ "\$(cat '$c/variant')" != db && "\$(cat '$c/variant')" != missing-table ]] || exit 1
 if [[ "\$(cat '$c/variant')" == late-db && -s '$c/db' ]]; then exit 1; fi
 printf 'query\n' >> '$c/db'
-printf '["/opt/bookorbit/custom library"]\n'
+case "\$(cat '$c/variant')" in
+  changed-set)
+    if [[ \$(wc -l < '$c/db') == 2 ]]; then printf '["/opt/bookorbit/other library"]\n'; else printf '["/opt/bookorbit/custom library"]\n'; fi ;;
+  root-physical) printf '["/srv/bookorbit/custom library","/srv/bookorbit/escape"]\n' ;;
+  root-alias) printf '["/srv/bookorbit/library alias","/srv/bookorbit/escape"]\n' ;;
+  root-code-alias) printf '["/srv/bookorbit/code alias/future"]\n' ;;
+  *) printf '["/opt/bookorbit/custom library"]\n' ;;
+esac
 SH
     chmod 0755 "$c/local/bin/psql"
     case "$variant" in
@@ -139,6 +157,15 @@ SH
       url-missing) sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgres://localhost/bookorbit|' "$c/opt/bookorbit/.env" ;;
       url-reserved) sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgres://fixture:fixture@localhost/book%2Forbit|' "$c/opt/bookorbit/.env" ;;
     esac
+    case "$variant" in
+      root-*)
+        mv "$c/opt/bookorbit" "$c/srv/bookorbit"
+        ln -s ../srv/bookorbit "$c/opt/bookorbit"
+        ln -s 'custom library' "$c/opt/bookorbit/library alias"
+        ln -s server/public "$c/opt/bookorbit/code alias"
+        ln -s "$c/external" "$c/opt/bookorbit/escape"
+        ;;
+    esac
     printf '[Service]\nEnvironmentFile=/opt/bookorbit/.env\n' > "$c/units/bookorbit.service"
     env_before=missing
     [[ ! -f "$c/opt/bookorbit/.env" ]] || env_before=$(sed '/^APP_VERSION=/d' "$c/opt/bookorbit/.env" | sha256sum | cut -d' ' -f1)
@@ -165,7 +192,13 @@ UnsetEnvironment=
 ExecStart={ path=/usr/bin/node ; argv[]=/usr/bin/node /opt/bookorbit/server/dist/main.js ; ignore_errors=no ; }
 PROPERTIES
   [[ "$VARIANT" != override ]] || printf 'RootDirectory=/foreign\n'
-elif [[ "$1" == show-environment ]]; then printf 'LANG=C.UTF-8\n'; else printf '%s\n' "$*" >> "$CASE_ROOT/services"; fi
+elif [[ "$1" == show-environment ]]; then printf 'LANG=C.UTF-8\n'; else
+  printf '%s\n' "$*" >> "$CASE_ROOT/services"
+  if [[ "$*" == 'stop bookorbit' && "$VARIANT" == root-remap ]]; then
+    mv /srv/bookorbit /srv/remapped
+    ln -sfn ../srv/remapped /opt/bookorbit
+  fi
+fi
 SH
     chmod 0755 "$c/bin/systemctl"
     cat > "$c/build-observe.cjs" << 'JS'
@@ -253,22 +286,25 @@ curl() {
   [[ -z "$format" ]] || printf 200
 }
 curl_download() {
+  printf download >> "$CASE_ROOT/effects"
   [[ "$VARIANT" != download ]] || return 22
   tar -czf "$1" -C "$CASE_ROOT" payload
 }
 # shellcheck disable=SC2034
 CLEAN_INSTALL_KEEP_PATHS=('caller keep')
 CLEAN_INSTALL_KEEP=legacy
+if [[ "$VARIANT" == root-caller-code ]]; then CLEAN_INSTALL_KEEP_PATHS+=('code alias/future'); fi
 MODELS
     if [[ "$role" == install ]]; then rm -rf "$c/opt/bookorbit"; fi
     # Extract only actual cold hook definitions; framework bootstrap is not run.
-    bash -c 'curl() { :; }; source "$1"; declare -f install_script update_script' hook-source "$ROOT/scripts/lxc/bookorbit.sh" > "$c/hooks.sh"
+    bash -c 'unset var_cpu var_ram var_disk; curl() { :; }; source "$1"; declare -p var_cpu var_ram var_disk; declare -f install_script update_script' hook-source "$ROOT/scripts/lxc/bookorbit.sh" > "$c/hooks.sh"
     rc=0
     env -i "${caller_env[@]}" PATH="$c/bin:$PATH" CASE_ROOT="$c" HOME="$c/home" TMPDIR="$TMPDIR" RUNTIME_NODE="$RUNTIME_NODE" VARIANT="$variant" ROLE="$role" VERBOSE="$verbose" APP=BookOrbit NSAPP=bookorbit LOCAL_IP=10.20.30.40 BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/errors.log" \
       timeout 50s unshare -m --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
     expected=0
-    case "$variant" in build) expected=52 ;; download) expected=250 ;; copy) expected=252 ;; invalid | missing | db | missing-table | overlap | alias | override | env-symlink | env-hardlink | env-directory | late-db | url-duplicate | url-unknown | url-override | url-escape | url-readwrite | url-tls | url-missing | url-reserved) expected=65 ;; esac
+    case "$variant" in build) expected=52 ;; download) expected=250 ;; copy) expected=252 ;; invalid | missing | db | missing-table | overlap | alias | override | env-symlink | env-hardlink | env-directory | late-db | changed-set | root-code-alias | root-caller-code | root-remap | url-duplicate | url-unknown | url-override | url-escape | url-readwrite | url-tls | url-missing | url-reserved) expected=65 ;; esac
     check "$rc" "$expected" "$verbose/$variant actual generated cold-hook status"
+    check "$(cat "$c/bundle-requirements")" '2:4096' "$verbose/$variant actual source-selected cold bundle CPU/RAM"
     if [[ "$rc" != "$expected" ]]; then tail -n 5 "$c/output"; fi
     if [[ "$role" == install && "$rc" == 0 ]]; then
       check "$(grep -c '^PORT=80$' "$c/opt/bookorbit/.env" || true)" 1 'fresh HTTP80 config'
@@ -282,13 +318,14 @@ MODELS
       check "$after" "$env_before" "$variant existing keys/port/config byte-preserved"
       check "$(stat -c '%a:%u:%g' "$c/opt/bookorbit/.env" 2> /dev/null || true)" "$env_access" "$variant config access metadata preserved"
       check "$(stat -c '%d:%i:%a:%u:%g' "$c/opt/bookorbit/custom data/row" 2> /dev/null || true)" "$data_before" "$variant data inode/metadata survived"
+      check "$(cat "$c/opt/bookorbit/custom data/row" 2> /dev/null || true)" 'USER persistent bytes' "$variant actual data bytes survived"
       check "$(stat -c '%d:%i:%a:%u:%g' "$c/opt/bookorbit/custom library/book.epub" 2> /dev/null || true)" "$library_before" "$variant database library inode survived"
       check "$(cat "$c/opt/bookorbit/custom library/book.epub" 2> /dev/null || true)" 'USER book bytes' "$variant book bytes survived"
       check "$(cat "$c/opt/bookorbit/caller keep/row" 2> /dev/null || true)" 'USER caller' "$variant literal inherited keep survives"
       check "$(cat "$c/opt/bookorbit/legacy/row" 2> /dev/null || true)" 'USER legacy' "$variant legacy inherited keep survives"
       if [[ "$variant" == trailing ]]; then check "$(cat "$c/opt/bookorbit/custom import /row" 2> /dev/null || true)" 'USER imports' 'source resolves import-root value without trimming'; fi
       check "$(sha256sum "$c/units/bookorbit.service" | cut -d' ' -f1)" "$unit_before" "$variant operator unit unchanged"
-      if [[ "$expected" == 65 && "$variant" != late-db ]]; then
+      if [[ "$expected" == 65 && "$variant" != late-db && "$variant" != changed-set && "$variant" != root-remap ]]; then
         check "$(stat -c %s "$c/effects")" 0 "$variant refusal precedes runtime effects"
         check "$(stat -c %s "$c/services")" 0 "$variant refusal precedes service effects"
         check "$(cat "$c/opt/bookorbit/code")" 'USER code' "$variant refusal precedes replacement"
@@ -301,12 +338,32 @@ MODELS
           check "$(readlink "$c/opt/bookorbit/.env" || true)" "$env_link" "$variant link target unchanged"
           check "$(grep -c '/opt/bookorbit/.env must be a single-link regular file' "$c/output" || true)" 1 "$variant specific config path diagnostic"
           ;;
-        late-db)
+        late-db | changed-set | root-remap)
           check "$(cat "$c/effects")" runtime 'late discovery failure follows runtime setup'
           check "$(cat "$c/services")" 'stop bookorbit' 'late discovery failure leaves stopped service'
           check "$(cat "$c/opt/bookorbit/code")" 'USER code' 'late discovery failure leaves source untouched'
-          check "$(grep -c 'discovery failed after service stop; configuration/data retained' "$c/output" || true)" 1 'late discovery diagnostic identifies retained state and stopped service'
+          if [[ "$variant" == late-db ]]; then
+            check "$(grep -c 'discovery failed after service stop; configuration/data retained' "$c/output" || true)" 1 'late discovery diagnostic identifies retained state and stopped service'
+          else
+            check "$(grep -Ec 'configuration/library roots changed|application root changed' "$c/output" || true)" 1 'changed successful discovery refuses before replacement'
+            check "$(wc -l < "$c/db")" 2 'two successful SQL discovery calls'
+            check "$(stat -c %s "$c/packages")" 0 'no package work after changed discovery'
+            check "$(stat -c %s "$c/pnpm")" 0 'no build work after changed discovery'
+          fi
           check "$(grep -c 'no app effects' "$c/output" || true)" 0 'late discovery never claims before-effects refusal'
+          ;;
+      esac
+      case "$variant" in
+        root-*)
+          printf 'BOOKORBIT_ROOT_OUTCOME mode=%s variant=%s status=%s library=%s source=%s\n' "$verbose" "$variant" "$rc" \
+            "$(if [[ -f "$c/opt/bookorbit/custom library/book.epub" ]]; then printf present; else printf missing; fi)" \
+            "$(if grep -qx 'new client bytes' "$c/opt/bookorbit/server/public/index.html"; then printf changed; else printf old; fi)"
+          check "$(readlink "$c/opt/bookorbit")" "$(if [[ "$variant" == root-remap ]]; then printf ../srv/remapped; else printf ../srv/bookorbit; fi)" 'logical root alias retained at selected physical root'
+          if [[ "$rc" == 0 ]]; then
+            check "$(cat "$c/opt/bookorbit/server/public/index.html")" 'new client bytes' 'physical root received changed source witness'
+            if [[ "$variant" == root-alias ]]; then check "$(readlink "$c/opt/bookorbit/library alias")" 'custom library' 'in-tree alias retained with referent'; fi
+            case "$variant" in root-physical | root-alias) check "$(readlink "$c/opt/bookorbit/escape")" "$c/external" 'escaping alias retained without touching external target' ;; esac
+          fi
           ;;
       esac
       if [[ "$rc" != 0 ]]; then check "$(test -e "$c/pending/bookorbit" && printf present || printf absent)" present "$variant failure retains pending"; fi
