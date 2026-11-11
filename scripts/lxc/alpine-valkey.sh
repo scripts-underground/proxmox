@@ -20,12 +20,25 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
+  local memory memtotal_mb maxmemory_mb
+  # Bound decimal input before arithmetic; no creator memory variable is needed.
+  if ! memory=$(LC_ALL=C free -m) ||
+    ! memtotal_mb=$(awk '$1 == "Mem:" {total = $2; rows++} END {if (rows != 1) exit 1; print total}' <<< "$memory") ||
+    [[ ! "$memtotal_mb" =~ ^[1-9][0-9]{0,16}$ ]]; then
+    msg_error "Unable to determine receiver memory for Valkey"
+    return 65
+  fi
+  maxmemory_mb=$((memtotal_mb * 75 / 100))
+  if ((maxmemory_mb == 0)); then
+    msg_error "Receiver memory is too small for a positive Valkey maxmemory"
+    return 65
+  fi
+
   msg_info "Installing Valkey"
   $STD apk add valkey
   msg_ok "Installed Valkey"
-  MAXMEMORY_MB=$((MEMTOTAL_MB * 75 / 100))
   cat << EOF > /etc/valkey/valkey.conf
-maxmemory ${MAXMEMORY_MB}mb
+maxmemory ${maxmemory_mb}mb
 maxmemory-policy allkeys-lru
 maxmemory-samples 10
 EOF
