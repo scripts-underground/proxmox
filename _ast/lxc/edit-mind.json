@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "edit-mind",
   "type": "lxc",
-  "total_lines": 269,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/IliasHad/edit-mind\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Edit-Mind\"\nvar_tags=\"${var_tags:-ai;media;photos}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-32}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    cmake \\\n    redis-server \\\n    nginx \\\n    python3 \\\n    python3-dev \\\n    libgomp1 \\\n    libglib2.0-0 \\\n    libgl1 \\\n    libsm6 \\\n    libxext6 \\\n    libxrender1 \\\n    openssl\n  msg_ok \"Installed Dependencies\"\n\n  setup_ffmpeg\n  PG_VERSION=\"16\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"editmind\" PG_DB_USER=\"editmind\" setup_postgresql_db\n  NODE_VERSION=\"22\" setup_nodejs\n  UV_PYTHON=\"3.11\" setup_uv\n\n  msg_info \"Installing pnpm\"\n  $STD corepack enable pnpm\n  $STD corepack prepare pnpm@10.33.1 --activate\n  msg_ok \"Installed pnpm\"\n\n  fetch_and_deploy_gh_release \"edit-mind\" \"IliasHad/edit-mind\" \"tarball\"\n\n  msg_info \"Installing Application Dependencies\"\n  cd /opt/edit-mind || exit\n  $STD pnpm install --prefer-frozen-lockfile\n  $STD pnpm --filter prisma generate\n  msg_ok \"Installed Application Dependencies\"\n\n  msg_info \"Building Application\"\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/apps/web/.env.production\nVITE_BACKGROUND_JOBS_URL=http://${LOCAL_IP}:4000\nEOF\n  $STD pnpm run build:web\n  $STD pnpm rebuild @tailwindcss/oxide rollup onnxruntime-node\n  $STD pnpm run build:background-jobs\n  msg_ok \"Built Application\"\n\n  msg_info \"Setting up Python ML Environment\"\n  $STD uv venv --python 3.11 /opt/edit-mind/.venv\n  $STD uv pip install --no-cache-dir --python /opt/edit-mind/.venv \\\n    -r /opt/edit-mind/python/requirements.txt \\\n    chromadb\n  msg_ok \"Set up Python ML Environment\"\n\n  msg_info \"Configuring Application\"\n  SESSION_SECRET=$(openssl rand -base64 32)\n  ENCRYPTION_KEY=$(openssl rand -base64 32)\n  mkdir -p /opt/edit-mind/.data /opt/edit-mind/ml-models\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/.env\nSESSION_SECRET=${SESSION_SECRET}\nENCRYPTION_KEY=${ENCRYPTION_KEY}\nHOST_MEDIA_PATH=/opt/edit-mind/media\nOLLAMA_MODEL=qwen2.5:7b-instruct\nUSE_OLLAMA_MODEL=false\nOLLAMA_HOST=\nOLLAMA_PORT=\nGEMINI_API_KEY=\nUSE_GEMINI=false\nPORT=3745\nBACKGROUND_JOBS_PORT=4000\nML_PORT=8765\nREDIS_PORT=6379\nPOSTGRES_PORT=5432\nCHROMA_PORT=8000\nEOF\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/.env.system\nDATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\nREDIS_URL=redis://127.0.0.1:6379\nREDIS_HOST=127.0.0.1\nCHROMA_HOST=127.0.0.1\nIS_PERSISTENT=TRUE\nML_HOST=127.0.0.1\nPROCESSED_VIDEOS_DIR=/opt/edit-mind/.data\nTHUMBNAILS_PATH=/opt/edit-mind/.data/.thumbnails\nSTITCHED_VIDEOS_DIR=/opt/edit-mind/.data/.stitched-videos\nFACES_DIR=/opt/edit-mind/.data/.faces\nUNKNOWN_FACES_DIR=/opt/edit-mind/.data/.unknown_faces\nKNOWN_FACES_FILE=/opt/edit-mind/.data/.faces.json\nKNOWN_FACES_FILE_LOADED=/opt/edit-mind/.data/.known_faces.json\nBACKGROUND_JOBS_URL=http://127.0.0.1:4000\nNODE_ENV=production\nANONYMIZED_TELEMETRY=FALSE\nWEB_APP_URL=http://${LOCAL_IP}:3745\nEOF\n  mkdir -p /opt/edit-mind/media\n  set -a \u0026\u0026 source /opt/edit-mind/.env \u0026\u0026 source /opt/edit-mind/.env.system \u0026\u0026 set +a\n  $STD pnpm --filter prisma migrate:deploy\n  $STD pnpm --filter db seed\n  msg_ok \"Configured Application\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-chroma.service\n[Unit]\nDescription=Edit-Mind ChromaDB\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironment=IS_PERSISTENT=TRUE\nExecStart=/opt/edit-mind/.venv/bin/chroma run --host 127.0.0.1 --port 8000 --path /opt/edit-mind/.data/chroma\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-ml.service\n[Unit]\nDescription=Edit-Mind ML Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nEnvironment=YOLO_CONFIG_DIR=/opt/edit-mind/ml-models/ultralytics\nEnvironment=DEEPFACE_HOME=/opt/edit-mind/ml-models/deepface\nEnvironment=TRANSCRIPTION_MODEL_CACHE=/opt/edit-mind/ml-models/whisper\nEnvironment=TORCH_HOME=/opt/edit-mind/ml-models/torch\nEnvironment=HF_HOME=/opt/edit-mind/ml-models/huggingface\nExecStart=/opt/edit-mind/.venv/bin/python /opt/edit-mind/python/main.py --host 0.0.0.0 --port 8765\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-jobs.service\n[Unit]\nDescription=Edit-Mind Background Jobs\nAfter=network.target postgresql.service redis-server.service edit-mind-chroma.service edit-mind-ml.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nExecStart=/usr/bin/pnpm --filter background-jobs start\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-web.service\n[Unit]\nDescription=Edit-Mind Web Application\nAfter=network.target postgresql.service redis-server.service edit-mind-chroma.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nExecStart=/usr/bin/pnpm --filter web start --host 0.0.0.0 --port 3745\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now edit-mind-chroma\n  systemctl enable -q --now edit-mind-ml\n  systemctl enable -q --now edit-mind-jobs\n  systemctl enable -q --now edit-mind-web\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3745${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/edit-mind ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"edit-mind\" \"IliasHad/edit-mind\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop edit-mind-web edit-mind-jobs\n    msg_ok \"Stopped Services\"\n\n    msg_info \"Backing up Data\"\n    cp /opt/edit-mind/.env /opt/edit-mind.env.bak\n    cp /opt/edit-mind/.env.system /opt/edit-mind.env.system.bak\n    msg_ok \"Backed up Data\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"edit-mind\" \"IliasHad/edit-mind\" \"tarball\"\n\n    msg_info \"Rebuilding Application\"\n    cd /opt/edit-mind || exit\n    $STD pnpm install --prefer-frozen-lockfile\n    $STD pnpm --filter prisma generate\n    $STD pnpm run build:web\n    $STD pnpm rebuild @tailwindcss/oxide rollup onnxruntime-node\n    $STD pnpm run build:background-jobs\n    msg_ok \"Rebuilt Application\"\n\n    msg_info \"Restoring Data\"\n    cp /opt/edit-mind.env.bak /opt/edit-mind/.env\n    cp /opt/edit-mind.env.system.bak /opt/edit-mind/.env.system\n    rm -f /opt/edit-mind.env.bak /opt/edit-mind.env.system.bak\n    msg_ok \"Restored Data\"\n\n    msg_info \"Running Migrations\"\n    cd /opt/edit-mind || exit\n    set -a \u0026\u0026 source /opt/edit-mind/.env \u0026\u0026 source /opt/edit-mind/.env.system \u0026\u0026 set +a\n    $STD pnpm --filter prisma migrate:deploy\n    msg_ok \"Ran Migrations\"\n\n    msg_info \"Starting Services\"\n    systemctl start edit-mind-web edit-mind-jobs\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"edit-mind\" -- \"$@\"\n",
+  "total_lines": 727,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/IliasHad/edit-mind\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Edit-Mind\"\nvar_tags=\"${var_tags:-ai;media;photos}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-32}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-yes}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  # Refuse a conflicting native media namespace before downloads or package effects.\n  # Python is provisioned below; this preflight uses bootstrap Bash/coreutils only.\n  local native_media native_target\n  if [[ -e /media/videos || -L /media/videos ]]; then\n    if [[ ! -d /media/videos || ! -d /opt/edit-mind/media ]] ||\n      ! native_media=$(readlink -f -- /media/videos) ||\n      ! native_target=$(readlink -f -- /opt/edit-mind/media) ||\n      [[ \"$native_media\" != \"$native_target\" ]]; then\n      msg_error \"Edit-Mind: /media/videos conflicts with /opt/edit-mind/media; reconcile existing data first\"\n      return 65\n    fi\n  fi\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    cmake \\\n    redis-server \\\n    nginx \\\n    python3 \\\n    python3-dev \\\n    libgomp1 \\\n    libglib2.0-0 \\\n    libgl1 \\\n    libsm6 \\\n    libxext6 \\\n    libxrender1 \\\n    openssl\n  msg_ok \"Installed Dependencies\"\n\n  setup_ffmpeg\n  PG_VERSION=\"16\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"editmind\" PG_DB_USER=\"editmind\" setup_postgresql_db\n  NODE_VERSION=\"22\" setup_nodejs\n  UV_PYTHON=\"3.11\" setup_uv\n\n  msg_info \"Installing pnpm\"\n  $STD corepack enable pnpm\n  $STD corepack prepare pnpm@10.33.1 --activate\n  msg_ok \"Installed pnpm\"\n\n  fetch_and_deploy_gh_release \"edit-mind\" \"IliasHad/edit-mind\" \"tarball\"\n\n  msg_info \"Installing Application Dependencies\"\n  cd /opt/edit-mind || exit\n  $STD pnpm install --prefer-frozen-lockfile\n  $STD pnpm --filter prisma generate\n  msg_ok \"Installed Application Dependencies\"\n\n  msg_info \"Building Application\"\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/apps/web/.env.production\nVITE_BACKGROUND_JOBS_URL=http://${LOCAL_IP}:4000\nEOF\n  $STD pnpm run build:web\n  $STD pnpm rebuild @tailwindcss/oxide rollup onnxruntime-node\n  $STD pnpm run build:background-jobs\n  msg_ok \"Built Application\"\n\n  msg_info \"Setting up Python ML Environment\"\n  $STD uv venv --python 3.11 /opt/edit-mind/.venv\n  $STD uv pip install --no-cache-dir --python /opt/edit-mind/.venv \\\n    -r /opt/edit-mind/python/requirements.txt \\\n    chromadb\n  msg_ok \"Set up Python ML Environment\"\n\n  msg_info \"Configuring Application\"\n  SESSION_SECRET=$(openssl rand -base64 32)\n  ENCRYPTION_KEY=$(openssl rand -base64 32)\n  mkdir -p /opt/edit-mind/.data /opt/edit-mind/ml-models\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/.env\nSESSION_SECRET=${SESSION_SECRET}\nENCRYPTION_KEY=${ENCRYPTION_KEY}\nHOST_MEDIA_PATH=/opt/edit-mind/media\nOLLAMA_MODEL=qwen2.5:7b-instruct\nUSE_OLLAMA_MODEL=false\nOLLAMA_HOST=\nOLLAMA_PORT=\nGEMINI_API_KEY=\nUSE_GEMINI=false\nPORT=3745\nBACKGROUND_JOBS_PORT=4000\nML_PORT=8765\nREDIS_PORT=6379\nPOSTGRES_PORT=5432\nCHROMA_PORT=8000\nEOF\n  cat \u003c\u003c EOF \u003e /opt/edit-mind/.env.system\nDATABASE_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\nREDIS_URL=redis://127.0.0.1:6379\nREDIS_HOST=127.0.0.1\nCHROMA_HOST=127.0.0.1\nIS_PERSISTENT=TRUE\nML_HOST=127.0.0.1\nPROCESSED_VIDEOS_DIR=/opt/edit-mind/.data\nTHUMBNAILS_PATH=/opt/edit-mind/.data/.thumbnails\nSTITCHED_VIDEOS_DIR=/opt/edit-mind/.data/.stitched-videos\nFACES_DIR=/opt/edit-mind/.data/.faces\nUNKNOWN_FACES_DIR=/opt/edit-mind/.data/.unknown_faces\nKNOWN_FACES_FILE=/opt/edit-mind/.data/.faces.json\nKNOWN_FACES_FILE_LOADED=/opt/edit-mind/.data/.known_faces.json\nBACKGROUND_JOBS_URL=http://127.0.0.1:4000\nNODE_ENV=production\nANONYMIZED_TELEMETRY=FALSE\nWEB_APP_URL=http://${LOCAL_IP}:3745\nEOF\n  mkdir -p /opt/edit-mind/media\n  python3 - \u003c\u003c 'PY'\nimport os\nfrom pathlib import Path\nmedia, target = Path('/media/videos'), Path('/opt/edit-mind/media')\nif os.path.lexists(media):\n    if not media.is_dir() or media.resolve() != target.resolve():\n        raise SystemExit('Edit-Mind: native media mapping changed during install')\nelse:\n    media.parent.mkdir(parents=True, exist_ok=True)\n    media.symlink_to(target, target_is_directory=True)\nPY\n  (\n    export DATABASE_URL=\"postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\"\n    export SESSION_SECRET ENCRYPTION_KEY NODE_ENV=production\n    $STD pnpm --filter prisma migrate:deploy\n    $STD pnpm --filter db seed\n  )\n  msg_ok \"Configured Application\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-chroma.service\n[Unit]\nDescription=Edit-Mind ChromaDB\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironment=IS_PERSISTENT=TRUE\nExecStart=/opt/edit-mind/.venv/bin/chroma run --host 127.0.0.1 --port 8000 --path /opt/edit-mind/.data/chroma\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-ml.service\n[Unit]\nDescription=Edit-Mind ML Service\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nEnvironment=YOLO_CONFIG_DIR=/opt/edit-mind/ml-models/ultralytics\nEnvironment=DEEPFACE_HOME=/opt/edit-mind/ml-models/deepface\nEnvironment=TRANSCRIPTION_MODEL_CACHE=/opt/edit-mind/ml-models/whisper\nEnvironment=TORCH_HOME=/opt/edit-mind/ml-models/torch\nEnvironment=HF_HOME=/opt/edit-mind/ml-models/huggingface\nExecStart=/opt/edit-mind/.venv/bin/python /opt/edit-mind/python/main.py --host 0.0.0.0 --port 8765\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-jobs.service\n[Unit]\nDescription=Edit-Mind Background Jobs\nAfter=network.target postgresql.service redis-server.service edit-mind-chroma.service edit-mind-ml.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nExecStart=/usr/bin/pnpm --filter background-jobs start\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/edit-mind-web.service\n[Unit]\nDescription=Edit-Mind Web Application\nAfter=network.target postgresql.service redis-server.service edit-mind-chroma.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/edit-mind\nEnvironmentFile=/opt/edit-mind/.env\nEnvironmentFile=/opt/edit-mind/.env.system\nExecStart=/usr/bin/pnpm --filter web start --host 0.0.0.0 --port 3745\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now edit-mind-chroma\n  systemctl enable -q --now edit-mind-ml\n  systemctl enable -q --now edit-mind-jobs\n  systemctl enable -q --now edit-mind-web\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3745${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  # Captured in the generated updater: discovery must survive missing node_modules.\n  function edit_mind_state() {\n    python3 - \"$@\" \u003c\u003c 'PY'\nimport hashlib\nimport json\nimport os\nfrom pathlib import Path\nimport re\nimport shlex\nimport subprocess\nimport sys\nfrom urllib.parse import parse_qsl, unquote, urlsplit\n\nAPP_ROOT = Path('/opt/edit-mind')\nMEDIA = Path('/media/videos')\n\nclass Refusal(ValueError):\n    \"\"\"Only source-owned diagnostics may cross the configuration boundary.\"\"\"\n\ndef require(ok, message):\n    if not ok:\n        raise Refusal(message)\n\ndef literal(value):\n    require(not any(c in value for c in '\\\\$`\\x00\\r\\n'),\n            'unsupported escape, expansion or multiline configuration')\n    return value\n\ndef words(value):\n    require('%' not in value, 'unsupported systemd specifier expansion')\n    token = r'''(?:[^\\s'\"\\\\]+|\"[^\"\\\\]*\"|'[^'\\\\]*')'''\n    require(not value or re.fullmatch(token+r'(?:\\s+'+token+r')*', value),\n            'unsupported systemd word quoting; quote complete words only')\n    return shlex.split(literal(value), comments=False, posix=True)\n\ndef query(*argv):\n    p = subprocess.run(argv, capture_output=True, text=True, timeout=20)\n    require(p.returncode == 0, 'cannot observe effective service configuration')\n    return p.stdout.strip()\n\nfingerprints = {}\nroots = set()\nkeeps = set()\n\ndef contents(path):\n    p = Path(path)\n    require(p.is_absolute() and p.is_file(), 'required configuration file unavailable')\n    data = p.read_bytes()\n    require(len(data) \u003c= 1048576, 'configuration file exceeds supported bound')\n    fingerprints[str(p)] = hashlib.sha256(data).hexdigest()\n    return data.decode('utf-8')\n\ndef assignment(text):\n    require('=' in text, 'expected literal KEY=value assignment')\n    key, value = text.split('=', 1)\n    require(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key), 'invalid environment name')\n    return key, literal(value)\n\ndef env_file(path):\n    result = {}\n    for line in contents(path).splitlines():\n        line = line.strip()\n        if not line or line.startswith(('#', ';')):\n            continue\n        key, value = assignment(line)\n        # EnvironmentFile discards unquoted edge whitespace; Environment= does not.\n        value = value.strip(' \\t')\n        if value.startswith(('\"', \"'\")):\n            require(len(value) \u003e= 2 and value[-1] == value[0] and value[0] not in value[1:-1],\n                    'unsupported EnvironmentFile quoting')\n            value = value[1:-1]\n        else:\n            require(not any(c in value for c in \"\\\"'\"), 'unsupported EnvironmentFile quoting')\n        result[key] = value\n    return result\n\ndef absolute(value, cwd):\n    literal(value)\n    require(value and not value.startswith('~'), 'empty or home-relative persistent path')\n    # Do not erase symlink/.. traversal before the owning validation boundary.\n    return Path(os.path.join(str(cwd), value))\n\ndef protected(path):\n    require('..' not in path.parts, 'unsupported parent traversal in persistent path')\n    # Preserve lexical aliases as well as referents. Never copy external data.\n    for component in (path, *path.parents):\n        if component.is_symlink():\n            component.resolve(strict=True)  # Refuse loops and unknown/dangling mappings.\n    for p in (path, path.resolve()):\n        require(p != APP_ROOT and p not in APP_ROOT.parents,\n                'persistent path overlaps application root or ancestor')\n        roots.add(str(p))\n        if not p.is_relative_to(APP_ROOT):\n            continue\n        rel = p.relative_to(APP_ROOT)\n        parts = rel.parts\n        require(not any(any(c in part for c in '*?[]\\\\\\r\\n') for part in parts),\n                'persistent path cannot be represented as a literal keep')\n        require(not set(parts) \u0026 {'node_modules', 'build', 'dist', 'src', '.git', '__pycache__', 'tests', 'server', 'migrations'},\n                'persistent path overlaps code, dependencies or generated output')\n        python_config = str(rel) in {'python/.env', 'python/services/.env', 'python/services/analysis/.env'}\n        require(python_config or parts[0] not in {'python', 'scripts', 'patches', 'docker', 'docs', 'tests'},\n                'persistent path overlaps application code')\n        require(not (parts[0] in {'apps', 'packages'} and len(parts) \u003c 3),\n                'persistent path overlaps package code')\n        require(not (len(parts) \u003e= 3 and parts[0] == 'apps' and parts[2] in {'app', 'public', 'server.js', 'package.json'}),\n                'persistent path overlaps package source')\n        require(not any(part.endswith(('.ts', '.tsx', '.js', '.mjs', '.cjs', '.py', '.prisma')) or\n                        part in {'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json'}\n                        for part in parts),\n                'persistent path overlaps application source')\n        keeps.add(str(rel))\n\ndef root(value, cwd):\n    protected(absolute(value, cwd))\n\ndef temporary(value):\n    require(isinstance(value, str) and value.startswith('/') and\n            not any(ord(c) \u003c 32 or ord(c) == 127 for c in value), 'unsupported temporary-workspace value')\n    path = Path(value)\n    require('..' not in path.parts, 'unsupported temporary-workspace traversal')\n    for component in (path, *path.parents):\n        if component.is_symlink():\n            component.resolve(strict=True)\n    for candidate in (path, path.resolve()):\n        require(candidate != APP_ROOT and candidate not in APP_ROOT.parents and\n                not candidate.is_relative_to(APP_ROOT), 'temporary workspace overlaps application tree or ancestor')\n    # Temporary workspace is deliberately not a durable root or deployment keep.\n    return value\n\ndef service(name, manager):\n    props = {}\n    for line in query('systemctl', 'show', 'edit-mind-'+name+'.service',\n                      '-p', 'FragmentPath', '-p', 'DropInPaths', '-p', 'NeedDaemonReload').splitlines():\n        key, value = line.split('=', 1)\n        props[key] = value\n    require(props.get('NeedDaemonReload') == 'no', 'service changes need daemon-reload before update')\n    fragment = props.get('FragmentPath', '')\n    require(fragment, 'application service fragment unavailable')\n    paths = [fragment] + words(props.get('DropInPaths', ''))\n    baseline = {key: value for key, value in manager.items() if key == 'TMPDIR'}\n    env, envfiles, command, cwd = dict(baseline), [], None, None\n    allowed = {'Type', 'User', 'Group', 'WorkingDirectory', 'Environment', 'EnvironmentFile',\n               'ExecStart', 'Restart', 'RestartSec', 'TimeoutStartSec', 'TimeoutStopSec'}\n    for path in paths:\n        section = None\n        for line in contents(path).splitlines():\n            line = line.strip()\n            if not line or line.startswith(('#', ';')):\n                continue\n            if line.startswith('[') and line.endswith(']'):\n                section = line[1:-1]\n                require(section in {'Unit', 'Service', 'Install'}, 'unsupported service section')\n                continue\n            require('=' in line, 'unsupported multiline unit syntax')\n            key, value = line.split('=', 1)\n            key, value = key.strip(), value.strip()\n            if section != 'Service':\n                require(key in {'Description', 'After', 'Before', 'Wants', 'Requires', 'WantedBy'},\n                        'unsupported unit dependency directive')\n                continue\n            require(key in allowed, 'unsupported service directive: '+key)\n            if key == 'Environment':\n                if not value:\n                    env = dict(baseline)\n                for item in words(value):\n                    k, v = assignment(item)\n                    env[k] = v\n            elif key == 'EnvironmentFile':\n                if not value:\n                    envfiles = []\n                else:\n                    items = words(value)\n                    require(len(items) == 1 and items[0].startswith('/'), 'unsupported EnvironmentFile path')\n                    envfiles.append(items[0])\n            elif key == 'ExecStart':\n                if not value:\n                    command = None\n                else:\n                    require(command is None, 'ambiguous multiple ExecStart commands')\n                    command = words(value)\n            elif key == 'WorkingDirectory':\n                require(value.startswith('/'), 'WorkingDirectory must be an absolute literal')\n                cwd = Path(value)\n            elif key in {'User', 'Group'}:\n                require(value == 'root', 'unsupported service user or group')\n            elif key == 'Type':\n                require(value == 'simple', 'unsupported service type')\n    require(cwd == APP_ROOT and command, 'unsupported service CWD or missing command')\n    for path in envfiles:\n        env.update(env_file(path))\n        protected(Path(path))\n    require(not set(env) \u0026 {'NODE_OPTIONS', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH'},\n            'unsupported runtime wrapper configuration')\n    require(not any(k.startswith('PG') for k in env), 'unsupported ambient PostgreSQL configuration')\n    if name in {'web', 'jobs'}:\n        package = 'web' if name == 'web' else 'background-jobs'\n        require(command[:4] == ['/usr/bin/pnpm', '--filter', package, 'start'],\n                'unsupported Node service wrapper')\n        tail = command[4:]\n        require(name == 'web' or not tail, 'unsupported jobs startup options')\n        require(not tail or (len(tail) == 4 and tail[0] == '--host' and tail[2] == '--port'\n                            and tail[3].isdigit()), 'unsupported web startup options')\n        cwd = APP_ROOT/'apps'/package\n    elif name == 'ml':\n        require(command[:2] == [str(APP_ROOT/'.venv/bin/python'), str(APP_ROOT/'python/main.py')],\n                'unsupported Python service wrapper')\n        tail = command[2:]\n        require(len(tail) == 4 and tail[0] == '--host' and tail[2] == '--port' and tail[3].isdigit(),\n                'unsupported Python startup options')\n    else:\n        require(command[:2] == [str(APP_ROOT/'.venv/bin/chroma'), 'run'], 'unsupported Chroma wrapper')\n        tail = command[2:]\n        require(len(tail) == 6 and set(tail[::2]) == {'--host', '--port', '--path'},\n                'unsupported Chroma startup options')\n        options = dict(zip(tail[::2], tail[1::2]))\n        require(options['--port'].isdigit(), 'unsupported Chroma port')\n        root(options['--path'], cwd)\n    # dotenv/config fills absent Node keys; Python's two load_dotenv() calls\n    # search from main.py and face_recognizer.py, not the updater's CWD.\n    fallbacks = []\n    if name in {'web', 'jobs'}:\n        fallbacks = [cwd/'.env']\n    elif name == 'ml':\n        for candidates in ((APP_ROOT/'python/.env', APP_ROOT/'.env'),\n                           (APP_ROOT/'python/services/analysis/.env', APP_ROOT/'python/services/.env',\n                            APP_ROOT/'python/.env', APP_ROOT/'.env')):\n            fallbacks += [next((p for p in candidates if p.exists()), APP_ROOT/'.env')]\n    for path in fallbacks:\n        protected(path)\n        if path.exists():\n            values = env_file(path)\n            require(not any('#' in value for value in values.values()), 'unsupported dotenv inline comment syntax')\n            for key, value in values.items():\n                env.setdefault(key, value)\n    require(not set(env) \u0026 {'NODE_OPTIONS', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH'} and\n            not any(k.startswith('PG') for k in env), 'unsupported dotenv driver or wrapper configuration')\n    require(not set(env) \u0026 {'XDG_CACHE_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE',\n                           'TRANSFORMERS_CACHE', 'PYTHONHOME'} and env.get('HOME', '/root') == '/root',\n            'unsupported dependency cache/home override; configure the native cache fields explicitly')\n    if 'TMPDIR' in env:\n        temporary(env['TMPDIR'])\n    return dict(env=env, cwd=str(cwd), argv=command)\n\ndef decode(value):\n    require(not re.search(r'%(?![0-9A-Fa-f]{2})', value), 'malformed PostgreSQL URL escape')\n    value = unquote(value, errors='strict')\n    require(not any(c in value for c in '\\x00\\r\\n'), 'invalid PostgreSQL URL field')\n    return value\n\ndef database(url):\n    require(not any(ord(c) \u003c= 32 for c in url), 'unsupported whitespace in PostgreSQL URL')\n    u = urlsplit(url)\n    require(u.scheme in {'postgresql', 'postgres'} and not u.fragment and u.hostname and\n            u.username and u.password is not None and u.path.startswith('/'),\n            'DATABASE_URL must select an explicit PostgreSQL host, user and database')\n    require(re.fullmatch(r'[A-Za-z0-9.:-]+', u.hostname) and (u.port is None or 1 \u003c= u.port \u003c= 65535),\n            'unsupported PostgreSQL host')\n    decode(u.query)\n    options = parse_qsl(u.query, keep_blank_values=True, strict_parsing=True, errors='strict')\n    require(len(dict(options)) == len(options) and set(dict(options)) \u003c= {'schema', 'sslmode'},\n            'unsupported or duplicate Prisma connection option')\n    options = dict(options)\n    # Prisma TLS trust semantics are not silently mapped to libpq's different modes.\n    tls = options.get('sslmode', 'prefer')\n    require(tls in {'disable', 'prefer'}, 'unsupported TLS mapping; no downgrade attempted')\n    # Quaint6 dbname() returns the first raw URL path segment, not a decoded name.\n    db = u.path[1:]\n    require(re.fullmatch(r'[A-Za-z0-9_.-]+', db), 'unsupported PostgreSQL database name')\n    schema = options.get('schema', 'public')\n    require(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_ ]*', schema) and len(schema.encode()) \u003c= 63,\n            'invalid PostgreSQL schema')\n    env = dict(PATH=os.environ['PATH'], HOME='/nonexistent', PGHOST=u.hostname,\n               PGPORT=str(u.port or 5432), PGUSER=decode(u.username), PGPASSWORD=decode(u.password),\n               PGDATABASE=db, PGSSLMODE=tls, PGGSSENCMODE='disable', PGCONNECT_TIMEOUT='5', PGPASSFILE='/dev/null',\n               PGSERVICEFILE='/dev/null', PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000')\n    ident = '\"'+schema.replace('\"', '\"\"')+'\"'\n    fields = [('Folder', 'path'), ('Job', 'videoPath'), ('Job', 'thumbnailPath'),\n              ('Video', 'source'), ('Video', 'thumbnailUrl'), ('ChatMessage', 'stitchedVideoPath'),\n              ('Export', 'filePath')]\n    selects = ['SELECT \"'+col+'\" AS path FROM '+ident+'.\"'+table+'\"' for table, col in fields]\n    sql = 'BEGIN READ ONLY; SELECT COALESCE(json_agg(left(path,4097) ORDER BY path),\\'[]\\'::json) FROM (' + \\\n          'SELECT path FROM (' + ' UNION '.join(selects) + ') AS all_roots ' + \\\n          'WHERE path IS NOT NULL AND path \u003c\u003e \\'\\' LIMIT 10001) AS roots; COMMIT;'\n    p = subprocess.run(['psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1'], input=sql,\n                       env=env, capture_output=True, text=True, timeout=20)\n    require(p.returncode == 0, 'configured PostgreSQL/schema inventory unavailable; no fallback attempted')\n    paths = json.loads(p.stdout)\n    require(isinstance(paths, list) and len(paths) \u003c= 10000 and\n            all(isinstance(v, str) and len(v) \u003c= 4096 for v in paths),\n            'PostgreSQL root inventory exceeds supported 10000 paths / 4096 characters')\n    return paths\n\ndef discover():\n    require(APP_ROOT.is_dir() and APP_ROOT.resolve() == APP_ROOT, 'unsupported application-root alias')\n    for keep in sys.argv[2:]:\n        require(keep and not keep.startswith('/') and not keep.endswith('/') and\n                '//' not in keep and not set(keep.split('/')) \u0026 {'.', '..'}, 'invalid caller keep')\n        root(keep, APP_ROOT)\n    # Manager-provided path/driver fields would otherwise escape the unit grammar.\n    def manager_pairs(items):\n        result = {}\n        for key, value in items:\n            require(key not in result, 'duplicate manager environment field')\n            result[key] = value\n        return result\n    manager = json.loads(query('systemctl', 'show-environment', '--output=json'), object_pairs_hook=manager_pairs)\n    require(type(manager) is dict and all(type(v) is str for v in manager.values()),\n            'unsupported manager environment JSON grammar')\n    for key in manager:\n        require(key in {'LANG', 'LANGUAGE', 'LC_ALL', 'PATH', 'TMPDIR'} or key.startswith('LC_'),\n                 'unsupported manager environment; configure application units explicitly')\n    if 'TMPDIR' in manager:\n        temporary(manager['TMPDIR'])\n    for rel in ('.env', '.env.system', '.data', '.venv', 'media', 'ml-models',\n                '.locations.json', 'apps/web/.env.production'):\n        protected(APP_ROOT/rel)\n    # Parse mandatory legacy config even when a unit deliberately resets its files.\n    env_file(APP_ROOT/'.env')\n    env_file(APP_ROOT/'.env.system')\n    contents(APP_ROOT/'apps/web/.env.production')\n    units = {name: service(name, manager) for name in ('web', 'jobs', 'ml', 'chroma')}\n    require(units['web']['env'].get('DATABASE_URL') == units['jobs']['env'].get('DATABASE_URL'),\n            'web/jobs database mappings differ; reconcile before update')\n    urls = set()\n    host = set()\n    js = {'PROCESSED_VIDEOS_DIR': '.results', 'THUMBNAILS_PATH': '.thumbnails',\n          'FACES_DIR': '.faces', 'UNKNOWN_FACES_DIR': '.unknown_faces',\n          'STITCHED_VIDEOS_DIR': 'output-videos', 'EXPORTS_DIR': '/app/data/.exports',\n          'XENOVA_MODEL_CACHE_DIR': '/ml-models/embedding-models'}\n    for name, unit in units.items():\n        e, cwd = unit['env'], Path(unit['cwd'])\n        if name in {'web', 'jobs'}:\n            require(e.get('DATABASE_URL'), 'missing effective DATABASE_URL')\n            urls.add(e['DATABASE_URL'])\n            root('.locations.json', cwd)\n            for key, default in js.items():\n                root(e.get(key) or default, cwd)\n            # Additional native readers have different defaults/anchors.\n            root(e.get('THUMBNAILS_PATH') or '/app/data/.thumbnails', cwd)\n            root(e.get('FACES_DIR') or '.faces_db', cwd)\n            root(e.get('THUMBNAILS_PATH') or '.thumbnails', MEDIA)\n        if name == 'ml':\n            defaults = {'YOLO_CONFIG_DIR': '/ml-models/ultralytics', 'DEEPFACE_HOME': '/root',\n                        'TRANSCRIPTION_MODEL_CACHE': 'ml-models/.whisper', 'TORCH_HOME': '/root/.cache/torch',\n                        'HF_HOME': '/ml-models/huggingface', 'THUMBNAILS_PATH': '/app/data/.thumbnails/',\n                        'FACES_DIR': '.faces', 'UNKNOWN_FACES_DIR': '.unknown_faces'}\n            for key, default in defaults.items():\n                root(e.get(key, default), cwd)\n        for key in ('KNOWN_FACES_FILE', 'KNOWN_FACES_FILE_LOADED'):\n            if e.get(key):\n                root(e[key], cwd)\n        if e.get('HOST_MEDIA_PATH'):\n            value = absolute(e['HOST_MEDIA_PATH'], cwd)\n            protected(value)\n            host.add(str(value))\n        require(e.get('USE_EXTERNAL_HOST', '').lower() not in {'1', 'true'},\n                'external-host path translation is unsupported by native media wiring')\n    require(len(host) == 1, 'missing or ambiguous native HOST_MEDIA_PATH')\n    target = Path(next(iter(host)))\n    require(target.is_dir(), 'configured native media directory unavailable')\n    protected(MEDIA)\n    require(not os.path.lexists(MEDIA) or (MEDIA.is_dir() and MEDIA.resolve() == target.resolve()),\n            '/media/videos conflicts with HOST_MEDIA_PATH; reconcile existing data without overwriting it')\n    for url in urls:\n        for value in database(url):\n            if re.match(r'^https?://', value):\n                continue\n            if value.startswith('file:'):\n                u = urlsplit(value)\n                require(u.netloc in {'', 'localhost'} and not u.query and not u.fragment,\n                        'unsupported database file URL')\n                value = decode(u.path)\n            require(not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', value), 'unsupported database path scheme')\n            for name in ('web', 'jobs', 'ml'):\n                root(value, units[name]['cwd'])\n    return dict(keeps=sorted(keeps), roots=sorted(roots), files=fingerprints, units=units, manager=manager,\n                media_target=str(target), media_exists=os.path.lexists(MEDIA))\n\ntry:\n    mode = sys.argv[1]\n    if mode == 'discover':\n        print(json.dumps(discover(), sort_keys=True))\n    else:\n        plan = json.loads(Path(sys.argv[2]).read_text())\n        if mode == 'keeps':\n            sys.stdout.buffer.write(b''.join(p.encode()+b'\\0' for p in plan['keeps']))\n        elif mode == 'media':\n            target = Path(plan['media_target'])\n            require(target.is_dir(), 'native media target disappeared')\n            if os.path.lexists(MEDIA):\n                require(MEDIA.is_dir() and MEDIA.resolve() == target.resolve(), 'native media mapping changed')\n            else:\n                MEDIA.parent.mkdir(parents=True, exist_ok=True)\n                MEDIA.symlink_to(target, target_is_directory=True)\n        elif mode == 'migrate':\n            env = dict(os.environ)\n            for key in list(env):\n                if key.startswith('PG') or key in {'NODE_OPTIONS', 'LD_PRELOAD', 'LD_LIBRARY_PATH'}:\n                    del env[key]\n            env.update(plan['units']['web']['env'])\n            os.execvpe('pnpm', ['pnpm', '--filter', 'prisma', 'migrate:deploy'], env)\n        else:\n            raise ValueError('unknown state operation')\nexcept (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:\n    # Do not print input text, credentials, subprocess stderr or DATABASE_URL.\n    print('Edit-Mind persistence refused: '+str(error) if isinstance(error, Refusal)\n          else 'Edit-Mind persistence refused: inventory unavailable', file=sys.stderr)\n    sys.exit(65)\nPY\n  }\n\n  if [[ ! -d /opt/edit-mind ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit 65\n  fi\n\n  if check_for_gh_release \"edit-mind\" \"IliasHad/edit-mind\"; then\n    local before after keep_file declaration service\n    local -a caller_keeps=()\n    case \"${CLEAN_INSTALL_KEEP:-}\" in *$'\\n'* | *$'\\r'* | *$'\\t'*) exit 65 ;; esac\n    read -r -a caller_keeps \u003c\u003c\u003c \"${CLEAN_INSTALL_KEEP:-}\"\n    if declaration=$(declare -p CLEAN_INSTALL_KEEP_PATHS 2\u003e /dev/null); then\n      [[ \"$declaration\" =~ ^declare\\ -[^[:space:]]*a[^[:space:]]*\\  ]] || exit 65\n      [[ ! \"$declaration\" =~ ^declare\\ -[^[:space:]]*r ]] || exit 65\n      caller_keeps+=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")\n    fi\n    before=$(mktemp)\n    after=$(mktemp)\n    keep_file=$(mktemp)\n    chmod 0600 \"$before\" \"$after\" \"$keep_file\"\n    edit_mind_state discover \"${caller_keeps[@]}\" \u003e \"$before\"\n\n    msg_info \"Stopping Services\"\n    for service in edit-mind-web edit-mind-jobs edit-mind-ml edit-mind-chroma; do\n      systemctl stop \"$service\"\n    done\n    msg_ok \"Stopped Services\"\n\n    edit_mind_state discover \"${caller_keeps[@]}\" \u003e \"$after\"\n    if ! cmp -s \"$before\" \"$after\"; then\n      msg_error \"Edit-Mind configuration or database paths changed while quiescing; retry after reconciling writers\"\n      exit 65\n    fi\n    edit_mind_state keeps \"$before\" \u003e \"$keep_file\"\n    local -a discovered_keeps=()\n    mapfile -d '' -t discovered_keeps \u003c \"$keep_file\"\n    CLEAN_INSTALL_KEEP_PATHS+=(\"${discovered_keeps[@]}\")\n    edit_mind_state media \"$before\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"edit-mind\" \"IliasHad/edit-mind\" \"tarball\"\n\n    msg_info \"Rebuilding Application\"\n    cd /opt/edit-mind || exit\n    $STD pnpm install --prefer-frozen-lockfile\n    $STD pnpm --filter prisma generate\n    $STD pnpm run build:web\n    $STD pnpm rebuild @tailwindcss/oxide rollup onnxruntime-node\n    $STD pnpm run build:background-jobs\n    msg_ok \"Rebuilt Application\"\n\n    msg_info \"Running Migrations\"\n    cd /opt/edit-mind || exit\n    edit_mind_state migrate \"$before\"\n    msg_ok \"Ran Migrations\"\n\n    msg_info \"Starting Services\"\n    for service in edit-mind-chroma edit-mind-ml edit-mind-jobs edit-mind-web; do\n      systemctl start \"$service\"\n      systemctl is-active --quiet \"$service\"\n    done\n    rm -f \"$before\" \"$after\" \"$keep_file\"\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"edit-mind\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -26,6 +26,18 @@
     "var_unprivileged=\"${var_unprivileged:-1}\"",
     "",
     "function install_script() {",
+    "  # Refuse a conflicting native media namespace before downloads or package effects.",
+    "  # Python is provisioned below; this preflight uses bootstrap Bash/coreutils only.",
+    "  local native_media native_target",
+    "  if [[ -e /media/videos || -L /media/videos ]]; then",
+    "    if [[ ! -d /media/videos || ! -d /opt/edit-mind/media ]] ||",
+    "      ! native_media=$(readlink -f -- /media/videos) ||",
+    "      ! native_target=$(readlink -f -- /opt/edit-mind/media) ||",
+    "      [[ \"$native_media\" != \"$native_target\" ]]; then",
+    "      msg_error \"Edit-Mind: /media/videos conflicts with /opt/edit-mind/media; reconcile existing data first\"",
+    "      return 65",
+    "    fi",
+    "  fi",
     "  msg_info \"Installing Dependencies\"",
     "  $STD apt install -y \\",
     "    build-essential \\",
@@ -119,9 +131,23 @@
     "WEB_APP_URL=http://${LOCAL_IP}:3745",
     "EOF",
     "  mkdir -p /opt/edit-mind/media",
-    "  set -a \u0026\u0026 source /opt/edit-mind/.env \u0026\u0026 source /opt/edit-mind/.env.system \u0026\u0026 set +a",
-    "  $STD pnpm --filter prisma migrate:deploy",
-    "  $STD pnpm --filter db seed",
+    "  python3 - \u003c\u003c 'PY'",
+    "import os",
+    "from pathlib import Path",
+    "media, target = Path('/media/videos'), Path('/opt/edit-mind/media')",
+    "if os.path.lexists(media):",
+    "    if not media.is_dir() or media.resolve() != target.resolve():",
+    "        raise SystemExit('Edit-Mind: native media mapping changed during install')",
+    "else:",
+    "    media.parent.mkdir(parents=True, exist_ok=True)",
+    "    media.symlink_to(target, target_is_directory=True)",
+    "PY",
+    "  (",
+    "    export DATABASE_URL=\"postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\"",
+    "    export SESSION_SECRET ENCRYPTION_KEY NODE_ENV=production",
+    "    $STD pnpm --filter prisma migrate:deploy",
+    "    $STD pnpm --filter db seed",
+    "  )",
     "  msg_ok \"Configured Application\"",
     "",
     "  msg_info \"Creating Services\"",
@@ -223,20 +249,455 @@
     "  check_container_storage",
     "  check_container_resources",
     "",
+    "  # Captured in the generated updater: discovery must survive missing node_modules.",
+    "  function edit_mind_state() {",
+    "    python3 - \"$@\" \u003c\u003c 'PY'",
+    "import hashlib",
+    "import json",
+    "import os",
+    "from pathlib import Path",
+    "import re",
+    "import shlex",
+    "import subprocess",
+    "import sys",
+    "from urllib.parse import parse_qsl, unquote, urlsplit",
+    "",
+    "APP_ROOT = Path('/opt/edit-mind')",
+    "MEDIA = Path('/media/videos')",
+    "",
+    "class Refusal(ValueError):",
+    "    \"\"\"Only source-owned diagnostics may cross the configuration boundary.\"\"\"",
+    "",
+    "def require(ok, message):",
+    "    if not ok:",
+    "        raise Refusal(message)",
+    "",
+    "def literal(value):",
+    "    require(not any(c in value for c in '\\\\$`\\x00\\r\\n'),",
+    "            'unsupported escape, expansion or multiline configuration')",
+    "    return value",
+    "",
+    "def words(value):",
+    "    require('%' not in value, 'unsupported systemd specifier expansion')",
+    "    token = r'''(?:[^\\s'\"\\\\]+|\"[^\"\\\\]*\"|'[^'\\\\]*')'''",
+    "    require(not value or re.fullmatch(token+r'(?:\\s+'+token+r')*', value),",
+    "            'unsupported systemd word quoting; quote complete words only')",
+    "    return shlex.split(literal(value), comments=False, posix=True)",
+    "",
+    "def query(*argv):",
+    "    p = subprocess.run(argv, capture_output=True, text=True, timeout=20)",
+    "    require(p.returncode == 0, 'cannot observe effective service configuration')",
+    "    return p.stdout.strip()",
+    "",
+    "fingerprints = {}",
+    "roots = set()",
+    "keeps = set()",
+    "",
+    "def contents(path):",
+    "    p = Path(path)",
+    "    require(p.is_absolute() and p.is_file(), 'required configuration file unavailable')",
+    "    data = p.read_bytes()",
+    "    require(len(data) \u003c= 1048576, 'configuration file exceeds supported bound')",
+    "    fingerprints[str(p)] = hashlib.sha256(data).hexdigest()",
+    "    return data.decode('utf-8')",
+    "",
+    "def assignment(text):",
+    "    require('=' in text, 'expected literal KEY=value assignment')",
+    "    key, value = text.split('=', 1)",
+    "    require(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key), 'invalid environment name')",
+    "    return key, literal(value)",
+    "",
+    "def env_file(path):",
+    "    result = {}",
+    "    for line in contents(path).splitlines():",
+    "        line = line.strip()",
+    "        if not line or line.startswith(('#', ';')):",
+    "            continue",
+    "        key, value = assignment(line)",
+    "        # EnvironmentFile discards unquoted edge whitespace; Environment= does not.",
+    "        value = value.strip(' \\t')",
+    "        if value.startswith(('\"', \"'\")):",
+    "            require(len(value) \u003e= 2 and value[-1] == value[0] and value[0] not in value[1:-1],",
+    "                    'unsupported EnvironmentFile quoting')",
+    "            value = value[1:-1]",
+    "        else:",
+    "            require(not any(c in value for c in \"\\\"'\"), 'unsupported EnvironmentFile quoting')",
+    "        result[key] = value",
+    "    return result",
+    "",
+    "def absolute(value, cwd):",
+    "    literal(value)",
+    "    require(value and not value.startswith('~'), 'empty or home-relative persistent path')",
+    "    # Do not erase symlink/.. traversal before the owning validation boundary.",
+    "    return Path(os.path.join(str(cwd), value))",
+    "",
+    "def protected(path):",
+    "    require('..' not in path.parts, 'unsupported parent traversal in persistent path')",
+    "    # Preserve lexical aliases as well as referents. Never copy external data.",
+    "    for component in (path, *path.parents):",
+    "        if component.is_symlink():",
+    "            component.resolve(strict=True)  # Refuse loops and unknown/dangling mappings.",
+    "    for p in (path, path.resolve()):",
+    "        require(p != APP_ROOT and p not in APP_ROOT.parents,",
+    "                'persistent path overlaps application root or ancestor')",
+    "        roots.add(str(p))",
+    "        if not p.is_relative_to(APP_ROOT):",
+    "            continue",
+    "        rel = p.relative_to(APP_ROOT)",
+    "        parts = rel.parts",
+    "        require(not any(any(c in part for c in '*?[]\\\\\\r\\n') for part in parts),",
+    "                'persistent path cannot be represented as a literal keep')",
+    "        require(not set(parts) \u0026 {'node_modules', 'build', 'dist', 'src', '.git', '__pycache__', 'tests', 'server', 'migrations'},",
+    "                'persistent path overlaps code, dependencies or generated output')",
+    "        python_config = str(rel) in {'python/.env', 'python/services/.env', 'python/services/analysis/.env'}",
+    "        require(python_config or parts[0] not in {'python', 'scripts', 'patches', 'docker', 'docs', 'tests'},",
+    "                'persistent path overlaps application code')",
+    "        require(not (parts[0] in {'apps', 'packages'} and len(parts) \u003c 3),",
+    "                'persistent path overlaps package code')",
+    "        require(not (len(parts) \u003e= 3 and parts[0] == 'apps' and parts[2] in {'app', 'public', 'server.js', 'package.json'}),",
+    "                'persistent path overlaps package source')",
+    "        require(not any(part.endswith(('.ts', '.tsx', '.js', '.mjs', '.cjs', '.py', '.prisma')) or",
+    "                        part in {'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json'}",
+    "                        for part in parts),",
+    "                'persistent path overlaps application source')",
+    "        keeps.add(str(rel))",
+    "",
+    "def root(value, cwd):",
+    "    protected(absolute(value, cwd))",
+    "",
+    "def temporary(value):",
+    "    require(isinstance(value, str) and value.startswith('/') and",
+    "            not any(ord(c) \u003c 32 or ord(c) == 127 for c in value), 'unsupported temporary-workspace value')",
+    "    path = Path(value)",
+    "    require('..' not in path.parts, 'unsupported temporary-workspace traversal')",
+    "    for component in (path, *path.parents):",
+    "        if component.is_symlink():",
+    "            component.resolve(strict=True)",
+    "    for candidate in (path, path.resolve()):",
+    "        require(candidate != APP_ROOT and candidate not in APP_ROOT.parents and",
+    "                not candidate.is_relative_to(APP_ROOT), 'temporary workspace overlaps application tree or ancestor')",
+    "    # Temporary workspace is deliberately not a durable root or deployment keep.",
+    "    return value",
+    "",
+    "def service(name, manager):",
+    "    props = {}",
+    "    for line in query('systemctl', 'show', 'edit-mind-'+name+'.service',",
+    "                      '-p', 'FragmentPath', '-p', 'DropInPaths', '-p', 'NeedDaemonReload').splitlines():",
+    "        key, value = line.split('=', 1)",
+    "        props[key] = value",
+    "    require(props.get('NeedDaemonReload') == 'no', 'service changes need daemon-reload before update')",
+    "    fragment = props.get('FragmentPath', '')",
+    "    require(fragment, 'application service fragment unavailable')",
+    "    paths = [fragment] + words(props.get('DropInPaths', ''))",
+    "    baseline = {key: value for key, value in manager.items() if key == 'TMPDIR'}",
+    "    env, envfiles, command, cwd = dict(baseline), [], None, None",
+    "    allowed = {'Type', 'User', 'Group', 'WorkingDirectory', 'Environment', 'EnvironmentFile',",
+    "               'ExecStart', 'Restart', 'RestartSec', 'TimeoutStartSec', 'TimeoutStopSec'}",
+    "    for path in paths:",
+    "        section = None",
+    "        for line in contents(path).splitlines():",
+    "            line = line.strip()",
+    "            if not line or line.startswith(('#', ';')):",
+    "                continue",
+    "            if line.startswith('[') and line.endswith(']'):",
+    "                section = line[1:-1]",
+    "                require(section in {'Unit', 'Service', 'Install'}, 'unsupported service section')",
+    "                continue",
+    "            require('=' in line, 'unsupported multiline unit syntax')",
+    "            key, value = line.split('=', 1)",
+    "            key, value = key.strip(), value.strip()",
+    "            if section != 'Service':",
+    "                require(key in {'Description', 'After', 'Before', 'Wants', 'Requires', 'WantedBy'},",
+    "                        'unsupported unit dependency directive')",
+    "                continue",
+    "            require(key in allowed, 'unsupported service directive: '+key)",
+    "            if key == 'Environment':",
+    "                if not value:",
+    "                    env = dict(baseline)",
+    "                for item in words(value):",
+    "                    k, v = assignment(item)",
+    "                    env[k] = v",
+    "            elif key == 'EnvironmentFile':",
+    "                if not value:",
+    "                    envfiles = []",
+    "                else:",
+    "                    items = words(value)",
+    "                    require(len(items) == 1 and items[0].startswith('/'), 'unsupported EnvironmentFile path')",
+    "                    envfiles.append(items[0])",
+    "            elif key == 'ExecStart':",
+    "                if not value:",
+    "                    command = None",
+    "                else:",
+    "                    require(command is None, 'ambiguous multiple ExecStart commands')",
+    "                    command = words(value)",
+    "            elif key == 'WorkingDirectory':",
+    "                require(value.startswith('/'), 'WorkingDirectory must be an absolute literal')",
+    "                cwd = Path(value)",
+    "            elif key in {'User', 'Group'}:",
+    "                require(value == 'root', 'unsupported service user or group')",
+    "            elif key == 'Type':",
+    "                require(value == 'simple', 'unsupported service type')",
+    "    require(cwd == APP_ROOT and command, 'unsupported service CWD or missing command')",
+    "    for path in envfiles:",
+    "        env.update(env_file(path))",
+    "        protected(Path(path))",
+    "    require(not set(env) \u0026 {'NODE_OPTIONS', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH'},",
+    "            'unsupported runtime wrapper configuration')",
+    "    require(not any(k.startswith('PG') for k in env), 'unsupported ambient PostgreSQL configuration')",
+    "    if name in {'web', 'jobs'}:",
+    "        package = 'web' if name == 'web' else 'background-jobs'",
+    "        require(command[:4] == ['/usr/bin/pnpm', '--filter', package, 'start'],",
+    "                'unsupported Node service wrapper')",
+    "        tail = command[4:]",
+    "        require(name == 'web' or not tail, 'unsupported jobs startup options')",
+    "        require(not tail or (len(tail) == 4 and tail[0] == '--host' and tail[2] == '--port'",
+    "                            and tail[3].isdigit()), 'unsupported web startup options')",
+    "        cwd = APP_ROOT/'apps'/package",
+    "    elif name == 'ml':",
+    "        require(command[:2] == [str(APP_ROOT/'.venv/bin/python'), str(APP_ROOT/'python/main.py')],",
+    "                'unsupported Python service wrapper')",
+    "        tail = command[2:]",
+    "        require(len(tail) == 4 and tail[0] == '--host' and tail[2] == '--port' and tail[3].isdigit(),",
+    "                'unsupported Python startup options')",
+    "    else:",
+    "        require(command[:2] == [str(APP_ROOT/'.venv/bin/chroma'), 'run'], 'unsupported Chroma wrapper')",
+    "        tail = command[2:]",
+    "        require(len(tail) == 6 and set(tail[::2]) == {'--host', '--port', '--path'},",
+    "                'unsupported Chroma startup options')",
+    "        options = dict(zip(tail[::2], tail[1::2]))",
+    "        require(options['--port'].isdigit(), 'unsupported Chroma port')",
+    "        root(options['--path'], cwd)",
+    "    # dotenv/config fills absent Node keys; Python's two load_dotenv() calls",
+    "    # search from main.py and face_recognizer.py, not the updater's CWD.",
+    "    fallbacks = []",
+    "    if name in {'web', 'jobs'}:",
+    "        fallbacks = [cwd/'.env']",
+    "    elif name == 'ml':",
+    "        for candidates in ((APP_ROOT/'python/.env', APP_ROOT/'.env'),",
+    "                           (APP_ROOT/'python/services/analysis/.env', APP_ROOT/'python/services/.env',",
+    "                            APP_ROOT/'python/.env', APP_ROOT/'.env')):",
+    "            fallbacks += [next((p for p in candidates if p.exists()), APP_ROOT/'.env')]",
+    "    for path in fallbacks:",
+    "        protected(path)",
+    "        if path.exists():",
+    "            values = env_file(path)",
+    "            require(not any('#' in value for value in values.values()), 'unsupported dotenv inline comment syntax')",
+    "            for key, value in values.items():",
+    "                env.setdefault(key, value)",
+    "    require(not set(env) \u0026 {'NODE_OPTIONS', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH'} and",
+    "            not any(k.startswith('PG') for k in env), 'unsupported dotenv driver or wrapper configuration')",
+    "    require(not set(env) \u0026 {'XDG_CACHE_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE',",
+    "                           'TRANSFORMERS_CACHE', 'PYTHONHOME'} and env.get('HOME', '/root') == '/root',",
+    "            'unsupported dependency cache/home override; configure the native cache fields explicitly')",
+    "    if 'TMPDIR' in env:",
+    "        temporary(env['TMPDIR'])",
+    "    return dict(env=env, cwd=str(cwd), argv=command)",
+    "",
+    "def decode(value):",
+    "    require(not re.search(r'%(?![0-9A-Fa-f]{2})', value), 'malformed PostgreSQL URL escape')",
+    "    value = unquote(value, errors='strict')",
+    "    require(not any(c in value for c in '\\x00\\r\\n'), 'invalid PostgreSQL URL field')",
+    "    return value",
+    "",
+    "def database(url):",
+    "    require(not any(ord(c) \u003c= 32 for c in url), 'unsupported whitespace in PostgreSQL URL')",
+    "    u = urlsplit(url)",
+    "    require(u.scheme in {'postgresql', 'postgres'} and not u.fragment and u.hostname and",
+    "            u.username and u.password is not None and u.path.startswith('/'),",
+    "            'DATABASE_URL must select an explicit PostgreSQL host, user and database')",
+    "    require(re.fullmatch(r'[A-Za-z0-9.:-]+', u.hostname) and (u.port is None or 1 \u003c= u.port \u003c= 65535),",
+    "            'unsupported PostgreSQL host')",
+    "    decode(u.query)",
+    "    options = parse_qsl(u.query, keep_blank_values=True, strict_parsing=True, errors='strict')",
+    "    require(len(dict(options)) == len(options) and set(dict(options)) \u003c= {'schema', 'sslmode'},",
+    "            'unsupported or duplicate Prisma connection option')",
+    "    options = dict(options)",
+    "    # Prisma TLS trust semantics are not silently mapped to libpq's different modes.",
+    "    tls = options.get('sslmode', 'prefer')",
+    "    require(tls in {'disable', 'prefer'}, 'unsupported TLS mapping; no downgrade attempted')",
+    "    # Quaint6 dbname() returns the first raw URL path segment, not a decoded name.",
+    "    db = u.path[1:]",
+    "    require(re.fullmatch(r'[A-Za-z0-9_.-]+', db), 'unsupported PostgreSQL database name')",
+    "    schema = options.get('schema', 'public')",
+    "    require(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_ ]*', schema) and len(schema.encode()) \u003c= 63,",
+    "            'invalid PostgreSQL schema')",
+    "    env = dict(PATH=os.environ['PATH'], HOME='/nonexistent', PGHOST=u.hostname,",
+    "               PGPORT=str(u.port or 5432), PGUSER=decode(u.username), PGPASSWORD=decode(u.password),",
+    "               PGDATABASE=db, PGSSLMODE=tls, PGGSSENCMODE='disable', PGCONNECT_TIMEOUT='5', PGPASSFILE='/dev/null',",
+    "               PGSERVICEFILE='/dev/null', PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=10000')",
+    "    ident = '\"'+schema.replace('\"', '\"\"')+'\"'",
+    "    fields = [('Folder', 'path'), ('Job', 'videoPath'), ('Job', 'thumbnailPath'),",
+    "              ('Video', 'source'), ('Video', 'thumbnailUrl'), ('ChatMessage', 'stitchedVideoPath'),",
+    "              ('Export', 'filePath')]",
+    "    selects = ['SELECT \"'+col+'\" AS path FROM '+ident+'.\"'+table+'\"' for table, col in fields]",
+    "    sql = 'BEGIN READ ONLY; SELECT COALESCE(json_agg(left(path,4097) ORDER BY path),\\'[]\\'::json) FROM (' + \\",
+    "          'SELECT path FROM (' + ' UNION '.join(selects) + ') AS all_roots ' + \\",
+    "          'WHERE path IS NOT NULL AND path \u003c\u003e \\'\\' LIMIT 10001) AS roots; COMMIT;'",
+    "    p = subprocess.run(['psql', '-X', '-w', '-qAt', '-v', 'ON_ERROR_STOP=1'], input=sql,",
+    "                       env=env, capture_output=True, text=True, timeout=20)",
+    "    require(p.returncode == 0, 'configured PostgreSQL/schema inventory unavailable; no fallback attempted')",
+    "    paths = json.loads(p.stdout)",
+    "    require(isinstance(paths, list) and len(paths) \u003c= 10000 and",
+    "            all(isinstance(v, str) and len(v) \u003c= 4096 for v in paths),",
+    "            'PostgreSQL root inventory exceeds supported 10000 paths / 4096 characters')",
+    "    return paths",
+    "",
+    "def discover():",
+    "    require(APP_ROOT.is_dir() and APP_ROOT.resolve() == APP_ROOT, 'unsupported application-root alias')",
+    "    for keep in sys.argv[2:]:",
+    "        require(keep and not keep.startswith('/') and not keep.endswith('/') and",
+    "                '//' not in keep and not set(keep.split('/')) \u0026 {'.', '..'}, 'invalid caller keep')",
+    "        root(keep, APP_ROOT)",
+    "    # Manager-provided path/driver fields would otherwise escape the unit grammar.",
+    "    def manager_pairs(items):",
+    "        result = {}",
+    "        for key, value in items:",
+    "            require(key not in result, 'duplicate manager environment field')",
+    "            result[key] = value",
+    "        return result",
+    "    manager = json.loads(query('systemctl', 'show-environment', '--output=json'), object_pairs_hook=manager_pairs)",
+    "    require(type(manager) is dict and all(type(v) is str for v in manager.values()),",
+    "            'unsupported manager environment JSON grammar')",
+    "    for key in manager:",
+    "        require(key in {'LANG', 'LANGUAGE', 'LC_ALL', 'PATH', 'TMPDIR'} or key.startswith('LC_'),",
+    "                 'unsupported manager environment; configure application units explicitly')",
+    "    if 'TMPDIR' in manager:",
+    "        temporary(manager['TMPDIR'])",
+    "    for rel in ('.env', '.env.system', '.data', '.venv', 'media', 'ml-models',",
+    "                '.locations.json', 'apps/web/.env.production'):",
+    "        protected(APP_ROOT/rel)",
+    "    # Parse mandatory legacy config even when a unit deliberately resets its files.",
+    "    env_file(APP_ROOT/'.env')",
+    "    env_file(APP_ROOT/'.env.system')",
+    "    contents(APP_ROOT/'apps/web/.env.production')",
+    "    units = {name: service(name, manager) for name in ('web', 'jobs', 'ml', 'chroma')}",
+    "    require(units['web']['env'].get('DATABASE_URL') == units['jobs']['env'].get('DATABASE_URL'),",
+    "            'web/jobs database mappings differ; reconcile before update')",
+    "    urls = set()",
+    "    host = set()",
+    "    js = {'PROCESSED_VIDEOS_DIR': '.results', 'THUMBNAILS_PATH': '.thumbnails',",
+    "          'FACES_DIR': '.faces', 'UNKNOWN_FACES_DIR': '.unknown_faces',",
+    "          'STITCHED_VIDEOS_DIR': 'output-videos', 'EXPORTS_DIR': '/app/data/.exports',",
+    "          'XENOVA_MODEL_CACHE_DIR': '/ml-models/embedding-models'}",
+    "    for name, unit in units.items():",
+    "        e, cwd = unit['env'], Path(unit['cwd'])",
+    "        if name in {'web', 'jobs'}:",
+    "            require(e.get('DATABASE_URL'), 'missing effective DATABASE_URL')",
+    "            urls.add(e['DATABASE_URL'])",
+    "            root('.locations.json', cwd)",
+    "            for key, default in js.items():",
+    "                root(e.get(key) or default, cwd)",
+    "            # Additional native readers have different defaults/anchors.",
+    "            root(e.get('THUMBNAILS_PATH') or '/app/data/.thumbnails', cwd)",
+    "            root(e.get('FACES_DIR') or '.faces_db', cwd)",
+    "            root(e.get('THUMBNAILS_PATH') or '.thumbnails', MEDIA)",
+    "        if name == 'ml':",
+    "            defaults = {'YOLO_CONFIG_DIR': '/ml-models/ultralytics', 'DEEPFACE_HOME': '/root',",
+    "                        'TRANSCRIPTION_MODEL_CACHE': 'ml-models/.whisper', 'TORCH_HOME': '/root/.cache/torch',",
+    "                        'HF_HOME': '/ml-models/huggingface', 'THUMBNAILS_PATH': '/app/data/.thumbnails/',",
+    "                        'FACES_DIR': '.faces', 'UNKNOWN_FACES_DIR': '.unknown_faces'}",
+    "            for key, default in defaults.items():",
+    "                root(e.get(key, default), cwd)",
+    "        for key in ('KNOWN_FACES_FILE', 'KNOWN_FACES_FILE_LOADED'):",
+    "            if e.get(key):",
+    "                root(e[key], cwd)",
+    "        if e.get('HOST_MEDIA_PATH'):",
+    "            value = absolute(e['HOST_MEDIA_PATH'], cwd)",
+    "            protected(value)",
+    "            host.add(str(value))",
+    "        require(e.get('USE_EXTERNAL_HOST', '').lower() not in {'1', 'true'},",
+    "                'external-host path translation is unsupported by native media wiring')",
+    "    require(len(host) == 1, 'missing or ambiguous native HOST_MEDIA_PATH')",
+    "    target = Path(next(iter(host)))",
+    "    require(target.is_dir(), 'configured native media directory unavailable')",
+    "    protected(MEDIA)",
+    "    require(not os.path.lexists(MEDIA) or (MEDIA.is_dir() and MEDIA.resolve() == target.resolve()),",
+    "            '/media/videos conflicts with HOST_MEDIA_PATH; reconcile existing data without overwriting it')",
+    "    for url in urls:",
+    "        for value in database(url):",
+    "            if re.match(r'^https?://', value):",
+    "                continue",
+    "            if value.startswith('file:'):",
+    "                u = urlsplit(value)",
+    "                require(u.netloc in {'', 'localhost'} and not u.query and not u.fragment,",
+    "                        'unsupported database file URL')",
+    "                value = decode(u.path)",
+    "            require(not re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', value), 'unsupported database path scheme')",
+    "            for name in ('web', 'jobs', 'ml'):",
+    "                root(value, units[name]['cwd'])",
+    "    return dict(keeps=sorted(keeps), roots=sorted(roots), files=fingerprints, units=units, manager=manager,",
+    "                media_target=str(target), media_exists=os.path.lexists(MEDIA))",
+    "",
+    "try:",
+    "    mode = sys.argv[1]",
+    "    if mode == 'discover':",
+    "        print(json.dumps(discover(), sort_keys=True))",
+    "    else:",
+    "        plan = json.loads(Path(sys.argv[2]).read_text())",
+    "        if mode == 'keeps':",
+    "            sys.stdout.buffer.write(b''.join(p.encode()+b'\\0' for p in plan['keeps']))",
+    "        elif mode == 'media':",
+    "            target = Path(plan['media_target'])",
+    "            require(target.is_dir(), 'native media target disappeared')",
+    "            if os.path.lexists(MEDIA):",
+    "                require(MEDIA.is_dir() and MEDIA.resolve() == target.resolve(), 'native media mapping changed')",
+    "            else:",
+    "                MEDIA.parent.mkdir(parents=True, exist_ok=True)",
+    "                MEDIA.symlink_to(target, target_is_directory=True)",
+    "        elif mode == 'migrate':",
+    "            env = dict(os.environ)",
+    "            for key in list(env):",
+    "                if key.startswith('PG') or key in {'NODE_OPTIONS', 'LD_PRELOAD', 'LD_LIBRARY_PATH'}:",
+    "                    del env[key]",
+    "            env.update(plan['units']['web']['env'])",
+    "            os.execvpe('pnpm', ['pnpm', '--filter', 'prisma', 'migrate:deploy'], env)",
+    "        else:",
+    "            raise ValueError('unknown state operation')",
+    "except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:",
+    "    # Do not print input text, credentials, subprocess stderr or DATABASE_URL.",
+    "    print('Edit-Mind persistence refused: '+str(error) if isinstance(error, Refusal)",
+    "          else 'Edit-Mind persistence refused: inventory unavailable', file=sys.stderr)",
+    "    sys.exit(65)",
+    "PY",
+    "  }",
+    "",
     "  if [[ ! -d /opt/edit-mind ]]; then",
     "    msg_error \"No ${APP} Installation Found!\"",
-    "    exit",
+    "    exit 65",
     "  fi",
     "",
     "  if check_for_gh_release \"edit-mind\" \"IliasHad/edit-mind\"; then",
+    "    local before after keep_file declaration service",
+    "    local -a caller_keeps=()",
+    "    case \"${CLEAN_INSTALL_KEEP:-}\" in *$'\\n'* | *$'\\r'* | *$'\\t'*) exit 65 ;; esac",
+    "    read -r -a caller_keeps \u003c\u003c\u003c \"${CLEAN_INSTALL_KEEP:-}\"",
+    "    if declaration=$(declare -p CLEAN_INSTALL_KEEP_PATHS 2\u003e /dev/null); then",
+    "      [[ \"$declaration\" =~ ^declare\\ -[^[:space:]]*a[^[:space:]]*\\  ]] || exit 65",
+    "      [[ ! \"$declaration\" =~ ^declare\\ -[^[:space:]]*r ]] || exit 65",
+    "      caller_keeps+=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")",
+    "    fi",
+    "    before=$(mktemp)",
+    "    after=$(mktemp)",
+    "    keep_file=$(mktemp)",
+    "    chmod 0600 \"$before\" \"$after\" \"$keep_file\"",
+    "    edit_mind_state discover \"${caller_keeps[@]}\" \u003e \"$before\"",
+    "",
     "    msg_info \"Stopping Services\"",
-    "    systemctl stop edit-mind-web edit-mind-jobs",
+    "    for service in edit-mind-web edit-mind-jobs edit-mind-ml edit-mind-chroma; do",
+    "      systemctl stop \"$service\"",
+    "    done",
     "    msg_ok \"Stopped Services\"",
     "",
-    "    msg_info \"Backing up Data\"",
-    "    cp /opt/edit-mind/.env /opt/edit-mind.env.bak",
-    "    cp /opt/edit-mind/.env.system /opt/edit-mind.env.system.bak",
-    "    msg_ok \"Backed up Data\"",
+    "    edit_mind_state discover \"${caller_keeps[@]}\" \u003e \"$after\"",
+    "    if ! cmp -s \"$before\" \"$after\"; then",
+    "      msg_error \"Edit-Mind configuration or database paths changed while quiescing; retry after reconciling writers\"",
+    "      exit 65",
+    "    fi",
+    "    edit_mind_state keeps \"$before\" \u003e \"$keep_file\"",
+    "    local -a discovered_keeps=()",
+    "    mapfile -d '' -t discovered_keeps \u003c \"$keep_file\"",
+    "    CLEAN_INSTALL_KEEP_PATHS+=(\"${discovered_keeps[@]}\")",
+    "    edit_mind_state media \"$before\"",
     "",
     "    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"edit-mind\" \"IliasHad/edit-mind\" \"tarball\"",
     "",
@@ -249,20 +710,17 @@
     "    $STD pnpm run build:background-jobs",
     "    msg_ok \"Rebuilt Application\"",
     "",
-    "    msg_info \"Restoring Data\"",
-    "    cp /opt/edit-mind.env.bak /opt/edit-mind/.env",
-    "    cp /opt/edit-mind.env.system.bak /opt/edit-mind/.env.system",
-    "    rm -f /opt/edit-mind.env.bak /opt/edit-mind.env.system.bak",
-    "    msg_ok \"Restored Data\"",
-    "",
     "    msg_info \"Running Migrations\"",
     "    cd /opt/edit-mind || exit",
-    "    set -a \u0026\u0026 source /opt/edit-mind/.env \u0026\u0026 source /opt/edit-mind/.env.system \u0026\u0026 set +a",
-    "    $STD pnpm --filter prisma migrate:deploy",
+    "    edit_mind_state migrate \"$before\"",
     "    msg_ok \"Ran Migrations\"",
     "",
     "    msg_info \"Starting Services\"",
-    "    systemctl start edit-mind-web edit-mind-jobs",
+    "    for service in edit-mind-chroma edit-mind-ml edit-mind-jobs edit-mind-web; do",
+    "      systemctl start \"$service\"",
+    "      systemctl is-active --quiet \"$service\"",
+    "    done",
+    "    rm -f \"$before\" \"$after\" \"$keep_file\"",
     "    msg_ok \"Started Services\"",
     "    msg_ok \"Updated successfully!\"",
     "  fi",
@@ -279,7 +737,7 @@
     {
       "name": "install_script",
       "start_line": 21,
-      "end_line": 205,
+      "end_line": 231,
       "name_span": {
         "start_line": 21,
         "start_col": 10,
@@ -290,25 +748,37 @@
     },
     {
       "name": "post_install_script",
-      "start_line": 207,
-      "end_line": 212,
+      "start_line": 233,
+      "end_line": 238,
       "name_span": {
-        "start_line": 207,
+        "start_line": 233,
         "start_col": 10,
-        "end_line": 207,
+        "end_line": 233,
         "end_col": 29,
         "kind": ""
       }
     },
     {
       "name": "update_script",
-      "start_line": 214,
-      "end_line": 263,
+      "start_line": 240,
+      "end_line": 721,
       "name_span": {
-        "start_line": 214,
+        "start_line": 240,
         "start_col": 10,
-        "end_line": 214,
+        "end_line": 240,
         "end_col": 23,
+        "kind": ""
+      }
+    },
+    {
+      "name": "edit_mind_state",
+      "start_line": 246,
+      "end_line": 655,
+      "name_span": {
+        "start_line": 246,
+        "start_col": 12,
+        "end_line": 246,
+        "end_col": 27,
         "kind": ""
       }
     }
@@ -419,177 +889,227 @@
   "heredocs": [
     {
       "op": {
-        "line": 59,
+        "line": 71,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 59,
+        "line": 71,
         "start_col": 10,
         "end_col": 13,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 61,
+        "line": 73,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 60,
-        "end_line": 60
+        "start_line": 72,
+        "end_line": 72
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 78,
+        "line": 90,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 78,
+        "line": 90,
         "start_col": 10,
         "end_col": 13,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 94,
+        "line": 106,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 79,
-        "end_line": 93
+        "start_line": 91,
+        "end_line": 105
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 95,
+        "line": 107,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 95,
+        "line": 107,
         "start_col": 10,
         "end_col": 13,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 113,
+        "line": 125,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 96,
-        "end_line": 112
+        "start_line": 108,
+        "end_line": 124
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 121,
-        "col": 7,
+        "line": 127,
+        "col": 13,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 121,
-        "start_col": 10,
-        "end_col": 13,
-        "text": "EOF"
+        "line": 127,
+        "start_col": 16,
+        "end_col": 20,
+        "text": "PY"
       },
       "marker_end": {
         "line": 137,
         "start_col": 1,
-        "end_col": 4,
-        "text": "EOF"
+        "end_col": 3,
+        "text": "PY"
       },
       "body": {
-        "start_line": 122,
+        "start_line": 128,
         "end_line": 136
       },
-      "expand": true,
+      "expand": false,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 139,
+        "line": 147,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 139,
+        "line": 147,
         "start_col": 10,
         "end_col": 13,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 161,
-        "start_col": 1,
-        "end_col": 4,
-        "text": "EOF"
-      },
-      "body": {
-        "start_line": 140,
-        "end_line": 160
-      },
-      "expand": true,
-      "strip_tabs": false
-    },
-    {
-      "op": {
         "line": 163,
-        "col": 7,
-        "kind": "\u003c\u003c"
-      },
-      "marker_start": {
-        "line": 163,
-        "start_col": 10,
-        "end_col": 13,
-        "text": "EOF"
-      },
-      "marker_end": {
-        "line": 180,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 164,
-        "end_line": 179
+        "start_line": 148,
+        "end_line": 162
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 182,
+        "line": 165,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 182,
+        "line": 165,
         "start_col": 10,
         "end_col": 13,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 199,
+        "line": 187,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 183,
-        "end_line": 198
+        "start_line": 166,
+        "end_line": 186
       },
       "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 189,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 189,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 206,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 190,
+        "end_line": 205
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 208,
+        "col": 7,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 208,
+        "start_col": 10,
+        "end_col": 13,
+        "text": "EOF"
+      },
+      "marker_end": {
+        "line": 225,
+        "start_col": 1,
+        "end_col": 4,
+        "text": "EOF"
+      },
+      "body": {
+        "start_line": 209,
+        "end_line": 224
+      },
+      "expand": true,
+      "strip_tabs": false
+    },
+    {
+      "op": {
+        "line": 247,
+        "col": 20,
+        "kind": "\u003c\u003c"
+      },
+      "marker_start": {
+        "line": 247,
+        "start_col": 23,
+        "end_col": 27,
+        "text": "PY"
+      },
+      "marker_end": {
+        "line": 654,
+        "start_col": 1,
+        "end_col": 3,
+        "text": "PY"
+      },
+      "body": {
+        "start_line": 248,
+        "end_line": 653
+      },
+      "expand": false,
       "strip_tabs": false
     }
   ],
@@ -953,1976 +1473,3498 @@
       "end_col": 28
     },
     {
-      "kind": "command",
+      "kind": "comment",
       "start_line": 22,
       "start_col": 3,
       "end_line": 22,
-      "end_col": 11
+      "end_col": 85
     },
     {
-      "kind": "string-dq",
-      "start_line": 22,
-      "start_col": 12,
-      "end_line": 22,
-      "end_col": 37
-    },
-    {
-      "kind": "param-exp",
+      "kind": "comment",
       "start_line": 23,
       "start_col": 3,
       "end_line": 23,
+      "end_col": 84
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 24,
+      "start_col": 3,
+      "end_line": 24,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 24,
+      "start_col": 9,
+      "end_line": 24,
+      "end_col": 21
+    },
+    {
+      "kind": "var-name",
+      "start_line": 24,
+      "start_col": 9,
+      "end_line": 24,
+      "end_col": 21
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 24,
+      "start_col": 22,
+      "end_line": 24,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 24,
+      "start_col": 22,
+      "end_line": 24,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 25,
+      "start_col": 3,
+      "end_line": 25,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 25,
+      "start_col": 6,
+      "end_line": 25,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "-e",
+      "start_line": 25,
+      "start_col": 9,
+      "end_line": 25,
+      "end_col": 11
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 25,
+      "start_col": 26,
+      "end_line": 25,
+      "end_col": 28
+    },
+    {
+      "kind": "test-operator",
+      "op": "-L",
+      "start_line": 25,
+      "start_col": 29,
+      "end_line": 25,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 25,
+      "start_col": 46,
+      "end_line": 25,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 25,
+      "start_col": 48,
+      "end_line": 25,
+      "end_col": 49
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 25,
+      "start_col": 50,
+      "end_line": 25,
+      "end_col": 54
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 26,
+      "start_col": 5,
+      "end_line": 26,
       "end_col": 7
     },
     {
-      "kind": "command",
-      "start_line": 23,
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 26,
       "start_col": 8,
-      "end_line": 23,
-      "end_col": 11
+      "end_line": 26,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 26,
+      "start_col": 11,
+      "end_line": 26,
+      "end_col": 12
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 26,
+      "start_col": 13,
+      "end_line": 26,
+      "end_col": 15
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 26,
+      "start_col": 30,
+      "end_line": 26,
+      "end_col": 32
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 26,
+      "start_col": 33,
+      "end_line": 26,
+      "end_col": 34
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 26,
+      "start_col": 35,
+      "end_line": 26,
+      "end_col": 37
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 26,
+      "start_col": 59,
+      "end_line": 26,
+      "end_col": 61
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 26,
+      "start_col": 62,
+      "end_line": 26,
+      "end_col": 64
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 27,
+      "start_col": 7,
+      "end_line": 27,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 27,
+      "start_col": 9,
+      "end_line": 27,
+      "end_col": 53
+    },
+    {
+      "kind": "var-name",
+      "start_line": 27,
+      "start_col": 9,
+      "end_line": 27,
+      "end_col": 21
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 27,
+      "start_col": 22,
+      "end_line": 27,
+      "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 37,
-      "start_col": 3,
-      "end_line": 37,
+      "start_line": 27,
+      "start_col": 24,
+      "end_line": 27,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 27,
+      "start_col": 54,
+      "end_line": 27,
+      "end_col": 56
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 28,
+      "start_col": 7,
+      "end_line": 28,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 28,
+      "start_col": 9,
+      "end_line": 28,
+      "end_col": 61
+    },
+    {
+      "kind": "var-name",
+      "start_line": 28,
+      "start_col": 9,
+      "end_line": 28,
+      "end_col": 22
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 28,
+      "start_col": 23,
+      "end_line": 28,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 28,
+      "start_col": 25,
+      "end_line": 28,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 28,
+      "start_col": 62,
+      "end_line": 28,
+      "end_col": 64
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 29,
+      "start_col": 7,
+      "end_line": 29,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 37,
+      "start_line": 29,
       "start_col": 10,
-      "end_line": 37,
+      "end_line": 29,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 29,
+      "start_col": 11,
+      "end_line": 29,
+      "end_col": 24
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 29,
+      "start_col": 26,
+      "end_line": 29,
+      "end_col": 28
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 29,
+      "start_col": 29,
+      "end_line": 29,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 29,
+      "start_col": 30,
+      "end_line": 29,
+      "end_col": 44
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 29,
+      "start_col": 46,
+      "end_line": 29,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 29,
+      "start_col": 48,
+      "end_line": 29,
+      "end_col": 49
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 29,
+      "start_col": 50,
+      "end_line": 29,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 30,
+      "start_col": 7,
+      "end_line": 30,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 30,
+      "start_col": 17,
+      "end_line": 30,
+      "end_col": 110
+    },
+    {
+      "kind": "command",
+      "start_line": 31,
+      "start_col": 7,
+      "end_line": 31,
+      "end_col": 13
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 32,
+      "start_col": 5,
+      "end_line": 32,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 33,
+      "start_col": 3,
+      "end_line": 33,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 34,
+      "start_col": 3,
+      "end_line": 34,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 34,
+      "start_col": 12,
+      "end_line": 34,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 35,
+      "start_col": 3,
+      "end_line": 35,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 35,
+      "start_col": 8,
+      "end_line": 35,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 3,
+      "end_line": 49,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 10,
+      "end_line": 49,
       "end_col": 34
     },
     {
       "kind": "command",
-      "start_line": 39,
+      "start_line": 51,
       "start_col": 3,
-      "end_line": 39,
+      "end_line": 51,
       "end_col": 15
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 3,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 18
     },
     {
       "kind": "var-name",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 3,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 14,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 18
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 19,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 40
     },
     {
       "kind": "var-name",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 19,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 29
     },
     {
       "kind": "string-dq",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 30,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 40,
+      "start_line": 52,
       "start_col": 41,
-      "end_line": 40,
+      "end_line": 52,
       "end_col": 57
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 3,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 24
     },
     {
       "kind": "var-name",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 3,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 14,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 24
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 25,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 46
     },
     {
       "kind": "var-name",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 25,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 36,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 46
     },
     {
       "kind": "command",
-      "start_line": 41,
+      "start_line": 53,
       "start_col": 47,
-      "end_line": 41,
+      "end_line": 53,
       "end_col": 66
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 42,
+      "start_line": 54,
       "start_col": 3,
-      "end_line": 42,
+      "end_line": 54,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 42,
+      "start_line": 54,
       "start_col": 3,
-      "end_line": 42,
+      "end_line": 54,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 42,
+      "start_line": 54,
       "start_col": 16,
-      "end_line": 42,
+      "end_line": 54,
       "end_col": 20
     },
     {
       "kind": "command",
-      "start_line": 42,
+      "start_line": 54,
       "start_col": 21,
-      "end_line": 42,
+      "end_line": 54,
       "end_col": 33
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 43,
+      "start_line": 55,
       "start_col": 3,
-      "end_line": 43,
+      "end_line": 55,
       "end_col": 19
     },
     {
       "kind": "var-name",
-      "start_line": 43,
+      "start_line": 55,
       "start_col": 3,
-      "end_line": 43,
+      "end_line": 55,
       "end_col": 12
     },
     {
       "kind": "string-dq",
-      "start_line": 43,
+      "start_line": 55,
       "start_col": 13,
-      "end_line": 43,
+      "end_line": 55,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 43,
+      "start_line": 55,
       "start_col": 20,
-      "end_line": 43,
+      "end_line": 55,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 45,
+      "start_line": 57,
       "start_col": 3,
-      "end_line": 45,
+      "end_line": 57,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 45,
+      "start_line": 57,
       "start_col": 12,
-      "end_line": 45,
+      "end_line": 57,
       "end_col": 29
     },
     {
       "kind": "param-exp",
-      "start_line": 46,
+      "start_line": 58,
       "start_col": 3,
-      "end_line": 46,
+      "end_line": 58,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 46,
+      "start_line": 58,
       "start_col": 8,
-      "end_line": 46,
+      "end_line": 58,
       "end_col": 16
     },
     {
       "kind": "param-exp",
-      "start_line": 47,
+      "start_line": 59,
       "start_col": 3,
-      "end_line": 47,
+      "end_line": 59,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 47,
+      "start_line": 59,
       "start_col": 8,
-      "end_line": 47,
+      "end_line": 59,
       "end_col": 16
     },
     {
       "kind": "command",
-      "start_line": 48,
+      "start_line": 60,
       "start_col": 3,
-      "end_line": 48,
+      "end_line": 60,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 48,
+      "start_line": 60,
       "start_col": 10,
-      "end_line": 48,
+      "end_line": 60,
       "end_col": 26
     },
     {
       "kind": "command",
-      "start_line": 50,
+      "start_line": 62,
       "start_col": 3,
-      "end_line": 50,
+      "end_line": 62,
       "end_col": 30
     },
     {
       "kind": "string-dq",
-      "start_line": 50,
+      "start_line": 62,
       "start_col": 31,
-      "end_line": 50,
+      "end_line": 62,
       "end_col": 42
     },
     {
       "kind": "string-dq",
-      "start_line": 50,
+      "start_line": 62,
       "start_col": 43,
-      "end_line": 50,
+      "end_line": 62,
       "end_col": 63
     },
     {
       "kind": "string-dq",
-      "start_line": 50,
+      "start_line": 62,
       "start_col": 64,
-      "end_line": 50,
+      "end_line": 62,
       "end_col": 73
     },
     {
       "kind": "command",
-      "start_line": 52,
+      "start_line": 64,
       "start_col": 3,
-      "end_line": 52,
+      "end_line": 64,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 52,
+      "start_line": 64,
       "start_col": 12,
-      "end_line": 52,
+      "end_line": 64,
       "end_col": 49
     },
     {
       "kind": "command",
-      "start_line": 53,
+      "start_line": 65,
       "start_col": 3,
-      "end_line": 53,
+      "end_line": 65,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 53,
+      "start_line": 65,
       "start_col": 21,
-      "end_line": 53,
+      "end_line": 65,
       "end_col": 23
     },
     {
       "kind": "command",
-      "start_line": 53,
+      "start_line": 65,
       "start_col": 24,
-      "end_line": 53,
+      "end_line": 65,
       "end_col": 28
     },
     {
       "kind": "param-exp",
-      "start_line": 54,
+      "start_line": 66,
       "start_col": 3,
-      "end_line": 54,
+      "end_line": 66,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 54,
+      "start_line": 66,
       "start_col": 8,
-      "end_line": 54,
+      "end_line": 66,
       "end_col": 12
     },
     {
       "kind": "param-exp",
-      "start_line": 55,
+      "start_line": 67,
       "start_col": 3,
-      "end_line": 55,
+      "end_line": 67,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 55,
+      "start_line": 67,
       "start_col": 8,
-      "end_line": 55,
+      "end_line": 67,
       "end_col": 12
     },
     {
       "kind": "command",
-      "start_line": 56,
+      "start_line": 68,
       "start_col": 3,
-      "end_line": 56,
+      "end_line": 68,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 56,
+      "start_line": 68,
       "start_col": 10,
-      "end_line": 56,
+      "end_line": 68,
       "end_col": 46
     },
     {
       "kind": "command",
-      "start_line": 58,
+      "start_line": 70,
       "start_col": 3,
-      "end_line": 58,
+      "end_line": 70,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 58,
+      "start_line": 70,
       "start_col": 12,
-      "end_line": 58,
+      "end_line": 70,
       "end_col": 34
     },
     {
       "kind": "command",
-      "start_line": 59,
+      "start_line": 71,
       "start_col": 3,
-      "end_line": 59,
+      "end_line": 71,
       "end_col": 6
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c",
-      "start_line": 59,
+      "start_line": 71,
       "start_col": 7,
-      "end_line": 59,
+      "end_line": 71,
       "end_col": 9
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 59,
+      "start_line": 71,
       "start_col": 10,
-      "end_line": 59,
+      "end_line": 71,
       "end_col": 13,
       "expand": true
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 59,
+      "start_line": 71,
       "start_col": 14,
-      "end_line": 59,
+      "end_line": 71,
       "end_col": 15
     },
     {
       "kind": "param-exp",
-      "start_line": 60,
+      "start_line": 72,
       "start_col": 33,
-      "end_line": 60,
+      "end_line": 72,
       "end_col": 44
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 61,
+      "start_line": 73,
       "start_col": 1,
-      "end_line": 61,
+      "end_line": 73,
       "end_col": 4,
       "expand": true
     },
     {
       "kind": "param-exp",
-      "start_line": 62,
+      "start_line": 74,
       "start_col": 3,
-      "end_line": 62,
+      "end_line": 74,
       "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 62,
-      "start_col": 8,
-      "end_line": 62,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 63,
-      "start_col": 3,
-      "end_line": 63,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 63,
-      "start_col": 8,
-      "end_line": 63,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 64,
-      "start_col": 3,
-      "end_line": 64,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 64,
-      "start_col": 8,
-      "end_line": 64,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 65,
-      "start_col": 3,
-      "end_line": 65,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 65,
-      "start_col": 10,
-      "end_line": 65,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 67,
-      "start_col": 3,
-      "end_line": 67,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 67,
-      "start_col": 12,
-      "end_line": 67,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 68,
-      "start_col": 3,
-      "end_line": 68,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 68,
-      "start_col": 8,
-      "end_line": 68,
-      "end_col": 10
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 69,
-      "start_col": 3,
-      "end_line": 69,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 69,
-      "start_col": 8,
-      "end_line": 69,
-      "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 72,
-      "start_col": 3,
-      "end_line": 72,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 72,
-      "start_col": 10,
-      "end_line": 72,
-      "end_col": 40
     },
     {
       "kind": "command",
       "start_line": 74,
-      "start_col": 3,
+      "start_col": 8,
       "end_line": 74,
-      "end_col": 11
+      "end_col": 12
     },
     {
-      "kind": "string-dq",
-      "start_line": 74,
-      "start_col": 12,
-      "end_line": 74,
-      "end_col": 37
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "param-exp",
       "start_line": 75,
       "start_col": 3,
       "end_line": 75,
-      "end_col": 44
-    },
-    {
-      "kind": "var-name",
-      "start_line": 75,
-      "start_col": 3,
-      "end_line": 75,
-      "end_col": 17
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 75,
-      "start_col": 18,
-      "end_line": 75,
-      "end_col": 44
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 75,
-      "start_col": 20,
+      "start_col": 8,
       "end_line": 75,
-      "end_col": 27
+      "end_col": 12
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "param-exp",
       "start_line": 76,
       "start_col": 3,
       "end_line": 76,
-      "end_col": 44
-    },
-    {
-      "kind": "var-name",
-      "start_line": 76,
-      "start_col": 3,
-      "end_line": 76,
-      "end_col": 17
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 76,
-      "start_col": 18,
-      "end_line": 76,
-      "end_col": 44
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 76,
-      "start_col": 20,
+      "start_col": 8,
       "end_line": 76,
-      "end_col": 27
+      "end_col": 12
     },
     {
       "kind": "command",
       "start_line": 77,
       "start_col": 3,
       "end_line": 77,
-      "end_col": 8
-    },
-    {
-      "kind": "command",
-      "start_line": 78,
-      "start_col": 3,
-      "end_line": 78,
-      "end_col": 6
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 78,
-      "start_col": 7,
-      "end_line": 78,
-      "end_col": 9
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 78,
-      "start_col": 10,
-      "end_line": 78,
-      "end_col": 13,
-      "expand": true
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 78,
-      "start_col": 14,
-      "end_line": 78,
-      "end_col": 15
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 79,
-      "start_col": 16,
-      "end_line": 79,
-      "end_col": 33
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 80,
-      "start_col": 16,
-      "end_line": 80,
-      "end_col": 33
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 94,
-      "start_col": 1,
-      "end_line": 94,
-      "end_col": 4,
-      "expand": true
-    },
-    {
-      "kind": "command",
-      "start_line": 95,
-      "start_col": 3,
-      "end_line": 95,
-      "end_col": 6
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 95,
-      "start_col": 7,
-      "end_line": 95,
-      "end_col": 9
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 95,
-      "start_col": 10,
-      "end_line": 95,
-      "end_col": 13,
-      "expand": true
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 95,
-      "start_col": 14,
-      "end_line": 95,
-      "end_col": 15
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 96,
-      "start_col": 27,
-      "end_line": 96,
-      "end_col": 40
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 96,
-      "start_col": 41,
-      "end_line": 96,
-      "end_col": 54
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 96,
-      "start_col": 70,
-      "end_line": 96,
-      "end_col": 83
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 112,
-      "start_col": 20,
-      "end_line": 112,
-      "end_col": 31
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 113,
-      "start_col": 1,
-      "end_line": 113,
-      "end_col": 4,
-      "expand": true
-    },
-    {
-      "kind": "command",
-      "start_line": 114,
-      "start_col": 3,
-      "end_line": 114,
-      "end_col": 8
-    },
-    {
-      "kind": "command",
-      "start_line": 115,
-      "start_col": 3,
-      "end_line": 115,
-      "end_col": 6
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 115,
-      "start_col": 10,
-      "end_line": 115,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 115,
-      "start_col": 13,
-      "end_line": 115,
-      "end_col": 19
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 115,
-      "start_col": 40,
-      "end_line": 115,
-      "end_col": 42
-    },
-    {
-      "kind": "command",
-      "start_line": 115,
-      "start_col": 43,
-      "end_line": 115,
-      "end_col": 49
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 115,
-      "start_col": 77,
-      "end_line": 115,
-      "end_col": 79
-    },
-    {
-      "kind": "command",
-      "start_line": 115,
-      "start_col": 80,
-      "end_line": 115,
-      "end_col": 83
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 116,
-      "start_col": 3,
-      "end_line": 116,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 116,
-      "start_col": 8,
-      "end_line": 116,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 117,
-      "start_col": 3,
-      "end_line": 117,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 117,
-      "start_col": 8,
-      "end_line": 117,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 118,
-      "start_col": 3,
-      "end_line": 118,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 118,
+      "start_line": 77,
       "start_col": 10,
-      "end_line": 118,
-      "end_col": 34
+      "end_line": 77,
+      "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 120,
+      "start_line": 79,
       "start_col": 3,
-      "end_line": 120,
+      "end_line": 79,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 120,
+      "start_line": 79,
       "start_col": 12,
-      "end_line": 120,
-      "end_col": 31
+      "end_line": 79,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 80,
+      "start_col": 3,
+      "end_line": 80,
+      "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 121,
+      "start_line": 80,
+      "start_col": 8,
+      "end_line": 80,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 81,
       "start_col": 3,
-      "end_line": 121,
+      "end_line": 81,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 81,
+      "start_col": 8,
+      "end_line": 81,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 84,
+      "start_col": 3,
+      "end_line": 84,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 84,
+      "start_col": 10,
+      "end_line": 84,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 86,
+      "start_col": 3,
+      "end_line": 86,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 86,
+      "start_col": 12,
+      "end_line": 86,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 87,
+      "start_col": 3,
+      "end_line": 87,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 87,
+      "start_col": 18,
+      "end_line": 87,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 87,
+      "start_col": 20,
+      "end_line": 87,
+      "end_col": 27
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 88,
+      "start_col": 3,
+      "end_line": 88,
+      "end_col": 17
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 88,
+      "start_col": 18,
+      "end_line": 88,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 88,
+      "start_col": 20,
+      "end_line": 88,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 89,
+      "start_col": 3,
+      "end_line": 89,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 90,
+      "start_col": 3,
+      "end_line": 90,
       "end_col": 6
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c",
-      "start_line": 121,
+      "start_line": 90,
       "start_col": 7,
-      "end_line": 121,
+      "end_line": 90,
       "end_col": 9
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 121,
+      "start_line": 90,
       "start_col": 10,
-      "end_line": 121,
+      "end_line": 90,
       "end_col": 13,
       "expand": true
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 121,
+      "start_line": 90,
       "start_col": 14,
-      "end_line": 121,
+      "end_line": 90,
       "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 91,
+      "start_col": 16,
+      "end_line": 91,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 92,
+      "start_col": 16,
+      "end_line": 92,
+      "end_col": 33
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 106,
+      "start_col": 1,
+      "end_line": 106,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 107,
+      "start_col": 3,
+      "end_line": 107,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 107,
+      "start_col": 7,
+      "end_line": 107,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 107,
+      "start_col": 10,
+      "end_line": 107,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 107,
+      "start_col": 14,
+      "end_line": 107,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 108,
+      "start_col": 27,
+      "end_line": 108,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 108,
+      "start_col": 41,
+      "end_line": 108,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 108,
+      "start_col": 70,
+      "end_line": 108,
+      "end_col": 83
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 124,
+      "start_col": 20,
+      "end_line": 124,
+      "end_col": 31
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 125,
+      "start_col": 1,
+      "end_line": 125,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 126,
+      "start_col": 3,
+      "end_line": 126,
+      "end_col": 8
+    },
+    {
+      "kind": "command",
+      "start_line": 127,
+      "start_col": 3,
+      "end_line": 127,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 127,
+      "start_col": 13,
+      "end_line": 127,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 127,
+      "start_col": 16,
+      "end_line": 127,
+      "end_col": 20
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 127,
+      "start_col": 16,
+      "end_line": 127,
+      "end_col": 20
     },
     {
       "kind": "heredoc-delim",
       "start_line": 137,
       "start_col": 1,
       "end_line": 137,
-      "end_col": 4,
-      "expand": true
-    },
-    {
-      "kind": "command",
-      "start_line": 139,
-      "start_col": 3,
-      "end_line": 139,
-      "end_col": 6
+      "end_col": 3
     },
     {
       "kind": "operator",
-      "op": "\u003c\u003c",
+      "op": "(",
+      "start_line": 138,
+      "start_col": 3,
+      "end_line": 138,
+      "end_col": 4
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
       "start_line": 139,
-      "start_col": 7,
+      "start_col": 5,
       "end_line": 139,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 139,
+      "start_col": 12,
+      "end_line": 139,
+      "end_col": 96
+    },
+    {
+      "kind": "var-name",
+      "start_line": 139,
+      "start_col": 12,
+      "end_line": 139,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 139,
+      "start_col": 25,
+      "end_line": 139,
+      "end_col": 96
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 39,
+      "end_line": 139,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 53,
+      "end_line": 139,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 139,
+      "start_col": 82,
+      "end_line": 139,
+      "end_col": 95
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 140,
+      "start_col": 5,
+      "end_line": 140,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 140,
+      "start_col": 12,
+      "end_line": 140,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 140,
+      "start_col": 12,
+      "end_line": 140,
+      "end_col": 26
+    },
+    {
+      "kind": "var-name",
+      "start_line": 140,
+      "start_col": 27,
+      "end_line": 140,
+      "end_col": 41
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 140,
+      "start_col": 27,
+      "end_line": 140,
+      "end_col": 41
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 140,
+      "start_col": 42,
+      "end_line": 140,
+      "end_col": 61
+    },
+    {
+      "kind": "var-name",
+      "start_line": 140,
+      "start_col": 42,
+      "end_line": 140,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 141,
+      "start_col": 5,
+      "end_line": 141,
       "end_col": 9
     },
     {
-      "kind": "heredoc-delim",
-      "start_line": 139,
-      "start_col": 10,
-      "end_line": 139,
-      "end_col": 13,
-      "expand": true
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 139,
-      "start_col": 14,
-      "end_line": 139,
-      "end_col": 15
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 161,
-      "start_col": 1,
-      "end_line": 161,
-      "end_col": 4,
-      "expand": true
-    },
-    {
       "kind": "command",
-      "start_line": 163,
-      "start_col": 3,
-      "end_line": 163,
-      "end_col": 6
+      "start_line": 141,
+      "start_col": 10,
+      "end_line": 141,
+      "end_col": 14
     },
     {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 163,
-      "start_col": 7,
-      "end_line": 163,
+      "kind": "param-exp",
+      "start_line": 142,
+      "start_col": 5,
+      "end_line": 142,
       "end_col": 9
     },
     {
-      "kind": "heredoc-delim",
-      "start_line": 163,
+      "kind": "command",
+      "start_line": 142,
       "start_col": 10,
-      "end_line": 163,
-      "end_col": 13,
-      "expand": true
+      "end_line": 142,
+      "end_col": 14
     },
     {
       "kind": "operator",
-      "op": "\u003e",
-      "start_line": 163,
-      "start_col": 14,
-      "end_line": 163,
-      "end_col": 15
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 180,
-      "start_col": 1,
-      "end_line": 180,
-      "end_col": 4,
-      "expand": true
+      "op": ")",
+      "start_line": 143,
+      "start_col": 3,
+      "end_line": 143,
+      "end_col": 4
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 144,
       "start_col": 3,
-      "end_line": 182,
-      "end_col": 6
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 182,
-      "start_col": 7,
-      "end_line": 182,
-      "end_col": 9
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 182,
-      "start_col": 10,
-      "end_line": 182,
-      "end_col": 13,
-      "expand": true
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 182,
-      "start_col": 14,
-      "end_line": 182,
-      "end_col": 15
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 199,
-      "start_col": 1,
-      "end_line": 199,
-      "end_col": 4,
-      "expand": true
-    },
-    {
-      "kind": "command",
-      "start_line": 200,
-      "start_col": 3,
-      "end_line": 200,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 201,
-      "start_col": 3,
-      "end_line": 201,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 202,
-      "start_col": 3,
-      "end_line": 202,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 203,
-      "start_col": 3,
-      "end_line": 203,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 204,
-      "start_col": 3,
-      "end_line": 204,
+      "end_line": 144,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 204,
+      "start_line": 144,
       "start_col": 10,
-      "end_line": 204,
+      "end_line": 144,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 146,
+      "start_col": 3,
+      "end_line": 146,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 146,
+      "start_col": 12,
+      "end_line": 146,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 147,
+      "start_col": 3,
+      "end_line": 147,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 147,
+      "start_col": 7,
+      "end_line": 147,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 147,
+      "start_col": 10,
+      "end_line": 147,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 147,
+      "start_col": 14,
+      "end_line": 147,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 163,
+      "start_col": 1,
+      "end_line": 163,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 165,
+      "start_col": 3,
+      "end_line": 165,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 165,
+      "start_col": 7,
+      "end_line": 165,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 165,
+      "start_col": 10,
+      "end_line": 165,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 165,
+      "start_col": 14,
+      "end_line": 165,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 187,
+      "start_col": 1,
+      "end_line": 187,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 3,
+      "end_line": 189,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 189,
+      "start_col": 7,
+      "end_line": 189,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 189,
+      "start_col": 10,
+      "end_line": 189,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 189,
+      "start_col": 14,
+      "end_line": 189,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 206,
+      "start_col": 1,
+      "end_line": 206,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 208,
+      "start_col": 3,
+      "end_line": 208,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 208,
+      "start_col": 7,
+      "end_line": 208,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 208,
+      "start_col": 10,
+      "end_line": 208,
+      "end_col": 13,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 208,
+      "start_col": 14,
+      "end_line": 208,
+      "end_col": 15
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 225,
+      "start_col": 1,
+      "end_line": 225,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 226,
+      "start_col": 3,
+      "end_line": 226,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 227,
+      "start_col": 3,
+      "end_line": 227,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 228,
+      "start_col": 3,
+      "end_line": 228,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 229,
+      "start_col": 3,
+      "end_line": 229,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 230,
+      "start_col": 3,
+      "end_line": 230,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 230,
+      "start_col": 10,
+      "end_line": 230,
       "end_col": 28
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 205,
+      "start_line": 231,
       "start_col": 1,
-      "end_line": 205,
+      "end_line": 231,
       "end_col": 2
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 207,
+      "start_line": 233,
       "start_col": 1,
-      "end_line": 207,
+      "end_line": 233,
       "end_col": 9
     },
     {
       "kind": "function-name",
-      "start_line": 207,
+      "start_line": 233,
       "start_col": 10,
-      "end_line": 207,
+      "end_line": 233,
       "end_col": 29
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 207,
+      "start_line": 233,
       "start_col": 32,
-      "end_line": 207,
+      "end_line": 233,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 208,
+      "start_line": 234,
       "start_col": 3,
-      "end_line": 208,
+      "end_line": 234,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 208,
+      "start_line": 234,
       "start_col": 10,
-      "end_line": 208,
+      "end_line": 234,
       "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 3,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 11,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 81
     },
     {
       "kind": "param-exp",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 12,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 23
     },
     {
       "kind": "param-exp",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 23,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 28
     },
     {
       "kind": "param-exp",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 28,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 34
     },
     {
       "kind": "param-exp",
-      "start_line": 209,
+      "start_line": 235,
       "start_col": 75,
-      "end_line": 209,
+      "end_line": 235,
       "end_col": 80
     },
     {
       "kind": "command",
-      "start_line": 210,
+      "start_line": 236,
       "start_col": 3,
-      "end_line": 210,
+      "end_line": 236,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 210,
+      "start_line": 236,
       "start_col": 11,
-      "end_line": 210,
+      "end_line": 236,
       "end_col": 65
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 236,
       "start_col": 12,
-      "end_line": 210,
+      "end_line": 236,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 236,
       "start_col": 19,
-      "end_line": 210,
+      "end_line": 236,
       "end_col": 24
     },
     {
       "kind": "param-exp",
-      "start_line": 210,
+      "start_line": 236,
       "start_col": 59,
-      "end_line": 210,
+      "end_line": 236,
       "end_col": 64
     },
     {
       "kind": "command",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 3,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 11,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 57
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 12,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 18
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 18,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 28
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 28,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 34
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 41,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 46
     },
     {
       "kind": "param-exp",
-      "start_line": 211,
+      "start_line": 237,
       "start_col": 51,
-      "end_line": 211,
+      "end_line": 237,
       "end_col": 56
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 212,
+      "start_line": 238,
       "start_col": 1,
-      "end_line": 212,
+      "end_line": 238,
       "end_col": 2
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 214,
+      "start_line": 240,
       "start_col": 1,
-      "end_line": 214,
+      "end_line": 240,
       "end_col": 9
     },
     {
       "kind": "function-name",
-      "start_line": 214,
+      "start_line": 240,
       "start_col": 10,
-      "end_line": 214,
+      "end_line": 240,
       "end_col": 23
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 214,
+      "start_line": 240,
       "start_col": 26,
-      "end_line": 214,
+      "end_line": 240,
       "end_col": 27
     },
     {
       "kind": "command",
-      "start_line": 215,
-      "start_col": 3,
-      "end_line": 215,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 216,
-      "start_col": 3,
-      "end_line": 216,
-      "end_col": 26
-    },
-    {
-      "kind": "command",
-      "start_line": 217,
-      "start_col": 3,
-      "end_line": 217,
-      "end_col": 28
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 219,
-      "start_col": 3,
-      "end_line": 219,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 219,
-      "start_col": 6,
-      "end_line": 219,
-      "end_col": 8
-    },
-    {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 219,
-      "start_col": 9,
-      "end_line": 219,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-d",
-      "start_line": 219,
-      "start_col": 11,
-      "end_line": 219,
-      "end_col": 13
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 219,
-      "start_col": 29,
-      "end_line": 219,
-      "end_col": 31
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 219,
-      "start_col": 31,
-      "end_line": 219,
-      "end_col": 32
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 219,
-      "start_col": 33,
-      "end_line": 219,
-      "end_col": 37
-    },
-    {
-      "kind": "command",
-      "start_line": 220,
-      "start_col": 5,
-      "end_line": 220,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 220,
-      "start_col": 15,
-      "end_line": 220,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 220,
-      "start_col": 19,
-      "end_line": 220,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 221,
-      "start_col": 5,
-      "end_line": 221,
-      "end_col": 9
-    },
-    {
-      "kind": "keyword",
-      "op": "fi",
-      "start_line": 222,
-      "start_col": 3,
-      "end_line": 222,
-      "end_col": 5
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 224,
-      "start_col": 3,
-      "end_line": 224,
-      "end_col": 5
-    },
-    {
-      "kind": "command",
-      "start_line": 224,
-      "start_col": 6,
-      "end_line": 224,
-      "end_col": 26
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 224,
-      "start_col": 27,
-      "end_line": 224,
-      "end_col": 38
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 224,
-      "start_col": 39,
-      "end_line": 224,
-      "end_col": 59
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 224,
-      "start_col": 59,
-      "end_line": 224,
-      "end_col": 60
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 224,
-      "start_col": 61,
-      "end_line": 224,
-      "end_col": 65
-    },
-    {
-      "kind": "command",
-      "start_line": 225,
-      "start_col": 5,
-      "end_line": 225,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 225,
-      "start_col": 14,
-      "end_line": 225,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 226,
-      "start_col": 5,
-      "end_line": 226,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 227,
-      "start_col": 5,
-      "end_line": 227,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 227,
-      "start_col": 12,
-      "end_line": 227,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 229,
-      "start_col": 5,
-      "end_line": 229,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 229,
-      "start_col": 14,
-      "end_line": 229,
-      "end_col": 31
-    },
-    {
-      "kind": "command",
-      "start_line": 230,
-      "start_col": 5,
-      "end_line": 230,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 231,
-      "start_col": 5,
-      "end_line": 231,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 232,
-      "start_col": 5,
-      "end_line": 232,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 232,
-      "start_col": 12,
-      "end_line": 232,
-      "end_col": 28
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 234,
-      "start_col": 5,
-      "end_line": 234,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
-      "start_line": 234,
-      "start_col": 5,
-      "end_line": 234,
-      "end_col": 18
-    },
-    {
-      "kind": "command",
-      "start_line": 234,
-      "start_col": 21,
-      "end_line": 234,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 234,
-      "start_col": 49,
-      "end_line": 234,
-      "end_col": 60
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 234,
-      "start_col": 61,
-      "end_line": 234,
-      "end_col": 81
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 234,
-      "start_col": 82,
-      "end_line": 234,
-      "end_col": 91
-    },
-    {
-      "kind": "command",
-      "start_line": 236,
-      "start_col": 5,
-      "end_line": 236,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 236,
-      "start_col": 14,
-      "end_line": 236,
-      "end_col": 38
-    },
-    {
-      "kind": "command",
-      "start_line": 237,
-      "start_col": 5,
-      "end_line": 237,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 237,
-      "start_col": 23,
-      "end_line": 237,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 237,
-      "start_col": 26,
-      "end_line": 237,
-      "end_col": 30
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 238,
-      "start_col": 5,
-      "end_line": 238,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 238,
-      "start_col": 10,
-      "end_line": 238,
-      "end_col": 14
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 239,
-      "start_col": 5,
-      "end_line": 239,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 239,
-      "start_col": 10,
-      "end_line": 239,
-      "end_col": 14
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 240,
-      "start_col": 5,
-      "end_line": 240,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 240,
-      "start_col": 10,
-      "end_line": 240,
-      "end_col": 14
-    },
-    {
-      "kind": "param-exp",
       "start_line": 241,
-      "start_col": 5,
-      "end_line": 241,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 241,
-      "start_col": 10,
+      "start_col": 3,
       "end_line": 241,
       "end_col": 14
     },
     {
-      "kind": "param-exp",
-      "start_line": 242,
-      "start_col": 5,
-      "end_line": 242,
-      "end_col": 9
-    },
-    {
       "kind": "command",
       "start_line": 242,
-      "start_col": 10,
+      "start_col": 3,
       "end_line": 242,
-      "end_col": 14
+      "end_col": 26
     },
     {
       "kind": "command",
       "start_line": 243,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 243,
-      "end_col": 11
+      "end_col": 28
     },
     {
-      "kind": "string-dq",
-      "start_line": 243,
-      "start_col": 12,
-      "end_line": 243,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
+      "kind": "comment",
       "start_line": 245,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 245,
-      "end_col": 13
+      "end_col": 84
     },
     {
-      "kind": "string-dq",
-      "start_line": 245,
-      "start_col": 14,
-      "end_line": 245,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
+      "kind": "keyword",
+      "op": "function",
       "start_line": 246,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 246,
-      "end_col": 7
+      "end_col": 11
+    },
+    {
+      "kind": "function-name",
+      "start_line": 246,
+      "start_col": 12,
+      "end_line": 246,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 246,
+      "start_col": 30,
+      "end_line": 246,
+      "end_col": 31
     },
     {
       "kind": "command",
       "start_line": 247,
       "start_col": 5,
       "end_line": 247,
-      "end_col": 7
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 247,
+      "start_col": 15,
+      "end_line": 247,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 247,
+      "start_col": 16,
+      "end_line": 247,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 247,
+      "start_col": 20,
+      "end_line": 247,
+      "end_col": 22
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 247,
+      "start_col": 23,
+      "end_line": 247,
+      "end_col": 27
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 247,
+      "start_col": 23,
+      "end_line": 247,
+      "end_col": 27
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 654,
+      "start_col": 1,
+      "end_line": 654,
+      "end_col": 3
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 655,
+      "start_col": 3,
+      "end_line": 655,
+      "end_col": 4
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 657,
+      "start_col": 3,
+      "end_line": 657,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 657,
+      "start_col": 6,
+      "end_line": 657,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 657,
+      "start_col": 9,
+      "end_line": 657,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-d",
+      "start_line": 657,
+      "start_col": 11,
+      "end_line": 657,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 657,
+      "start_col": 29,
+      "end_line": 657,
+      "end_col": 31
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 657,
+      "start_col": 31,
+      "end_line": 657,
+      "end_col": 32
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 657,
+      "start_col": 33,
+      "end_line": 657,
+      "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 248,
+      "start_line": 658,
       "start_col": 5,
-      "end_line": 248,
-      "end_col": 7
+      "end_line": 658,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 658,
+      "start_col": 15,
+      "end_line": 658,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 658,
+      "start_col": 19,
+      "end_line": 658,
+      "end_col": 25
     },
     {
       "kind": "command",
-      "start_line": 249,
+      "start_line": 659,
       "start_col": 5,
-      "end_line": 249,
+      "end_line": 659,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 660,
+      "start_col": 3,
+      "end_line": 660,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 662,
+      "start_col": 3,
+      "end_line": 662,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 662,
+      "start_col": 6,
+      "end_line": 662,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 662,
+      "start_col": 27,
+      "end_line": 662,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 662,
+      "start_col": 39,
+      "end_line": 662,
+      "end_col": 59
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 662,
+      "start_col": 59,
+      "end_line": 662,
+      "end_col": 60
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 662,
+      "start_col": 61,
+      "end_line": 662,
+      "end_col": 65
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 663,
+      "start_col": 5,
+      "end_line": 663,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 663,
+      "start_col": 11,
+      "end_line": 663,
+      "end_col": 17
+    },
+    {
+      "kind": "var-name",
+      "start_line": 663,
+      "start_col": 11,
+      "end_line": 663,
+      "end_col": 17
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 663,
+      "start_col": 18,
+      "end_line": 663,
+      "end_col": 23
+    },
+    {
+      "kind": "var-name",
+      "start_line": 663,
+      "start_col": 18,
+      "end_line": 663,
+      "end_col": 23
+    },
+    {
+      "kind": "var-name",
+      "start_line": 663,
+      "start_col": 24,
+      "end_line": 663,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 663,
+      "start_col": 24,
+      "end_line": 663,
+      "end_col": 33
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 663,
+      "start_col": 34,
+      "end_line": 663,
+      "end_col": 45
+    },
+    {
+      "kind": "var-name",
+      "start_line": 663,
+      "start_col": 34,
+      "end_line": 663,
+      "end_col": 45
+    },
+    {
+      "kind": "var-name",
+      "start_line": 663,
+      "start_col": 46,
+      "end_line": 663,
+      "end_col": 53
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 663,
+      "start_col": 46,
+      "end_line": 663,
+      "end_col": 53
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 664,
+      "start_col": 5,
+      "end_line": 664,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 664,
+      "start_col": 14,
+      "end_line": 664,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 664,
+      "start_col": 14,
+      "end_line": 664,
+      "end_col": 26
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 665,
+      "start_col": 5,
+      "end_line": 665,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 665,
+      "start_col": 10,
+      "end_line": 665,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 665,
+      "start_col": 11,
+      "end_line": 665,
+      "end_col": 34
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 665,
+      "start_col": 36,
+      "end_line": 665,
+      "end_col": 38
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 665,
+      "start_col": 40,
+      "end_line": 665,
+      "end_col": 45
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 665,
+      "start_col": 50,
+      "end_line": 665,
+      "end_col": 55
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 665,
+      "start_col": 60,
+      "end_line": 665,
+      "end_col": 65
+    },
+    {
+      "kind": "command",
+      "start_line": 665,
+      "start_col": 68,
+      "end_line": 665,
+      "end_col": 72
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 665,
+      "start_col": 76,
+      "end_line": 665,
+      "end_col": 78
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 665,
+      "start_col": 79,
+      "end_line": 665,
+      "end_col": 83
+    },
+    {
+      "kind": "command",
+      "start_line": 666,
+      "start_col": 5,
+      "end_line": 666,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c\u003c",
+      "start_line": 666,
+      "start_col": 29,
+      "end_line": 666,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 666,
+      "start_col": 33,
+      "end_line": 666,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 666,
+      "start_col": 34,
+      "end_line": 666,
+      "end_col": 57
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 667,
+      "start_col": 5,
+      "end_line": 667,
+      "end_col": 7
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 667,
+      "start_col": 8,
+      "end_line": 667,
+      "end_col": 71
+    },
+    {
+      "kind": "var-name",
+      "start_line": 667,
+      "start_col": 8,
+      "end_line": 667,
+      "end_col": 19
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 667,
+      "start_col": 20,
+      "end_line": 667,
+      "end_col": 71
+    },
+    {
+      "kind": "keyword",
+      "op": "declare",
+      "start_line": 667,
+      "start_col": 22,
+      "end_line": 667,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 667,
+      "start_col": 33,
+      "end_line": 667,
+      "end_col": 57
+    },
+    {
+      "kind": "var-name",
+      "start_line": 667,
+      "start_col": 33,
+      "end_line": 667,
+      "end_col": 57
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 667,
+      "start_col": 59,
+      "end_line": 667,
+      "end_col": 60
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 667,
+      "start_col": 71,
+      "end_line": 667,
+      "end_col": 72
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 667,
+      "start_col": 73,
+      "end_line": 667,
+      "end_col": 77
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 668,
+      "start_col": 7,
+      "end_line": 668,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 668,
+      "start_col": 10,
+      "end_line": 668,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 668,
+      "start_col": 11,
+      "end_line": 668,
+      "end_col": 23
+    },
+    {
+      "kind": "test-operator",
+      "op": "=~",
+      "start_line": 668,
+      "start_col": 25,
+      "end_line": 668,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 668,
+      "start_col": 69,
+      "end_line": 668,
+      "end_col": 71
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 668,
+      "start_col": 72,
+      "end_line": 668,
+      "end_col": 74
+    },
+    {
+      "kind": "command",
+      "start_line": 668,
+      "start_col": 75,
+      "end_line": 668,
+      "end_col": 79
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 669,
+      "start_col": 7,
+      "end_line": 669,
+      "end_col": 9
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 669,
+      "start_col": 10,
+      "end_line": 669,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 249,
+      "start_line": 669,
       "start_col": 12,
-      "end_line": 249,
-      "end_col": 27
+      "end_line": 669,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 669,
+      "start_col": 13,
+      "end_line": 669,
+      "end_col": 25
+    },
+    {
+      "kind": "test-operator",
+      "op": "=~",
+      "start_line": 669,
+      "start_col": 27,
+      "end_line": 669,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 669,
+      "start_col": 56,
+      "end_line": 669,
+      "end_col": 58
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 669,
+      "start_col": 59,
+      "end_line": 669,
+      "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 251,
+      "start_line": 669,
+      "start_col": 62,
+      "end_line": 669,
+      "end_col": 66
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 670,
+      "start_col": 7,
+      "end_line": 670,
+      "end_col": 55
+    },
+    {
+      "kind": "var-name",
+      "start_line": 670,
+      "start_col": 7,
+      "end_line": 670,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 670,
+      "start_col": 22,
+      "end_line": 670,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 670,
+      "start_col": 23,
+      "end_line": 670,
+      "end_col": 53
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 671,
       "start_col": 5,
-      "end_line": 251,
+      "end_line": 671,
+      "end_col": 7
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 672,
+      "start_col": 5,
+      "end_line": 672,
+      "end_col": 21
+    },
+    {
+      "kind": "var-name",
+      "start_line": 672,
+      "start_col": 5,
+      "end_line": 672,
+      "end_col": 11
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 672,
+      "start_col": 12,
+      "end_line": 672,
+      "end_col": 21
+    },
+    {
+      "kind": "command",
+      "start_line": 672,
+      "start_col": 14,
+      "end_line": 672,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 673,
+      "start_col": 5,
+      "end_line": 673,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 673,
+      "start_col": 5,
+      "end_line": 673,
+      "end_col": 10
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 673,
+      "start_col": 11,
+      "end_line": 673,
+      "end_col": 20
+    },
+    {
+      "kind": "command",
+      "start_line": 673,
+      "start_col": 13,
+      "end_line": 673,
+      "end_col": 19
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 674,
+      "start_col": 5,
+      "end_line": 674,
+      "end_col": 24
+    },
+    {
+      "kind": "var-name",
+      "start_line": 674,
+      "start_col": 5,
+      "end_line": 674,
+      "end_col": 14
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 674,
+      "start_col": 15,
+      "end_line": 674,
+      "end_col": 24
+    },
+    {
+      "kind": "command",
+      "start_line": 674,
+      "start_col": 17,
+      "end_line": 674,
+      "end_col": 23
+    },
+    {
+      "kind": "command",
+      "start_line": 675,
+      "start_col": 5,
+      "end_line": 675,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 675,
+      "start_col": 16,
+      "end_line": 675,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 675,
+      "start_col": 17,
+      "end_line": 675,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 675,
+      "start_col": 26,
+      "end_line": 675,
+      "end_col": 34
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 675,
+      "start_col": 27,
+      "end_line": 675,
+      "end_col": 33
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 675,
+      "start_col": 35,
+      "end_line": 675,
+      "end_col": 47
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 675,
+      "start_col": 36,
+      "end_line": 675,
+      "end_col": 46
+    },
+    {
+      "kind": "function-call",
+      "start_line": 676,
+      "start_col": 5,
+      "end_line": 676,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 676,
+      "start_col": 30,
+      "end_line": 676,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 676,
+      "start_col": 31,
+      "end_line": 676,
+      "end_col": 49
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 676,
+      "start_col": 51,
+      "end_line": 676,
+      "end_col": 52
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 676,
+      "start_col": 53,
+      "end_line": 676,
+      "end_col": 62
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 676,
+      "start_col": 54,
+      "end_line": 676,
+      "end_col": 61
+    },
+    {
+      "kind": "command",
+      "start_line": 678,
+      "start_col": 5,
+      "end_line": 678,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 251,
+      "start_line": 678,
       "start_col": 14,
-      "end_line": 251,
-      "end_col": 34
+      "end_line": 678,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "for",
+      "start_line": 679,
+      "start_col": 5,
+      "end_line": 679,
+      "end_col": 8
+    },
+    {
+      "kind": "var-name",
+      "start_line": 679,
+      "start_col": 9,
+      "end_line": 679,
+      "end_col": 16
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 679,
+      "start_col": 17,
+      "end_line": 679,
+      "end_col": 19
+    },
+    {
+      "kind": "keyword",
+      "op": "do",
+      "start_line": 679,
+      "start_col": 80,
+      "end_line": 679,
+      "end_col": 82
     },
     {
       "kind": "command",
-      "start_line": 252,
+      "start_line": 680,
+      "start_col": 7,
+      "end_line": 680,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 680,
+      "start_col": 22,
+      "end_line": 680,
+      "end_col": 32
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 680,
+      "start_col": 23,
+      "end_line": 680,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "done",
+      "start_line": 681,
       "start_col": 5,
-      "end_line": 252,
+      "end_line": 681,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 682,
+      "start_col": 5,
+      "end_line": 682,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 682,
+      "start_col": 12,
+      "end_line": 682,
+      "end_col": 30
+    },
+    {
+      "kind": "function-call",
+      "start_line": 684,
+      "start_col": 5,
+      "end_line": 684,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 684,
+      "start_col": 30,
+      "end_line": 684,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 684,
+      "start_col": 31,
+      "end_line": 684,
+      "end_col": 49
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 684,
+      "start_col": 51,
+      "end_line": 684,
+      "end_col": 52
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 684,
+      "start_col": 53,
+      "end_line": 684,
+      "end_col": 61
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 684,
+      "start_col": 54,
+      "end_line": 684,
+      "end_col": 60
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 685,
+      "start_col": 5,
+      "end_line": 685,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 685,
+      "start_col": 8,
+      "end_line": 685,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 685,
+      "start_col": 10,
+      "end_line": 685,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 685,
+      "start_col": 17,
+      "end_line": 685,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 685,
+      "start_col": 18,
+      "end_line": 685,
+      "end_col": 25
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 685,
+      "start_col": 27,
+      "end_line": 685,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 685,
+      "start_col": 28,
+      "end_line": 685,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 685,
+      "start_col": 35,
+      "end_line": 685,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 685,
+      "start_col": 37,
+      "end_line": 685,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 686,
+      "start_col": 7,
+      "end_line": 686,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 686,
+      "start_col": 17,
+      "end_line": 686,
+      "end_col": 117
+    },
+    {
+      "kind": "command",
+      "start_line": 687,
+      "start_col": 7,
+      "end_line": 687,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 688,
+      "start_col": 5,
+      "end_line": 688,
+      "end_col": 7
+    },
+    {
+      "kind": "function-call",
+      "start_line": 689,
+      "start_col": 5,
+      "end_line": 689,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 689,
+      "start_col": 27,
+      "end_line": 689,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 689,
+      "start_col": 28,
+      "end_line": 689,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 689,
+      "start_col": 37,
+      "end_line": 689,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 689,
+      "start_col": 39,
+      "end_line": 689,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 689,
+      "start_col": 40,
+      "end_line": 689,
+      "end_col": 50
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 690,
+      "start_col": 5,
+      "end_line": 690,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 690,
+      "start_col": 14,
+      "end_line": 690,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 690,
+      "start_col": 14,
+      "end_line": 690,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 691,
+      "start_col": 5,
+      "end_line": 691,
+      "end_col": 12
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 691,
+      "start_col": 16,
+      "end_line": 691,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c",
+      "start_line": 691,
+      "start_col": 39,
+      "end_line": 691,
+      "end_col": 40
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 691,
+      "start_col": 41,
+      "end_line": 691,
+      "end_col": 53
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 691,
+      "start_col": 42,
+      "end_line": 691,
+      "end_col": 52
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 692,
+      "start_col": 5,
+      "end_line": 692,
+      "end_col": 57
+    },
+    {
+      "kind": "var-name",
+      "start_line": 692,
+      "start_col": 5,
+      "end_line": 692,
+      "end_col": 29
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 692,
+      "start_col": 32,
+      "end_line": 692,
+      "end_col": 56
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 692,
+      "start_col": 33,
+      "end_line": 692,
+      "end_col": 55
+    },
+    {
+      "kind": "function-call",
+      "start_line": 693,
+      "start_col": 5,
+      "end_line": 693,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 693,
+      "start_col": 27,
+      "end_line": 693,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 693,
+      "start_col": 28,
+      "end_line": 693,
+      "end_col": 35
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 695,
+      "start_col": 5,
+      "end_line": 695,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 695,
+      "start_col": 5,
+      "end_line": 695,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 695,
+      "start_col": 21,
+      "end_line": 695,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 695,
+      "start_col": 49,
+      "end_line": 695,
+      "end_col": 60
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 695,
+      "start_col": 61,
+      "end_line": 695,
+      "end_col": 81
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 695,
+      "start_col": 82,
+      "end_line": 695,
+      "end_col": 91
+    },
+    {
+      "kind": "command",
+      "start_line": 697,
+      "start_col": 5,
+      "end_line": 697,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 697,
+      "start_col": 14,
+      "end_line": 697,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 698,
+      "start_col": 5,
+      "end_line": 698,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 252,
+      "start_line": 698,
       "start_col": 23,
-      "end_line": 252,
+      "end_line": 698,
       "end_col": 25
     },
     {
       "kind": "command",
-      "start_line": 252,
+      "start_line": 698,
       "start_col": 26,
-      "end_line": 252,
+      "end_line": 698,
       "end_col": 30
     },
     {
-      "kind": "command",
-      "start_line": 253,
-      "start_col": 5,
-      "end_line": 253,
-      "end_col": 8
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 253,
-      "start_col": 12,
-      "end_line": 253,
-      "end_col": 14
-    },
-    {
-      "kind": "command",
-      "start_line": 253,
-      "start_col": 15,
-      "end_line": 253,
-      "end_col": 21
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 253,
-      "start_col": 42,
-      "end_line": 253,
-      "end_col": 44
-    },
-    {
-      "kind": "command",
-      "start_line": 253,
-      "start_col": 45,
-      "end_line": 253,
-      "end_col": 51
-    },
-    {
-      "kind": "operator",
-      "op": "\u0026\u0026",
-      "start_line": 253,
-      "start_col": 79,
-      "end_line": 253,
-      "end_col": 81
-    },
-    {
-      "kind": "command",
-      "start_line": 253,
-      "start_col": 82,
-      "end_line": 253,
-      "end_col": 85
-    },
-    {
       "kind": "param-exp",
-      "start_line": 254,
+      "start_line": 699,
       "start_col": 5,
-      "end_line": 254,
+      "end_line": 699,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 254,
+      "start_line": 699,
       "start_col": 10,
-      "end_line": 254,
+      "end_line": 699,
+      "end_col": 14
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 700,
+      "start_col": 5,
+      "end_line": 700,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 700,
+      "start_col": 10,
+      "end_line": 700,
+      "end_col": 14
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 701,
+      "start_col": 5,
+      "end_line": 701,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 701,
+      "start_col": 10,
+      "end_line": 701,
+      "end_col": 14
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 702,
+      "start_col": 5,
+      "end_line": 702,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 702,
+      "start_col": 10,
+      "end_line": 702,
+      "end_col": 14
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 703,
+      "start_col": 5,
+      "end_line": 703,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 703,
+      "start_col": 10,
+      "end_line": 703,
       "end_col": 14
     },
     {
       "kind": "command",
-      "start_line": 255,
+      "start_line": 704,
       "start_col": 5,
-      "end_line": 255,
+      "end_line": 704,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 255,
+      "start_line": 704,
       "start_col": 12,
-      "end_line": 255,
-      "end_col": 28
-    },
-    {
-      "kind": "command",
-      "start_line": 257,
-      "start_col": 5,
-      "end_line": 257,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 257,
-      "start_col": 14,
-      "end_line": 257,
+      "end_line": 704,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 258,
+      "start_line": 706,
       "start_col": 5,
-      "end_line": 258,
-      "end_col": 14
+      "end_line": 706,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 706,
+      "start_col": 14,
+      "end_line": 706,
+      "end_col": 34
     },
     {
       "kind": "command",
-      "start_line": 259,
+      "start_line": 707,
       "start_col": 5,
-      "end_line": 259,
+      "end_line": 707,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 707,
+      "start_col": 23,
+      "end_line": 707,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 707,
+      "start_col": 26,
+      "end_line": 707,
+      "end_col": 30
+    },
+    {
+      "kind": "function-call",
+      "start_line": 708,
+      "start_col": 5,
+      "end_line": 708,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 708,
+      "start_col": 29,
+      "end_line": 708,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 708,
+      "start_col": 30,
+      "end_line": 708,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 709,
+      "start_col": 5,
+      "end_line": 709,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 259,
+      "start_line": 709,
       "start_col": 12,
-      "end_line": 259,
+      "end_line": 709,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 711,
+      "start_col": 5,
+      "end_line": 711,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 711,
+      "start_col": 14,
+      "end_line": 711,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "for",
+      "start_line": 712,
+      "start_col": 5,
+      "end_line": 712,
+      "end_col": 8
+    },
+    {
+      "kind": "var-name",
+      "start_line": 712,
+      "start_col": 9,
+      "end_line": 712,
+      "end_col": 16
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 712,
+      "start_col": 17,
+      "end_line": 712,
+      "end_col": 19
+    },
+    {
+      "kind": "keyword",
+      "op": "do",
+      "start_line": 712,
+      "start_col": 80,
+      "end_line": 712,
+      "end_col": 82
+    },
+    {
+      "kind": "command",
+      "start_line": 713,
+      "start_col": 7,
+      "end_line": 713,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 713,
+      "start_col": 23,
+      "end_line": 713,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 713,
+      "start_col": 24,
+      "end_line": 713,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 714,
+      "start_col": 7,
+      "end_line": 714,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 714,
+      "start_col": 35,
+      "end_line": 714,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 714,
+      "start_col": 36,
+      "end_line": 714,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "done",
+      "start_line": 715,
+      "start_col": 5,
+      "end_line": 715,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 716,
+      "start_col": 5,
+      "end_line": 716,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 716,
+      "start_col": 11,
+      "end_line": 716,
+      "end_col": 20
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 716,
+      "start_col": 12,
+      "end_line": 716,
+      "end_col": 19
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 716,
+      "start_col": 21,
+      "end_line": 716,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 716,
+      "start_col": 22,
+      "end_line": 716,
+      "end_col": 28
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 716,
+      "start_col": 30,
+      "end_line": 716,
+      "end_col": 42
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 716,
+      "start_col": 31,
+      "end_line": 716,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 717,
+      "start_col": 5,
+      "end_line": 717,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 717,
+      "start_col": 12,
+      "end_line": 717,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 260,
+      "start_line": 718,
       "start_col": 5,
-      "end_line": 260,
+      "end_line": 718,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 260,
+      "start_line": 718,
       "start_col": 12,
-      "end_line": 260,
+      "end_line": 718,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 261,
+      "start_line": 719,
       "start_col": 3,
-      "end_line": 261,
+      "end_line": 719,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 262,
+      "start_line": 720,
       "start_col": 3,
-      "end_line": 262,
+      "end_line": 720,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 263,
+      "start_line": 721,
       "start_col": 1,
-      "end_line": 263,
+      "end_line": 721,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 265,
+      "start_line": 723,
       "start_col": 1,
-      "end_line": 265,
+      "end_line": 723,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 266,
+      "start_line": 724,
       "start_col": 1,
-      "end_line": 266,
+      "end_line": 724,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 267,
+      "start_line": 725,
       "start_col": 1,
-      "end_line": 267,
+      "end_line": 725,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 1,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 8,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 10,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 21,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 22,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 66,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 77
     },
     {
       "kind": "string-dq",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 81,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 85
     },
     {
       "kind": "param-exp",
-      "start_line": 268,
+      "start_line": 726,
       "start_col": 82,
-      "end_line": 268,
+      "end_line": 726,
       "end_col": 84
     }
   ],
-  "bootstrap_line": 268,
+  "bootstrap_line": 726,
   "hooks": {
     "header_info": false,
     "install_script": true,
