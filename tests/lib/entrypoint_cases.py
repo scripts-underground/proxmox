@@ -24,6 +24,7 @@ DIRECT = {
     'maintenance-kosmozoo-current': [[]],
     'maintenance-kosmozoo-native': [[]],
     'maintenance-lazylibrarian-native': [[]],
+    'maintenance-bookorbit-native': [[]],
     'migration-dragonfly': [[]],
     'migration-dragonfly-native': [[]],
     'codeberg-release': [[], ['--live'], ['--bundle']],
@@ -59,7 +60,8 @@ class Entrypoints(unittest.TestCase):
                      'tests/maintenance-current-hardening.test.sh', 'tests/maintenance-cron-update.test.sh',
                      'tests/maintenance-package-force.test.sh',
                       'tests/migration-dragonfly.test.sh', 'tests/migration-dragonfly-native.test.sh',
-                      'tests/maintenance-lazylibrarian-native.test.sh'}
+                       'tests/maintenance-lazylibrarian-native.test.sh',
+                       'tests/maintenance-bookorbit-native.test.sh'}
         self.assertTrue(additions <= actual)
         self.assertEqual(len(actual - additions - {'tests/test-workflow-ownership.test.sh', 'tests/test-workflow-entrypoints.test.sh'}), 69)
         for suite, row in REGISTRY.items():
@@ -71,7 +73,7 @@ class Entrypoints(unittest.TestCase):
                     # An ownership/fixture context must never authorize another role.
                     with self.assertRaises(AdmissionError):
                         Context.validate(d, self.context.path, suite, 'not-a-mode')
-        print('CATALOGUE original=69 additions=8 shell=79 roles=actual-policy', flush=True)
+        print('CATALOGUE original=69 additions=9 shell=80 roles=actual-policy', flush=True)
 
     def test_every_registered_mode_has_fixed_source_argv(self):
         from entrypoint import command_for
@@ -112,7 +114,7 @@ class Entrypoints(unittest.TestCase):
                     self.assertFalse(any(a in ('ssh','eval') for a in argv))
                     if recording_calls is not None:self.assertEqual(recording_calls,[])
                     cases += 1
-        self.assertEqual(cases,100)
+        self.assertEqual(cases,101)
         print('REGISTERED_SOURCE_ARGV cases='+str(cases)+' public_native_routes=separate_actual_main_test',flush=True)
 
     def direct(self, suite, args, context):

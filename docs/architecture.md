@@ -476,6 +476,17 @@ command failures. Custom headers and menus use this same boundary after core is
 loaded. PVE scripts load their existing bootstrap before their first header;
 the cron manager declares its custom banner first and renders it after bootstrap.
 
+BookOrbit's cold updater discovers installed configuration and database library
+roots before runtime/service/source effects, then rechecks after service stop.
+Its app-owned restricted environment grammar refuses unsupported service overrides;
+the system PostgreSQL client performs read-only discovery independently of app
+dependencies. Existing literal keep paths protect config and in-tree persistence
+through checked replacement; generated source/build overlaps refuse. Updates do
+not rotate keys, alter operator units/ports or change PostgreSQL major versions.
+Fresh and update paths build only frozen client/server dependency closures while
+retaining upstream prebuild hooks. Modeled preservation assertions and the separate
+native BookOrbit consumer have different proof scopes, documented in tests/README.md.
+
 ### 3.2 Addon — `misc/bootstrap/addon_lxc`
 
 The addon shim runs INSIDE an existing LXC container. Every line is a source,

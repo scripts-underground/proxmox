@@ -34,9 +34,9 @@ revisions instead of silently refreshing admission.
 
 The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
 current-hardening, cron-update and package-force fixtures, Dragonfly fixture/native
-consumers, the LazyLibrarian native bundle consumer, two workflow regressions, browser and contribution
+consumers, the LazyLibrarian and BookOrbit native bundle consumers, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 100 public suite/mode combinations. The
+suite/mode/options refuse. There are 101 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
@@ -763,3 +763,20 @@ catalogue output and a home-page title do not prove it. Before claiming that gat
 observe actual JSON catalogue/AST contents and the generated HTML pages' script,
 AST and catalogue crosslinks on the exact output projection. These outcomes have
 not been verified by the source/admission checkpoint.
+# BookOrbit qualification
+
+`maintenance-build-hooks/fixture` also runs `lib/bookorbit.fixture.sh`: actual
+cold bundles, Node environment parsing and checked source replacement, with
+package/build/PostgreSQL/systemd producers modeled. Its immutable extra-reference
+tree includes BookOrbit v3.7.0 source contracts and the oldest published v2.0.1
+baseline, both of which define `library_folders`.
+
+`maintenance-bookorbit-native/bundle` uses the existing runtime/publisher/Broker
+and one admitted owned CT. It compiles the actual pinned release, migrates the
+database, onboards, uploads/reads owned EPUB text, persists preferences/progress
+through restart and forced cold update, and decodes a tiny owned DjVu. It retains
+secrets and application logs in the CT, exporting redacted outcome/peak records.
+Successful consumption stops at the normal preservation-pending boundary; external
+saved-byte verification and a bound acknowledgement precede public finalization.
+This is a core cold-bundle proof, not Proxmox menu/one-line transport, optional
+TTS/read-aloud, device sync or external-provider qualification.
