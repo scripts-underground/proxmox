@@ -508,5 +508,6 @@ PY
     done
   done
 done
+bash "$ROOT/tests/lib/bookorbit.fixture.sh" || failures=$((failures + 1))
 printf '%s failure(s); actual cold hooks/helpers/files/Node/Dotenv consumers; compiled/runtime/service/model artifacts modeled\n' "$failures"
 [[ "$failures" == 0 ]]

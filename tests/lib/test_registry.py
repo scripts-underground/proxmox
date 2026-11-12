@@ -35,6 +35,7 @@ REGISTRY.update({
     'github-force-deploy': Suite('tests/github-force-deploy.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-kosmozoo-native': Suite('tests/maintenance-kosmozoo-native.test.sh', ('live-runtime',), 'live-runtime'),
     'maintenance-lazylibrarian-native': Suite('tests/maintenance-lazylibrarian-native.test.sh', ('bundle',), 'bundle'),
+    'maintenance-bookorbit-native': Suite('tests/maintenance-bookorbit-native.test.sh', ('bundle',), 'bundle'),
     'migration-dragonfly-native': Suite('tests/migration-dragonfly-native.test.sh', ('live-runtime',), 'live-runtime'),
     'uv-project-version': Suite('tests/uv-project-version.test.sh', ('live-runtime',), 'live-runtime'),
     'romm-player-serving': Suite('tests/romm-player-serving.test.sh', ('live-runtime', 'setup'), 'live-runtime', (('setup', '--setup'),)),
