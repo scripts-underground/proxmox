@@ -486,6 +486,68 @@ not rotate keys, alter operator units/ports or change PostgreSQL major versions.
 Fresh and update paths build only frozen client/server dependency closures while
 retaining upstream prebuild hooks. Modeled preservation assertions and the separate
 native BookOrbit consumer have different proof scopes, documented in tests/README.md.
+BookOrbit keeps the literal service entry root distinct from its physical directory.
+Discovery captures physical path/device/inode and lexical entry identity before
+configuration/query work. One app-owned closure walks config, caller and typed DB
+paths component by component, preserving material prefix links and referents, not
+ordinary traversal parents. Linux metadata-only O_PATH/NOFOLLOW descriptors bind
+each reached mount ID and inode to mountinfo coordinates. App-root and descendant
+mount charts project external bind aliases back into relative keeps; hidden,
+unreachable, code-overlapping or uncharacterized projections refuse. No recursive
+data crawl, mover, shared path registry or provider policy is introduced.
+
+A read-only repeatable-read SQL session inventories the migration ledger, catalog
+and 12 source-pinned path fields plus derived dock thumbnails. Unknown ledger/schema
+combinations refuse rather than guessing empty data. Config uses physical service
+cwd semantics; literal DB dot-dot paths refuse. Typed optional and source-proven
+reader seeds admit witnessed absence independently of creation permission.
+Nonmaterial missing tails still undergo code/ancestor/mount projection admission;
+existing prefix links remain material, but absent subtrees are not owned.
+The finite contract is pinned to v2.0.1 and v3.7.0.
+Versioned NUL-delimited metadata precedes, but never becomes, a replacement keep.
+It binds config bytes, service view, typed SQL inputs, dependency identities and
+relevant topology within each pass and across service stop, even for unchanged
+keep sets. A remap refuses before replacement and retains pending/stopped state.
+The cross-pass service view uses a typed ExecStart configuration projection:
+executable, argv and ignore-errors remain inputs, while validated execution
+timestamps, PID and exit bookkeeping do not. The finite systemd257 text record
+must parse completely; unsupported records refuse. Raw service snapshots and live
+PID/birth still bind each individual discovery pass. Public metadata includes the
+typed command and service-view hash, not inline environment or config values.
+Bounds are 64MiB SQL output, 60 seconds, 4096 path bytes/components and 40 symlink expansions;
+exhaustion refuses65 without a partial plan. This is validation-time consistency,
+not an atomic lock against nonparticipating administrators. Operator units and
+data remain in place; unsupported service filesystem views refuse without repair.
+
+One app-owned config-input owner admits metadata before any config byte I/O and
+resnapshots through that same boundary. Primary .env retains its single-link
+nonsymlink ORIGINAL request-leaf contract before leaf expansion, independent of
+ancestor/root aliases; optional server/.env permits regular aliases/hardlinks.
+Every optional lookup enters the common closure, preserving existing prefix links
+and recording absence without inventing a file/subtree keep. Only an admitted
+ordinary regular O_PATH descriptor is reopened through
+this process's trusted /proc/self/fd, fstat-matched and read to at most1MiB+1;
+overflow refuses before parsing. All FDs close in finally. Presence, alias/target
+identity and byte hashes are compared within-pass and across quiescence, including
+unchanged bytes on a replacement inode. Raw config values never enter diagnostics
+or public metadata; UTF8/environment grammar and precedence remain unchanged.
+
+Ordinary data filesystems are not rejected by name. Coordinate admission rejects
+API/magic filesystems and unprovable representations instead. Btrfs subvolume
+stat devices remain distinct from the mountinfo superblock device. NFS deliberately
+reports `/` as every mount root, so its decoded export-source path supplies the
+coordinate base. All projections still require reached mount and fstat identity;
+cross-superblock application/network aliases refuse as unprovable. This is a
+kernel VFS contract, not native qualification of every storage backend.
+Source-proven missing DB reader dependencies retain prefix/link/mount/absence
+witnesses without creating data; absence is separate from creation permission.
+Typed tool/resource inputs use the same closure. Commands enumerate the accepted
+service PATH (primary EnvironmentFile over inline, otherwise installed systemd's
+default with manager ambiguity admission), never optional dotenv or updater PATH.
+Nest fallback fills only unset application variables. Commands retain a
+conservative union of candidates without claiming first-executable resolution.
+Optional missing tools remain optional. KOReader overrides are directories;
+generated-code and uncharacterized in-app executable targets remain refusals.
 
 ### 3.2 Addon — `misc/bootstrap/addon_lxc`
 

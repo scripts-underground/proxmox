@@ -770,12 +770,85 @@ cold bundles, Node environment parsing and checked source replacement, with
 package/build/PostgreSQL/systemd producers modeled. Its immutable extra-reference
 tree includes BookOrbit v3.7.0 source contracts and the oldest published v2.0.1
 baseline, both of which define `library_folders`.
+Private mount namespaces isolate both `/opt` and `/srv` for relocated-root cases.
+The fixture checks logical/physical library paths, alias referents, code conflicts,
+root identity changes and successful changed keep sets after service stop. These
+are filesystem/parser/generated-updater checks, not an additional native deployment.
+
+The dependency matrix covers config app/dock/import paths, inherited caller keeps,
+all current typed DB path classes and derived thumbnails through real bind aliases
+and prefix-link chains in both verbosity modes. Actual Node readers compare
+requested-path bytes, inode and access metadata across real cold replacement;
+successful witnesses are printed as `DEPENDENCY_GREEN`. Cold post-stop link, mount,
+config-byte and same-keep SQL changes must refuse65 before fetch/replacement,
+leaving source, pending state and stopped-service diagnostics intact.
+The service producer changes systemd257 execution bookkeeping after stop in every
+successful cold update. Exact product projection tests retain executable/argv/
+ignore-errors and all other service inputs, exclude only validated lifecycle data,
+and refuse malformed/unknown records. These modeled contrasts complement the
+separate owned-service running/stopped proof; they are not native app acceptance.
+`lib/bookorbit-path-contract.cjs` extracts the actual app-owned closure for native
+mount/lookup tests: escaped, nested, stacked/hidden and two-device views, reserved
+code, missing/dangling/error paths, symlink bounds and identity changes. Discovery
+has no seed/record/work-count quota; overlapping origins retain ownership and
+fresh repeated/final observations detect remaps. Clock and permission-error producers are explicitly modeled; the refusal policy
+is actual product code. `assets/bookorbit-path-schema.json` independently binds
+the fixture's finite typed field/ledger contract. Real PostgreSQL transaction and
+schema admission require their separate gate; modeled SQL is not that proof.
+
+Config regressions use the actual generated hook and Node reader, not a replacement
+reader model. An observer only schedules pathname swaps and checks admitted regular
+FDs, the 1MiB+1 read bound and FD closure. Both primary and optional inputs exercise
+FIFO/device/socket/directory/alias targets, overflow and metadata-to-byte pathname
+swaps. Optional regular/alias/hardlink/absence/dangling cases retain their supported
+semantics; SQL/stop producers schedule optional presence and same-byte inode changes.
+Each new child has PID/birth/process-group ownership recorded before its bounded
+wait and is reaped in finally. A timeout is failure, never a successful refusal.
+
+Compatibility cases retain legitimate missing DB reader rows as absence witnesses,
+not files to create. Explicit required-input failures remain failures. Synthetic
+Btrfs/ZFS/NFS/CIFS mount-type vectors use real metadata/lookup consumers but do not
+qualify those filesystem drivers. NFS's constant mountinfo root is distinguished
+with its export-source coordinate; subvolume stat devices remain distinct. Actual
+tiny external/default-PATH tool consumers and configured plugin resources survive
+cold replacement; missing optional tools do not require installation. Generated
+code targets and unprovable API/network coordinates still refuse before effects.
 
 `maintenance-bookorbit-native/bundle` uses the existing runtime/publisher/Broker
 and one admitted owned CT. It compiles the actual pinned release, migrates the
 database, onboards, uploads/reads owned EPUB text, persists preferences/progress
 through restart and forced cold update, and decodes a tiny owned DjVu. It retains
 secrets and application logs in the CT, exporting redacted outcome/peak records.
+Requirements come from the selected script defaults and are checked in both actual
+generated bundles against the admitted native allocation and observed CPU/RAM.
+Peak diagnostics compare that selected RAM/disk pair, not a historical provision
+constant; the separate 2GiB build heap remains unchanged.
+After a normal fresh install/provenance check, the native fixture renames its own
+stopped app to `/srv/bookorbit` on the same filesystem and keeps the normal unit
+through an `/opt/bookorbit` alias. Actual SQL libraries use the physical root.
+Reader/data/root identities are checked before and after forced clean update.
+Config values except derived `APP_VERSION` and access metadata are preserved;
+config inode equality is not claimed. Book/data/import inode equality is checked.
+After generic runtime APT transport preparation, a consumer-entry bind capability
+gate runs before BookOrbit's own prerequisites, bundles or installation. Its tiny
+owned disk fixture verifies kernel mount identity and sentinel bytes/dev/inode,
+then unmounts and removes only its exact members; denial stops without a security
+workaround. One native trial retains the original canonical physical library and
+adds separate API-created bind-view and intermediate-prefix-link libraries with
+distinct EPUBs. Actual before/after API spine reads, SQL paths, requested Node
+bytes/dev/inode/access metadata, mount charts and link identities must survive the
+same forced clean update; no model or startup-only result substitutes for readers.
+Both bind checks share one validated single-root kernel-coordinate helper and
+emit source/reached mount facts and mount status before comparison. A separate
+cheap private-namespace proof exercises that exact helper and entry gate; it is
+not unprivileged-CT capability or BookOrbit native qualification.
+The app-owned native RAM observer binds the creation lineage, config/LVID, init
+PID/birth and receiving root, maps its unified cgroup through the outer VM's actual
+full-root cgroup2 mount, and checks the minimum finite ancestor `memory.max`.
+An unlimited leaf is allowed only with a proven finite ancestor; all-max, missing,
+ambiguous, escaping or changing observations refuse before app install. Only the
+kernel root cgroup may lack `memory.max`. Deterministic full-observer tests live in
+`tests/lib/bookorbit_memory_test.py`; no requested-config substitution is used.
 Successful consumption stops at the normal preservation-pending boundary; external
 saved-byte verification and a bound acknowledgement precede public finalization.
 This is a core cold-bundle proof, not Proxmox menu/one-line transport, optional
