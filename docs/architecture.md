@@ -514,15 +514,15 @@ timestamps, PID and exit bookkeeping do not. The finite systemd257 text record
 must parse completely; unsupported records refuse. Raw service snapshots and live
 PID/birth still bind each individual discovery pass. Public metadata includes the
 typed command and service-view hash, not inline environment or config values.
-Bounds are 64MiB SQL output, 250000 distinct seeds, 512000 records, 1000000 prefix
-observations, 60 seconds, 4096 path bytes/components and 40 symlink expansions;
+Bounds are 64MiB SQL output, 60 seconds, 4096 path bytes/components and 40 symlink expansions;
 exhaustion refuses65 without a partial plan. This is validation-time consistency,
 not an atomic lock against nonparticipating administrators. Operator units and
 data remain in place; unsupported service filesystem views refuse without repair.
 
 One app-owned config-input owner admits metadata before any config byte I/O and
 resnapshots through that same boundary. Primary .env retains its single-link
-nonsymlink leaf contract; optional server/.env permits regular aliases/hardlinks.
+nonsymlink ORIGINAL request-leaf contract before leaf expansion, independent of
+ancestor/root aliases; optional server/.env permits regular aliases/hardlinks.
 Every optional lookup enters the common closure, preserving existing prefix links
 and recording absence without inventing a file/subtree keep. Only an admitted
 ordinary regular O_PATH descriptor is reopened through

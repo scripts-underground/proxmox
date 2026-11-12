@@ -203,7 +203,7 @@ function configInput(file,required){
       const [head,tail]=mount.split(' - '),fields=head.split(' '),decode=v=>v.replace(/\\(040|011|012|134)/g,(_,n)=>String.fromCharCode(parseInt(n,8))),other=tail.split(' ');
       filesystemCoordinate({root:decode(fields[3]),target:decode(fields[4]),type:other[0],source:decode(other[1])},next);
       const item={path:next,identity:identity(s),mount:mnt[1],view:digest(mount),link:s.isSymbolicLink()?fs.readlinkSync(next):null};records.push(item);
-      if(required&&next===file&&(!s.isFile()||s.nlink!==1n)){
+      if(required&&!todo.length&&(!s.isFile()||s.nlink!==1n)){
         process.stderr.write('BookOrbit: '+file+' must be a single-link regular file, not a symlink, hardlink alias or special file.\n');fail('unsupported primary config object');
       }
       if(s.isSymbolicLink()){
@@ -370,11 +370,11 @@ function inventory(env){
   return {seeds,hash:digest(JSON.stringify([cat.columns,ledger.rows,seeds]))};
 }
 function closure(identity,seeds){
-  stage='path-dependencies';let observations=0;
+  stage='path-dependencies';
   const keeps=new Set(['.env']),deps=new Map(),relevant=new Set(),namespace=fs.readlinkSync('/proc/self/ns/mnt');
   const reserved=['client','packages','patches','node_modules','package.json','pnpm-lock.yaml','pnpm-workspace.yaml','tsconfig.base.json','server/src','server/dist','server/public','server/migrations','server/node_modules','server/bin','server/requirements','server/package.json','server/tsconfig.json','server/tsconfig.build.json','server/nest-cli.json'];
   const inside=(p,a)=>p===a||(a==='/'?p.startsWith('/'):p.startsWith(a+'/')),decode=s=>s.replace(/\\(040|011|012|134)/g,(_,n)=>String.fromCharCode(parseInt(n,8)));
-  function budget(){if(Date.now()-started>60000)fail('inventory 60s limit');if(++observations>1000000)fail('prefix observation limit');}
+  function budget(){if(Date.now()-started>60000)fail('inventory 60s limit');}
   function mounts(){return fs.readFileSync('/proc/self/mountinfo','utf8').trim().split('\n').map(line=>{const parts=line.split(' - '),f=parts[0].split(' ');if(parts.length!==2||f.length<6||!/^\d+:\d+$/.test(f[2]))fail('invalid mountinfo');return {id:f[0],parent:f[1],dev:f[2],root:decode(f[3]),target:decode(f[4]),type:parts[1].split(' ')[0],source:decode(parts[1].split(' ')[1])};});}
   const before=mounts(),byID=new Map(before.map(r=>[r.id,r]));
   function observe(p,remember=true){
@@ -383,7 +383,7 @@ function closure(identity,seeds){
     try{const s=fs.fstatSync(fd,{bigint:true}),m=/^mnt_id:\s+(\d+)$/m.exec(fs.readFileSync('/proc/self/fdinfo/'+fd,'utf8'));if(!m||!byID.has(m[1]))fail('reached mount ID unavailable');
       const mount=byID.get(m[1]);
       const item={path:p,dev:String(s.dev),ino:String(s.ino),mode:String(s.mode),mount:m[1],link:s.isSymbolicLink()?fs.readlinkSync(p):null,coordinate:filesystemCoordinate(mount,p),fsdev:mount.dev,network:/^(nfs4?|cifs|smb3)$/.test(mount.type)};
-      if(remember){const old=deps.get(p);if(old&&JSON.stringify(old)!==JSON.stringify(item))fail('dependency changed within discovery: '+p);deps.set(p,item);relevant.add(m[1]);if(deps.size>512000)fail('dependency record limit');}return item;
+      if(remember){const old=deps.get(p);if(old&&JSON.stringify(old)!==JSON.stringify(item))fail('dependency changed within discovery: '+p);deps.set(p,item);relevant.add(m[1]);}return item;
     }finally{fs.closeSync(fd);}
   }
   const app=identity.physical,anchor=observe(app),charts=[{path:app,item:anchor}];
@@ -408,7 +408,7 @@ function closure(identity,seeds){
     let current='/',todo=raw.split('/').slice(1),links=0,components=0,last=observe('/');
     while(todo.length){budget();if(++components>4096)fail('path component limit: '+seed.origin);const part=todo.shift();if(!part||part==='.')continue;if(part==='..'){current=path.dirname(current);last=observe(current);continue;}
       const next=current==='/'?'/'+part:current+'/'+part;let item;
-      try{item=observe(next);}catch(error){if(error.code!=='ENOENT'||!(seed.mayBeAbsent||seed.creatable))throw error;const suffix=[part,...todo];if(suffix.some(v=>v==='.'||v==='..'))fail('unsupported missing suffix: '+seed.origin);const missing=next+(todo.length?'/'+todo.join('/'):'');deps.set('missing:'+missing,{path:next,missing:true,unresolved:missing});if(deps.size>512000)fail('dependency record limit');
+      try{item=observe(next);}catch(error){if(error.code!=='ENOENT'||!(seed.mayBeAbsent||seed.creatable))throw error;const suffix=[part,...todo];if(suffix.some(v=>v==='.'||v==='..'))fail('unsupported missing suffix: '+seed.origin);const missing=next+(todo.length?'/'+todo.join('/'):'');deps.set('missing:'+missing,{path:next,missing:true,unresolved:missing});
          const keep=!seed.traceOnly&&seed.materialMissing!==false;
          for(const a of [root,app]){if(inside(a,missing))fail('missing path contains application: '+missing);if(missing.startsWith(a+'/'))admit(path.relative(a,missing),keep);}
         // A missing suffix still inherits the existing ancestor's filesystem chart.
@@ -426,7 +426,6 @@ function closure(identity,seeds){
     if(seed.origin.startsWith('tool:')&&inside(current,app))fail('uncharacterized in-tree executable override: '+seed.origin);
     if(!seed.traceOnly)material(current,last);
   }
-  if(new Set(seeds.map(s=>s.value)).size>250000)fail('distinct path seed limit');
   for(const seed of seeds){detail='path dependency refused: '+seed.origin;walk(seed);}
   const after=mounts(),afterByID=new Map(after.map(r=>[r.id,r]));
   for(const id of relevant)if(JSON.stringify(byID.get(id))!==JSON.stringify(afterByID.get(id)))fail('relevant mount changed during discovery');

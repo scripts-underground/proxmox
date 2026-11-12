@@ -789,8 +789,9 @@ and refuse malformed/unknown records. These modeled contrasts complement the
 separate owned-service running/stopped proof; they are not native app acceptance.
 `lib/bookorbit-path-contract.cjs` extracts the actual app-owned closure for native
 mount/lookup tests: escaped, nested, stacked/hidden and two-device views, reserved
-code, missing/dangling/error paths, symlink bounds and identity changes. Count,
-clock and permission-error producers are explicitly modeled; the refusal policy
+code, missing/dangling/error paths, symlink bounds and identity changes. Discovery
+has no seed/record/work-count quota; overlapping origins retain ownership and
+fresh repeated/final observations detect remaps. Clock and permission-error producers are explicitly modeled; the refusal policy
 is actual product code. `assets/bookorbit-path-schema.json` independently binds
 the fixture's finite typed field/ledger contract. Real PostgreSQL transaction and
 schema admission require their separate gate; modeled SQL is not that proof.

@@ -1,6 +1,6 @@
 'use strict';
-// Actual app-owned closure body, native metadata/mount/path consumers. Only
-// count/time exhaustion uses explicitly injected observation/clock producers.
+// Actual app-owned closure body, native metadata/mount/path consumers.
+// Time exhaustion uses an explicitly injected clock; metadata remains native.
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),cp=require('node:child_process');
 const source=fs.readFileSync(process.argv[2],'utf8'),body=source.slice(source.indexOf('function closure(identity,seeds){'),source.indexOf('\n(async()=>{'));
 const coordinate=source.slice(source.indexOf('function filesystemCoordinate('),source.indexOf('\nconst run='));
@@ -53,8 +53,8 @@ pass('symlink cycle refuses boundedly',()=>assert.throws(()=>run(seed(app+'/loop
 pass('same keeps changed link identity changes metadata',()=>{const a=run(seed('/mnt/entry/row'));fs.unlinkSync(app+'/middle');fs.symlinkSync('/mnt/other',app+'/middle');const b=run(seed('/mnt/entry/row'));assert.deepEqual(a.keeps,b.keeps);assert.notDeepEqual(a.metadata,b.metadata);});
 pass('same keeps stacked same-source mount changes metadata',()=>{const a=run(seed('/mnt/space'));mount(escaped,'/mnt/space');const b=run(seed('/mnt/space'));assert.deepEqual(a.keeps,b.keeps);assert.notDeepEqual(a.metadata,b.metadata);});
 pass('4096-byte path bound has no partial result',()=>assert.throws(()=>run(seed('/'+ 'a'.repeat(4096))),/invalid path seed/));
-pass('250001 distinct seeds refuse before lookup',()=>assert.throws(()=>run(Array.from({length:250001},(_,i)=>({origin:'db:limit',value:'/limit/'+i,creatable:true}))),/distinct path seed limit/));
-pass('dependency record cap policy uses actual closure',()=>{class Large extends Map{get size(){return super.size?512001:0;}}assert.throws(()=>run(seed('/mnt/data'),compile(fs,Large)),/dependency record limit/);});
+pass('overlapping seed origins preserve ownership without seed-count admission',()=>{assert(!body.includes('distinct path seed limit'));const a=run(seed('/mnt/data/row')),b=run([{origin:'db:book_files.absolute_path',value:'/mnt/data/row'},{origin:'db:books.folder_path',value:'/mnt/data'},{origin:'db:library_dir_scan_state.dir_path',value:'/mnt/data'}]);assert.deepEqual(a.keeps,b.keeps);assert.deepEqual(a.metadata,b.metadata);});
+pass('final fresh dependency revalidation detects native remap without record quota',()=>{assert(!body.includes('dependency record limit'));const target=app+'/final-fresh-owned';fs.mkdirSync(target);fs.writeFileSync(target+'/row','owned bytes');let visits=0;const api=new Proxy(fs,{get:(t,k)=>k==='openSync'?(p,...a)=>{if(p===target&&++visits===2){fs.renameSync(target,target+'-old');fs.mkdirSync(target);fs.writeFileSync(target+'/row','owned bytes');}return fs.openSync(p,...a);}:t[k]});assert.throws(()=>run(seed(target+'/row'),compile(api)),/changed/);assert.equal(visits,2);});
 pass('whole inventory clock cap uses actual closure',()=>assert.throws(()=>run(seed('/mnt/data'),compile(fs,Map,{now:()=>60001},0)),/60s limit/));
 pass('EACCES producer is not masked as missing',()=>{const api=new Proxy(fs,{get:(t,k)=>k==='openSync'?(p,...a)=>{if(p==='/mnt/denied'){const e=Error('denied');e.code='EACCES';throw e;}return fs.openSync(p,...a);}:t[k]});assert.throws(()=>run(seed('/mnt/denied',true),compile(api)),e=>e.code==='EACCES');});
 fs.mkdirSync('/mnt/second-device');cp.execFileSync('/usr/bin/mount',['-t','tmpfs','-o','size=4k,nr_inodes=4','tmpfs','/mnt/second-device'],{timeout:5000});
@@ -69,17 +69,7 @@ pass('API filesystem coordinate is still refused before use',()=>assert.throws((
 fs.mkdirSync(app+'/hidden');mount('/mnt/data',app+'/hidden');mount('/mnt/other',app+'/hidden');
 pass('hidden application projection refuses rather than silently external',()=>assert.throws(()=>run(seed('/mnt/data/row')),/hidden application mount projection/));
 pass('within-pass native directory remap refuses',()=>{const target=app+'/remap-owned';fs.mkdirSync(target);fs.writeFileSync(target+'/row','owned bytes');let changed=false;const api=new Proxy(fs,{get:(t,k)=>k==='openSync'?(p,...a)=>{const fd=fs.openSync(p,...a);if(p===target+'/row'&&!changed){changed=true;fs.renameSync(target,target+'-old');fs.mkdirSync(target);fs.writeFileSync(target+'/row','owned bytes');}return fd;}:t[k]});assert.throws(()=>run(seed(target+'/row'),compile(api)),/changed|projection/);});
-pass('million-prefix cap uses actual policy and cached native observation producer',()=>{
-  const cache=new Map(),opened=new Map();let serial=10000000;
-  const api=new Proxy(fs,{get:(t,k)=>{
-    if(k==='openSync')return(p,...a)=>{if(!cache.has(p)){const fd=fs.openSync(p,...a);try{cache.set(p,{stat:fs.fstatSync(fd,{bigint:true}),info:fs.readFileSync('/proc/self/fdinfo/'+fd,'utf8')});}finally{fs.closeSync(fd);}}const fd=serial++;opened.set(fd,cache.get(p));return fd;};
-    if(k==='fstatSync')return fd=>opened.get(fd).stat;
-    if(k==='closeSync')return fd=>opened.delete(fd);
-    if(k==='readFileSync')return(p,...a)=>p.startsWith('/proc/self/fdinfo/')?opened.get(Number(p.split('/').at(-1))).info:fs.readFileSync(p,...a);
-    return t[k];
-  }});
-  assert.throws(()=>run(Array(150000).fill({origin:'db:limit',value:'/mnt/other/row',creatable:false}),compile(api)),/prefix observation limit/);
-});
+pass('repeated overlapping observations detect native remap without work quota',()=>{assert(!body.includes('prefix observation limit'));const target='/mnt/repeated-owned';fs.mkdirSync(target);for(const name of ['one','two'])fs.writeFileSync(target+'/'+name,'owned bytes');let changed=false;const opened=new Map();const api=new Proxy(fs,{get:(t,k)=>k==='openSync'?(p,...a)=>{const fd=fs.openSync(p,...a);opened.set(fd,p);return fd;}:k==='closeSync'?fd=>{const p=opened.get(fd);fs.closeSync(fd);opened.delete(fd);if(p===target+'/one'&&!changed){changed=true;fs.renameSync(target,target+'-old');fs.mkdirSync(target);for(const name of ['one','two'])fs.writeFileSync(target+'/'+name,'owned bytes');}}:t[k]});assert.throws(()=>run([{origin:'db:one',value:target+'/one'},{origin:'db:two',value:target+'/two'}],compile(api)),/changed within discovery/);assert(changed);assert.equal(opened.size,0);});
 const configurationSource=source.slice(source.indexOf('function execStartConfiguration('),source.indexOf('function pairs('));
 const serviceAPI=new Function("const fail=why=>{throw Error(why)};"+configurationSource+';return {execStartConfiguration,serviceConfiguration};')();
 const command='{ path=/usr/bin/node ; argv[]=/usr/bin/node /opt/bookorbit/server/dist/main.js ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }';
@@ -89,4 +79,4 @@ for(const [i,value] of lifecycle.entries())pass('service lifecycle '+i+' retains
 for(const [name,from,to] of [['executable','path=/usr/bin/node','path=/usr/bin/other'],['argv','main.js','other.js'],['ignore-errors','ignore_errors=no','ignore_errors=yes']])pass('service '+name+' remains a configuration difference',()=>assert.notDeepEqual(configured(command.replace(from,to)),configured(command)));
 for(const key of ['Environment','PrivateMounts','RootDirectory','WorkingDirectory','BindPaths'])pass('service '+key+' remains a configuration difference',()=>{const a={MainPID:'0',ExecStart:command,[key]:'one'},b={...a,[key]:'two'};assert.notDeepEqual(serviceAPI.serviceConfiguration(a),serviceAPI.serviceConfiguration(b));});
 for(const [i,value] of [command+' trailing',command+command,command.replace(' ; start_time=', ' ; unknown=yes ; start_time='),command.replace('ignore_errors=no','ignore_errors=maybe'),command.replace('code=(null)','code=unknown'),command.replace('status=0/0','status=999/0'),command.replace('pid=0','pid=2147483648'),command.replace('start_time=[n/a]','start_time=[]'),command.replace('start_time=[n/a]','start_time=[n/a ; argv[]=foreign]'),command.replace('main.js ;','main.js ; injected=yes ;'),command.replace('main.js','"main.js"'),command.replace('code=(null) ; status=0/0','code=exited ; status=0/0'),command.replace('code=(null) ; status=0/0','code=killed ; status=0/0'),'x'.repeat(4097)].entries())pass('service malformed record '+i+' refuses without suffix guessing',()=>assert.throws(()=>configured(value),/unsupported service/));
-console.log('BOOKORBIT_CLOSURE_CONTRACT_PASS '+checks+'; native lookup/mount consumers; count/time/permission error producers explicitly modeled');
+console.log('BOOKORBIT_CLOSURE_CONTRACT_PASS '+checks+'; native lookup/mount consumers; time/permission error producers explicitly modeled');

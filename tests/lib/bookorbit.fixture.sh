@@ -24,6 +24,7 @@ if [[ "${1:-}" == --child ]]; then
   mount --bind "$c/pending" /var/lib/scripts-underground/update-pending
   mount --bind "$c/locks" /var/lib/scripts-underground/maintenance-locks
   mount --bind "$c/bin/systemctl" /usr/bin/systemctl
+  if [[ -f "$c/request-root-link" ]]; then ln -sfn -- "$(cat "$c/request-root-link")" /opt/bookorbit; fi
   source "$ROOT/misc/bundle.func"
   source "$c/hooks.sh"
   : "${var_cpu:?source-selected CPU required}" "${var_ram:?source-selected RAM required}"
@@ -41,11 +42,14 @@ if [[ "${1:-}" == --child ]]; then
   if [[ -f "$c/dependency-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/dependency-reader.cjs" before; fi
   if [[ -f "$c/compat-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/compat-reader.cjs" before; fi
   if [[ -f "$c/optional-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/optional-reader.cjs" before; fi
+  if [[ -f "$c/request-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/request-reader.cjs" before; fi
   status=0
   bash "$c/bundle" || status=$?
   if [[ -f "$c/dependency-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/dependency-reader.cjs" after "$status"; fi
   if [[ -f "$c/compat-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/compat-reader.cjs" after "$status"; fi
   if [[ -f "$c/optional-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/optional-reader.cjs" after "$status"; fi
+  if [[ -f "$c/request-reader.cjs" ]]; then "$RUNTIME_NODE" "$c/request-reader.cjs" after "$status"; fi
+  if [[ -f "$c/request-root-link" ]]; then ln -sfn ../srv/bookorbit "$c/opt/bookorbit"; fi
   exit "$status"
 fi
 : "${TMPDIR:?disk-backed scratch required}" "${RUNTIME_NODE:?}" "${RUNTIME_EXTRA_REFERENCES:?}"
@@ -84,6 +88,13 @@ check() {
 }
 dependency_variants=(root-bind root-chain late-link late-mount late-config late-db-same)
 config_variants=(cfg-absent cfg-regular cfg-alias cfg-hardlink cfg-dangling cfg-dangling-chain cfg-dangling-external cfg-dangling-code cfg-dangling-remap cfg-appearance cfg-disappearance cfg-remap cfg-late-appearance cfg-late-disappearance cfg-late-remap)
+request_variants=()
+for root_mode in plain absolute relative chain dot dotdot trailing; do
+  for object in regular symlink hardlink multicomponent chained; do request_variants+=("request-$root_mode-primary-$object"); done
+done
+for root_mode in plain absolute; do
+  for object in absent regular alias hardlink; do request_variants+=("request-$root_mode-optional-$object"); done
+done
 compat_variants=(compat-fs-btrfs compat-fs-zfs compat-fs-nfs4 compat-fs-cifs compat-fs-network-ambiguous compat-db-missing compat-missing-within compat-missing-late compat-tool-absolute compat-tool-default compat-tool-service-path compat-tool-manager-default compat-tool-path-invalid compat-tool-manager-ambiguous compat-tool-missing compat-tool-code)
 compat_variants+=(compat-optional-path compat-optional-bogus-path compat-inline-path compat-primary-inline-path)
 for kind in primary optional; do
@@ -94,7 +105,7 @@ for seed in app dock import caller library file folder scanner dockfile dockunit
   for topology in bind chain; do dependency_variants+=("dep-$seed-$topology"); done
 done
 for verbose in no yes; do
-  for variant in fresh fresh-caller update update-caller build download copy invalid missing db missing-table overlap alias override stopped whitespace inherited quoted relative external trailing env-symlink env-hardlink env-directory late-db changed-set root-logical root-physical root-alias root-code-alias root-caller-code root-remap url-encoded url-ipv6 url-duplicate url-unknown url-override url-escape url-readwrite url-tls url-missing url-reserved "${dependency_variants[@]}" "${config_variants[@]}" "${compat_variants[@]}"; do
+  for variant in fresh fresh-caller update update-caller build download copy invalid missing db missing-table overlap alias override stopped whitespace inherited quoted relative external trailing env-symlink env-hardlink env-directory late-db changed-set root-logical root-physical root-alias root-code-alias root-caller-code root-remap url-encoded url-ipv6 url-duplicate url-unknown url-override url-escape url-readwrite url-tls url-missing url-reserved "${dependency_variants[@]}" "${config_variants[@]}" "${compat_variants[@]}" "${request_variants[@]}"; do
     c="$work/$verbose-$variant"
     mkdir -p "$c/"{opt,srv,mnt/books,mnt/data,units,local,cache,state/scripts-underground,pending,locks,home,bin,external,payload/server/src/db/migrations/meta,payload/server/bin/kepubify,payload/server/requirements,payload/client/dist}
     chmod 0700 "$c/locks" "$c/pending"
@@ -404,6 +415,82 @@ JS
         fi
         ;;
     esac
+    if [[ "$variant" == request-* ]]; then
+      IFS=- read -r _ request_root request_role request_object <<< "$variant"
+      if [[ "$request_role" == primary ]]; then
+        case "$request_object" in
+          hardlink) ln "$c/opt/bookorbit/.env" "$c/external/environment" ;;
+          symlink | multicomponent | chained)
+            mv "$c/opt/bookorbit/.env" "$c/external/environment"
+            mkdir "$c/external/sub"
+            target="$c/external/environment"
+            if [[ "$request_object" == multicomponent ]]; then target="$c/external/sub/../environment"; fi
+            if [[ "$request_object" == chained ]]; then
+              ln -s "$target" "$c/external/leaf-link"
+              target="$c/external/leaf-link"
+            fi
+            ln -s "$target" "$c/opt/bookorbit/.env"
+            ;;
+        esac
+      elif [[ "$request_object" != absent ]]; then
+        printf 'SETUP_BOOTSTRAP_TOKEN=fallback-owned\nPORT=9999\n' > "$c/opt/bookorbit/optional-owned"
+        sed -i '/^SETUP_BOOTSTRAP_TOKEN=/d' "$c/opt/bookorbit/.env"
+        case "$request_object" in
+          regular) cp "$c/opt/bookorbit/optional-owned" "$c/opt/bookorbit/server/.env" ;;
+          alias) ln -s ../optional-owned "$c/opt/bookorbit/server/.env" ;;
+          hardlink)
+            mv "$c/opt/bookorbit/optional-owned" "$c/external/optional-owned"
+            ln "$c/external/optional-owned" "$c/opt/bookorbit/server/.env"
+            ;;
+        esac
+      fi
+      if [[ "$request_root" != plain ]]; then
+        mv "$c/opt/bookorbit" "$c/srv/bookorbit"
+        ln -s ../srv/bookorbit "$c/opt/bookorbit"
+        case "$request_root" in
+          absolute) printf /srv/bookorbit > "$c/request-root-link" ;;
+          relative)
+            mkdir "$c/srv/level"
+            printf ../srv/level/../bookorbit > "$c/request-root-link"
+            ;;
+          chain)
+            ln -s /srv/bookorbit "$c/mnt/root-entry"
+            printf /mnt/root-entry > "$c/request-root-link"
+            ;;
+          dot) printf /srv/./bookorbit > "$c/request-root-link" ;;
+          dotdot)
+            mkdir "$c/srv/level"
+            printf /srv/level/../bookorbit > "$c/request-root-link"
+            ;;
+          trailing) printf /srv/bookorbit/ > "$c/request-root-link" ;;
+        esac
+      fi
+      cat > "$c/request-reader.cjs" << 'JS'
+const fs=require('node:fs'),assert=require('node:assert/strict'),util=require('node:util');
+const c=process.env.CASE_ROOT,v=process.env.VARIANT,[phase,status]=process.argv.slice(2),[,root,role,object]=v.split('-'),invalid=role==='primary'&&object!=='regular';
+const fact=p=>{const s=fs.lstatSync(p);return {dev:s.dev,ino:s.ino,mode:s.mode,uid:s.uid,gid:s.gid,nlink:s.nlink,link:s.isSymbolicLink()?fs.readlinkSync(p):null};};
+const primary='/opt/bookorbit/.env',optional='/opt/bookorbit/server/.env',target=c+'/external/environment';
+const current={leaf:fact(primary),raw:fs.readFileSync(primary,'utf8').replace(/^APP_VERSION=.*\n/gm,''),rootLink:root==='plain'?null:fs.readlinkSync('/opt/bookorbit')};
+if(fs.existsSync(target)){current.target=fact(target);current.targetRaw=fs.readFileSync(target,'utf8');}
+if(role==='optional'&&object!=='absent'){current.optional=fact(optional);current.optionalRaw=fs.readFileSync(optional,'utf8');}
+if(phase==='before'){fs.writeFileSync(c+'/request-before.json',JSON.stringify(current));}
+else{
+ const before=JSON.parse(fs.readFileSync(c+'/request-before.json'));
+ console.log('REQUEST_COLD_STATUS '+v+' '+status);
+ if(invalid){
+  console.log('REQUEST_RELATIONSHIP '+v+' '+JSON.stringify({status,leafBefore:before.leaf,leafAfter:current.leaf,targetUnchanged:JSON.stringify(before.target)===JSON.stringify(current.target),rawUnchanged:before.raw===current.raw}));
+  assert.equal(status,'65');assert.deepEqual(current,before);
+  const reads=fs.readFileSync(c+'/config-observations','utf8').trim().split('\n').map(JSON.parse);assert(reads.length&&reads.every(r=>r.contentOpens===0&&r.reads===0&&r.FDs_closed));
+  for(const file of ['effects','services','packages','pnpm'])assert.equal(fs.statSync(c+'/'+file).size,0);assert.equal(fs.readFileSync('/opt/bookorbit/code','utf8'),'USER code\n');
+ }else{
+  assert.equal(status,'0');assert.equal(current.raw,before.raw);assert.equal(current.rootLink,before.rootLink);for(const k of ['mode','uid','gid'])assert.equal(current.leaf[k],before.leaf[k]);
+  if(role==='optional'&&object!=='absent'){assert.deepEqual(current.optional,before.optional);assert.equal(current.optionalRaw,before.optionalRaw);const e={...util.parseEnv(current.optionalRaw),...util.parseEnv(fs.readFileSync(primary,'utf8'))};assert.equal(e.SETUP_BOOTSTRAP_TOKEN,'fallback-owned');assert.equal(e.PORT,'4555');}
+  assert.equal(fs.readFileSync('/opt/bookorbit/server/public/index.html','utf8'),'new client bytes\n');
+ }
+ console.log('REQUEST_POLICY_GREEN '+v+' status='+status+'; original leaf policy, content admission and final relationships verified');
+}
+JS
+    fi
     printf '[Service]\nEnvironmentFile=/opt/bookorbit/.env\n' > "$c/units/bookorbit.service"
     env_before=missing
     [[ ! -f "$c/opt/bookorbit/.env" ]] || env_before=$(sed '/^APP_VERSION=/d' "$c/opt/bookorbit/.env" | sha256sum | cut -d' ' -f1)
@@ -546,7 +633,7 @@ setup_postgresql_db() { export PG_DB_NAME=bookorbit PG_DB_USER=fixture PG_DB_PAS
 setup_uv() { :; }
 node() {
   case "$VARIANT" in
-    cfg-*) "$RUNTIME_NODE" --require "$BOOKORBIT_FIXTURE_SOURCE/tests/lib/bookorbit-config-observe.cjs" "$@" ;;
+    cfg-* | request-*) "$RUNTIME_NODE" --require "$BOOKORBIT_FIXTURE_SOURCE/tests/lib/bookorbit-config-observe.cjs" "$@" ;;
     compat-*) "$RUNTIME_NODE" --require "$BOOKORBIT_FIXTURE_SOURCE/tests/lib/bookorbit-compat-observe.cjs" "$@" ;;
     *) "$RUNTIME_NODE" "$@" ;;
   esac
@@ -596,14 +683,20 @@ MODELS
     bash -c 'unset var_cpu var_ram var_disk; curl() { :; }; source "$1"; declare -p var_cpu var_ram var_disk; declare -f install_script update_script' hook-source "$ROOT/scripts/lxc/bookorbit.sh" > "$c/hooks.sh"
     rc=0
     launcher=(timeout 50s)
-    [[ "$variant" != cfg-* ]] || launcher=(python3 "$work/config-child.py" "$c")
+    case "$variant" in cfg-* | request-*) launcher=(python3 "$work/config-child.py" "$c") ;; esac
     env -i "${caller_env[@]}" PATH="$c/bin:$PATH" CASE_ROOT="$c" BOOKORBIT_FIXTURE_SOURCE="$ROOT" HOME="$c/home" TMPDIR="$TMPDIR" RUNTIME_NODE="$RUNTIME_NODE" VARIANT="$variant" ROLE="$role" VERBOSE="$verbose" APP=BookOrbit NSAPP=bookorbit LOCAL_IP=10.20.30.40 BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/errors.log" \
       "${launcher[@]}" unshare -m --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
     expected=0
     case "$variant" in build) expected=52 ;; download) expected=250 ;; copy) expected=252 ;; invalid | missing | db | missing-table | overlap | alias | override | env-symlink | env-hardlink | env-directory | late-db | late-link | late-mount | late-config | late-db-same | changed-set | root-code-alias | root-caller-code | root-remap | url-duplicate | url-unknown | url-override | url-escape | url-readwrite | url-tls | url-missing | url-reserved) expected=65 ;; esac
     case "$variant" in cfg-absent | cfg-regular | cfg-alias | cfg-hardlink | cfg-dangling | cfg-dangling-chain | cfg-dangling-external) ;; cfg-*) expected=65 ;; esac
     case "$variant" in compat-missing-within | compat-missing-late | compat-tool-code | compat-fs-network-ambiguous | compat-tool-path-invalid | compat-tool-manager-ambiguous) expected=65 ;; esac
+    case "$variant" in request-*-primary-*) [[ "$variant" == *-regular ]] || expected=65 ;; esac
     check "$rc" "$expected" "$verbose/$variant actual generated cold-hook status"
+    if [[ "$variant" == request-* ]]; then
+      check "$(grep -c '^REQUEST_POLICY_GREEN ' "$c/output" || true)" 1 "$verbose/$variant original request leaf and outcome"
+      check "$(test -s "$c/child-owner.json" && test -s "$c/child-terminal.json" && printf owned)" owned "$verbose/$variant early owned request child reaped"
+      grep -E '^REQUEST_(COLD_STATUS|RELATIONSHIP|POLICY_GREEN) ' "$c/output" || true
+    fi
     if [[ -f "$c/optional-reader.cjs" ]]; then
       check "$(grep -c '^OPTIONAL_OUTCOME_GREEN ' "$c/output" || true)" 1 "$verbose/$variant actual optional topology and service command retained"
       grep -E '^OPTIONAL_(BEFORE|HOOK_STATUS|OUTCOME_GREEN) ' "$c/output" || true
