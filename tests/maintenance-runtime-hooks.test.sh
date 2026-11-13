@@ -24,10 +24,32 @@ if [[ "${1:-}" == --child ]]; then
   # Runtime-contract unit inputs, consumed by the real admission adapter.
   export LXC_REQUIRED_CPU=0 LXC_REQUIRED_RAM=0
   cleanup_lxc() { :; }
-  ensure_dependencies() { :; }
+  # MODELED helper: only AliasVault's clang prerequisite is modeled (presence check plus apt
+  # install of the model shim); other packages count as already present. Real dpkg-query,
+  # apt-update and refresh semantics are native-proof scope.
+  ensure_dependencies() {
+    if [[ "$APP" != aliasvault || "$*" != clang ]]; then return 0; fi
+    printf 'ensure %s\n' "$*" >> "$c/sequence"
+    if [[ -x "$c/local/bin/clang" ]]; then return 0; fi
+    apt install -y "$@"
+  }
   getent() { return 0; }
   apt() {
-    local arg
+    local arg clang=0
+    if [[ "$APP" == aliasvault ]]; then
+      for arg in "$@"; do
+        [[ "$arg" != clang ]] || clang=1
+      done
+      printf 'apt %s\n' "$*" >> "$c/apt-calls"
+      printf 'apt %s\n' "$*" >> "$c/sequence"
+      if ((clang)); then
+        [[ "$APP_FAULT" != package ]] || return 100
+        mkdir -p "$c/local/bin"
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$c/local/bin/clang"
+        chmod 0755 "$c/local/bin/clang"
+      fi
+      return 0
+    fi
     for arg in "$@"; do
       if [[ "$arg" == *.deb ]]; then
         if [[ "$APP_CASE:$APP_ROLE" == thingsboard:update && "${DPKG_FORCE_CONFOLD:-}" != 1 ]]; then
@@ -119,6 +141,7 @@ if [[ "${1:-}" == --child ]]; then
     fi
   }
   systemctl() {
+    [[ "$APP" != aliasvault ]] || printf 'systemctl %s\n' "$*" >> "$c/sequence"
     printf '%s\n' "$*" >> "$c/services"
     if [[ "$1" == start || " $* " == *' --now '* ]]; then
       [[ "$APP_CASE" != thingsboard || "$(cat "$c/java-version")" == 25 ]] || return 57
@@ -126,6 +149,7 @@ if [[ "${1:-}" == --child ]]; then
   }
   curl_download() {
     [[ "$APP_FAULT" != download ]] || return 22
+    [[ "$APP" != aliasvault || "$1" == *.deb ]] || printf 'fetch\n' >> "$c/sequence"
     if [[ "$1" == *.deb ]]; then printf package > "$1"; else tar -czf "$1" -C "$c" payload; fi
   }
   curl() {
@@ -172,18 +196,24 @@ check() {
 }
 for app in radicale discourse thingsboard aliasvault; do
   for mode in no yes; do
-    for variant in fresh update download build copy runtime; do
+    for variant in fresh update download build copy runtime prereq present package current; do
+      [[ "$app" == aliasvault || ("$variant" != prereq && "$variant" != present && "$variant" != package && "$variant" != current) ]] || continue
       [[ ("$app" != thingsboard && "$app" != radicale) || "$variant" != build ]] || continue
       [[ "$app" != discourse || "$variant" != copy ]] || continue
       [[ "$app" != discourse || "$variant" != runtime ]] || continue
       c="$work/$app-$mode-$variant"
       role=update fault=none
       [[ "$variant" != fresh ]] || role=install
-      case "$variant" in download | build | copy | runtime) fault="$variant" ;; esac
+      case "$variant" in download | build | copy | runtime | package) fault="$variant" ;; esac
       mkdir -p "$c/"{opt,local/bin,cache,state,home/.cargo,home/.rbenv/shims,etc/systemd/system,etc/nginx/sites-available,etc/nginx/sites-enabled,etc/radicale,etc/postgresql/16/main,payload,external,root}
       : > "$c/home/.cargo/env"
       printf 'old\n' > "$c/home/.$app"
-      for log in services db-major-calls uv-calls corepack-calls bundle-calls yarn-calls pnpm-calls npm-calls dotnet-calls nginx-calls runuser-calls; do : > "$c/$log"; done
+      [[ "$variant" != current ]] || printf '2.0.0\n' > "$c/home/.$app"
+      if [[ "$variant" == present ]]; then
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$c/local/bin/clang"
+        chmod 0755 "$c/local/bin/clang"
+      fi
+      for log in services db-major-calls uv-calls corepack-calls bundle-calls yarn-calls pnpm-calls npm-calls dotnet-calls nginx-calls runuser-calls sequence apt-calls; do : > "$c/$log"; done
       printf '17\n' > "$c/java-version"
       printf 'old PostgreSQL data\n' > "$c/external/database"
       printf 'old credential\n' > "$c/external/credential"
@@ -193,6 +223,8 @@ for app in radicale discourse thingsboard aliasvault; do
 #!/usr/bin/env bash
 [[ "$1" == --web ]] || { printf 'Unknown core build target: %s\n' "$1" >&2; exit 64; }
 [[ "$APP_FAULT" != build ]] || exit 52
+[[ "$APP" != aliasvault ]] || printf 'build\n' >> "$APP_FIXTURE/sequence"
+[[ "$APP" != aliasvault || -x /usr/local/bin/clang ]] || { printf 'MODEL compiler missing\n' >&2; exit 58; }
 SH
       chmod 0755 "$c/payload/core/build-and-distribute.sh"
       cp "$MAINTENANCE_REFERENCES/radicale/pyproject.toml" "$c/payload/pyproject.toml"
@@ -249,7 +281,7 @@ PY
         expected=250
         [[ "$app" != discourse ]] || expected=22
         ;;
-      build) expected=52 ;; copy) expected=252 ;; runtime) expected=51 ;; esac
+      build) expected=52 ;; copy) expected=252 ;; runtime) expected=51 ;; package) expected=100 ;; esac
       [[ "$app:$variant" != thingsboard:copy ]] || expected=0
       check "$rc" "$expected" "$app/$mode/$variant cold hook status"
       if [[ "$rc" != "$expected" ]]; then
@@ -294,7 +326,7 @@ PY
           if [[ "$role" == update ]]; then check "$(cat "$c/etc/thingsboard/conf/thingsboard.conf")" 'USER database/port' "$app/$variant packaged config/DB secret/port retained"; fi
           ;;
         aliasvault)
-          if [[ "$rc" == 0 ]]; then
+          if [[ "$rc" == 0 && "$variant" != current ]]; then
             check "$(cat "$c/node-version" 2> /dev/null || true)" 24 "$app/$variant selected Node24"
             check "$(cat "$c/opt/aliasvault/client/wwwroot/index.html" 2> /dev/null || true)" '<html>React source-layout consumer</html>' "$app/$variant React build output reaches served root"
           fi
@@ -302,6 +334,27 @@ PY
             check "$(cat "$c/opt/aliasvault/certificates/ssl/key.pem" 2> /dev/null || true)" 'USER private key' "$app/$variant original certificate key retained"
             check "$(cat "$c/opt/aliasvault/data/persisted" 2> /dev/null || true)" 'USER database/upload' "$app/$variant internal persistent data retained"
           fi
+          if [[ "$role" == install ]]; then
+            check "$(grep -cE ' clang( |$)' "$c/sequence" || true)" 1 "$app/$variant fresh install requests the compiler"
+          fi
+          if [[ "$role" == update && "$variant" != current ]]; then
+            ordered=$(awk '/^ensure clang/ && !e {e = NR} /^systemctl stop/ && !s {s = NR} /^fetch$/ && !f {f = NR} /^build$/ && !b {b = NR} END {print (e && (!s || e < s) && (!f || (s && s < f)) && (!b || (f && f < b))) ? "ordered" : "misordered"}' "$c/sequence")
+            check "$ordered" ordered "$app/$variant compiler preparation precedes stop, fetch and build"
+          fi
+          case "$variant" in
+            present) check "$(grep -c '^apt install' "$c/sequence" || true)" 0 "$app/$variant present compiler is not reinstalled" ;;
+            prereq) check "$(grep -c '^apt install -y clang$' "$c/sequence" || true)" 1 "$app/$variant missing compiler acquired once" ;;
+            package)
+              check "$(grep -c '^systemctl stop' "$c/sequence" || true)" 0 "$app/$variant acquisition failure precedes any service stop"
+              check "$(grep -c '^fetch$' "$c/sequence" || true)" 0 "$app/$variant acquisition failure precedes publication"
+              check "$(grep -c '^build$' "$c/sequence" || true)" 0 "$app/$variant acquisition failure precedes build"
+              ;;
+            current)
+              check "$(wc -c < "$c/sequence")" 0 "$app/$variant current release performs no preparation, stop, fetch or build"
+              check "$(wc -c < "$c/services")" 0 "$app/$variant current release leaves services untouched"
+              check "$(test -f "$c/node-version" && printf present || printf absent)" absent "$app/$variant current release does not change Node"
+              ;;
+          esac
           ;;
       esac
       if [[ "$role" == update && "$expected" != 0 ]]; then
