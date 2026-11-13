@@ -140,6 +140,25 @@ The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
 
+`maintenance-runtime-hooks/fixture` also runs `tests/lib/mysql-repo.fixture.sh`,
+`tests/lib/mysql-db.fixture.sh` and `tests/lib/fleet-mysql.fixture.sh`. The repository
+fixture runs the actual `manage_tool_repository mysql` branch in a private `/etc/apt`
+(deb822 content, Debian suite and component selection, stale-file cleanup, refusal
+and failure statuses under plain and conditional callers); key transport, the
+fallback-suite probe and dpkg are models and no APT signature is claimed. It also
+witnesses that the actual `setup_mysql` call site and the standalone `mysql.sh` install
+hook fetch the renewed `RPM-GPG-KEY-mysql-2025`; the rest of the standalone installer is
+not validated by it, and keys already cached on installed systems are not migrated. The first executes the actual `setup_mysql_db`
+with the real `silent` wrapper in cold shells (plain, conditional and errexit callers,
+both `$STD` modes, with and without pipefail), checking input refusal, the checked
+entropy path, SQL text for supplied/generated passwords and wildcard-bearing names,
+failure propagation, append-only credentials and same-shell/child exports. The second
+uses the real Fleet hooks, writer and inlined `tools.func`: one password in the
+credentials file, `.env` and the migration process, failure before consumer effects,
+and an updater that never provisions. `mysql`, packages, release deployment, systemd,
+HTTP and the Fleet binary are models; SQL parsing, grants, account selection and Fleet
+operation need a real server and are not claimed.
+
 `migration-dragonfly/fixture` executes actual cold-generated install/update bundles
 and the release helper with modeled package, HTTP and systemd boundaries. It
 observes the real runtime-file startup gate, partial preparation/retry, unchanged
