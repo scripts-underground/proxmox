@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "garmin-grafana",
   "type": "lxc",
-  "total_lines": 235,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: aliaksei135\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/arpanghosh8453/garmin-grafana\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"garmin-grafana\"\nvar_tags=\"${var_tags:-sports;visualization}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  setup_uv\n\n  setup_deb822_repo \"influxdb\" \\\n    \"https://repos.influxdata.com/influxdata-archive.key\" \\\n    \"https://repos.influxdata.com/debian\" \\\n    \"stable\" \\\n    \"main\"\n\n  msg_info \"Installing InfluxDB\"\n  $STD apt install -y influxdb\n  msg_ok \"Installed InfluxDB\"\n\n  msg_info \"Installing Chronograf\"\n  CHRONOGRAF_VERSION=$(get_latest_github_release \"influxdata/chronograf\")\n  fetch_and_deploy_from_url \"https://dl.influxdata.com/chronograf/releases/chronograf_${CHRONOGRAF_VERSION}_amd64.deb\" \"\"\n  msg_ok \"Installed Chronograf\"\n\n  msg_info \"Configuring InfluxDB\"\n  sed -i 's/# index-version = \"inmem\"/index-version = \"tsi1\"/' /etc/influxdb/influxdb.conf\n  $STD systemctl enable --now influxdb\n  INFLUXDB_USER=\"garmin_grafana_user\"\n  INFLUXDB_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\n  INFLUXDB_NAME=\"GarminStats\"\n  $STD influx -execute \"CREATE DATABASE ${INFLUXDB_NAME}\"\n  $STD influx -execute \"CREATE USER ${INFLUXDB_USER} WITH PASSWORD '${INFLUXDB_PASSWORD}'\"\n  $STD influx -execute \"GRANT ALL ON ${INFLUXDB_NAME} TO ${INFLUXDB_USER}\"\n  msg_ok \"Configured InfluxDB\"\n\n  setup_deb822_repo \"grafana\" \\\n    \"https://apt.grafana.com/gpg.key\" \\\n    \"https://apt.grafana.com\" \\\n    \"stable\" \\\n    \"main\"\n\n  msg_info \"Installing Grafana\"\n  $STD apt install -y grafana\n  $STD systemctl enable --now grafana-server\n  msg_ok \"Installed Grafana\"\n\n  msg_info \"Configuring Grafana\"\n  GRAFANA_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\n  retries=0\n  while ! grafana-cli admin reset-admin-password \"${GRAFANA_PASS}\" \u0026\u003e /dev/null; do\n    retries=$((retries + 1))\n    [[ $retries -ge 30 ]] \u0026\u0026 break\n    sleep 2\n  done\n  $STD grafana-cli --homepath /usr/share/grafana plugins install marcusolsson-hourly-heatmap-panel\n  $STD systemctl restart grafana-server\n  msg_ok \"Configured Grafana\"\n\n  fetch_and_deploy_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\" \"tarball\"\n\n  msg_info \"Installing Python Dependencies\"\n  mkdir -p /opt/garmin-grafana/.garminconnect\n  $STD uv sync --locked --project /opt/garmin-grafana/\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Provisioning Grafana Dashboard \u0026 Datasource\"\n  sed -i 's/\\${DS_GARMIN_STATS}/garmin_influxdb/g' /opt/garmin-grafana/Grafana_Dashboard/Garmin-Grafana-Dashboard.json\n  sed -i 's/influxdb:8086/localhost:8086/' /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/influxdb_user/${INFLUXDB_USER}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/influxdb_secret_password/${INFLUXDB_PASSWORD}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/GarminStats/${INFLUXDB_NAME}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  cp -r /opt/garmin-grafana/Grafana_Datasource/* /etc/grafana/provisioning/datasources\n  cp -r /opt/garmin-grafana/Grafana_Dashboard/* /etc/grafana/provisioning/dashboards\n  msg_ok \"Provisioned Grafana Dashboard \u0026 Datasource\"\n\n  read -rp \"Are you using Garmin in mainland China? (y/N): \" prompt\n  if [[ \"${prompt,,}\" =~ ^(y|yes)$ ]]; then\n    GARMIN_CN=\"True\"\n  else\n    GARMIN_CN=\"False\"\n  fi\n\n  msg_info \"Writing Environment Configuration\"\n  cat \u003c\u003c EOF \u003e /opt/garmin-grafana/.env\nINFLUXDB_HOST=localhost\nINFLUXDB_PORT=8086\nINFLUXDB_ENDPOINT_IS_HTTP=True\nINFLUXDB_USERNAME=${INFLUXDB_USER}\nINFLUXDB_PASSWORD=${INFLUXDB_PASSWORD}\nINFLUXDB_DATABASE=${INFLUXDB_NAME}\nGARMIN_IS_CN=${GARMIN_CN}\nTOKEN_DIR=/opt/garmin-grafana/.garminconnect\nGRAFANA_USER=admin\nGRAFANA_PASSWORD=${GRAFANA_PASS}\nEOF\n  msg_ok \"Wrote Environment Configuration\"\n\n  if [[ -z \"$(ls -A /opt/garmin-grafana/.garminconnect)\" ]]; then\n    read -r -p \"Please enter your Garmin Connect Email: \" GARMIN_EMAIL\n    read -r -p \"Please enter your Garmin Connect Password (used to generate token, NOT stored): \" GARMIN_PASSWORD\n    read -r -p \"Please enter your MFA Code (leave blank if not applicable): \" GARMIN_MFA\n    GARMIN_BASE64_PASSWORD=$(echo -n \"${GARMIN_PASSWORD}\" | base64 -w0)\n    msg_info \"Creating Garmin credentials (timeout 60s)\"\n    if [[ -n \"${GARMIN_MFA}\" ]]; then\n      echo \"${GARMIN_MFA}\" | GARMINCONNECT_EMAIL=\"${GARMIN_EMAIL}\" GARMINCONNECT_BASE64_PASSWORD=\"${GARMIN_BASE64_PASSWORD}\" \\\n        timeout 60s uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\n    else\n      GARMINCONNECT_EMAIL=\"${GARMIN_EMAIL}\" GARMINCONNECT_BASE64_PASSWORD=\"${GARMIN_BASE64_PASSWORD}\" \\\n        timeout 60s uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py \u003c /dev/null\n    fi\n    unset GARMIN_EMAIL GARMIN_PASSWORD GARMIN_MFA GARMIN_BASE64_PASSWORD\n    if [[ -z \"$(ls -A /opt/garmin-grafana/.garminconnect)\" ]]; then\n      msg_error \"Failed to create token\"\n      exit 1\n    fi\n    msg_ok \"Created Garmin credentials\"\n  fi\n\n  $STD systemctl restart grafana-server\n\n  msg_info \"Installing Bulk Import Helper\"\n  cat \u003c\u003c 'EOF' \u003e /usr/local/bin/garmin-bulk-import\n#!/usr/bin/env bash\nif [[ -z $1 ]]; then\n  echo \"Usage: $0 \u003cstart_date\u003e [end_date]\"\n  echo \"Example: $0 2023-01-01 2023-01-31\"\n  exit 1\nfi\nSTART_DATE=\"$1\"\nEND_DATE=\"${2:-$(date +%Y-%m-%d)}\"\nsystemctl stop garmin-grafana\nMANUAL_START_DATE=\"${START_DATE}\" MANUAL_END_DATE=\"${END_DATE}\" uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\nsystemctl start garmin-grafana\nEOF\n  chmod +x /usr/local/bin/garmin-bulk-import\n  msg_ok \"Installed Bulk Import Helper\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/garmin-grafana.service\n[Unit]\nDescription=garmin-grafana Service\nAfter=network.target influxdb.service\nRequires=influxdb.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/garmin-grafana\nEnvironmentFile=/opt/garmin-grafana/.env\nExecStart=$(which uv) run --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now garmin-grafana\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/garmin-grafana ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  if check_for_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop garmin-grafana\n    msg_ok \"Stopped Services\"\n\n    msg_info \"Backing up Data\"\n    cp /opt/garmin-grafana/.env /opt/garmin-grafana.env.bak\n    cp -r /opt/garmin-grafana/.garminconnect /opt/garmin-grafana-tokens.bak\n    msg_ok \"Backed up Data\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\" \"tarball\"\n\n    msg_info \"Restoring Data\"\n    cp /opt/garmin-grafana.env.bak /opt/garmin-grafana/.env\n    cp -r /opt/garmin-grafana-tokens.bak /opt/garmin-grafana/.garminconnect\n    rm -f /opt/garmin-grafana.env.bak\n    rm -rf /opt/garmin-grafana-tokens.bak\n    msg_ok \"Restored Data\"\n\n    msg_info \"Updating Dependencies\"\n    source /opt/garmin-grafana/.env\n    $STD uv sync --locked --project /opt/garmin-grafana/\n    sed -i 's/\\${DS_GARMIN_STATS}/garmin_influxdb/g' /opt/garmin-grafana/Grafana_Dashboard/Garmin-Grafana-Dashboard.json\n    sed -i 's/influxdb:8086/localhost:8086/' /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/influxdb_user/${INFLUXDB_USERNAME}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/influxdb_secret_password/${INFLUXDB_PASSWORD}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/GarminStats/${INFLUXDB_DATABASE}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    cp -r /opt/garmin-grafana/Grafana_Datasource/* /etc/grafana/provisioning/datasources\n    cp -r /opt/garmin-grafana/Grafana_Dashboard/* /etc/grafana/provisioning/dashboards\n    msg_ok \"Updated Dependencies\"\n\n    msg_info \"Starting Services\"\n    systemctl start garmin-grafana\n    $STD systemctl restart grafana-server\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"garmin-grafana\" -- \"$@\"\n",
+  "total_lines": 245,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: aliaksei135\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/arpanghosh8453/garmin-grafana\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"garmin-grafana\"\nvar_tags=\"${var_tags:-sports;visualization}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-2048}\"\nvar_disk=\"${var_disk:-8}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  setup_uv\n\n  setup_deb822_repo \"influxdb\" \\\n    \"https://repos.influxdata.com/influxdata-archive.key\" \\\n    \"https://repos.influxdata.com/debian\" \\\n    \"stable\" \\\n    \"main\"\n\n  msg_info \"Installing InfluxDB\"\n  $STD apt install -y influxdb\n  msg_ok \"Installed InfluxDB\"\n\n  msg_info \"Installing Chronograf\"\n  CHRONOGRAF_VERSION=$(get_latest_github_release \"influxdata/chronograf\")\n  fetch_and_deploy_from_url \"https://dl.influxdata.com/chronograf/releases/chronograf_${CHRONOGRAF_VERSION}_amd64.deb\" \"\"\n  msg_ok \"Installed Chronograf\"\n\n  msg_info \"Configuring InfluxDB\"\n  sed -i 's/# index-version = \"inmem\"/index-version = \"tsi1\"/' /etc/influxdb/influxdb.conf\n  $STD systemctl enable --now influxdb\n  INFLUXDB_USER=\"garmin_grafana_user\"\n  INFLUXDB_PASSWORD=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\n  INFLUXDB_NAME=\"GarminStats\"\n  $STD influx -execute \"CREATE DATABASE ${INFLUXDB_NAME}\"\n  $STD influx -execute \"CREATE USER ${INFLUXDB_USER} WITH PASSWORD '${INFLUXDB_PASSWORD}'\"\n  $STD influx -execute \"GRANT ALL ON ${INFLUXDB_NAME} TO ${INFLUXDB_USER}\"\n  msg_ok \"Configured InfluxDB\"\n\n  setup_deb822_repo \"grafana\" \\\n    \"https://apt.grafana.com/gpg.key\" \\\n    \"https://apt.grafana.com\" \\\n    \"stable\" \\\n    \"main\"\n\n  msg_info \"Installing Grafana\"\n  $STD apt install -y grafana\n  $STD systemctl enable --now grafana-server\n  msg_ok \"Installed Grafana\"\n\n  msg_info \"Configuring Grafana\"\n  GRAFANA_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | cut -c1-13)\n  retries=0\n  while ! grafana-cli admin reset-admin-password \"${GRAFANA_PASS}\" \u0026\u003e /dev/null; do\n    retries=$((retries + 1))\n    [[ $retries -ge 30 ]] \u0026\u0026 break\n    sleep 2\n  done\n  $STD grafana-cli --homepath /usr/share/grafana plugins install marcusolsson-hourly-heatmap-panel\n  $STD systemctl restart grafana-server\n  msg_ok \"Configured Grafana\"\n\n  fetch_and_deploy_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\" \"tarball\"\n\n  msg_info \"Installing Python Dependencies\"\n  mkdir -p /opt/garmin-grafana/.garminconnect\n  $STD uv sync --locked --project /opt/garmin-grafana/\n  msg_ok \"Installed Python Dependencies\"\n\n  msg_info \"Provisioning Grafana Dashboard \u0026 Datasource\"\n  sed -i 's/\\${DS_GARMIN_STATS}/garmin_influxdb/g' /opt/garmin-grafana/Grafana_Dashboard/Garmin-Grafana-Dashboard.json\n  sed -i 's/influxdb:8086/localhost:8086/' /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/influxdb_user/${INFLUXDB_USER}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/influxdb_secret_password/${INFLUXDB_PASSWORD}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  sed -i \"s/GarminStats/${INFLUXDB_NAME}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n  cp -r /opt/garmin-grafana/Grafana_Datasource/* /etc/grafana/provisioning/datasources\n  cp -r /opt/garmin-grafana/Grafana_Dashboard/* /etc/grafana/provisioning/dashboards\n  msg_ok \"Provisioned Grafana Dashboard \u0026 Datasource\"\n\n  read -rp \"Are you using Garmin in mainland China? (y/N): \" prompt\n  if [[ \"${prompt,,}\" =~ ^(y|yes)$ ]]; then\n    GARMIN_CN=\"True\"\n  else\n    GARMIN_CN=\"False\"\n  fi\n\n  msg_info \"Writing Environment Configuration\"\n  cat \u003c\u003c EOF \u003e /opt/garmin-grafana/.env\nINFLUXDB_HOST=localhost\nINFLUXDB_PORT=8086\nINFLUXDB_ENDPOINT_IS_HTTP=True\nINFLUXDB_USERNAME=${INFLUXDB_USER}\nINFLUXDB_PASSWORD=${INFLUXDB_PASSWORD}\nINFLUXDB_DATABASE=${INFLUXDB_NAME}\nGARMINCONNECT_IS_CN=${GARMIN_CN}\nTOKEN_DIR=/opt/garmin-grafana/.garminconnect\nGRAFANA_USER=admin\nGRAFANA_PASSWORD=${GRAFANA_PASS}\nEOF\n  msg_ok \"Wrote Environment Configuration\"\n\n  if [[ -z \"$(ls -A /opt/garmin-grafana/.garminconnect)\" ]]; then\n    read -r -p \"Please enter your Garmin Connect Email: \" GARMIN_EMAIL\n    read -r -p \"Please enter your Garmin Connect Password (used to generate token, NOT stored): \" GARMIN_PASSWORD\n    read -r -p \"Please enter your MFA Code (leave blank if not applicable): \" GARMIN_MFA\n    GARMIN_BASE64_PASSWORD=$(echo -n \"${GARMIN_PASSWORD}\" | base64 -w0)\n    msg_info \"Creating Garmin credentials (timeout 60s)\"\n    if [[ -n \"${GARMIN_MFA}\" ]]; then\n      echo \"${GARMIN_MFA}\" | GARMINCONNECT_EMAIL=\"${GARMIN_EMAIL}\" GARMINCONNECT_BASE64_PASSWORD=\"${GARMIN_BASE64_PASSWORD}\" \\\n        timeout 60s uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\n    else\n      GARMINCONNECT_EMAIL=\"${GARMIN_EMAIL}\" GARMINCONNECT_BASE64_PASSWORD=\"${GARMIN_BASE64_PASSWORD}\" \\\n        timeout 60s uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py \u003c /dev/null\n    fi\n    unset GARMIN_EMAIL GARMIN_PASSWORD GARMIN_MFA GARMIN_BASE64_PASSWORD\n    if [[ -z \"$(ls -A /opt/garmin-grafana/.garminconnect)\" ]]; then\n      msg_error \"Failed to create token\"\n      exit 1\n    fi\n    msg_ok \"Created Garmin credentials\"\n  fi\n\n  $STD systemctl restart grafana-server\n\n  msg_info \"Installing Bulk Import Helper\"\n  cat \u003c\u003c 'EOF' \u003e /usr/local/bin/garmin-bulk-import\n#!/usr/bin/env bash\nif [[ -z $1 ]]; then\n  echo \"Usage: $0 \u003cstart_date\u003e [end_date]\"\n  echo \"Example: $0 2023-01-01 2023-01-31\"\n  exit 1\nfi\nSTART_DATE=\"$1\"\nEND_DATE=\"${2:-$(date +%Y-%m-%d)}\"\nsystemctl stop garmin-grafana\nMANUAL_START_DATE=\"${START_DATE}\" MANUAL_END_DATE=\"${END_DATE}\" uv run --env-file /opt/garmin-grafana/.env --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\nsystemctl start garmin-grafana\nEOF\n  chmod +x /usr/local/bin/garmin-bulk-import\n  msg_ok \"Installed Bulk Import Helper\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/garmin-grafana.service\n[Unit]\nDescription=garmin-grafana Service\nAfter=network.target influxdb.service\nRequires=influxdb.service\n\n[Service]\nType=simple\nWorkingDirectory=/opt/garmin-grafana\nEnvironmentFile=/opt/garmin-grafana/.env\nExecStart=$(which uv) run --project /opt/garmin-grafana/ /opt/garmin-grafana/src/garmin_grafana/garmin_fetch.py\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now garmin-grafana\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:3000${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/garmin-grafana ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  # Preserve the operator's explicit setting; migrate the old installer key only\n  # when the upstream key is absent, including on a no-op release update.\n  (\n    unset GARMIN_IS_CN GARMINCONNECT_IS_CN\n    source /opt/garmin-grafana/.env\n    if [[ ! ${GARMINCONNECT_IS_CN+x} \u0026\u0026 ${GARMIN_IS_CN+x} ]]; then\n      printf '\\nGARMINCONNECT_IS_CN=%q\\n' \"$GARMIN_IS_CN\" \u003e\u003e /opt/garmin-grafana/.env\n    fi\n  )\n\n  if check_for_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\"; then\n    msg_info \"Stopping Services\"\n    systemctl stop garmin-grafana\n    msg_ok \"Stopped Services\"\n\n    msg_info \"Backing up Data\"\n    cp /opt/garmin-grafana/.env /opt/garmin-grafana.env.bak\n    cp -r /opt/garmin-grafana/.garminconnect /opt/garmin-grafana-tokens.bak\n    msg_ok \"Backed up Data\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\" \"tarball\"\n\n    msg_info \"Restoring Data\"\n    cp /opt/garmin-grafana.env.bak /opt/garmin-grafana/.env\n    cp -r /opt/garmin-grafana-tokens.bak /opt/garmin-grafana/.garminconnect\n    rm -f /opt/garmin-grafana.env.bak\n    rm -rf /opt/garmin-grafana-tokens.bak\n    msg_ok \"Restored Data\"\n\n    msg_info \"Updating Dependencies\"\n    source /opt/garmin-grafana/.env\n    $STD uv sync --locked --project /opt/garmin-grafana/\n    sed -i 's/\\${DS_GARMIN_STATS}/garmin_influxdb/g' /opt/garmin-grafana/Grafana_Dashboard/Garmin-Grafana-Dashboard.json\n    sed -i 's/influxdb:8086/localhost:8086/' /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/influxdb_user/${INFLUXDB_USERNAME}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/influxdb_secret_password/${INFLUXDB_PASSWORD}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    sed -i \"s/GarminStats/${INFLUXDB_DATABASE}/\" /opt/garmin-grafana/Grafana_Datasource/influxdb.yaml\n    cp -r /opt/garmin-grafana/Grafana_Datasource/* /etc/grafana/provisioning/datasources\n    cp -r /opt/garmin-grafana/Grafana_Dashboard/* /etc/grafana/provisioning/dashboards\n    msg_ok \"Updated Dependencies\"\n\n    msg_info \"Starting Services\"\n    systemctl start garmin-grafana\n    $STD systemctl restart grafana-server\n    msg_ok \"Started Services\"\n    msg_ok \"Updated successfully!\"\n  fi\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"garmin-grafana\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -109,7 +109,7 @@
     "INFLUXDB_USERNAME=${INFLUXDB_USER}",
     "INFLUXDB_PASSWORD=${INFLUXDB_PASSWORD}",
     "INFLUXDB_DATABASE=${INFLUXDB_NAME}",
-    "GARMIN_IS_CN=${GARMIN_CN}",
+    "GARMINCONNECT_IS_CN=${GARMIN_CN}",
     "TOKEN_DIR=/opt/garmin-grafana/.garminconnect",
     "GRAFANA_USER=admin",
     "GRAFANA_PASSWORD=${GRAFANA_PASS}",
@@ -195,6 +195,16 @@
     "    exit",
     "  fi",
     "",
+    "  # Preserve the operator's explicit setting; migrate the old installer key only",
+    "  # when the upstream key is absent, including on a no-op release update.",
+    "  (",
+    "    unset GARMIN_IS_CN GARMINCONNECT_IS_CN",
+    "    source /opt/garmin-grafana/.env",
+    "    if [[ ! ${GARMINCONNECT_IS_CN+x} \u0026\u0026 ${GARMIN_IS_CN+x} ]]; then",
+    "      printf '\\nGARMINCONNECT_IS_CN=%q\\n' \"$GARMIN_IS_CN\" \u003e\u003e /opt/garmin-grafana/.env",
+    "    fi",
+    "  )",
+    "",
     "  if check_for_gh_release \"garmin-grafana\" \"arpanghosh8453/garmin-grafana\"; then",
     "    msg_info \"Stopping Services\"",
     "    systemctl stop garmin-grafana",
@@ -269,7 +279,7 @@
     {
       "name": "update_script",
       "start_line": 181,
-      "end_line": 229,
+      "end_line": 239,
       "name_span": {
         "start_line": 181,
         "start_col": 10,
@@ -2059,9 +2069,9 @@
     {
       "kind": "param-exp",
       "start_line": 105,
-      "start_col": 14,
+      "start_col": 21,
       "end_line": 105,
-      "end_col": 26
+      "end_col": 33
     },
     {
       "kind": "param-exp",
@@ -3144,204 +3154,256 @@
       "end_col": 5
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "comment",
       "start_line": 191,
       "start_col": 3,
-      "end_line": 191,
-      "end_col": 5
-    },
-    {
-      "kind": "command",
-      "start_line": 191,
-      "start_col": 6,
-      "end_line": 191,
-      "end_col": 26
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 191,
-      "start_col": 27,
-      "end_line": 191,
-      "end_col": 43
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 191,
-      "start_col": 44,
-      "end_line": 191,
-      "end_col": 75
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 191,
-      "start_col": 75,
-      "end_line": 191,
-      "end_col": 76
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 191,
-      "start_col": 77,
       "end_line": 191,
       "end_col": 81
     },
     {
-      "kind": "command",
+      "kind": "comment",
       "start_line": 192,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 192,
-      "end_col": 13
+      "end_col": 74
     },
     {
-      "kind": "string-dq",
-      "start_line": 192,
-      "start_col": 14,
-      "end_line": 192,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
+      "kind": "operator",
+      "op": "(",
       "start_line": 193,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 193,
-      "end_col": 14
+      "end_col": 4
     },
     {
       "kind": "command",
       "start_line": 194,
       "start_col": 5,
       "end_line": 194,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 195,
+      "start_col": 5,
+      "end_line": 195,
       "end_col": 11
     },
     {
-      "kind": "string-dq",
-      "start_line": 194,
-      "start_col": 12,
-      "end_line": 194,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
+      "kind": "keyword",
+      "op": "if",
       "start_line": 196,
       "start_col": 5,
       "end_line": 196,
-      "end_col": 13
+      "end_col": 7
     },
     {
-      "kind": "string-dq",
+      "kind": "operator",
+      "op": "[[",
       "start_line": 196,
-      "start_col": 14,
+      "start_col": 8,
       "end_line": 196,
-      "end_col": 31
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 196,
+      "start_col": 11,
+      "end_line": 196,
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 13,
+      "end_line": 196,
+      "end_col": 37
+    },
+    {
+      "kind": "test-operator",
+      "op": "\u0026\u0026",
+      "start_line": 196,
+      "start_col": 38,
+      "end_line": 196,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 196,
+      "start_col": 41,
+      "end_line": 196,
+      "end_col": 58
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 196,
+      "start_col": 59,
+      "end_line": 196,
+      "end_col": 61
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 196,
+      "start_col": 61,
+      "end_line": 196,
+      "end_col": 62
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 196,
+      "start_col": 63,
+      "end_line": 196,
+      "end_col": 67
     },
     {
       "kind": "command",
       "start_line": 197,
-      "start_col": 5,
+      "start_col": 7,
       "end_line": 197,
-      "end_col": 7
+      "end_col": 13
     },
     {
-      "kind": "command",
+      "kind": "string-sq",
+      "start_line": 197,
+      "start_col": 14,
+      "end_line": 197,
+      "end_col": 42
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 197,
+      "start_col": 43,
+      "end_line": 197,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 197,
+      "start_col": 44,
+      "end_line": 197,
+      "end_col": 57
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u003e",
+      "start_line": 197,
+      "start_col": 59,
+      "end_line": 197,
+      "end_col": 61
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
       "start_line": 198,
       "start_col": 5,
       "end_line": 198,
       "end_col": 7
     },
     {
-      "kind": "command",
+      "kind": "operator",
+      "op": ")",
       "start_line": 199,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 199,
-      "end_col": 11
+      "end_col": 4
     },
     {
-      "kind": "string-dq",
-      "start_line": 199,
-      "start_col": 12,
-      "end_line": 199,
-      "end_col": 28
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "keyword",
+      "op": "if",
       "start_line": 201,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 201,
-      "end_col": 20
-    },
-    {
-      "kind": "var-name",
-      "start_line": 201,
-      "start_col": 5,
-      "end_line": 201,
-      "end_col": 18
+      "end_col": 5
     },
     {
       "kind": "command",
       "start_line": 201,
-      "start_col": 21,
+      "start_col": 6,
       "end_line": 201,
-      "end_col": 48
+      "end_col": 26
     },
     {
       "kind": "string-dq",
       "start_line": 201,
-      "start_col": 49,
+      "start_col": 27,
       "end_line": 201,
-      "end_col": 65
+      "end_col": 43
     },
     {
       "kind": "string-dq",
       "start_line": 201,
-      "start_col": 66,
+      "start_col": 44,
       "end_line": 201,
-      "end_col": 97
+      "end_col": 75
     },
     {
-      "kind": "string-dq",
+      "kind": "operator",
+      "op": ";",
       "start_line": 201,
-      "start_col": 98,
+      "start_col": 75,
       "end_line": 201,
-      "end_col": 107
+      "end_col": 76
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 201,
+      "start_col": 77,
+      "end_line": 201,
+      "end_col": 81
     },
     {
       "kind": "command",
-      "start_line": 203,
+      "start_line": 202,
       "start_col": 5,
-      "end_line": 203,
+      "end_line": 202,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 203,
+      "start_line": 202,
       "start_col": 14,
+      "end_line": 202,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 5,
       "end_line": 203,
-      "end_col": 30
+      "end_col": 14
     },
     {
       "kind": "command",
       "start_line": 204,
       "start_col": 5,
       "end_line": 204,
-      "end_col": 7
+      "end_col": 11
     },
     {
-      "kind": "command",
-      "start_line": 205,
-      "start_col": 5,
-      "end_line": 205,
-      "end_col": 7
+      "kind": "string-dq",
+      "start_line": 204,
+      "start_col": 12,
+      "end_line": 204,
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 206,
       "start_col": 5,
       "end_line": 206,
-      "end_col": 7
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 14,
+      "end_line": 206,
+      "end_col": 31
     },
     {
       "kind": "command",
@@ -3355,334 +3417,440 @@
       "start_line": 208,
       "start_col": 5,
       "end_line": 208,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 209,
+      "start_col": 5,
+      "end_line": 209,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 208,
+      "start_line": 209,
       "start_col": 12,
-      "end_line": 208,
-      "end_col": 27
+      "end_line": 209,
+      "end_col": 28
     },
     {
-      "kind": "command",
-      "start_line": 210,
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 211,
       "start_col": 5,
-      "end_line": 210,
-      "end_col": 13
+      "end_line": 211,
+      "end_col": 20
     },
     {
-      "kind": "string-dq",
-      "start_line": 210,
-      "start_col": 14,
-      "end_line": 210,
-      "end_col": 37
+      "kind": "var-name",
+      "start_line": 211,
+      "start_col": 5,
+      "end_line": 211,
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 211,
-      "start_col": 5,
+      "start_col": 21,
       "end_line": 211,
-      "end_col": 11
+      "end_col": 48
     },
     {
-      "kind": "param-exp",
-      "start_line": 212,
-      "start_col": 5,
-      "end_line": 212,
-      "end_col": 9
+      "kind": "string-dq",
+      "start_line": 211,
+      "start_col": 49,
+      "end_line": 211,
+      "end_col": 65
     },
     {
-      "kind": "command",
-      "start_line": 212,
-      "start_col": 10,
-      "end_line": 212,
-      "end_col": 12
+      "kind": "string-dq",
+      "start_line": 211,
+      "start_col": 66,
+      "end_line": 211,
+      "end_col": 97
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 211,
+      "start_col": 98,
+      "end_line": 211,
+      "end_col": 107
     },
     {
       "kind": "command",
       "start_line": 213,
       "start_col": 5,
       "end_line": 213,
-      "end_col": 8
+      "end_col": 13
     },
     {
-      "kind": "string-sq",
+      "kind": "string-dq",
       "start_line": 213,
-      "start_col": 12,
+      "start_col": 14,
       "end_line": 213,
-      "end_col": 53
+      "end_col": 30
     },
     {
       "kind": "command",
       "start_line": 214,
       "start_col": 5,
       "end_line": 214,
-      "end_col": 8
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 214,
-      "start_col": 12,
-      "end_line": 214,
-      "end_col": 45
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 215,
       "start_col": 5,
       "end_line": 215,
-      "end_col": 8
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 215,
-      "start_col": 12,
-      "end_line": 215,
-      "end_col": 51
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 215,
-      "start_col": 29,
-      "end_line": 215,
-      "end_col": 49
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 216,
       "start_col": 5,
       "end_line": 216,
-      "end_col": 8
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 216,
-      "start_col": 12,
-      "end_line": 216,
-      "end_col": 62
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 216,
-      "start_col": 40,
-      "end_line": 216,
-      "end_col": 60
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 217,
       "start_col": 5,
       "end_line": 217,
-      "end_col": 8
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 217,
-      "start_col": 12,
-      "end_line": 217,
-      "end_col": 49
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 217,
-      "start_col": 27,
-      "end_line": 217,
-      "end_col": 47
+      "end_col": 7
     },
     {
       "kind": "command",
       "start_line": 218,
       "start_col": 5,
       "end_line": 218,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 219,
-      "start_col": 5,
-      "end_line": 219,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 220,
-      "start_col": 5,
-      "end_line": 220,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 220,
+      "start_line": 218,
       "start_col": 12,
-      "end_line": 220,
-      "end_col": 34
+      "end_line": 218,
+      "end_col": 27
     },
     {
       "kind": "command",
-      "start_line": 222,
+      "start_line": 220,
       "start_col": 5,
-      "end_line": 222,
+      "end_line": 220,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 222,
+      "start_line": 220,
       "start_col": 14,
+      "end_line": 220,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 221,
+      "start_col": 5,
+      "end_line": 221,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 222,
+      "start_col": 5,
       "end_line": 222,
-      "end_col": 33
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 222,
+      "start_col": 10,
+      "end_line": 222,
+      "end_col": 12
     },
     {
       "kind": "command",
       "start_line": 223,
       "start_col": 5,
       "end_line": 223,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 223,
+      "start_col": 12,
+      "end_line": 223,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 224,
+      "start_col": 5,
+      "end_line": 224,
+      "end_col": 8
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 224,
+      "start_col": 12,
+      "end_line": 224,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 225,
+      "start_col": 5,
+      "end_line": 225,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 225,
+      "start_col": 12,
+      "end_line": 225,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 225,
+      "start_col": 29,
+      "end_line": 225,
+      "end_col": 49
+    },
+    {
+      "kind": "command",
+      "start_line": 226,
+      "start_col": 5,
+      "end_line": 226,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 226,
+      "start_col": 12,
+      "end_line": 226,
+      "end_col": 62
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 226,
+      "start_col": 40,
+      "end_line": 226,
+      "end_col": 60
+    },
+    {
+      "kind": "command",
+      "start_line": 227,
+      "start_col": 5,
+      "end_line": 227,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 227,
+      "start_col": 12,
+      "end_line": 227,
+      "end_col": 49
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 227,
+      "start_col": 27,
+      "end_line": 227,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 228,
+      "start_col": 5,
+      "end_line": 228,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 229,
+      "start_col": 5,
+      "end_line": 229,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 230,
+      "start_col": 5,
+      "end_line": 230,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 230,
+      "start_col": 12,
+      "end_line": 230,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 232,
+      "start_col": 5,
+      "end_line": 232,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 232,
+      "start_col": 14,
+      "end_line": 232,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 233,
+      "start_col": 5,
+      "end_line": 233,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 224,
+      "start_line": 234,
       "start_col": 5,
-      "end_line": 224,
+      "end_line": 234,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 224,
+      "start_line": 234,
       "start_col": 10,
-      "end_line": 224,
+      "end_line": 234,
       "end_col": 19
     },
     {
       "kind": "command",
-      "start_line": 225,
+      "start_line": 235,
       "start_col": 5,
-      "end_line": 225,
+      "end_line": 235,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 225,
+      "start_line": 235,
       "start_col": 12,
-      "end_line": 225,
+      "end_line": 235,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 226,
+      "start_line": 236,
       "start_col": 5,
-      "end_line": 226,
+      "end_line": 236,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 226,
+      "start_line": 236,
       "start_col": 12,
-      "end_line": 226,
+      "end_line": 236,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 227,
+      "start_line": 237,
       "start_col": 3,
-      "end_line": 227,
+      "end_line": 237,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 228,
+      "start_line": 238,
       "start_col": 3,
-      "end_line": 228,
+      "end_line": 238,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 229,
+      "start_line": 239,
       "start_col": 1,
-      "end_line": 229,
+      "end_line": 239,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 231,
+      "start_line": 241,
       "start_col": 1,
-      "end_line": 231,
+      "end_line": 241,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 232,
+      "start_line": 242,
       "start_col": 1,
-      "end_line": 232,
+      "end_line": 242,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 233,
+      "start_line": 243,
       "start_col": 1,
-      "end_line": 233,
+      "end_line": 243,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 1,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 8,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 10,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 21,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 22,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 66,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 82
     },
     {
       "kind": "string-dq",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 86,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 90
     },
     {
       "kind": "param-exp",
-      "start_line": 234,
+      "start_line": 244,
       "start_col": 87,
-      "end_line": 234,
+      "end_line": 244,
       "end_col": 89
     }
   ],
-  "bootstrap_line": 234,
+  "bootstrap_line": 244,
   "hooks": {
     "header_info": false,
     "install_script": true,
