@@ -189,6 +189,7 @@ for app in ('endurain','invidious','keycloak','cronmaster','autocaliweb'):
 check('original assertions retained',784,len(checks))
 exec(compile((R/'tests/maintenance-romm-current.py').read_bytes(),'maintenance-romm-current.py','exec'))
 exec(compile((R/'tests/maintenance-input-current.py').read_bytes(),'maintenance-input-current.py','exec'))
+exec(compile((R/'tests/maintenance-garmin-env.py').read_bytes(),'maintenance-garmin-env.py','exec'))
 failures=sum(not x['passed'] for x in checks);(W/'result.json').write_text(json.dumps(dict(checks=checks,failures=failures,scope='cold generated commands/native files, tar, metadata and SQLite; network/build/services modeled'),sort_keys=True,indent=2))
 print(str(len(checks))+' current hardening checks; '+str(failures)+' failure(s)',flush=True)
 if not failures:print('CURRENT_HARDENING_PASS',flush=True)
