@@ -102,7 +102,7 @@ INFLUXDB_ENDPOINT_IS_HTTP=True
 INFLUXDB_USERNAME=${INFLUXDB_USER}
 INFLUXDB_PASSWORD=${INFLUXDB_PASSWORD}
 INFLUXDB_DATABASE=${INFLUXDB_NAME}
-GARMIN_IS_CN=${GARMIN_CN}
+GARMINCONNECT_IS_CN=${GARMIN_CN}
 TOKEN_DIR=/opt/garmin-grafana/.garminconnect
 GRAFANA_USER=admin
 GRAFANA_PASSWORD=${GRAFANA_PASS}
@@ -187,6 +187,16 @@ function update_script() {
     msg_error "No ${APP} Installation Found!"
     exit
   fi
+
+  # Preserve the operator's explicit setting; migrate the old installer key only
+  # when the upstream key is absent, including on a no-op release update.
+  (
+    unset GARMIN_IS_CN GARMINCONNECT_IS_CN
+    source /opt/garmin-grafana/.env
+    if [[ ! ${GARMINCONNECT_IS_CN+x} && ${GARMIN_IS_CN+x} ]]; then
+      printf '\nGARMINCONNECT_IS_CN=%q\n' "$GARMIN_IS_CN" >> /opt/garmin-grafana/.env
+    fi
+  )
 
   if check_for_gh_release "garmin-grafana" "arpanghosh8453/garmin-grafana"; then
     msg_info "Stopping Services"
