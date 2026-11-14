@@ -40,8 +40,32 @@ if [[ "${1:-}" == --child ]]; then
   }
   setup_rust() { :; }
   rustup() { :; }
-  setup_ruby() { :; }
+  setup_ruby() {
+    [[ -f /opt/discourse/Gemfile ]] || return 58
+    printf '%s\n' "${RUBY_VERSION:-unset}" >> "$c/ruby-calls"
+  }
   setup_deb822_repo() { :; }
+  pkg-config() {
+    [[ "$*" == '--modversion vips' && -f "$c/vips-installed" ]] || return 1
+    cat "$c/vips-installed"
+  }
+  meson() { printf '%s\n' "$*" >> "$c/vips-calls"; }
+  ninja() {
+    printf '%s\n' "$*" >> "$c/vips-calls"
+    [[ "$*" != *install ]] || printf '8.18.7\n' > "$c/vips-installed"
+  }
+  ldconfig() { :; }
+  sha256sum() {
+    if [[ "$1" == -c ]]; then
+      cat >> "$c/vips-sha"
+      return 0
+    fi
+    command sha256sum "$@"
+  }
+  tar() {
+    if [[ "$*" == *vips.tar.xz* ]]; then return 0; fi
+    command tar "$@"
+  }
   setup_postgresql() { printf '%s\n' "${PG_VERSION:-unset}" >> "$c/db-major-calls"; }
   setup_postgresql_db() { export PG_DB_NAME PG_DB_USER PG_DB_PASS=fixture-db-secret; }
   setup_nodejs() {
@@ -102,7 +126,12 @@ if [[ "${1:-}" == --child ]]; then
     if [[ "$1" == clone ]]; then
       mkdir -p /opt/discourse
       command cp -a "$c/payload/." /opt/discourse/
-    elif [[ "$1" == pull ]]; then printf 'new code\n' > /opt/discourse/code; fi
+    elif [[ "$1" == pull ]]; then
+      printf 'new code\n' > /opt/discourse/code
+      command cp "$c/payload/Gemfile" /opt/discourse/Gemfile
+      mkdir -p /opt/discourse/script
+      command cp "$c/payload/script/discourse_vips_worker" /opt/discourse/script/discourse_vips_worker
+    fi
   }
   runuser() { printf '%s\n' "$*" >> "$c/runuser-calls"; }
   nginx() {
@@ -144,6 +173,11 @@ if [[ "${1:-}" == --child ]]; then
     done
     [[ "$url" != *'/tags/'* ]] || tag=${url##*/}
     body="{\"tag_name\":\"$tag\",\"assets\":[{\"browser_download_url\":\"https://fixture.invalid/thingsboard-2.deb\"},{\"browser_download_url\":\"https://fixture.invalid/wasm-pack-v1-x86_64-unknown-linux-musl.tar.gz\"}]}"
+    if [[ "$url" == https://cache.ruby-lang.org/pub/ruby/index.txt ]]; then
+      printf 'name\turl\tsha1\n'
+      printf 'ruby-3.4.4\tu\ts\nruby-4.0.1\tu\ts\nruby-4.0.9\tu\ts\nruby-4.0.9\tu2\ts\nruby-4.0.10\tu\ts\nruby-4.1.0-preview1\tu\ts\nruby-4.1.2\tu\ts\n'
+      return 0
+    fi
     if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; else printf '%s' "$body"; fi
     [[ -z "$format" ]] || printf 200
   }
@@ -172,22 +206,35 @@ check() {
 }
 for app in radicale discourse thingsboard aliasvault; do
   for mode in no yes; do
-    for variant in fresh update download build copy runtime; do
+    for variant in fresh update download build copy runtime vips; do
       [[ ("$app" != thingsboard && "$app" != radicale) || "$variant" != build ]] || continue
       [[ "$app" != discourse || "$variant" != copy ]] || continue
       [[ "$app" != discourse || "$variant" != runtime ]] || continue
+      [[ "$app" == discourse || "$variant" != vips ]] || continue
       c="$work/$app-$mode-$variant"
       role=update fault=none
       [[ "$variant" != fresh ]] || role=install
+      vips_requirement='8, 18'
+      [[ "$variant" != vips ]] || vips_requirement='8, 19'
       case "$variant" in download | build | copy | runtime) fault="$variant" ;; esac
       mkdir -p "$c/"{opt,local/bin,cache,state,home/.cargo,home/.rbenv/shims,etc/systemd/system,etc/nginx/sites-available,etc/nginx/sites-enabled,etc/radicale,etc/postgresql/16/main,payload,external,root}
       : > "$c/home/.cargo/env"
       printf 'old\n' > "$c/home/.$app"
-      for log in services db-major-calls uv-calls corepack-calls bundle-calls yarn-calls pnpm-calls npm-calls dotnet-calls nginx-calls runuser-calls; do : > "$c/$log"; done
+      for log in services db-major-calls uv-calls corepack-calls bundle-calls ruby-calls vips-calls vips-sha yarn-calls pnpm-calls npm-calls dotnet-calls nginx-calls runuser-calls; do : > "$c/$log"; done
       printf '17\n' > "$c/java-version"
       printf 'old PostgreSQL data\n' > "$c/external/database"
       printf 'old credential\n' > "$c/external/credential"
       printf 'new code\n' > "$c/payload/code"
+      ruby_requirement='~> 4.0.0' ruby_expected=4.0.10
+      [[ "$mode" != yes ]] || { ruby_requirement=4.0.1 ruby_expected=4.0.1; }
+      printf 'source "https://rubygems.org"\n\nruby "%s"\n' "$ruby_requirement" > "$c/payload/Gemfile"
+      mkdir -p "$c/payload/script"
+      printf 'raise LoadError, "libvips 8.18 or newer is required" if !Vips.at_least_libvips?(%s)\n' "$vips_requirement" > "$c/payload/script/discourse_vips_worker"
+      vips_builds=1
+      if [[ "$app" == discourse && "$role" == update && "$mode" == yes ]]; then
+        printf '8.18.7\n' > "$c/vips-installed"
+        vips_builds=0
+      fi
       mkdir -p "$c/payload/"{core,apps/server,apps/web,certificates}
       cat > "$c/payload/core/build-and-distribute.sh" << 'SH'
 #!/usr/bin/env bash
@@ -250,6 +297,7 @@ PY
         [[ "$app" != discourse ]] || expected=22
         ;;
       build) expected=52 ;; copy) expected=252 ;; runtime) expected=51 ;; esac
+      [[ "$variant" != vips ]] || expected=65
       [[ "$app:$variant" != thingsboard:copy ]] || expected=0
       check "$rc" "$expected" "$app/$mode/$variant cold hook status"
       if [[ "$rc" != "$expected" ]]; then
@@ -285,6 +333,9 @@ PY
           if [[ "$role" == update ]]; then check "$(cat "$c/opt/discourse/public/uploads/file")" 'USER forum upload' "$app/$variant forum uploads retained"; fi
           if [[ "$rc" == 0 ]]; then
             check "$(grep -c 'discourse discourse-sidekiq' "$c/services" || true)" "$([[ "$role" == update ]] && printf 2 || printf 1)" "$app/$variant both service lifecycle participants"
+            check "$(cat "$c/ruby-calls")" "$ruby_expected" "$app/$variant Ruby derived from deployed Gemfile ($ruby_requirement)"
+            check "$(grep -c '^setup ' "$c/vips-calls" || true)" "$vips_builds" "$app/$variant libvips built only when the installed one is older than the source requires"
+            check "$(grep -c '^5baaead3b0bb20ffdb9e9ff09aa9fda08620923df77b63b436654cb5e0b3bf94  .*/vips.tar.xz$' "$c/vips-sha" || true)" "$vips_builds" "$app/$variant libvips archive checked against its pinned SHA256"
             check "$(stat -c %s "$c/yarn-calls")" 0 "$app/$variant obsolete package manager never invoked"
             check "$(grep -c X-Accel-Mapping "$c/etc/nginx/sites-available/discourse" || true)" 0 "$app/$variant invalid stylesheet mapping removed"
           fi
@@ -304,7 +355,7 @@ PY
           fi
           ;;
       esac
-      if [[ "$role" == update && "$expected" != 0 ]]; then
+      if [[ "$role" == update && "$expected" != 0 && "$variant" != vips ]]; then
         retry=0
         env -i PATH="$PATH" HOME="$c/home" TMPDIR="$TMPDIR" APP_FIXTURE="$c" APP_CASE="$app" APP_ROLE=update APP_FAULT=none APP="$app" NSAPP="$app" LOCAL_IP=10.20.30.40 VERBOSE="$mode" BUILD_LOG="$c/retry.log" DEBUG_LOGFILE="$c/retry-errors.log" MAINTENANCE_REFERENCES="$MAINTENANCE_REFERENCES" \
           unshare -m --propagation private -- bash "$0" --child < /dev/null > "$c/retry-output" 2>&1 || retry=$?

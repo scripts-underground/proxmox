@@ -36,7 +36,6 @@ function install_script() {
 
   PG_VERSION="17" PG_MODULES="pgvector" setup_postgresql
   NODE_VERSION="24" setup_nodejs
-  RUBY_VERSION="3.4.4" setup_ruby
 
   msg_info "Configuring PostgreSQL for Discourse"
   DISCOURSE_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
@@ -75,6 +74,80 @@ EOF
   chown -R root:root /opt/discourse
   chmod 755 /opt/discourse
   msg_ok "Configured Discourse"
+
+  local ruby_req ruby_series ruby_pattern ruby_version=""
+  ruby_req=$(sed -nE "s/^[[:space:]]*ruby[[:space:]]+[\"']([^\"']+)[\"'].*/\1/p" /opt/discourse/Gemfile | head -n1)
+  case "$ruby_req" in
+    "~> "[0-9]*.[0-9]*.[0-9]*)
+      ruby_series=${ruby_req#"~> "}
+      ruby_series=${ruby_series%.*}
+      ruby_pattern="^ruby-${ruby_series/./[.]}[.][0-9]+$"
+      ;;
+    "~> "[0-9]*.[0-9]*)
+      ruby_series=${ruby_req#"~> "}
+      ruby_pattern="^ruby-${ruby_series%%.*}[.][0-9]+[.][0-9]+$"
+      ;;
+    [0-9]*.[0-9]*.[0-9]*) ruby_version=$ruby_req ;;
+    *)
+      msg_error "Unsupported Ruby requirement in Discourse Gemfile: ${ruby_req:-none}"
+      exit 65
+      ;;
+  esac
+  if [[ -z "$ruby_version" ]]; then
+    ruby_version=$(curl -fsSL https://cache.ruby-lang.org/pub/ruby/index.txt |
+      awk -F'\t' -v re="$ruby_pattern" '$1 ~ re {print substr($1, 6)}' | sort -uV | tail -n1) || ruby_version=""
+  fi
+  [[ -n "$ruby_version" ]] || {
+    msg_error "Could not resolve a stable Ruby release for Discourse requirement ${ruby_req}"
+    exit 65
+  }
+  RUBY_VERSION="$ruby_version" setup_ruby
+
+  local vips_required vips_have
+  vips_required=$(sed -nE 's/.*at_least_libvips\?\(([0-9]+), *([0-9]+)\).*/\1.\2/p' /opt/discourse/script/discourse_vips_worker 2> /dev/null | head -n1)
+  vips_have=$(pkg-config --modversion vips 2> /dev/null || true)
+  if [[ -n "$vips_required" && ("$vips_have" == "" || "$(printf '%s\n%s\n' "$vips_required" "$vips_have" | sort -V | head -n1)" != "$vips_required") ]]; then
+    local vips_version="8.18.7" vips_sha256="5baaead3b0bb20ffdb9e9ff09aa9fda08620923df77b63b436654cb5e0b3bf94" vips_dir
+    if [[ "$(printf '%s\n%s\n' "$vips_required" "$vips_version" | sort -V | head -n1)" != "$vips_required" ]]; then
+      msg_error "Discourse requires libvips ${vips_required}, newer than the pinned ${vips_version}"
+      exit 65
+    fi
+    msg_info "Building libvips ${vips_version}"
+    $STD apt install -y \
+      meson \
+      ninja-build \
+      pkg-config \
+      xz-utils \
+      libglib2.0-dev \
+      libexpat1-dev \
+      libjpeg-dev \
+      libpng-dev \
+      libwebp-dev \
+      libtiff-dev \
+      libjxl-dev \
+      librsvg2-dev \
+      libcgif-dev \
+      libexif-dev \
+      liblcms2-dev \
+      liborc-0.4-dev \
+      libimagequant-dev \
+      libpango1.0-dev \
+      libheif-dev \
+      libfontconfig-dev
+    vips_dir=$(mktemp -d)
+    $STD curl -fsSL -o "$vips_dir/vips.tar.xz" "https://github.com/libvips/libvips/releases/download/v${vips_version}/vips-${vips_version}.tar.xz"
+    echo "${vips_sha256}  $vips_dir/vips.tar.xz" | sha256sum -c - > /dev/null
+    $STD tar -xf "$vips_dir/vips.tar.xz" -C "$vips_dir"
+    $STD meson setup "$vips_dir/build" "$vips_dir/vips-${vips_version}" --prefix=/usr/local --libdir=lib --buildtype=release --auto-features=disabled \
+      -Ddeprecated=false -Dexamples=false -Dcplusplus=false -Dppm=false -Danalyze=false -Dradiance=false -Dmodules=disabled -Dmagick=disabled -Dhighway=disabled \
+      -Dzlib=enabled -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dtiff=enabled -Dheif=enabled -Djpeg-xl=enabled -Drsvg=enabled -Dcgif=enabled \
+      -Dexif=enabled -Dlcms=enabled -Dorc=enabled -Dimagequant=enabled -Dfontconfig=enabled -Dpangocairo=enabled
+    $STD ninja -C "$vips_dir/build" -j"$(nproc)"
+    $STD ninja -C "$vips_dir/build" install
+    $STD ldconfig
+    rm -rf "$vips_dir"
+    msg_ok "Built libvips ${vips_version}"
+  fi
 
   msg_info "Installing Discourse Dependencies"
   $STD systemctl enable --now redis-server
@@ -263,8 +336,85 @@ function update_script() {
   systemctl stop discourse discourse-sidekiq
   msg_ok "Stopped Services"
 
-  msg_info "Updating Discourse"
+  msg_info "Updating Discourse Source"
   $STD git pull origin main
+  msg_ok "Updated Discourse Source"
+
+  local ruby_req ruby_series ruby_pattern ruby_version=""
+  ruby_req=$(sed -nE "s/^[[:space:]]*ruby[[:space:]]+[\"']([^\"']+)[\"'].*/\1/p" /opt/discourse/Gemfile | head -n1)
+  case "$ruby_req" in
+    "~> "[0-9]*.[0-9]*.[0-9]*)
+      ruby_series=${ruby_req#"~> "}
+      ruby_series=${ruby_series%.*}
+      ruby_pattern="^ruby-${ruby_series/./[.]}[.][0-9]+$"
+      ;;
+    "~> "[0-9]*.[0-9]*)
+      ruby_series=${ruby_req#"~> "}
+      ruby_pattern="^ruby-${ruby_series%%.*}[.][0-9]+[.][0-9]+$"
+      ;;
+    [0-9]*.[0-9]*.[0-9]*) ruby_version=$ruby_req ;;
+    *)
+      msg_error "Unsupported Ruby requirement in Discourse Gemfile: ${ruby_req:-none}"
+      exit 65
+      ;;
+  esac
+  if [[ -z "$ruby_version" ]]; then
+    ruby_version=$(curl -fsSL https://cache.ruby-lang.org/pub/ruby/index.txt |
+      awk -F'\t' -v re="$ruby_pattern" '$1 ~ re {print substr($1, 6)}' | sort -uV | tail -n1) || ruby_version=""
+  fi
+  [[ -n "$ruby_version" ]] || {
+    msg_error "Could not resolve a stable Ruby release for Discourse requirement ${ruby_req}"
+    exit 65
+  }
+  RUBY_VERSION="$ruby_version" setup_ruby
+
+  local vips_required vips_have
+  vips_required=$(sed -nE 's/.*at_least_libvips\?\(([0-9]+), *([0-9]+)\).*/\1.\2/p' /opt/discourse/script/discourse_vips_worker 2> /dev/null | head -n1)
+  vips_have=$(pkg-config --modversion vips 2> /dev/null || true)
+  if [[ -n "$vips_required" && ("$vips_have" == "" || "$(printf '%s\n%s\n' "$vips_required" "$vips_have" | sort -V | head -n1)" != "$vips_required") ]]; then
+    local vips_version="8.18.7" vips_sha256="5baaead3b0bb20ffdb9e9ff09aa9fda08620923df77b63b436654cb5e0b3bf94" vips_dir
+    if [[ "$(printf '%s\n%s\n' "$vips_required" "$vips_version" | sort -V | head -n1)" != "$vips_required" ]]; then
+      msg_error "Discourse requires libvips ${vips_required}, newer than the pinned ${vips_version}"
+      exit 65
+    fi
+    msg_info "Building libvips ${vips_version}"
+    $STD apt install -y \
+      meson \
+      ninja-build \
+      pkg-config \
+      xz-utils \
+      libglib2.0-dev \
+      libexpat1-dev \
+      libjpeg-dev \
+      libpng-dev \
+      libwebp-dev \
+      libtiff-dev \
+      libjxl-dev \
+      librsvg2-dev \
+      libcgif-dev \
+      libexif-dev \
+      liblcms2-dev \
+      liborc-0.4-dev \
+      libimagequant-dev \
+      libpango1.0-dev \
+      libheif-dev \
+      libfontconfig-dev
+    vips_dir=$(mktemp -d)
+    $STD curl -fsSL -o "$vips_dir/vips.tar.xz" "https://github.com/libvips/libvips/releases/download/v${vips_version}/vips-${vips_version}.tar.xz"
+    echo "${vips_sha256}  $vips_dir/vips.tar.xz" | sha256sum -c - > /dev/null
+    $STD tar -xf "$vips_dir/vips.tar.xz" -C "$vips_dir"
+    $STD meson setup "$vips_dir/build" "$vips_dir/vips-${vips_version}" --prefix=/usr/local --libdir=lib --buildtype=release --auto-features=disabled \
+      -Ddeprecated=false -Dexamples=false -Dcplusplus=false -Dppm=false -Danalyze=false -Dradiance=false -Dmodules=disabled -Dmagick=disabled -Dhighway=disabled \
+      -Dzlib=enabled -Djpeg=enabled -Dpng=enabled -Dwebp=enabled -Dtiff=enabled -Dheif=enabled -Djpeg-xl=enabled -Drsvg=enabled -Dcgif=enabled \
+      -Dexif=enabled -Dlcms=enabled -Dorc=enabled -Dimagequant=enabled -Dfontconfig=enabled -Dpangocairo=enabled
+    $STD ninja -C "$vips_dir/build" -j"$(nproc)"
+    $STD ninja -C "$vips_dir/build" install
+    $STD ldconfig
+    rm -rf "$vips_dir"
+    msg_ok "Built libvips ${vips_version}"
+  fi
+
+  msg_info "Updating Discourse"
   $STD corepack enable
   $STD bundle config set --local deployment true
   $STD bundle config set --local without 'test development'
