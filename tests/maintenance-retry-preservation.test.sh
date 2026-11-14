@@ -42,7 +42,7 @@ for fault in receiver install update update-link uninstall uninstall-link; do
       printf "pct %s\n" "$*" >> "$CASE_ROOT/calls"
       case "$*" in
         "exec 2110 -- test -f "* | "pull "*) return 1 ;;
-        "exec 2110 -- bash -c "*) [[ "$FAULT" != receiver ]] || return 46 ;;
+        "exec 2110 -- /bin/sh -c "*) [[ "$FAULT" != receiver ]] || return 46 ;;
         "exec 2110 -- ln -sf /usr/local/sbin/update /usr/bin/update") [[ "$FAULT" != update-link ]] || return 49 ;;
         "exec 2110 -- ln -sf /usr/local/sbin/uninstall /usr/bin/uninstall") [[ "$FAULT" != uninstall-link ]] || return 51 ;;
       esac
