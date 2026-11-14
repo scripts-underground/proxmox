@@ -7,8 +7,13 @@ if [[ "${1:-}" == --child ]]; then
   c="$CASE_ROOT"
   mount --bind "$c/opt" /opt
   mount --bind "$c/units" /etc/systemd/system
-  mount --bind /var/lib/scripts-underground "$c/state/scripts-underground"
+  python3 "$ROOT/tests/lib/fixture_mounts.py" preserve-root "$c/state/scripts-underground" "$c/mount-projection.json" "$ROOT" "$c" "$MAINTENANCE_REFERENCES"
   mount --rbind "$c/state" /var/lib
+  [[ -r "$ROOT/misc/tools.func" && -d "$c" ]] || {
+    printf 'Cannot preserve source/temp paths under managed metadata\n' >&2
+    exit 65
+  }
+  python3 "$ROOT/tests/lib/fixture_mounts.py" verify "$c/mount-projection.json"
   source "$ROOT/misc/tools.func"
   source "$c/hooks.sh"
   if [[ "$ROLE" == bundle || "$ROLE" == install-bundle ]]; then

@@ -171,6 +171,96 @@ class Entrypoints(unittest.TestCase):
                 dispatch(d, self.context.path, 'workflow-entrypoints', 'fixture', lambda *a: calls.append(a))
             self.assertEqual(calls, [])
 
+    def test_attached_public_and_direct_refuse_before_effects(self):
+        if self.context.document['schema'] != 2:
+            return
+        cli = runpy.run_path(str(self.source/'tests/run'), run_name='attached_refusal_cli')
+        cases = [
+            ('schema', lambda d: d.update(schema=7)),
+            ('kind', lambda d: d['target'].update(kind='unknown')),
+            ('mixed', lambda d: d['target'].update(disks={'vda':'not-authority'})),
+            ('DMI', lambda d: d['target'].update(uuid='wrong')),
+            ('MAC', lambda d: d['target'].update(mac='02:00:00:00:00:00')),
+            ('serial', lambda d: d['target']['work_volume'].update(serial='wrong')),
+            ('UUID', lambda d: d['target']['work_volume'].update(uuid='wrong')),
+            ('bind', lambda d: d['target']['mount'].update(inode=1)),
+            ('owner', lambda d: d['target']['ownership'].update(sha256='0'*64)),
+            ('qualification', lambda d: d['target']['infrastructure_qualification'].update(path='/no-such-qualification')),
+            ('source', lambda d: d['source'].update(tree_sha256='0'*64)),
+            ('history', lambda d: d['source'].update(history_sha256='0'*64)),
+            ('index', lambda d: d['source'].update(index_sha256='0'*64)),
+        ]
+        count = 0
+        for name, mutate in cases:
+            document = copy.deepcopy(self.context.document); mutate(document)
+            path = self.run_owner.directory/('attached-'+name+'.json')
+            path.write_text(json.dumps(document)); path.chmod(0o400)
+            for action in ('--check','--run'):
+                argv = ['tests/run',action,'--context',str(path),'--suite','maintenance-package-force','--mode','fixture']
+                before = self.tree_state(Path(self.context.operation['runs']))
+                with patch.object(sys,'argv',argv), patch('entrypoint.execute') as effects, patch('entrypoint.supervise') as supervisor:
+                    with self.assertRaises(AdmissionError): cli['main']()
+                    effects.assert_not_called(); supervisor.assert_not_called()
+                self.assertEqual(self.tree_state(Path(self.context.operation['runs'])),before)
+                count += 1
+            result, effects = self.direct('maintenance-package-force', [], path)
+            self.assertEqual(result.returncode,65,result.stderr)
+            self.assertEqual(effects,'')
+            count += 1
+        print('ATTACHED_PUBLIC_DIRECT_REFUSAL cases='+str(count)+' check_run_direct locks_consumers_units=0',flush=True)
+
+    def test_attached_native_dispatch_rechecks_changed_attestation(self):
+        if self.context.document['schema'] != 2:
+            return
+        native,calls,argv=self.native_fixture()
+        document=copy.deepcopy(self.context.document)
+        path=native.run.directory/'recheck-context.json'
+        path.write_text(json.dumps(document));path.chmod(0o400)
+        admitted=Context.admit(path,'workflow-entrypoints','fixture')
+        native.run.context.recheck=admitted.recheck
+        document['target']['ownership']['sha256']='0'*64
+        path.write_text(json.dumps(document))
+        with self.assertRaises(AdmissionError):native.dispatch('pct',argv)
+        self.assertEqual(calls,[])
+        print('ATTACHED_NATIVE_RECHECK changed_attestation before_typed_dispatch native_effects=0',flush=True)
+
+    def test_fixture_projection_preserves_nested_mount_graph(self):
+        body = '''import json,pathlib,subprocess,sys
+sys.path.insert(0,sys.argv[1]);import fixture_mounts as f
+root=pathlib.Path(sys.argv[2]);root.mkdir(mode=0o755)
+source=root/'source';tmp=root/'tmp';source.mkdir();tmp.mkdir()
+for parent,name in ((source,'source-payload'),(tmp,'tmp-payload')):
+ backing=root/name;backing.mkdir();(backing/'sentinel').write_text(name)
+ leaf=parent/'deep';leaf.mkdir();(leaf/'hidden').write_text('must-not-substitute')
+ subprocess.run(['/bin/mount','--bind',str(backing),str(leaf)],check=True,timeout=10)
+metadata=root/'metadata';metadata.mkdir();receipt=root/'projection.json';paths=[source,tmp]
+if sys.argv[3]=='old':
+ snapshot=dict(objects={str(p):f.identity(p) for p in paths},mounts=f.mount_graph(paths),paths=[str(p) for p in paths]);receipt.write_text(json.dumps(snapshot))
+ child=source.relative_to(f.MANAGED).parts[0];(metadata/child).mkdir()
+ subprocess.run(['/bin/mount','--bind',str(f.MANAGED/child),str(metadata/child)],check=True,timeout=10)
+else:f.preserve(metadata,receipt,paths,whole=sys.argv[3]=='whole')
+subprocess.run(['/bin/mount','--rbind',str(metadata),str(f.MANAGED)],check=True,timeout=10)
+try:f.verify(receipt)
+except (OSError,ValueError):
+ if sys.argv[3]=='old':print('OLD_NONRECURSIVE_PROJECTION_REFUSED');sys.exit(65)
+ raise
+assert (source/'deep/sentinel').read_text()=='source-payload'
+assert (tmp/'deep/sentinel').read_text()=='tmp-payload'
+print('NESTED_SOURCE_TMP_CONSUMERS_EXACT')
+foreign=root/'wrong-subtree';foreign.mkdir()
+subprocess.run(['/bin/mount','--bind',str(foreign),str(source/'deep')],check=True,timeout=10)
+try:f.verify(receipt)
+except ValueError:print('CHANGED_NESTED_GRAPH_REFUSED')
+else:raise AssertionError('changed nested graph admitted')
+'''
+        for subject, expected in [('old',65),('new',0),('whole',0)]:
+            parent=self.run_owner.directory/('nested-projection-'+subject)
+            result=subprocess.run(['/usr/bin/unshare','--mount','--propagation','private','/usr/bin/python3','-B','-c',body,str(self.source/'tests/lib'),str(parent),subject],capture_output=True,text=True,timeout=40)
+            self.run_owner.record('nested-mount-projection',dict(subject=subject,status=result.returncode,stdout=result.stdout,stderr=result.stderr))
+            self.assertEqual(result.returncode,expected,result.stdout+result.stderr)
+            self.assertIn('OLD_NONRECURSIVE_PROJECTION_REFUSED' if subject=='old' else 'CHANGED_NESTED_GRAPH_REFUSED',result.stdout)
+        print('FIXTURE_MOUNT_GRAPH old_refused65 real_nested_source_tmp_bytes new_pass changed_graph_refused',flush=True)
+
     def test_current_hardening_direct_guard_only(self):
         result, effects = self.direct('maintenance-current-hardening', [], self.context.path)
         self.assertEqual(result.returncode, 0, result.stderr)
