@@ -153,4 +153,5 @@ PY
   check "$(test -e "$c/state/lazylibrarian" && printf present || printf absent)" absent "LazyLibrarian/$mode successful update clears pending"
 done
 printf '%s failure(s); real offline uv/Python3.12/venv/package/ExecStart interpreter; app source/packages/setup_uv/systemctl modeled\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]
