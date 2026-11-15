@@ -348,4 +348,5 @@ printf '%s failure(s); actual Colanode hook and merge helper; network/build/serv
 [[ "$failures" == 0 ]]
 if [[ "${COLANODE_COLD:-0}" != 1 ]]; then
   COLANODE_COLD=1 bash "$0"
+  printf 'RUNTIME_HOOKS_RESULT failures=0\n'
 fi

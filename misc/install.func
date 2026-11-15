@@ -244,12 +244,28 @@ pkg_update() {
 
   case "$PKG_MANAGER" in
     apt)
-      if ! $STD apt-get update; then
+      local apt_update_rc=0
+      $STD apt-get update || apt_update_rc=$?
+      if ((apt_update_rc != 0)); then
+        # Mirror failover only has Debian and Ubuntu catalogues: any other or
+        # unreadable ID keeps the original failure and leaves sources untouched.
+        local distro="" distro_rc=0
+        distro=$(unset ID && . /etc/os-release 2> /dev/null && printf '%s' "${ID-}") || distro_rc=$?
+        case "$distro_rc:$distro" in
+          0:debian | 0:ubuntu) ;;
+          0:*)
+            msg_error "apt-get update failed (status ${apt_update_rc}); mirror failover supports only Debian and Ubuntu, not '${distro:-unknown}'. Package sources were not changed."
+            return "$apt_update_rc"
+            ;;
+          *)
+            msg_error "apt-get update failed (status ${apt_update_rc}) and the distribution ID could not be read (status ${distro_rc}). Package sources were not changed."
+            return "$apt_update_rc"
+            ;;
+        esac
+
         local failed_mirror
         failed_mirror=$(grep -m1 -oP '(?<=URIs: https?://)[^/]+' /etc/apt/sources.list.d/debian.sources 2> /dev/null || grep -m1 -oP '(?<=deb https?://)[^/]+' /etc/apt/sources.list 2> /dev/null || echo "unknown")
         msg_warn "apt-get update failed (${failed_mirror}), trying alternate mirrors..."
-        local distro
-        distro=$(. /etc/os-release 2> /dev/null && echo "$ID" || echo "debian")
 
         local eu_mirrors us_mirrors ap_mirrors
         if [[ "$distro" == "ubuntu" ]]; then
