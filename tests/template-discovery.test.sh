@@ -64,6 +64,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 check "$(_template_catalog_names fedora-43 -default_)" \
   fedora-43-default_20260115_amd64.tar.xz 'fedora 43 selects the amd64 archive'
+check "$(_template_catalog_names fedora- -default_ | tr '\n' ' ')" \
+  'fedora-43-default_20260115_amd64.tar.xz fedora-44-default_20260713_amd64.tar.xz ' \
+  'empty version selects all Fedora archives in version order'
+check "$(_template_catalog_names ubuntu- -standard_ | tail -n 1)" \
+  ubuntu-26.10-standard_26.10-1_amd64.tar.zst 'empty dotted version selects the newest Ubuntu archive'
 check "$(_template_catalog_names debian-13 -standard_)" \
   debian-13-standard_13.6-1_amd64.tar.zst 'debian 13 selects amd64, not arm64'
 check "$(_template_catalog_names alpine-3.24 -default_)" \
@@ -104,6 +109,8 @@ check "$(preflight_outcome)" pass 'preflight accepts the amd64 alpine 3.24 archi
 
 var_os=fedora var_version=99
 check "$(preflight_outcome)" fail 'preflight rejects a version the catalogue lacks'
+var_os=fedora var_version=''
+check "$(preflight_outcome)" pass 'preflight permits an empty version prefix'
 
 if ((fails > 0)); then
   echo "$fails failure(s)"
