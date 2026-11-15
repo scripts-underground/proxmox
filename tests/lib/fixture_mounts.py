@@ -40,18 +40,23 @@ def preserve(metadata, receipt, paths, whole=False):
     # present underneath it in mountinfo.
     objects = {str(p): identity(p) for p in [*paths, *(Path(row['target']) for row in graph)]}
     snapshot = dict(objects=objects, mounts=graph, paths=[str(p) for p in paths])
-    with receipt.open('x') as stream:
-        json.dump(snapshot, stream, sort_keys=True)
     if whole:
         if any(metadata.iterdir()):
             raise ValueError('fixture projection target not empty')
         subprocess.run(['/bin/mount', '--rbind', str(MANAGED), str(metadata)], check=True, timeout=20)
-        return
-    children = sorted({p.relative_to(MANAGED).parts[0] for p in paths if p.is_relative_to(MANAGED)})
-    for child in children:
-        target = metadata/child
-        target.mkdir()  # exclusive staging, never adopt a preexisting mount
-        subprocess.run(['/bin/mount', '--rbind', str(MANAGED/child), str(target)], check=True, timeout=20)
+    else:
+        children = sorted({p.relative_to(MANAGED).parts[0] for p in paths if p.is_relative_to(MANAGED)})
+        for child in children:
+            target = metadata/child
+            target.mkdir()  # exclusive staging, never adopt a preexisting mount
+            subprocess.run(['/bin/mount', '--rbind', str(MANAGED/child), str(target)], check=True, timeout=20)
+    # Only the mounts actually created for this projection may be added to the
+    # original input graph. Translate their staging paths to consumer paths.
+    staging = [row for row in mount_graph([metadata]) if Path(row['target']).is_relative_to(metadata)]
+    snapshot['projection_mounts'] = staging + [dict(row, target=str(MANAGED/Path(row['target']).relative_to(metadata)))
+                                              for row in staging]
+    with receipt.open('x') as stream:
+        json.dump(snapshot, stream, sort_keys=True)
 
 
 def verify(receipt):
@@ -62,6 +67,9 @@ def verify(receipt):
     current = mount_graph(paths)
     if any(row not in current for row in snapshot['mounts']):
         raise ValueError('fixture source/TMPDIR nested mount graph changed')
+    allowed = snapshot['mounts'] + snapshot['projection_mounts']
+    if any(row not in allowed and any(Path(row['target']).is_relative_to(p) for p in paths) for row in current):
+        raise ValueError('fixture source/TMPDIR unexpected nested mount added')
 
 
 if __name__ == '__main__':

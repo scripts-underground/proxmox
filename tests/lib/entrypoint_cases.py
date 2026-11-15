@@ -171,6 +171,26 @@ class Entrypoints(unittest.TestCase):
                 dispatch(d, self.context.path, 'workflow-entrypoints', 'fixture', lambda *a: calls.append(a))
             self.assertEqual(calls, [])
 
+    @staticmethod
+    @contextlib.contextmanager
+    def public_effects(cli):
+        with patch('entrypoint.execute') as effects, patch('entrypoint.supervise') as supervisor, patch.dict(cli['main'].__globals__, execute=effects):
+            yield effects, supervisor
+
+    def test_public_effect_recorder_observes_actual_cli_callback(self):
+        cli = runpy.run_path(str(self.source/'tests/run'), run_name='effect_recorder_cli')
+        argv = ['tests/run','--run','--context',str(self.context.path),'--suite','workflow-entrypoints','--mode','fixture']
+        with self.public_effects(cli) as (effects, supervisor):
+            self.assertIs(cli['main'].__globals__['execute'], effects, 'public execution recorder is detached from actual CLI callback')
+            effects.return_value = 79
+            def dispatch(document, path, suite, mode, execute):
+                return execute(['recording-consumer'], {}, self.context)
+            with patch.object(sys,'argv',argv), patch.object(Context,'admit',return_value=self.context), patch.dict(cli['main'].__globals__,dispatch=dispatch):
+                self.assertEqual(cli['main'](),79)
+            effects.assert_called_once_with(['recording-consumer'],{},self.context)
+            supervisor.assert_not_called()
+        print('PUBLIC_EFFECT_RECORDER actual_main_callback observed=1 native_effects=0',flush=True)
+
     def test_attached_public_and_direct_refuse_before_effects(self):
         if self.context.document['schema'] != 2:
             return
@@ -198,7 +218,7 @@ class Entrypoints(unittest.TestCase):
             for action in ('--check','--run'):
                 argv = ['tests/run',action,'--context',str(path),'--suite','maintenance-package-force','--mode','fixture']
                 before = self.tree_state(Path(self.context.operation['runs']))
-                with patch.object(sys,'argv',argv), patch('entrypoint.execute') as effects, patch('entrypoint.supervise') as supervisor:
+                with patch.object(sys,'argv',argv), self.public_effects(cli) as (effects, supervisor):
                     with self.assertRaises(AdmissionError): cli['main']()
                     effects.assert_not_called(); supervisor.assert_not_called()
                 self.assertEqual(self.tree_state(Path(self.context.operation['runs'])),before)
@@ -229,11 +249,12 @@ class Entrypoints(unittest.TestCase):
 sys.path.insert(0,sys.argv[1]);import fixture_mounts as f
 root=pathlib.Path(sys.argv[2]);root.mkdir(mode=0o755)
 source=root/'source';tmp=root/'tmp';source.mkdir();tmp.mkdir()
+fresh=source/'previously-unmounted';fresh.mkdir();(fresh/'original').write_text('original-descendant')
 for parent,name in ((source,'source-payload'),(tmp,'tmp-payload')):
  backing=root/name;backing.mkdir();(backing/'sentinel').write_text(name)
  leaf=parent/'deep';leaf.mkdir();(leaf/'hidden').write_text('must-not-substitute')
  subprocess.run(['/bin/mount','--bind',str(backing),str(leaf)],check=True,timeout=10)
-metadata=root/'metadata';metadata.mkdir();receipt=root/'projection.json';paths=[source,tmp]
+metadata=tmp/'metadata';metadata.mkdir();receipt=root/'projection.json';paths=[source,tmp]
 if sys.argv[3]=='old':
  snapshot=dict(objects={str(p):f.identity(p) for p in paths},mounts=f.mount_graph(paths),paths=[str(p) for p in paths]);receipt.write_text(json.dumps(snapshot))
  child=source.relative_to(f.MANAGED).parts[0];(metadata/child).mkdir()
@@ -247,6 +268,14 @@ except (OSError,ValueError):
 assert (source/'deep/sentinel').read_text()=='source-payload'
 assert (tmp/'deep/sentinel').read_text()=='tmp-payload'
 print('NESTED_SOURCE_TMP_CONSUMERS_EXACT')
+foreign=root/'new-subtree';foreign.mkdir();(foreign/'substitution').write_text('foreign-descendant')
+subprocess.run(['/bin/mount','--bind',str(foreign),str(fresh)],check=True,timeout=10)
+try:f.verify(receipt)
+except ValueError:print('ADDED_UNMOUNTED_DESCENDANT_REFUSED')
+else:raise AssertionError('new mount below previously unmounted input descendant admitted')
+subprocess.run(['/bin/umount',str(fresh)],check=True,timeout=10)
+assert (fresh/'original').read_text()=='original-descendant'
+f.verify(receipt)
 foreign=root/'wrong-subtree';foreign.mkdir()
 subprocess.run(['/bin/mount','--bind',str(foreign),str(source/'deep')],check=True,timeout=10)
 try:f.verify(receipt)
@@ -259,6 +288,7 @@ else:raise AssertionError('changed nested graph admitted')
             self.run_owner.record('nested-mount-projection',dict(subject=subject,status=result.returncode,stdout=result.stdout,stderr=result.stderr))
             self.assertEqual(result.returncode,expected,result.stdout+result.stderr)
             self.assertIn('OLD_NONRECURSIVE_PROJECTION_REFUSED' if subject=='old' else 'CHANGED_NESTED_GRAPH_REFUSED',result.stdout)
+            if subject != 'old':self.assertIn('ADDED_UNMOUNTED_DESCENDANT_REFUSED',result.stdout)
         print('FIXTURE_MOUNT_GRAPH old_refused65 real_nested_source_tmp_bytes new_pass changed_graph_refused',flush=True)
 
     def test_current_hardening_direct_guard_only(self):
@@ -416,12 +446,12 @@ else:raise AssertionError('changed nested graph admitted')
     def test_obsolete_public_options_zero_effects(self):
         cli=runpy.run_path(str(self.source/'tests/run'),run_name='obsolete_options')
         for option in ('--resume','--native-preflight','--framework-existing'):
-            with patch.object(sys,'argv',['tests/run','--run',option]),patch.object(Context,'admit') as admission,patch('entrypoint.execute') as effects,contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(sys,'argv',['tests/run','--run',option]),patch.object(Context,'admit') as admission,self.public_effects(cli) as (effects, supervisor),contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:cli['main']()
                 self.assertEqual(error.exception.code,2);admission.assert_not_called();effects.assert_not_called()
         self.assertNotIn('model',REGISTRY['maintenance-template-lock'].modes)
         for action in ('--check','--run'):
-            with patch.object(sys,'argv',['tests/run',action,'--context',str(self.context.path),'--suite','maintenance-template-lock','--mode','model']),patch('entrypoint.execute') as effects:
+            with patch.object(sys,'argv',['tests/run',action,'--context',str(self.context.path),'--suite','maintenance-template-lock','--mode','model']),self.public_effects(cli) as (effects, supervisor):
                 with self.assertRaisesRegex(AdmissionError,'not registered'):cli['main']()
                 effects.assert_not_called()
 
