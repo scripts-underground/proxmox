@@ -224,4 +224,5 @@ PY
   done
 done
 printf '%s failure(s); actual official archive checksum/tar/ELF and generated OS-only updater; transport/APT/systemd modeled; no native Readarr or ARM runtime claim\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]

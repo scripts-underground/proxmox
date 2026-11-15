@@ -1369,6 +1369,16 @@ reported. Existing explicit regex intent stays byte-identical. The restart repai
 reads base units and drop-ins, adds only missing defaults and preserves independent
 user `Restart`/`RestartSec` directives, including same-version repair.
 
+The runtime-hook suite discovers sorted regular `tests/runtime-hooks/*.sh` members,
+each in a separate process. App models, setup and assertions live in that app's
+file, including standalone fixtures. `tests/lib/runtime-hooks/harness.sh` owns only
+app-independent cold-child isolation, status checks and pending retries; callbacks
+and declared variants/path mappings supply app differences. Adding an app does not
+edit a shared app switch or registry. The aggregator requires a zero exit and one
+terminal `RUNTIME_HOOKS_RESULT failures=0` per member, and refuses empty discovery.
+Discovery remains inside the existing context-bound suite/source tree and retains
+its declared `MAINTENANCE_REFERENCES` input and public runner contract.
+
 The focused cold-hook tests execute actual helpers/files and native parser/module
 consumers with explicitly modeled compilers, model weights, database provisioning
 and service control. A bounded Node24/Vite compiler fixture verifies generated

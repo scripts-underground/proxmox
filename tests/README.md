@@ -1,5 +1,27 @@
 # Tests
 
+## Per-app runtime hooks
+
+`maintenance-runtime-hooks` remains one registered suite with the same public
+runner and `MAINTENANCE_REFERENCES` binding. Its entrypoint discovers regular
+`tests/runtime-hooks/*.sh` files in sorted order and runs each in its own process.
+Every member must exit zero and end with exactly one
+`RUNTIME_HOOKS_RESULT failures=0` line; missing results and empty discovery fail.
+
+Add or fix an app in its own file only. Cold-hook members source
+`tests/lib/runtime-hooks/harness.sh`, declare `app`, `variants`, and `hook_paths`
+(source path/fixture-relative path pairs), define `runtime_hooks_model`,
+`runtime_hooks_setup`, and `runtime_hooks_assert`, then call
+`runtime_hooks_main "$@"`. Optional `runtime_hooks_expected`,
+`runtime_hooks_retry_needed`, and `runtime_hooks_retry_assert` callbacks customize
+expected status, retry eligibility, and retry checks. Setup may select an
+app-specific fault before invoking the cold hook.
+Callbacks use the current case variables (`c`, `role`, `fault`, `mode`, `variant`,
+`rc`, `expected`); model callbacks run in the isolated cold child. The harness
+owns case directories, namespace setup, generic checks and pending retries, never
+app selection. Standalone app fixtures may instead own their lifecycle and emit
+the same terminal result. Aggregator controls exercise refusal and success paths.
+
 ## Normal guest entrypoint
 
 `tests/run` is the public guest-local catalogue/admission/dispatch CLI. The
