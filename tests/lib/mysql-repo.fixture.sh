@@ -10,6 +10,7 @@ ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
 if [[ "${1:-}" == --child ]]; then
   c="$CASE_ROOT"
   mount --bind "$c/apt" /etc/apt
+  mount --bind "$c/root" /root
   source "$ROOT/misc/core.func"
   source "$ROOT/misc/tools.func"
   msg_info() { :; }
@@ -96,7 +97,8 @@ go() {
   local label="$1"
   n=$((n + 1))
   c="$work/$n"
-  mkdir -p "$c/apt/sources.list.d" "$c/apt/keyrings" "$c/apt/trusted.gpg.d"
+  mkdir -p "$c/apt/sources.list.d" "$c/apt/keyrings" "$c/apt/trusted.gpg.d" "$c/root" "$c/receiver-root"
+  printf 'receiver credentials must survive\n' > "$c/receiver-root/mysql.creds"
   : > "$c/events"
   : > "$c/messages"
   printf 'Types: deb\n' > "$c/apt/sources.list.d/debian.sources"
@@ -112,7 +114,10 @@ go() {
   rc=missing
   env -i PATH="$PATH" HOME="$c" TMPDIR="$TMPDIR" CASE_ROOT="$c" ROOT="$ROOT" CALL="$CALL" VERSION=8.0 \
     _OS_ID=debian _OS_CODENAME=bookworm _OS_VERSION=12 _OS_VERSION_FULL='12 (bookworm)' BUILD_LOG="$c/build.log" "${@:2}" \
-    timeout 30s unshare -m --propagation private -- bash "$0" --child < /dev/null > "$c/output" 2>&1 || true
+    timeout 30s unshare -m --propagation private -- bash -c '
+      mount --bind "$CASE_ROOT/receiver-root" /root
+      unshare -m --propagation private -- bash "$1" --child
+    ' bash "$0" < /dev/null > "$c/output" 2>&1 || true
   [[ ! -f "$c/rc" ]] || rc=$(< "$c/rc")
   L="$label/$CALL"
 }
@@ -187,6 +192,8 @@ check "$(cat "$c/repo-args")" 'mysql 8.0 https://repo.mysql.com/apt/debian https
 CALL=mysql-script
 go mysql-script-key
 check "$rc" 0 "$L status"
+check "$(cat "$c/receiver-root/mysql.creds")" 'receiver credentials must survive' "$L receiver root credentials untouched"
+check "$(test -f "$c/root/mysql.creds" && printf present || printf absent)" present "$L installer writes only case-local root credentials"
 check "$(cat "$c/curl-args")" '-fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025' "$L fetches the renewed key over verified HTTPS"
 check "$(cat "$c/gpg-input")" KEY "$L key bytes reach gpg --dearmor"
 check "$(grep -c '^Components: mysql-8.0$' "$c/apt/sources.list.d/mysql.sources" || true)" 1 "$L component unchanged"

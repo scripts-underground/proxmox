@@ -26,6 +26,8 @@ if [[ "${1:-}" == --child ]]; then
     cat > "$c/mysql-sql.$n"
     return "${MYSQL_STATUS:-0}"
   }
+  mariadb() { return 0; }
+  sudo() { return 0; }
   openssl() {
     local n
     n=$(count openssl)
@@ -43,10 +45,19 @@ if [[ "${1:-}" == --child ]]; then
     printf '%s' "${MYSQL_DB_PASS-unset}" > "$c/pass-after"
     printf '%s' "${MYSQL_DB_NAME-unset}" > "$c/name-after"
     bash -c 'printf %s "${MYSQL_DB_PASS-unset}"' > "$c/pass-child" || true
+    umask > "$c/umask-after"
   }
   trap finish EXIT
   [[ "$PIPEFAIL" == on ]] || set +o pipefail
+  umask "${CALLER_UMASK:-022}"
   case "$CALL" in
+    credentials)
+      case "$DB_ENGINE" in
+        mysql) setup_mysql_db || rc=$? ;;
+        mariadb) setup_mariadb_db || rc=$? ;;
+        postgresql) setup_postgresql_db || rc=$? ;;
+      esac
+      ;;
     plain) setup_mysql_db || rc=$? ;;
     cond) if setup_mysql_db; then rc=0; else rc=$?; fi ;;
     errexit)
@@ -207,6 +218,27 @@ for STD_MODE in no yes; do
       check "$(stat -c %a "$work/existing-$tag.creds")" 640 "$L existing credentials mode retained"
       check "$(grep -c '^MySQL Credentials$' "$work/existing-$tag.creds")" 1 "$L labeled block appended"
     done
+  done
+done
+
+# The database helpers share one private append contract, including public-parent paths.
+STD_MODE=yes PF=on CALL=credentials
+for engine in mysql mariadb postgresql; do
+  case "$engine" in mysql) prefix=MYSQL ;; mariadb) prefix=MARIADB ;; postgresql) prefix=PG ;; esac
+  for mask in 000 022 077; do
+    path="$work/$engine-$mask.creds"
+    go private-creds DB_ENGINE="$engine" CALLER_UMASK="$mask" APP=Fleet APPLICATION=Fleet \
+      "${prefix}_DB_NAME=d" "${prefix}_DB_USER=u" "${prefix}_DB_PASS=x" "${prefix}_DB_CREDS_FILE=$path"
+    check "$rc" 0 "$L $engine new file status"
+    check "$(stat -c %a "$path")" 600 "$L $engine new credentials private with umask $mask"
+    check "$(grep -c '^Password: x$' "$path")" 1 "$L $engine exact password saved"
+    check "$(rd "$c/umask-after")" "0$mask" "$L $engine caller umask preserved"
+    chmod 640 "$path"
+    go existing-private-creds DB_ENGINE="$engine" CALLER_UMASK="$mask" APP=Fleet APPLICATION=Fleet \
+      "${prefix}_DB_NAME=d" "${prefix}_DB_USER=u" "${prefix}_DB_PASS=y" "${prefix}_DB_CREDS_FILE=$path"
+    check "$rc" 0 "$L $engine append status"
+    check "$(stat -c %a "$path")" 640 "$L $engine operator mode preserved"
+    check "$(grep -c '^Password: [xy]$' "$path")" 2 "$L $engine prior and new credentials retained"
   done
 done
 
