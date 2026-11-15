@@ -1049,6 +1049,42 @@ for i in range(2):
             receipt=json.loads(sorted(self.run_owner.directory.glob('*-failure-preservation.json'))[-1].read_text())
             self.assertEqual((receipt['original_status'],receipt['preservation_status'],receipt['state']),(17,124,'unknown'))
 
+    def test_supervised_consumer_umask_and_private_evidence(self):
+        child = subprocess.run(['/usr/bin/python3', '-B', '-c',
+                                'import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                                'p.mkdir(); (p/"ordinary").write_text("fixture"); '
+                                'print(oct(os.umask(0o022)))',
+                                str(self.run_owner.directory/'consumer-modes')],
+                               capture_output=True, text=True, check=True, timeout=20)
+        self.assertEqual(child.stdout.strip(), '0o22', 'supervisor leaked evidence umask into consumer')
+        fixture = self.run_owner.directory/'consumer-modes'
+        self.assertEqual(fixture.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((fixture/'ordinary').stat().st_mode & 0o777, 0o644)
+        private = [self.run_owner.directory]
+        evidence = list(self.run_owner.directory.glob('*.json'))
+        job = Path(self.context.operation['runs'])/'jobs'/self.context.operation['run_id']
+        if job.exists():
+            private.extend([job.parent, job])
+            evidence.extend(job.glob('*.json'))
+            for name in ('stdout.log', 'stderr.log', 'job.lock'):
+                path = job/name
+                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o600))
+                evidence.append(path)
+        for path in private:
+            self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o700))
+        for path in evidence:
+            if path.suffix == '.json':
+                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o400))
+        for path in private + evidence + [self.context.path]:
+            denied = subprocess.run(['/usr/bin/python3', '-B', '-c',
+                                     'import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                                     'os.listdir(p) if p.is_dir() else p.read_bytes()', str(path)],
+                                    user=65534, group=65534, extra_groups=[],
+                                    capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(denied.returncode, 0, 'non-root accessed private evidence: '+str(path))
+            self.assertIn('PermissionError', denied.stderr)
+        print('SUPERVISED_CONSUMER_UMASK actual_child=022 ordinary=0755/0644 evidence=0700/0600/0400 nonroot=denied job='+str(job.exists()), flush=True)
+
     def test_review_actual_native_process_umask(self):
         native,_,_=self.native_fixture()
         native.PROGRAMS=dict(native.PROGRAMS,pct='/usr/bin/python3')
