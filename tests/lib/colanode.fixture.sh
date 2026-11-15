@@ -7,10 +7,10 @@ if [[ "${1:-}" == --child ]]; then
   c="$CASE_ROOT"
   # Provide private mount targets without creating directories on the VM.
   # Keep the disk-backed workspace visible after replacing /var.
-  mount --bind /var/lib/scripts-underground "$c/opt/workspace-anchor"
+  mount --rbind /var/lib/scripts-underground "$c/opt/workspace-anchor"
   mount --rbind "$c/opt" /opt
   mount --bind "$c/var" /var
-  mount --bind /opt/workspace-anchor /var/lib/scripts-underground
+  mount --rbind /opt/workspace-anchor /var/lib/scripts-underground
   mount --bind "$c/etc" /etc
   mount --bind "$c/www" /var/www
   mount --bind "$c/nginx" /etc/nginx
@@ -77,7 +77,8 @@ if [[ "${1:-}" == --child ]]; then
   NSAPP=colanode
   [[ "$FAULT" != silent-build && "$FAULT" != silent-none ]] || STD=silent
   [[ "$FAULT" != forced ]] || export UPDATE_FORCE=1
-  [[ "$FAULT" != override ]] || export var_appversion=v3.0.0
+  [[ "$FAULT" != override* ]] || export var_appversion=v3.0.0
+  [[ "$FAULT" != override-latest ]] || export var_appversion=latest
   if [[ "${COLANODE_COLD:-0}" == 1 ]]; then
     source "$ROOT/misc/bundle.func"
     # shellcheck disable=SC2034 # These values are read by _write_bundle.
@@ -119,7 +120,7 @@ check() {
 if [[ "${COLANODE_COLD:-0}" == 1 ]]; then
   faults=(none retry-web retry-edit)
 else
-  faults=(red none build silent-build silent-none download publish conflict markerless legacy current historical current-site lookup forced override retry-web retry-edit)
+  faults=(red none build silent-build silent-none download publish conflict markerless legacy current historical current-site lookup forced override override-current override-noop override-latest retry-web retry-edit)
 fi
 for fault in "${faults[@]}"; do
   c="$work/$fault"
@@ -142,9 +143,11 @@ for fault in "${faults[@]}"; do
   case "$fault" in
     markerless) ;;
     legacy) printf '1.0.0\n' > "$c/opt/colanode_version.txt" ;;
-    current | current-site | forced) printf '2.0.0\n' > "$c/home/.colanode" ;;
+    current | current-site | forced | override-current | override-latest) printf '2.0.0\n' > "$c/home/.colanode" ;;
+    override-noop) printf '3.0.0\n' > "$c/home/.colanode" ;;
     *) printf '1.0.0\n' > "$c/home/.colanode" ;;
   esac
+  [[ "$fault" != override-current && "$fault" != override-noop ]] || cp "$c/new/payload/code" "$c/opt/colanode/code"
   printf 'user env\n' > "$c/opt/colanode/.env"
   printf 'upload bytes\n' > "$c/opt/colanode/data/upload"
   printf 'custom bytes\n' > "$c/opt/colanode/custom/state"
@@ -255,21 +258,23 @@ NGINX
   else
     check "$(cat "$c/nginx/sites-available/colanode")" 'custom nginx' "$fault custom nginx survives"
   fi
-  if [[ "$fault" == none || "$fault" == silent-none || "$fault" == markerless || "$fault" == legacy || "$fault" == historical || "$fault" == forced || "$fault" == override ]]; then
+  if [[ "$fault" == none || "$fault" == silent-none || "$fault" == markerless || "$fault" == legacy || "$fault" == historical || "$fault" == forced || "$fault" == override || "$fault" == override-current ]]; then
     check "$(cat "$c/opt/colanode/code")" 'new source' 'new release source published'
     check "$(cat "$c/opt/colanode/packages/core/dist/index.js")" 'new generated' 'new build output published'
     check "$(cat "$c/www/colanode/index.html")" 'new web' 'new web output published'
     marker=2.0.0
-    [[ "$fault" != override ]] || marker=3.0.0
-    check "$(cat "$c/home/.colanode")" "$marker" 'real marker follows publication'
-    if [[ "$fault" == override ]]; then
+    [[ "$fault" != override* ]] || marker=3.0.0
+    check "$(cat "$c/home/.colanode")" "$marker" "$fault real marker follows publication"
+    if [[ "$fault" == override || "$fault" == override-current ]]; then
       check "$(grep -c '^v3.0.0$' "$c/release-requests" || true)" 1 'explicit override reaches release selector'
     fi
     if [[ "$fault" == forced ]]; then
       check "$(grep -c '^v2.0.0$' "$c/release-requests" || true)" 1 'forced equal release is fetched'
     fi
-  elif [[ "$fault" == current || "$fault" == current-site ]]; then
-    check "$(cat "$c/home/.colanode")" 2.0.0 'current release marker unchanged'
+  elif [[ "$fault" == current || "$fault" == current-site || "$fault" == override-noop || "$fault" == override-latest ]]; then
+    marker=2.0.0
+    [[ "$fault" != override-noop ]] || marker=3.0.0
+    check "$(cat "$c/home/.colanode")" "$marker" "$fault current release marker unchanged"
     check "$(grep -c '^stop colanode-server$' "$c/services" 2> /dev/null || true)" 0 'current release does not stop service'
   else
     check "$(cat "$c/home/.colanode")" 1.0.0 "$fault leaves real marker"

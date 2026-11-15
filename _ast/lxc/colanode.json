@@ -3,7 +3,7 @@
   "slug": "colanode",
   "type": "lxc",
   "total_lines": 480,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://colanode.com/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Colanode\"\nvar_tags=\"${var_tags:-collaboration;notes;chat}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    nginx\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"colanode_db\" PG_DB_USER=\"colanode\" PG_DB_EXTENSIONS=\"vector\" setup_postgresql_db\n  NODE_VERSION=\"22\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\"\n\n  msg_info \"Building Application\"\n  cd /opt/colanode || exit\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD npm install\n  $STD npm run build -w @colanode/core\n  $STD npm run build -w @colanode/crdt\n  $STD npm run build -w @colanode/server\n  $STD npm run build -w @colanode/client\n  $STD npm run build -w @colanode/ui\n  $STD npm run build -w @colanode/web\n  $STD npm prune --production\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Configuring Application\"\n  mkdir -p /var/lib/colanode/storage /var/www/colanode\n  cp -r /opt/colanode/apps/web/dist/. /var/www/colanode/\n  cat \u003c\u003c EOF \u003e /opt/colanode/.env\nPOSTGRES_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\nREDIS_URL=redis://127.0.0.1:6379\nNODE_ENV=production\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Configuring Nginx\"\n  create_self_signed_cert \"colanode\"\n  cp /etc/ssl/colanode/colanode.crt /var/www/colanode/colanode.crt\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/colanode\nserver {\n    listen 4000 ssl;\n    server_name _;\n    root /var/www/colanode;\n    index index.html;\n\n    ssl_certificate /etc/ssl/colanode/colanode.crt;\n    ssl_certificate_key /etc/ssl/colanode/colanode.key;\n\n    add_header Cross-Origin-Opener-Policy \"same-origin\" always;\n    add_header Cross-Origin-Embedder-Policy \"require-corp\" always;\n\n    location ~ ^/(config|client)(/.*)?$ {\n        client_max_body_size 0;\n        proxy_pass http://127.0.0.1:3000;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade \\$http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host \\$http_host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n\n    location = /colanode.crt {\n        default_type application/x-x509-ca-cert;\n    }\n\n    location / {\n        try_files \\$uri \\$uri/ /index.html;\n    }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/colanode /etc/nginx/sites-enabled/colanode\n  rm -f /etc/nginx/sites-enabled/default\n  systemctl reload nginx\n  msg_ok \"Configured Nginx\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/colanode-server.service\n[Unit]\nDescription=Colanode Server\nAfter=network.target postgresql.service redis-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/colanode\nEnvironmentFile=/opt/colanode/.env\nExecStart=/usr/bin/node apps/server/dist/index.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now colanode-server\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URLs:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000${CL} (Web UI)\"\n  echo -e \"${INFO}${YW} Before using: import the self-signed cert into your browser:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000/colanode.crt${CL}\"\n  echo -e \"${INFO}${YW} Server URL to use inside the app:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000/config${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/colanode ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' latest_version=''\n  local recovery_file=\"$HOME/.colanode-update-recovery\" prior_stage='' recovery_published=0\n  local -a inherited_keeps=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${inherited_keeps[@]}\" .env data)\n  stage=$(mktemp -d /opt/.colanode-build.XXXXXX) || exit $?\n  if [[ -e \"$recovery_file\" || -L \"$recovery_file\" ]]; then\n    if [[ ! -f \"$recovery_file\" || -L \"$recovery_file\" ]]; then\n      msg_error \"Invalid Colanode recovery record: $recovery_file\"\n      _deploy_remove_owned_trees \"$stage\" || msg_error \"Retained Colanode stage: $stage\"\n      exit 65\n    fi\n    prior_stage=$(\u003c \"$recovery_file\")\n    if [[ \"$prior_stage\" != /opt/.colanode-build.* || \"$prior_stage\" == */*/*/* || ! -d \"$prior_stage\" || -L \"$prior_stage\" || ! -f \"$prior_stage/recovery.json\" ]]; then\n      msg_error \"Invalid Colanode recovery stage: $prior_stage\"\n      _deploy_remove_owned_trees \"$stage\" || msg_error \"Retained Colanode stage: $stage\"\n      exit 65\n    fi\n  fi\n  if [[ -f \"$HOME/.colanode\" ]]; then\n    old_version=$(\u003c \"$HOME/.colanode\")\n  elif [[ -f /opt/colanode_version.txt ]]; then\n    old_version=$(\u003c /opt/colanode_version.txt)\n  fi\n  old_version=$(_gh_version_from_tag \"$old_version\") || rc=$?\n  if [[ \"$rc\" == 0 ]]; then selected_tag=$(get_latest_github_release \"colanode/colanode\" false) || rc=$?; fi\n  if [[ \"$rc\" == 0 ]]; then latest_version=$(_gh_version_from_tag \"$selected_tag\") || rc=$?; fi\n  if [[ \"$rc\" == 0 ]]; then\n    [[ -n \"$selected_tag\" \u0026\u0026 -n \"$latest_version\" ]] || rc=250\n  fi\n  if [[ \"$rc\" == 0 ]]; then\n    if [[ -z \"$old_version\" || \"$old_version\" != \"$latest_version\" || \"${UPDATE_FORCE:-}\" == 1 ]]; then due=1; fi\n    old_source=\"$stage/no-old-source\"\n\n    # Hooks are transported individually. Keep the staged operation and its\n    # cleanup in this hook, and explicitly propagate every failure.\n    function colanode_update_staged() {\n      local tag entry\n      mkdir -p \"$stage/home\" \"$stage/old-home\" || return $?\n      if [[ -n \"$old_version\" ]]; then\n        if HOME=\"$stage/old-home\" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\\n          fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$old_version\" \"$stage/old\"; then\n          old_source=\"$stage/old\"\n        else\n          msg_warn \"Installed release source unavailable; proceeding without old-source comparison\"\n        fi\n      else\n        msg_warn \"Installed release marker unavailable; proceeding without old-source comparison\"\n      fi\n      tag=\"${var_appversion:-$selected_tag}\"\n      HOME=\"$stage/home\" FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\\n        fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$tag\" \"$stage/new\" '' '' \"$stage/selected.json\" || return $?\n      selected_version=$(\u003c \"$stage/home/.colanode\") || return $?\n      [[ -n \"$selected_version\" \u0026\u0026 -s \"$stage/selected.json\" ]] || return 65\n\n      msg_info \"Building Colanode in a private directory\"\n      (\n        cd \"$stage/new\" || exit $?\n        export NODE_OPTIONS=\"--max-old-space-size=4096\"\n        $STD npm install || exit $?\n        $STD npm run build -w @colanode/core || exit $?\n        $STD npm run build -w @colanode/crdt || exit $?\n        $STD npm run build -w @colanode/server || exit $?\n        $STD npm run build -w @colanode/client || exit $?\n        $STD npm run build -w @colanode/ui || exit $?\n        $STD npm run build -w @colanode/web || exit $?\n        $STD npm prune --production || exit $?\n      ) || return $?\n\n      # Supply inherited keep paths as literal NUL-delimited data. The checker\n      # reports actual conflicts; it never sources or interprets unit files.\n      : \u003e \"$stage/keeps\" || return $?\n      for entry in \"${CLEAN_INSTALL_KEEP_PATHS[@]}\"; do printf '%s\\0' \"$entry\" \u003e\u003e \"$stage/keeps\" || return $?; done\n      local -a legacy_keeps=()\n      read -r -a legacy_keeps \u003c\u003c\u003c \"${CLEAN_INSTALL_KEEP:-}\"\n      for entry in \"${legacy_keeps[@]}\"; do printf '%s\\0' \"$entry\" \u003e\u003e \"$stage/keeps\" || return $?; done\n      node - \"$old_source\" \"$stage/new\" /opt/colanode /var/www/colanode \"$stage/keeps\" \"$stage/recovery.json\" \"${prior_stage:+$prior_stage/recovery.json}\" \u003c\u003c 'JS' || return $?\nconst fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\nconst [oldRoot, incoming, live, web, keepFile, recordFile, priorFile] = process.argv.slice(2);\nconst hasBaseline = fs.existsSync(oldRoot);\nconst keeps = fs.readFileSync(keepFile).toString().split('\\0').filter(Boolean);\nconst stat = p =\u003e { try { return fs.lstatSync(p); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null; throw e; } };\nconst identity = p =\u003e {\n  const s = stat(p);\n  if (!s) return null;\n  if (s.isSymbolicLink()) return {type:'link', target:fs.readlinkSync(p)};\n  if (s.isFile()) return {type:'file', mode:s.mode \u0026 0o7777, hash:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')};\n  return {type:s.isDirectory() ? 'directory' : 'other'};\n};\nconst equalIdentity = (a, b) =\u003e JSON.stringify(a) === JSON.stringify(b);\nconst prior = priorFile ? JSON.parse(fs.readFileSync(priorFile, 'utf8')) : {app:{}, web:{}};\nif (priorFile \u0026\u0026 (prior.kind !== 'colanode-publication-v1' || !prior.app || !prior.web)) throw Error('Invalid Colanode recovery manifest');\nconst next = {kind:'colanode-publication-v1', app:{}, web:{}};\nconst same = (a, b) =\u003e {\n  const x = stat(a), y = stat(b);\n  if (!x || !y) return false;\n  if (x.isSymbolicLink() \u0026\u0026 y.isSymbolicLink()) return fs.readlinkSync(a) === fs.readlinkSync(b);\n  return x.isFile() \u0026\u0026 y.isFile() \u0026\u0026 (x.mode \u0026 0o111) === (y.mode \u0026 0o111) \u0026\u0026 fs.readFileSync(a).equals(fs.readFileSync(b));\n};\nconst lockPath = path.join(live, 'package-lock.json');\nlet packages = {};\ntry { packages = JSON.parse(fs.readFileSync(lockPath, 'utf8')).packages || {}; } catch (_) {\n  try { packages = JSON.parse(fs.readFileSync(path.join(incoming, 'package-lock.json'), 'utf8')).packages || {}; } catch (_) { packages = {}; }\n}\nconst mountRoots = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\\n').filter(Boolean).map(line =\u003e line.split(' ')[4].replace(/\\\\(040|011|012|134)/g, (_, n) =\u003e ({'040':' ', '011':'\\t', '012':'\\n', '134':'\\\\'})[n]));\nconst inMount = (p, root) =\u003e mountRoots.some(m =\u003e m.startsWith(root + '/') \u0026\u0026 (p === m || p.startsWith(m + '/')));\nconst copiedAsset = rel =\u003e {\n  const name = path.basename(rel);\n  if (!/^apps\\/(web\\/public|desktop\\/assets|mobile\\/assets)\\//.test(rel)) return null;\n  if (name === 'emojis.db') return `assets/emojis/${rel.startsWith('apps/web/') ? 'emojis.min.db' : 'emojis.db'}`;\n  if (name === 'icons.db') return `assets/icons/${rel.startsWith('apps/web/') ? 'icons.min.db' : 'icons.db'}`;\n  if (name === 'emojis.svg') return 'assets/emojis/emojis.svg';\n  if (name === 'icons.svg') return 'assets/icons/icons.svg';\n  if (['satoshi-variable.woff2', 'satoshi-variable-italic.woff2', 'antonio.ttf'].includes(name)) return `assets/fonts/${name}`;\n  if (name === 'favicon.ico') return 'assets/images/colanode-logo.ico';\n  if (/^colanode-logo(?:-192\\.jpg|-512\\.jpg|\\.png|\\.ico|\\.icns)$/.test(name)) return `assets/images/${name}`;\n  return null;\n};\nconst generated = rel =\u003e {\n  if (/^packages\\/(core|crdt|client|ui)\\/(dist\\/|tsconfig\\.tsbuildinfo$)/.test(rel)) return true;\n  if (/^apps\\/(server|web)\\/(dist\\/|tsconfig\\.tsbuildinfo$)/.test(rel)) return true;\n  const parts = rel.split('/');\n  for (let i = 0; i \u003c parts.length; i++) {\n    if (parts[i] !== 'node_modules' || !parts[i + 1]) continue;\n    if (parts[i + 1] === '.package-lock.json' \u0026\u0026 i + 2 === parts.length) return true;\n    if (parts[i + 1] === '.bin') return true;\n    const end = i + (parts[i + 1].startsWith('@') ? 3 : 2);\n    return Boolean(packages[parts.slice(0, end).join('/')]);\n  }\n  return false;\n};\nconst conflict = p =\u003e { console.error(`Colanode update conflict: ${p}`); process.exitCode = 65; };\nfunction scan(src, dst, rel = '', webMode = false) {\n  for (const name of fs.readdirSync(src)) {\n    const r = rel ? `${rel}/${name}` : name;\n    const from = path.join(src, name), to = path.join(dst, name);\n    const s = fs.lstatSync(from), d = stat(to);\n    if (s.isDirectory() \u0026\u0026 !d) { scan(from, to, r, webMode); continue; }\n    if (!s.isDirectory()) {\n      const scope = webMode ? 'web' : 'app';\n      next[scope][r] = {before:identity(to), after:identity(from)};\n    }\n    if (!d) continue;\n    if (inMount(to, webMode ? web : live)) { conflict(to); continue; }\n    if (!webMode \u0026\u0026 keeps.some(k =\u003e r === k || r.startsWith(k + '/'))) { conflict(to); continue; }\n    if (s.isDirectory() \u0026\u0026 d.isDirectory()) { scan(from, to, r, webMode); continue; }\n    if (s.isDirectory() !== d.isDirectory() || s.isSymbolicLink() !== d.isSymbolicLink()) { conflict(to); continue; }\n    const previous = prior[webMode ? 'web' : 'app'][r];\n    if (previous \u0026\u0026 (equalIdentity(identity(to), previous.after) || equalIdentity(identity(to), previous.before))) continue;\n    if (webMode) {\n      if (!same(to, path.join(live, 'apps/web/dist', r))) conflict(to);\n      continue;\n    }\n    if (r === 'package-lock.json') continue;\n    const copied = copiedAsset(r);\n    if (copied \u0026\u0026 same(to, path.join(oldRoot, copied))) continue;\n    const oldArtifact = path.join(oldRoot, r);\n    if (stat(oldArtifact)) { if (!same(to, oldArtifact)) conflict(to); continue; }\n    if (s.isSymbolicLink()) { if (!same(to, from)) conflict(to); continue; }\n    if (!hasBaseline) continue;\n    if (!generated(r)) conflict(to);\n  }\n}\nscan(incoming, live);\nscan(path.join(incoming, 'apps/web/dist'), web, '', true);\nif (!process.exitCode) fs.writeFileSync(recordFile, JSON.stringify(next), {mode:0o600});\nJS\n      [[ -d \"$stage/new/apps/web/dist\" ]] || return 65\n      local recovery_tmp recovery_rc\n      recovery_tmp=$(mktemp \"$HOME/.colanode-recovery.XXXXXX\") || return $?\n      printf '%s\\n' \"$stage\" \u003e \"$recovery_tmp\" || {\n        recovery_rc=$?\n        rm -f -- \"$recovery_tmp\"\n        return \"$recovery_rc\"\n      }\n      mv -f -- \"$recovery_tmp\" \"$recovery_file\" || {\n        recovery_rc=$?\n        rm -f -- \"$recovery_tmp\"\n        return \"$recovery_rc\"\n      }\n      recovery_published=1\n      msg_info \"Publishing Colanode\"\n      systemctl stop colanode-server || return $?\n      _deploy_replace_contents \"$stage/new\" /opt/colanode 0 || return $?\n      _deploy_replace_contents \"$stage/new/apps/web/dist\" /var/www/colanode 0 || return $?\n      systemctl start colanode-server || return $?\n    }\n\n    function colanode_repair_nginx() {\n      # Match only the literal historical generated site. Customized sites and\n      # unusual link topologies remain operator-owned and are not rewritten.\n      cat \u003e \"$stage/nginx-original\" \u003c\u003c 'NGINX'\nserver {\n    listen 4000 ssl;\n    server_name _;\n    root /var/www/colanode;\n    index index.html;\n\n    ssl_certificate /etc/ssl/colanode/colanode.crt;\n    ssl_certificate_key /etc/ssl/colanode/colanode.key;\n\n    add_header Cross-Origin-Opener-Policy \"same-origin\" always;\n    add_header Cross-Origin-Embedder-Policy \"require-corp\" always;\n\n    location ~ ^/(config|client)(/.*)?$ {\n        proxy_pass http://127.0.0.1:3000;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location = /colanode.crt {\n        default_type application/x-x509-ca-cert;\n    }\n\n    location / {\n        try_files $uri $uri/ /index.html;\n    }\n}\nNGINX\n      local site=/etc/nginx/sites-available/colanode site_stage site_rc=0 enabled_entry enabled_count=0\n      if [[ -f \"$site\" \u0026\u0026 ! -L \"$site\" ]] \u0026\u0026 [[ \"$(stat -c %h \"$site\")\" == 1 ]] \u0026\u0026 cmp -s \"$site\" \"$stage/nginx-original\"; then\n        site_stage=$(mktemp -d /etc/nginx/sites-available/.colanode-update.XXXXXX) || return $?\n        cp -a -- \"$site\" \"$site_stage/original\" || return $?\n        cp -a -- \"$site\" \"$site_stage/candidate\" || return $?\n        sed -e '/location ~ \\^\\/(config|client)/a\\        client_max_body_size 0;' \\\n          -e 's/proxy_set_header Host \\$host;/proxy_set_header Host $http_host;/' \\\n          \"$stage/nginx-original\" \u003e \"$site_stage/body\" || return $?\n        cat \"$site_stage/body\" \u003e \"$site_stage/candidate\" || return $?\n        # Debian's main configuration includes this directory. Recreate only\n        # its directory entries as links, substituting the candidate for the\n        # active site, then validate the complete nginx configuration before\n        # publishing. Other includes still use their original absolute paths.\n        mkdir \"$site_stage/enabled\" || return $?\n        : \u003e \"$site_stage/selected-entries\" || return $?\n        find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 -print0 \u003e \"$site_stage/entries\" || return $?\n        while IFS= read -r -d '' enabled_entry; do\n          if [[ \"$enabled_entry\" -ef \"$site\" ]]; then\n            ln -s -- \"$site_stage/candidate\" \"$site_stage/enabled/${enabled_entry##*/}\" || return $?\n            printf '%s\\0' \"$site_stage/enabled/${enabled_entry##*/}\" \u003e\u003e \"$site_stage/selected-entries\" || return $?\n            enabled_count=$((enabled_count + 1))\n          else\n            ln -s -- \"$enabled_entry\" \"$site_stage/enabled/${enabled_entry##*/}\" || return $?\n          fi\n        done \u003c \"$site_stage/entries\"\n        if [[ \"$enabled_count\" == 0 ]] || ! grep -Fq '/etc/nginx/sites-enabled/*' /etc/nginx/nginx.conf; then\n          msg_warn \"Cannot validate the generated Colanode site through the active nginx configuration; site unchanged\"\n          _deploy_remove_owned_trees \"$site_stage\" || return $?\n          return 0\n        fi\n        sed \"s|/etc/nginx/sites-enabled/\\\\*|$site_stage/enabled/*|g\" /etc/nginx/nginx.conf \u003e \"$site_stage/nginx.conf\" || return $?\n        if nginx -T -c \"$site_stage/nginx.conf\" \u003e \"$site_stage/dump\"; then :; else\n          site_rc=$?\n          msg_error \"Colanode nginx validation failed; candidate retained at $site_stage/candidate\"\n          return \"$site_rc\"\n        fi\n        while IFS= read -r -d '' enabled_entry; do\n          if ! grep -Fxq \"# configuration file $enabled_entry:\" \"$site_stage/dump\"; then\n            msg_error \"Cannot establish that nginx validated $enabled_entry\"\n            return 65\n          fi\n        done \u003c \"$site_stage/selected-entries\"\n        if grep -Fxq \"# configuration file $site:\" \"$site_stage/dump\"; then\n          msg_error \"Colanode site is also included outside the validated site directory\"\n          return 65\n        fi\n        cmp -s \"$site\" \"$site_stage/original\" || {\n          msg_error \"Colanode nginx site changed during update\"\n          return 65\n        }\n        mv -f -- \"$site_stage/candidate\" \"$site\" || return $?\n        systemctl reload nginx || site_rc=$?\n        if [[ \"$site_rc\" != 0 ]]; then\n          if cmp -s \"$site\" \"$site_stage/body\"; then\n            mv -f -- \"$site_stage/original\" \"$site\" || msg_error \"Restore nginx site from $site_stage/original\"\n          else\n            msg_error \"Colanode nginx site changed; original retained at $site_stage/original\"\n          fi\n          return \"$site_rc\"\n        fi\n        _deploy_remove_owned_trees \"$site_stage\" || return $?\n      else\n        msg_warn \"Custom or missing Colanode nginx site: check Host and client_max_body_size directives\"\n      fi\n    }\n\n    if [[ \"$due\" == 1 ]]; then colanode_update_staged || rc=$?; fi\n    if [[ \"$rc\" == 0 ]]; then colanode_repair_nginx || rc=$?; fi\n    if [[ \"$rc\" == 0 ]] \u0026\u0026 { [[ -n \"$selected_version\" ]] || [[ ! -f \"$HOME/.colanode\" \u0026\u0026 -n \"$old_version\" ]]; }; then\n      local marker_stage marker_value=\"${selected_version:-$old_version}\"\n      marker_stage=$(mktemp \"$HOME/.colanode-marker.XXXXXX\") || rc=$?\n      if [[ \"$rc\" == 0 ]]; then\n        printf '%s\\n' \"$marker_value\" \u003e \"$marker_stage\" \u0026\u0026 mv -f -- \"$marker_stage\" \"$HOME/.colanode\" || rc=$?\n        if [[ \"$rc\" != 0 ]]; then rm -f -- \"$marker_stage\" || msg_error \"Retained marker stage: $marker_stage\"; fi\n      fi\n    fi\n    [[ \"$rc\" != 0 || \"$due\" != 1 ]] || msg_ok \"Updated successfully!\"\n  else\n    msg_error \"Unable to check Colanode release (status=$rc)\"\n  fi\n  cd /opt || cleanup_rc=$?\n  if [[ \"$recovery_published\" == 1 \u0026\u0026 \"$rc\" != 0 ]]; then\n    msg_error \"Colanode update incomplete; recovery record retained at $recovery_file and $stage\"\n  else\n    if [[ \"$recovery_published\" == 1 ]]; then rm -f -- \"$recovery_file\" || cleanup_rc=$?; fi\n    if [[ \"$cleanup_rc\" == 0 ]]; then _deploy_remove_owned_trees \"$stage\" || {\n      cleanup_rc=$?\n      msg_error \"Retained Colanode stage: $stage\"\n    }; fi\n  fi\n  if [[ \"$rc\" == 0 \u0026\u0026 \"$cleanup_rc\" == 0 \u0026\u0026 -n \"$prior_stage\" \u0026\u0026 \"$prior_stage\" != \"$stage\" ]]; then\n    if [[ \"$recovery_published\" == 0 ]]; then rm -f -- \"$recovery_file\" || cleanup_rc=$?; fi\n    if [[ \"$cleanup_rc\" == 0 ]]; then\n      _deploy_remove_owned_trees \"$prior_stage\" || {\n        cleanup_rc=$?\n        msg_error \"Retained previous Colanode recovery stage: $prior_stage\"\n      }\n    fi\n  elif [[ \"$rc\" != 0 \u0026\u0026 \"$recovery_published\" == 1 \u0026\u0026 -n \"$prior_stage\" ]]; then\n    msg_warn \"Previous Colanode attempt retained at $prior_stage\"\n  fi\n  [[ \"$rc\" == 0 ]] || exit \"$rc\"\n  [[ \"$cleanup_rc\" == 0 ]] || exit \"$cleanup_rc\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"colanode\" -- \"$@\"\n",
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://colanode.com/\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Colanode\"\nvar_tags=\"${var_tags:-collaboration;notes;chat}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    redis-server \\\n    nginx\n  msg_ok \"Installed Dependencies\"\n\n  PG_VERSION=\"17\" PG_MODULES=\"pgvector\" setup_postgresql\n  PG_DB_NAME=\"colanode_db\" PG_DB_USER=\"colanode\" PG_DB_EXTENSIONS=\"vector\" setup_postgresql_db\n  NODE_VERSION=\"22\" setup_nodejs\n\n  fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\"\n\n  msg_info \"Building Application\"\n  cd /opt/colanode || exit\n  export NODE_OPTIONS=\"--max-old-space-size=4096\"\n  $STD npm install\n  $STD npm run build -w @colanode/core\n  $STD npm run build -w @colanode/crdt\n  $STD npm run build -w @colanode/server\n  $STD npm run build -w @colanode/client\n  $STD npm run build -w @colanode/ui\n  $STD npm run build -w @colanode/web\n  $STD npm prune --production\n  unset NODE_OPTIONS\n  msg_ok \"Built Application\"\n\n  msg_info \"Configuring Application\"\n  mkdir -p /var/lib/colanode/storage /var/www/colanode\n  cp -r /opt/colanode/apps/web/dist/. /var/www/colanode/\n  cat \u003c\u003c EOF \u003e /opt/colanode/.env\nPOSTGRES_URL=postgresql://${PG_DB_USER}:${PG_DB_PASS}@127.0.0.1:5432/${PG_DB_NAME}\nREDIS_URL=redis://127.0.0.1:6379\nNODE_ENV=production\nEOF\n  msg_ok \"Configured Application\"\n\n  msg_info \"Configuring Nginx\"\n  create_self_signed_cert \"colanode\"\n  cp /etc/ssl/colanode/colanode.crt /var/www/colanode/colanode.crt\n  cat \u003c\u003c EOF \u003e /etc/nginx/sites-available/colanode\nserver {\n    listen 4000 ssl;\n    server_name _;\n    root /var/www/colanode;\n    index index.html;\n\n    ssl_certificate /etc/ssl/colanode/colanode.crt;\n    ssl_certificate_key /etc/ssl/colanode/colanode.key;\n\n    add_header Cross-Origin-Opener-Policy \"same-origin\" always;\n    add_header Cross-Origin-Embedder-Policy \"require-corp\" always;\n\n    location ~ ^/(config|client)(/.*)?$ {\n        client_max_body_size 0;\n        proxy_pass http://127.0.0.1:3000;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade \\$http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host \\$http_host;\n        proxy_set_header X-Real-IP \\$remote_addr;\n        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \\$scheme;\n    }\n\n    location = /colanode.crt {\n        default_type application/x-x509-ca-cert;\n    }\n\n    location / {\n        try_files \\$uri \\$uri/ /index.html;\n    }\n}\nEOF\n  ln -sf /etc/nginx/sites-available/colanode /etc/nginx/sites-enabled/colanode\n  rm -f /etc/nginx/sites-enabled/default\n  systemctl reload nginx\n  msg_ok \"Configured Nginx\"\n\n  msg_info \"Creating Service\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/colanode-server.service\n[Unit]\nDescription=Colanode Server\nAfter=network.target postgresql.service redis-server.service\nRequires=postgresql.service redis-server.service\n\n[Service]\nType=simple\nUser=root\nWorkingDirectory=/opt/colanode\nEnvironmentFile=/opt/colanode/.env\nExecStart=/usr/bin/node apps/server/dist/index.js\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now colanode-server\n  msg_ok \"Created Service\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URLs:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000${CL} (Web UI)\"\n  echo -e \"${INFO}${YW} Before using: import the self-signed cert into your browser:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000/colanode.crt${CL}\"\n  echo -e \"${INFO}${YW} Server URL to use inside the app:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:4000/config${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/colanode ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' requested_version=''\n  local recovery_file=\"$HOME/.colanode-update-recovery\" prior_stage='' recovery_published=0\n  local -a inherited_keeps=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${inherited_keeps[@]}\" .env data)\n  stage=$(mktemp -d /opt/.colanode-build.XXXXXX) || exit $?\n  if [[ -e \"$recovery_file\" || -L \"$recovery_file\" ]]; then\n    if [[ ! -f \"$recovery_file\" || -L \"$recovery_file\" ]]; then\n      msg_error \"Invalid Colanode recovery record: $recovery_file\"\n      _deploy_remove_owned_trees \"$stage\" || msg_error \"Retained Colanode stage: $stage\"\n      exit 65\n    fi\n    prior_stage=$(\u003c \"$recovery_file\")\n    if [[ \"$prior_stage\" != /opt/.colanode-build.* || \"$prior_stage\" == */*/*/* || ! -d \"$prior_stage\" || -L \"$prior_stage\" || ! -f \"$prior_stage/recovery.json\" ]]; then\n      msg_error \"Invalid Colanode recovery stage: $prior_stage\"\n      _deploy_remove_owned_trees \"$stage\" || msg_error \"Retained Colanode stage: $stage\"\n      exit 65\n    fi\n  fi\n  if [[ -f \"$HOME/.colanode\" ]]; then\n    old_version=$(\u003c \"$HOME/.colanode\")\n  elif [[ -f /opt/colanode_version.txt ]]; then\n    old_version=$(\u003c /opt/colanode_version.txt)\n  fi\n  old_version=$(_gh_version_from_tag \"$old_version\") || rc=$?\n  selected_tag=\"${var_appversion:-}\"\n  if [[ \"$rc\" == 0 ]] \u0026\u0026 [[ -z \"$selected_tag\" || \"$selected_tag\" == latest ]]; then selected_tag=$(get_latest_github_release \"colanode/colanode\" false) || rc=$?; fi\n  if [[ \"$rc\" == 0 ]]; then requested_version=$(_gh_version_from_tag \"$selected_tag\") || rc=$?; fi\n  if [[ \"$rc\" == 0 ]]; then\n    [[ -n \"$selected_tag\" \u0026\u0026 -n \"$requested_version\" ]] || rc=250\n  fi\n  if [[ \"$rc\" == 0 ]]; then\n    if [[ -z \"$old_version\" || \"$old_version\" != \"$requested_version\" || \"${UPDATE_FORCE:-}\" == 1 ]]; then due=1; fi\n    old_source=\"$stage/no-old-source\"\n\n    # Hooks are transported individually. Keep the staged operation and its\n    # cleanup in this hook, and explicitly propagate every failure.\n    function colanode_update_staged() {\n      local entry\n      mkdir -p \"$stage/home\" \"$stage/old-home\" || return $?\n      if [[ -n \"$old_version\" ]]; then\n        if HOME=\"$stage/old-home\" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\\n          fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$old_version\" \"$stage/old\"; then\n          old_source=\"$stage/old\"\n        else\n          msg_warn \"Installed release source unavailable; proceeding without old-source comparison\"\n        fi\n      else\n        msg_warn \"Installed release marker unavailable; proceeding without old-source comparison\"\n      fi\n      HOME=\"$stage/home\" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\\n        fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$selected_tag\" \"$stage/new\" '' '' \"$stage/selected.json\" || return $?\n      selected_version=$(\u003c \"$stage/home/.colanode\") || return $?\n      [[ -n \"$selected_version\" \u0026\u0026 -s \"$stage/selected.json\" ]] || return 65\n\n      msg_info \"Building Colanode in a private directory\"\n      (\n        cd \"$stage/new\" || exit $?\n        export NODE_OPTIONS=\"--max-old-space-size=4096\"\n        $STD npm install || exit $?\n        $STD npm run build -w @colanode/core || exit $?\n        $STD npm run build -w @colanode/crdt || exit $?\n        $STD npm run build -w @colanode/server || exit $?\n        $STD npm run build -w @colanode/client || exit $?\n        $STD npm run build -w @colanode/ui || exit $?\n        $STD npm run build -w @colanode/web || exit $?\n        $STD npm prune --production || exit $?\n      ) || return $?\n\n      # Supply inherited keep paths as literal NUL-delimited data. The checker\n      # reports actual conflicts; it never sources or interprets unit files.\n      : \u003e \"$stage/keeps\" || return $?\n      for entry in \"${CLEAN_INSTALL_KEEP_PATHS[@]}\"; do printf '%s\\0' \"$entry\" \u003e\u003e \"$stage/keeps\" || return $?; done\n      local -a legacy_keeps=()\n      read -r -a legacy_keeps \u003c\u003c\u003c \"${CLEAN_INSTALL_KEEP:-}\"\n      for entry in \"${legacy_keeps[@]}\"; do printf '%s\\0' \"$entry\" \u003e\u003e \"$stage/keeps\" || return $?; done\n      node - \"$old_source\" \"$stage/new\" /opt/colanode /var/www/colanode \"$stage/keeps\" \"$stage/recovery.json\" \"${prior_stage:+$prior_stage/recovery.json}\" \u003c\u003c 'JS' || return $?\nconst fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\nconst [oldRoot, incoming, live, web, keepFile, recordFile, priorFile] = process.argv.slice(2);\nconst hasBaseline = fs.existsSync(oldRoot);\nconst keeps = fs.readFileSync(keepFile).toString().split('\\0').filter(Boolean);\nconst stat = p =\u003e { try { return fs.lstatSync(p); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null; throw e; } };\nconst identity = p =\u003e {\n  const s = stat(p);\n  if (!s) return null;\n  if (s.isSymbolicLink()) return {type:'link', target:fs.readlinkSync(p)};\n  if (s.isFile()) return {type:'file', mode:s.mode \u0026 0o7777, hash:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')};\n  return {type:s.isDirectory() ? 'directory' : 'other'};\n};\nconst equalIdentity = (a, b) =\u003e JSON.stringify(a) === JSON.stringify(b);\nconst prior = priorFile ? JSON.parse(fs.readFileSync(priorFile, 'utf8')) : {app:{}, web:{}};\nif (priorFile \u0026\u0026 (prior.kind !== 'colanode-publication-v1' || !prior.app || !prior.web)) throw Error('Invalid Colanode recovery manifest');\nconst next = {kind:'colanode-publication-v1', app:{}, web:{}};\nconst same = (a, b) =\u003e {\n  const x = stat(a), y = stat(b);\n  if (!x || !y) return false;\n  if (x.isSymbolicLink() \u0026\u0026 y.isSymbolicLink()) return fs.readlinkSync(a) === fs.readlinkSync(b);\n  return x.isFile() \u0026\u0026 y.isFile() \u0026\u0026 (x.mode \u0026 0o111) === (y.mode \u0026 0o111) \u0026\u0026 fs.readFileSync(a).equals(fs.readFileSync(b));\n};\nconst lockPath = path.join(live, 'package-lock.json');\nlet packages = {};\ntry { packages = JSON.parse(fs.readFileSync(lockPath, 'utf8')).packages || {}; } catch (_) {\n  try { packages = JSON.parse(fs.readFileSync(path.join(incoming, 'package-lock.json'), 'utf8')).packages || {}; } catch (_) { packages = {}; }\n}\nconst mountRoots = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\\n').filter(Boolean).map(line =\u003e line.split(' ')[4].replace(/\\\\(040|011|012|134)/g, (_, n) =\u003e ({'040':' ', '011':'\\t', '012':'\\n', '134':'\\\\'})[n]));\nconst inMount = (p, root) =\u003e mountRoots.some(m =\u003e m.startsWith(root + '/') \u0026\u0026 (p === m || p.startsWith(m + '/')));\nconst copiedAsset = rel =\u003e {\n  const name = path.basename(rel);\n  if (!/^apps\\/(web\\/public|desktop\\/assets|mobile\\/assets)\\//.test(rel)) return null;\n  if (name === 'emojis.db') return `assets/emojis/${rel.startsWith('apps/web/') ? 'emojis.min.db' : 'emojis.db'}`;\n  if (name === 'icons.db') return `assets/icons/${rel.startsWith('apps/web/') ? 'icons.min.db' : 'icons.db'}`;\n  if (name === 'emojis.svg') return 'assets/emojis/emojis.svg';\n  if (name === 'icons.svg') return 'assets/icons/icons.svg';\n  if (['satoshi-variable.woff2', 'satoshi-variable-italic.woff2', 'antonio.ttf'].includes(name)) return `assets/fonts/${name}`;\n  if (name === 'favicon.ico') return 'assets/images/colanode-logo.ico';\n  if (/^colanode-logo(?:-192\\.jpg|-512\\.jpg|\\.png|\\.ico|\\.icns)$/.test(name)) return `assets/images/${name}`;\n  return null;\n};\nconst generated = rel =\u003e {\n  if (/^packages\\/(core|crdt|client|ui)\\/(dist\\/|tsconfig\\.tsbuildinfo$)/.test(rel)) return true;\n  if (/^apps\\/(server|web)\\/(dist\\/|tsconfig\\.tsbuildinfo$)/.test(rel)) return true;\n  const parts = rel.split('/');\n  for (let i = 0; i \u003c parts.length; i++) {\n    if (parts[i] !== 'node_modules' || !parts[i + 1]) continue;\n    if (parts[i + 1] === '.package-lock.json' \u0026\u0026 i + 2 === parts.length) return true;\n    if (parts[i + 1] === '.bin') return true;\n    const end = i + (parts[i + 1].startsWith('@') ? 3 : 2);\n    return Boolean(packages[parts.slice(0, end).join('/')]);\n  }\n  return false;\n};\nconst conflict = p =\u003e { console.error(`Colanode update conflict: ${p}`); process.exitCode = 65; };\nfunction scan(src, dst, rel = '', webMode = false) {\n  for (const name of fs.readdirSync(src)) {\n    const r = rel ? `${rel}/${name}` : name;\n    const from = path.join(src, name), to = path.join(dst, name);\n    const s = fs.lstatSync(from), d = stat(to);\n    if (s.isDirectory() \u0026\u0026 !d) { scan(from, to, r, webMode); continue; }\n    if (!s.isDirectory()) {\n      const scope = webMode ? 'web' : 'app';\n      next[scope][r] = {before:identity(to), after:identity(from)};\n    }\n    if (!d) continue;\n    if (inMount(to, webMode ? web : live)) { conflict(to); continue; }\n    if (!webMode \u0026\u0026 keeps.some(k =\u003e r === k || r.startsWith(k + '/'))) { conflict(to); continue; }\n    if (s.isDirectory() \u0026\u0026 d.isDirectory()) { scan(from, to, r, webMode); continue; }\n    if (s.isDirectory() !== d.isDirectory() || s.isSymbolicLink() !== d.isSymbolicLink()) { conflict(to); continue; }\n    const previous = prior[webMode ? 'web' : 'app'][r];\n    if (previous \u0026\u0026 (equalIdentity(identity(to), previous.after) || equalIdentity(identity(to), previous.before))) continue;\n    if (webMode) {\n      if (!same(to, path.join(live, 'apps/web/dist', r))) conflict(to);\n      continue;\n    }\n    if (r === 'package-lock.json') continue;\n    const copied = copiedAsset(r);\n    if (copied \u0026\u0026 same(to, path.join(oldRoot, copied))) continue;\n    const oldArtifact = path.join(oldRoot, r);\n    if (stat(oldArtifact)) { if (!same(to, oldArtifact)) conflict(to); continue; }\n    if (s.isSymbolicLink()) { if (!same(to, from)) conflict(to); continue; }\n    if (!hasBaseline) continue;\n    if (!generated(r)) conflict(to);\n  }\n}\nscan(incoming, live);\nscan(path.join(incoming, 'apps/web/dist'), web, '', true);\nif (!process.exitCode) fs.writeFileSync(recordFile, JSON.stringify(next), {mode:0o600});\nJS\n      [[ -d \"$stage/new/apps/web/dist\" ]] || return 65\n      local recovery_tmp recovery_rc\n      recovery_tmp=$(mktemp \"$HOME/.colanode-recovery.XXXXXX\") || return $?\n      printf '%s\\n' \"$stage\" \u003e \"$recovery_tmp\" || {\n        recovery_rc=$?\n        rm -f -- \"$recovery_tmp\"\n        return \"$recovery_rc\"\n      }\n      mv -f -- \"$recovery_tmp\" \"$recovery_file\" || {\n        recovery_rc=$?\n        rm -f -- \"$recovery_tmp\"\n        return \"$recovery_rc\"\n      }\n      recovery_published=1\n      msg_info \"Publishing Colanode\"\n      systemctl stop colanode-server || return $?\n      _deploy_replace_contents \"$stage/new\" /opt/colanode 0 || return $?\n      _deploy_replace_contents \"$stage/new/apps/web/dist\" /var/www/colanode 0 || return $?\n      systemctl start colanode-server || return $?\n    }\n\n    function colanode_repair_nginx() {\n      # Match only the literal historical generated site. Customized sites and\n      # unusual link topologies remain operator-owned and are not rewritten.\n      cat \u003e \"$stage/nginx-original\" \u003c\u003c 'NGINX'\nserver {\n    listen 4000 ssl;\n    server_name _;\n    root /var/www/colanode;\n    index index.html;\n\n    ssl_certificate /etc/ssl/colanode/colanode.crt;\n    ssl_certificate_key /etc/ssl/colanode/colanode.key;\n\n    add_header Cross-Origin-Opener-Policy \"same-origin\" always;\n    add_header Cross-Origin-Embedder-Policy \"require-corp\" always;\n\n    location ~ ^/(config|client)(/.*)?$ {\n        proxy_pass http://127.0.0.1:3000;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n    location = /colanode.crt {\n        default_type application/x-x509-ca-cert;\n    }\n\n    location / {\n        try_files $uri $uri/ /index.html;\n    }\n}\nNGINX\n      local site=/etc/nginx/sites-available/colanode site_stage site_rc=0 enabled_entry enabled_count=0\n      if [[ -f \"$site\" \u0026\u0026 ! -L \"$site\" ]] \u0026\u0026 [[ \"$(stat -c %h \"$site\")\" == 1 ]] \u0026\u0026 cmp -s \"$site\" \"$stage/nginx-original\"; then\n        site_stage=$(mktemp -d /etc/nginx/sites-available/.colanode-update.XXXXXX) || return $?\n        cp -a -- \"$site\" \"$site_stage/original\" || return $?\n        cp -a -- \"$site\" \"$site_stage/candidate\" || return $?\n        sed -e '/location ~ \\^\\/(config|client)/a\\        client_max_body_size 0;' \\\n          -e 's/proxy_set_header Host \\$host;/proxy_set_header Host $http_host;/' \\\n          \"$stage/nginx-original\" \u003e \"$site_stage/body\" || return $?\n        cat \"$site_stage/body\" \u003e \"$site_stage/candidate\" || return $?\n        # Debian's main configuration includes this directory. Recreate only\n        # its directory entries as links, substituting the candidate for the\n        # active site, then validate the complete nginx configuration before\n        # publishing. Other includes still use their original absolute paths.\n        mkdir \"$site_stage/enabled\" || return $?\n        : \u003e \"$site_stage/selected-entries\" || return $?\n        find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 -print0 \u003e \"$site_stage/entries\" || return $?\n        while IFS= read -r -d '' enabled_entry; do\n          if [[ \"$enabled_entry\" -ef \"$site\" ]]; then\n            ln -s -- \"$site_stage/candidate\" \"$site_stage/enabled/${enabled_entry##*/}\" || return $?\n            printf '%s\\0' \"$site_stage/enabled/${enabled_entry##*/}\" \u003e\u003e \"$site_stage/selected-entries\" || return $?\n            enabled_count=$((enabled_count + 1))\n          else\n            ln -s -- \"$enabled_entry\" \"$site_stage/enabled/${enabled_entry##*/}\" || return $?\n          fi\n        done \u003c \"$site_stage/entries\"\n        if [[ \"$enabled_count\" == 0 ]] || ! grep -Fq '/etc/nginx/sites-enabled/*' /etc/nginx/nginx.conf; then\n          msg_warn \"Cannot validate the generated Colanode site through the active nginx configuration; site unchanged\"\n          _deploy_remove_owned_trees \"$site_stage\" || return $?\n          return 0\n        fi\n        sed \"s|/etc/nginx/sites-enabled/\\\\*|$site_stage/enabled/*|g\" /etc/nginx/nginx.conf \u003e \"$site_stage/nginx.conf\" || return $?\n        if nginx -T -c \"$site_stage/nginx.conf\" \u003e \"$site_stage/dump\"; then :; else\n          site_rc=$?\n          msg_error \"Colanode nginx validation failed; candidate retained at $site_stage/candidate\"\n          return \"$site_rc\"\n        fi\n        while IFS= read -r -d '' enabled_entry; do\n          if ! grep -Fxq \"# configuration file $enabled_entry:\" \"$site_stage/dump\"; then\n            msg_error \"Cannot establish that nginx validated $enabled_entry\"\n            return 65\n          fi\n        done \u003c \"$site_stage/selected-entries\"\n        if grep -Fxq \"# configuration file $site:\" \"$site_stage/dump\"; then\n          msg_error \"Colanode site is also included outside the validated site directory\"\n          return 65\n        fi\n        cmp -s \"$site\" \"$site_stage/original\" || {\n          msg_error \"Colanode nginx site changed during update\"\n          return 65\n        }\n        mv -f -- \"$site_stage/candidate\" \"$site\" || return $?\n        systemctl reload nginx || site_rc=$?\n        if [[ \"$site_rc\" != 0 ]]; then\n          if cmp -s \"$site\" \"$site_stage/body\"; then\n            mv -f -- \"$site_stage/original\" \"$site\" || msg_error \"Restore nginx site from $site_stage/original\"\n          else\n            msg_error \"Colanode nginx site changed; original retained at $site_stage/original\"\n          fi\n          return \"$site_rc\"\n        fi\n        _deploy_remove_owned_trees \"$site_stage\" || return $?\n      else\n        msg_warn \"Custom or missing Colanode nginx site: check Host and client_max_body_size directives\"\n      fi\n    }\n\n    if [[ \"$due\" == 1 ]]; then colanode_update_staged || rc=$?; fi\n    if [[ \"$rc\" == 0 ]]; then colanode_repair_nginx || rc=$?; fi\n    if [[ \"$rc\" == 0 ]] \u0026\u0026 { [[ -n \"$selected_version\" ]] || [[ ! -f \"$HOME/.colanode\" \u0026\u0026 -n \"$old_version\" ]]; }; then\n      local marker_stage marker_value=\"${selected_version:-$old_version}\"\n      marker_stage=$(mktemp \"$HOME/.colanode-marker.XXXXXX\") || rc=$?\n      if [[ \"$rc\" == 0 ]]; then\n        printf '%s\\n' \"$marker_value\" \u003e \"$marker_stage\" \u0026\u0026 mv -f -- \"$marker_stage\" \"$HOME/.colanode\" || rc=$?\n        if [[ \"$rc\" != 0 ]]; then rm -f -- \"$marker_stage\" || msg_error \"Retained marker stage: $marker_stage\"; fi\n      fi\n    fi\n    [[ \"$rc\" != 0 || \"$due\" != 1 ]] || msg_ok \"Updated successfully!\"\n  else\n    msg_error \"Unable to check Colanode release (status=$rc)\"\n  fi\n  cd /opt || cleanup_rc=$?\n  if [[ \"$recovery_published\" == 1 \u0026\u0026 \"$rc\" != 0 ]]; then\n    msg_error \"Colanode update incomplete; recovery record retained at $recovery_file and $stage\"\n  else\n    if [[ \"$recovery_published\" == 1 ]]; then rm -f -- \"$recovery_file\" || cleanup_rc=$?; fi\n    if [[ \"$cleanup_rc\" == 0 ]]; then _deploy_remove_owned_trees \"$stage\" || {\n      cleanup_rc=$?\n      msg_error \"Retained Colanode stage: $stage\"\n    }; fi\n  fi\n  if [[ \"$rc\" == 0 \u0026\u0026 \"$cleanup_rc\" == 0 \u0026\u0026 -n \"$prior_stage\" \u0026\u0026 \"$prior_stage\" != \"$stage\" ]]; then\n    if [[ \"$recovery_published\" == 0 ]]; then rm -f -- \"$recovery_file\" || cleanup_rc=$?; fi\n    if [[ \"$cleanup_rc\" == 0 ]]; then\n      _deploy_remove_owned_trees \"$prior_stage\" || {\n        cleanup_rc=$?\n        msg_error \"Retained previous Colanode recovery stage: $prior_stage\"\n      }\n    fi\n  elif [[ \"$rc\" != 0 \u0026\u0026 \"$recovery_published\" == 1 \u0026\u0026 -n \"$prior_stage\" ]]; then\n    msg_warn \"Previous Colanode attempt retained at $prior_stage\"\n  fi\n  [[ \"$rc\" == 0 ]] || exit \"$rc\"\n  [[ \"$cleanup_rc\" == 0 ]] || exit \"$cleanup_rc\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"colanode\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -149,7 +149,7 @@
     "    exit",
     "  fi",
     "",
-    "  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' latest_version=''",
+    "  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' requested_version=''",
     "  local recovery_file=\"$HOME/.colanode-update-recovery\" prior_stage='' recovery_published=0",
     "  local -a inherited_keeps=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")",
     "  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${inherited_keeps[@]}\" .env data)",
@@ -173,19 +173,20 @@
     "    old_version=$(\u003c /opt/colanode_version.txt)",
     "  fi",
     "  old_version=$(_gh_version_from_tag \"$old_version\") || rc=$?",
-    "  if [[ \"$rc\" == 0 ]]; then selected_tag=$(get_latest_github_release \"colanode/colanode\" false) || rc=$?; fi",
-    "  if [[ \"$rc\" == 0 ]]; then latest_version=$(_gh_version_from_tag \"$selected_tag\") || rc=$?; fi",
+    "  selected_tag=\"${var_appversion:-}\"",
+    "  if [[ \"$rc\" == 0 ]] \u0026\u0026 [[ -z \"$selected_tag\" || \"$selected_tag\" == latest ]]; then selected_tag=$(get_latest_github_release \"colanode/colanode\" false) || rc=$?; fi",
+    "  if [[ \"$rc\" == 0 ]]; then requested_version=$(_gh_version_from_tag \"$selected_tag\") || rc=$?; fi",
     "  if [[ \"$rc\" == 0 ]]; then",
-    "    [[ -n \"$selected_tag\" \u0026\u0026 -n \"$latest_version\" ]] || rc=250",
+    "    [[ -n \"$selected_tag\" \u0026\u0026 -n \"$requested_version\" ]] || rc=250",
     "  fi",
     "  if [[ \"$rc\" == 0 ]]; then",
-    "    if [[ -z \"$old_version\" || \"$old_version\" != \"$latest_version\" || \"${UPDATE_FORCE:-}\" == 1 ]]; then due=1; fi",
+    "    if [[ -z \"$old_version\" || \"$old_version\" != \"$requested_version\" || \"${UPDATE_FORCE:-}\" == 1 ]]; then due=1; fi",
     "    old_source=\"$stage/no-old-source\"",
     "",
     "    # Hooks are transported individually. Keep the staged operation and its",
     "    # cleanup in this hook, and explicitly propagate every failure.",
     "    function colanode_update_staged() {",
-    "      local tag entry",
+    "      local entry",
     "      mkdir -p \"$stage/home\" \"$stage/old-home\" || return $?",
     "      if [[ -n \"$old_version\" ]]; then",
     "        if HOME=\"$stage/old-home\" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\",
@@ -197,9 +198,8 @@
     "      else",
     "        msg_warn \"Installed release marker unavailable; proceeding without old-source comparison\"",
     "      fi",
-    "      tag=\"${var_appversion:-$selected_tag}\"",
-    "      HOME=\"$stage/home\" FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\",
-    "        fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$tag\" \"$stage/new\" '' '' \"$stage/selected.json\" || return $?",
+    "      HOME=\"$stage/home\" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \\",
+    "        fetch_and_deploy_gh_release \"colanode\" \"colanode/colanode\" \"tarball\" \"$selected_tag\" \"$stage/new\" '' '' \"$stage/selected.json\" || return $?",
     "      selected_version=$(\u003c \"$stage/home/.colanode\") || return $?",
     "      [[ -n \"$selected_version\" \u0026\u0026 -s \"$stage/selected.json\" ]] || return 65",
     "",
@@ -525,12 +525,12 @@
     },
     {
       "name": "colanode_update_staged",
-      "start_line": 180,
+      "start_line": 181,
       "end_line": 332,
       "name_span": {
-        "start_line": 180,
+        "start_line": 181,
         "start_col": 14,
-        "end_line": 180,
+        "end_line": 181,
         "end_col": 36,
         "kind": ""
       }
@@ -2418,15 +2418,15 @@
       "end_col": 53
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 145,
       "start_col": 54,
       "end_line": 145,
       "end_col": 64
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 145,
       "start_col": 54,
       "end_line": 145,
@@ -2482,21 +2482,21 @@
       "start_line": 145,
       "start_col": 101,
       "end_line": 145,
-      "end_col": 118
+      "end_col": 121
     },
     {
       "kind": "var-name",
       "start_line": 145,
       "start_col": 101,
       "end_line": 145,
-      "end_col": 115
+      "end_col": 118
     },
     {
       "kind": "string-sq",
       "start_line": 145,
-      "start_col": 116,
+      "start_col": 119,
       "end_line": 145,
-      "end_col": 118
+      "end_col": 121
     },
     {
       "kind": "keyword",
@@ -3577,299 +3577,253 @@
       "end_col": 62
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 169,
       "start_col": 3,
       "end_line": 169,
+      "end_col": 37
+    },
+    {
+      "kind": "var-name",
+      "start_line": 169,
+      "start_col": 3,
+      "end_line": 169,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 169,
+      "start_col": 16,
+      "end_line": 169,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 169,
+      "start_col": 17,
+      "end_line": 169,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 170,
+      "start_col": 3,
+      "end_line": 170,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 6,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 9,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 10,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 13
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 15,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 169,
+      "start_line": 170,
       "start_col": 20,
-      "end_line": 169,
+      "end_line": 170,
       "end_col": 22
     },
     {
       "kind": "operator",
-      "op": ";",
-      "start_line": 169,
-      "start_col": 22,
-      "end_line": 169,
-      "end_col": 23
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 169,
-      "start_col": 24,
-      "end_line": 169,
-      "end_col": 28
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 169,
-      "start_col": 29,
-      "end_line": 169,
-      "end_col": 96
-    },
-    {
-      "kind": "var-name",
-      "start_line": 169,
-      "start_col": 29,
-      "end_line": 169,
-      "end_col": 41
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 169,
-      "start_col": 42,
-      "end_line": 169,
-      "end_col": 96
-    },
-    {
-      "kind": "command",
-      "start_line": 169,
-      "start_col": 44,
-      "end_line": 169,
-      "end_col": 69
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 169,
-      "start_col": 70,
-      "end_line": 169,
-      "end_col": 89
+      "op": "\u0026\u0026",
+      "start_line": 170,
+      "start_col": 23,
+      "end_line": 170,
+      "end_col": 25
     },
     {
       "kind": "operator",
+      "op": "[[",
+      "start_line": 170,
+      "start_col": 26,
+      "end_line": 170,
+      "end_col": 28
+    },
+    {
+      "kind": "test-operator",
+      "op": "-z",
+      "start_line": 170,
+      "start_col": 29,
+      "end_line": 170,
+      "end_col": 31
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 32,
+      "end_line": 170,
+      "end_col": 47
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 33,
+      "end_line": 170,
+      "end_col": 46
+    },
+    {
+      "kind": "test-operator",
       "op": "||",
-      "start_line": 169,
-      "start_col": 97,
-      "end_line": 169,
-      "end_col": 99
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 169,
-      "start_col": 100,
-      "end_line": 169,
-      "end_col": 105
-    },
-    {
-      "kind": "var-name",
-      "start_line": 169,
-      "start_col": 100,
-      "end_line": 169,
-      "end_col": 102
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 169,
-      "start_col": 103,
-      "end_line": 169,
-      "end_col": 105
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 169,
-      "start_col": 105,
-      "end_line": 169,
-      "end_col": 106
-    },
-    {
-      "kind": "keyword",
-      "op": "fi",
-      "start_line": 169,
-      "start_col": 107,
-      "end_line": 169,
-      "end_col": 109
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
       "start_line": 170,
-      "start_col": 3,
+      "start_col": 48,
       "end_line": 170,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 170,
-      "start_col": 6,
-      "end_line": 170,
-      "end_col": 8
+      "end_col": 50
     },
     {
       "kind": "string-dq",
       "start_line": 170,
-      "start_col": 9,
-      "end_line": 170,
-      "end_col": 14
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 170,
-      "start_col": 10,
-      "end_line": 170,
-      "end_col": 13
-    },
-    {
-      "kind": "test-operator",
-      "op": "==",
-      "start_line": 170,
-      "start_col": 15,
-      "end_line": 170,
-      "end_col": 17
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 170,
-      "start_col": 20,
-      "end_line": 170,
-      "end_col": 22
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 170,
-      "start_col": 22,
-      "end_line": 170,
-      "end_col": 23
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 170,
-      "start_col": 24,
-      "end_line": 170,
-      "end_col": 28
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 170,
-      "start_col": 29,
-      "end_line": 170,
-      "end_col": 83
-    },
-    {
-      "kind": "var-name",
-      "start_line": 170,
-      "start_col": 29,
-      "end_line": 170,
-      "end_col": 43
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 170,
-      "start_col": 44,
-      "end_line": 170,
-      "end_col": 83
-    },
-    {
-      "kind": "command",
-      "start_line": 170,
-      "start_col": 46,
+      "start_col": 51,
       "end_line": 170,
       "end_col": 66
     },
     {
-      "kind": "string-dq",
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 52,
+      "end_line": 170,
+      "end_col": 65
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
       "start_line": 170,
       "start_col": 67,
       "end_line": 170,
-      "end_col": 82
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 170,
-      "start_col": 68,
-      "end_line": 170,
-      "end_col": 81
+      "end_col": 69
     },
     {
       "kind": "operator",
-      "op": "||",
+      "op": "]]",
       "start_line": 170,
-      "start_col": 84,
+      "start_col": 77,
       "end_line": 170,
-      "end_col": 86
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 170,
-      "start_col": 87,
-      "end_line": 170,
-      "end_col": 92
-    },
-    {
-      "kind": "var-name",
-      "start_line": 170,
-      "start_col": 87,
-      "end_line": 170,
-      "end_col": 89
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 170,
-      "start_col": 90,
-      "end_line": 170,
-      "end_col": 92
+      "end_col": 79
     },
     {
       "kind": "operator",
       "op": ";",
       "start_line": 170,
-      "start_col": 92,
+      "start_col": 79,
       "end_line": 170,
-      "end_col": 93
+      "end_col": 80
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 170,
+      "start_col": 81,
+      "end_line": 170,
+      "end_col": 85
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 170,
+      "start_col": 86,
+      "end_line": 170,
+      "end_col": 153
+    },
+    {
+      "kind": "var-name",
+      "start_line": 170,
+      "start_col": 86,
+      "end_line": 170,
+      "end_col": 98
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 170,
+      "start_col": 99,
+      "end_line": 170,
+      "end_col": 153
+    },
+    {
+      "kind": "command",
+      "start_line": 170,
+      "start_col": 101,
+      "end_line": 170,
+      "end_col": 126
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 170,
+      "start_col": 127,
+      "end_line": 170,
+      "end_col": 146
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 170,
+      "start_col": 154,
+      "end_line": 170,
+      "end_col": 156
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 170,
+      "start_col": 157,
+      "end_line": 170,
+      "end_col": 162
+    },
+    {
+      "kind": "var-name",
+      "start_line": 170,
+      "start_col": 157,
+      "end_line": 170,
+      "end_col": 159
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 170,
+      "start_col": 160,
+      "end_line": 170,
+      "end_col": 162
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 170,
+      "start_col": 162,
+      "end_line": 170,
+      "end_col": 163
     },
     {
       "kind": "keyword",
       "op": "fi",
       "start_line": 170,
-      "start_col": 94,
+      "start_col": 164,
       "end_line": 170,
-      "end_col": 96
+      "end_col": 166
     },
     {
       "kind": "keyword",
@@ -3932,902 +3886,1024 @@
       "start_col": 24,
       "end_line": 171,
       "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 171,
+      "start_col": 29,
+      "end_line": 171,
+      "end_col": 86
+    },
+    {
+      "kind": "var-name",
+      "start_line": 171,
+      "start_col": 29,
+      "end_line": 171,
+      "end_col": 46
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 171,
+      "start_col": 47,
+      "end_line": 171,
+      "end_col": 86
+    },
+    {
+      "kind": "command",
+      "start_line": 171,
+      "start_col": 49,
+      "end_line": 171,
+      "end_col": 69
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 171,
+      "start_col": 70,
+      "end_line": 171,
+      "end_col": 85
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 171,
+      "start_col": 71,
+      "end_line": 171,
+      "end_col": 84
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 171,
+      "start_col": 87,
+      "end_line": 171,
+      "end_col": 89
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 171,
+      "start_col": 90,
+      "end_line": 171,
+      "end_col": 95
+    },
+    {
+      "kind": "var-name",
+      "start_line": 171,
+      "start_col": 90,
+      "end_line": 171,
+      "end_col": 92
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 171,
+      "start_col": 93,
+      "end_line": 171,
+      "end_col": 95
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 171,
+      "start_col": 95,
+      "end_line": 171,
+      "end_col": 96
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 171,
+      "start_col": 97,
+      "end_line": 171,
+      "end_col": 99
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 172,
+      "start_col": 3,
+      "end_line": 172,
+      "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
       "start_line": 172,
-      "start_col": 5,
+      "start_col": 6,
       "end_line": 172,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 172,
+      "start_col": 9,
+      "end_line": 172,
+      "end_col": 14
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 172,
+      "start_col": 10,
+      "end_line": 172,
+      "end_col": 13
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 172,
+      "start_col": 15,
+      "end_line": 172,
+      "end_col": 17
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 172,
+      "start_col": 20,
+      "end_line": 172,
+      "end_col": 22
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 172,
+      "start_col": 22,
+      "end_line": 172,
+      "end_col": 23
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 172,
+      "start_col": 24,
+      "end_line": 172,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 173,
+      "start_col": 5,
+      "end_line": 173,
       "end_col": 7
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 8,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 10
     },
     {
       "kind": "string-dq",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 11,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 26
     },
     {
       "kind": "param-exp",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 12,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 25
     },
     {
       "kind": "test-operator",
       "op": "\u0026\u0026",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 27,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 29
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 30,
-      "end_line": 172,
+      "end_line": 173,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 33,
-      "end_line": 172,
-      "end_col": 50
+      "end_line": 173,
+      "end_col": 53
     },
     {
       "kind": "param-exp",
-      "start_line": 172,
+      "start_line": 173,
       "start_col": 34,
-      "end_line": 172,
-      "end_col": 49
+      "end_line": 173,
+      "end_col": 52
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 172,
-      "start_col": 51,
-      "end_line": 172,
-      "end_col": 53
+      "start_line": 173,
+      "start_col": 54,
+      "end_line": 173,
+      "end_col": 56
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 172,
-      "start_col": 54,
-      "end_line": 172,
-      "end_col": 56
+      "start_line": 173,
+      "start_col": 57,
+      "end_line": 173,
+      "end_col": 59
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 172,
-      "start_col": 57,
-      "end_line": 172,
-      "end_col": 63
+      "start_line": 173,
+      "start_col": 60,
+      "end_line": 173,
+      "end_col": 66
     },
     {
       "kind": "var-name",
-      "start_line": 172,
-      "start_col": 57,
-      "end_line": 172,
-      "end_col": 59
+      "start_line": 173,
+      "start_col": 60,
+      "end_line": 173,
+      "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 173,
+      "start_line": 174,
       "start_col": 3,
-      "end_line": 173,
+      "end_line": 174,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 3,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 6,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 9,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 10,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 13
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 15,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 20,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 22
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 22,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 23
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 174,
+      "start_line": 175,
       "start_col": 24,
-      "end_line": 174,
+      "end_line": 175,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 5,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 8,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "-z",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 11,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 14,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 28
     },
     {
       "kind": "param-exp",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 15,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 27
     },
     {
       "kind": "test-operator",
       "op": "||",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 29,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 31
     },
     {
       "kind": "string-dq",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 32,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 46
     },
     {
       "kind": "param-exp",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 33,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 45
     },
     {
       "kind": "test-operator",
       "op": "!=",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 47,
-      "end_line": 175,
+      "end_line": 176,
       "end_col": 49
     },
     {
       "kind": "string-dq",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 50,
-      "end_line": 175,
-      "end_col": 67
+      "end_line": 176,
+      "end_col": 70
     },
     {
       "kind": "param-exp",
-      "start_line": 175,
+      "start_line": 176,
       "start_col": 51,
-      "end_line": 175,
-      "end_col": 66
+      "end_line": 176,
+      "end_col": 69
     },
     {
       "kind": "test-operator",
       "op": "||",
-      "start_line": 175,
-      "start_col": 68,
-      "end_line": 175,
-      "end_col": 70
+      "start_line": 176,
+      "start_col": 71,
+      "end_line": 176,
+      "end_col": 73
     },
     {
       "kind": "string-dq",
-      "start_line": 175,
-      "start_col": 71,
-      "end_line": 175,
-      "end_col": 90
+      "start_line": 176,
+      "start_col": 74,
+      "end_line": 176,
+      "end_col": 93
     },
     {
       "kind": "param-exp",
-      "start_line": 175,
-      "start_col": 72,
-      "end_line": 175,
-      "end_col": 89
+      "start_line": 176,
+      "start_col": 75,
+      "end_line": 176,
+      "end_col": 92
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 175,
-      "start_col": 91,
-      "end_line": 175,
-      "end_col": 93
+      "start_line": 176,
+      "start_col": 94,
+      "end_line": 176,
+      "end_col": 96
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 175,
-      "start_col": 96,
-      "end_line": 175,
-      "end_col": 98
+      "start_line": 176,
+      "start_col": 99,
+      "end_line": 176,
+      "end_col": 101
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 175,
-      "start_col": 98,
-      "end_line": 175,
-      "end_col": 99
+      "start_line": 176,
+      "start_col": 101,
+      "end_line": 176,
+      "end_col": 102
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 175,
-      "start_col": 100,
-      "end_line": 175,
-      "end_col": 104
+      "start_line": 176,
+      "start_col": 103,
+      "end_line": 176,
+      "end_col": 107
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 175,
-      "start_col": 105,
-      "end_line": 175,
-      "end_col": 110
+      "start_line": 176,
+      "start_col": 108,
+      "end_line": 176,
+      "end_col": 113
     },
     {
       "kind": "var-name",
-      "start_line": 175,
-      "start_col": 105,
-      "end_line": 175,
-      "end_col": 108
+      "start_line": 176,
+      "start_col": 108,
+      "end_line": 176,
+      "end_col": 111
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 175,
-      "start_col": 110,
-      "end_line": 175,
-      "end_col": 111
+      "start_line": 176,
+      "start_col": 113,
+      "end_line": 176,
+      "end_col": 114
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 175,
-      "start_col": 112,
-      "end_line": 175,
-      "end_col": 114
+      "start_line": 176,
+      "start_col": 115,
+      "end_line": 176,
+      "end_col": 117
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 5,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 38
     },
     {
       "kind": "var-name",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 5,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 16,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 38
     },
     {
       "kind": "param-exp",
-      "start_line": 176,
+      "start_line": 177,
       "start_col": 17,
-      "end_line": 176,
+      "end_line": 177,
       "end_col": 23
-    },
-    {
-      "kind": "comment",
-      "start_line": 178,
-      "start_col": 5,
-      "end_line": 178,
-      "end_col": 76
     },
     {
       "kind": "comment",
       "start_line": 179,
       "start_col": 5,
       "end_line": 179,
+      "end_col": 76
+    },
+    {
+      "kind": "comment",
+      "start_line": 180,
+      "start_col": 5,
+      "end_line": 180,
       "end_col": 68
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 5,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 13
     },
     {
       "kind": "function-name",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 14,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 180,
+      "start_line": 181,
       "start_col": 39,
-      "end_line": 180,
+      "end_line": 181,
       "end_col": 40
     },
     {
       "kind": "keyword",
       "op": "local",
-      "start_line": 181,
-      "start_col": 7,
-      "end_line": 181,
-      "end_col": 12
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 181,
-      "start_col": 13,
-      "end_line": 181,
-      "end_col": 16
-    },
-    {
-      "kind": "var-name",
-      "start_line": 181,
-      "start_col": 13,
-      "end_line": 181,
-      "end_col": 16
-    },
-    {
-      "kind": "var-name",
-      "start_line": 181,
-      "start_col": 17,
-      "end_line": 181,
-      "end_col": 22
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 181,
-      "start_col": 17,
-      "end_line": 181,
-      "end_col": 22
-    },
-    {
-      "kind": "command",
       "start_line": 182,
       "start_col": 7,
       "end_line": 182,
+      "end_col": 12
+    },
+    {
+      "kind": "var-name",
+      "start_line": 182,
+      "start_col": 13,
+      "end_line": 182,
+      "end_col": 18
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 182,
+      "start_col": 13,
+      "end_line": 182,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 183,
+      "start_col": 7,
+      "end_line": 183,
       "end_col": 12
     },
     {
       "kind": "string-dq",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 16,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 29
     },
     {
       "kind": "param-exp",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 17,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 23
     },
     {
       "kind": "string-dq",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 30,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 47
     },
     {
       "kind": "param-exp",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 31,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 37
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 48,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 50
     },
     {
       "kind": "command",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 51,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 57
     },
     {
       "kind": "param-exp",
-      "start_line": 182,
+      "start_line": 183,
       "start_col": 58,
-      "end_line": 182,
+      "end_line": 183,
       "end_col": 60
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 7,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 9
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 10,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 12
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 13,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 16,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 30
     },
     {
       "kind": "param-exp",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 17,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 29
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 31,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 33
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 33,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 34
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 183,
+      "start_line": 184,
       "start_col": 35,
-      "end_line": 183,
+      "end_line": 184,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 9,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 12,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 34
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 12,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 16
     },
     {
       "kind": "string-dq",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 17,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 34
     },
     {
       "kind": "param-exp",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 18,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 24
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 35,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 35,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 49
     },
     {
       "kind": "string-sq",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 50,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 52
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 53,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 67
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 53,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 65
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 68,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 83
     },
     {
       "kind": "var-name",
-      "start_line": 184,
+      "start_line": 185,
       "start_col": 68,
-      "end_line": 184,
+      "end_line": 185,
       "end_col": 81
     },
     {
       "kind": "command",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 11,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 38
     },
     {
       "kind": "string-dq",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 39,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 49
     },
     {
       "kind": "string-dq",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 50,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 69
     },
     {
       "kind": "string-dq",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 70,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 79
     },
     {
       "kind": "string-dq",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 80,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 94
     },
     {
       "kind": "param-exp",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 81,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 93
     },
     {
       "kind": "string-dq",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 95,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 107
     },
     {
       "kind": "param-exp",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 96,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 102
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 107,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 108
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 185,
+      "start_line": 186,
       "start_col": 109,
-      "end_line": 185,
+      "end_line": 186,
       "end_col": 113
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 186,
+      "start_line": 187,
       "start_col": 11,
-      "end_line": 186,
+      "end_line": 187,
       "end_col": 34
     },
     {
       "kind": "var-name",
-      "start_line": 186,
+      "start_line": 187,
       "start_col": 11,
-      "end_line": 186,
+      "end_line": 187,
       "end_col": 21
     },
     {
       "kind": "string-dq",
-      "start_line": 186,
+      "start_line": 187,
       "start_col": 22,
-      "end_line": 186,
+      "end_line": 187,
       "end_col": 34
     },
     {
       "kind": "param-exp",
-      "start_line": 186,
+      "start_line": 187,
       "start_col": 23,
-      "end_line": 186,
+      "end_line": 187,
       "end_col": 29
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 187,
+      "start_line": 188,
       "start_col": 9,
-      "end_line": 187,
+      "end_line": 188,
       "end_col": 13
     },
     {
       "kind": "command",
-      "start_line": 188,
+      "start_line": 189,
       "start_col": 11,
-      "end_line": 188,
+      "end_line": 189,
       "end_col": 19
     },
     {
       "kind": "string-dq",
-      "start_line": 188,
+      "start_line": 189,
       "start_col": 20,
-      "end_line": 188,
+      "end_line": 189,
       "end_col": 100
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 189,
+      "start_line": 190,
       "start_col": 9,
-      "end_line": 189,
+      "end_line": 190,
       "end_col": 11
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 190,
+      "start_line": 191,
       "start_col": 7,
-      "end_line": 190,
+      "end_line": 191,
       "end_col": 11
     },
     {
       "kind": "command",
-      "start_line": 191,
+      "start_line": 192,
       "start_col": 9,
-      "end_line": 191,
+      "end_line": 192,
       "end_col": 17
     },
     {
       "kind": "string-dq",
-      "start_line": 191,
+      "start_line": 192,
       "start_col": 18,
-      "end_line": 191,
+      "end_line": 192,
       "end_col": 98
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 192,
+      "start_line": 193,
       "start_col": 7,
-      "end_line": 192,
+      "end_line": 193,
       "end_col": 9
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 193,
+      "start_line": 194,
       "start_col": 7,
-      "end_line": 193,
-      "end_col": 45
+      "end_line": 194,
+      "end_col": 25
     },
     {
       "kind": "var-name",
-      "start_line": 193,
+      "start_line": 194,
       "start_col": 7,
-      "end_line": 193,
-      "end_col": 10
+      "end_line": 194,
+      "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 193,
-      "start_col": 11,
-      "end_line": 193,
-      "end_col": 45
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 193,
+      "start_line": 194,
       "start_col": 12,
-      "end_line": 193,
-      "end_col": 44
+      "end_line": 194,
+      "end_col": 25
     },
     {
       "kind": "param-exp",
-      "start_line": 193,
-      "start_col": 30,
-      "end_line": 193,
+      "start_line": 194,
+      "start_col": 13,
+      "end_line": 194,
+      "end_col": 19
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 194,
+      "start_col": 26,
+      "end_line": 194,
+      "end_col": 43
+    },
+    {
+      "kind": "var-name",
+      "start_line": 194,
+      "start_col": 26,
+      "end_line": 194,
+      "end_col": 40
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 194,
+      "start_col": 41,
+      "end_line": 194,
       "end_col": 43
     },
     {
       "kind": "var-assign",
       "op": "=",
       "start_line": 194,
-      "start_col": 7,
+      "start_col": 44,
       "end_line": 194,
-      "end_col": 25
+      "end_col": 58
     },
     {
       "kind": "var-name",
       "start_line": 194,
-      "start_col": 7,
-      "end_line": 194,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 194,
-      "start_col": 12,
-      "end_line": 194,
-      "end_col": 25
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 194,
-      "start_col": 13,
-      "end_line": 194,
-      "end_col": 19
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 194,
-      "start_col": 26,
-      "end_line": 194,
-      "end_col": 40
-    },
-    {
-      "kind": "var-name",
-      "start_line": 194,
-      "start_col": 26,
-      "end_line": 194,
-      "end_col": 38
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 194,
-      "start_col": 41,
+      "start_col": 44,
       "end_line": 194,
       "end_col": 56
     },
     {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 194,
+      "start_col": 59,
+      "end_line": 194,
+      "end_col": 74
+    },
+    {
       "kind": "var-name",
       "start_line": 194,
-      "start_col": 41,
+      "start_col": 59,
       "end_line": 194,
-      "end_col": 54
+      "end_col": 72
     },
     {
       "kind": "command",
@@ -4862,78 +4938,78 @@
       "start_line": 195,
       "start_col": 78,
       "end_line": 195,
-      "end_col": 84
+      "end_col": 93
     },
     {
       "kind": "param-exp",
       "start_line": 195,
       "start_col": 79,
       "end_line": 195,
-      "end_col": 83
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 195,
-      "start_col": 85,
-      "end_line": 195,
-      "end_col": 97
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 195,
-      "start_col": 86,
-      "end_line": 195,
       "end_col": 92
     },
     {
-      "kind": "string-sq",
-      "start_line": 195,
-      "start_col": 98,
-      "end_line": 195,
-      "end_col": 100
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 195,
-      "start_col": 101,
-      "end_line": 195,
-      "end_col": 103
-    },
-    {
       "kind": "string-dq",
       "start_line": 195,
-      "start_col": 104,
+      "start_col": 94,
       "end_line": 195,
-      "end_col": 126
+      "end_col": 106
     },
     {
       "kind": "param-exp",
       "start_line": 195,
-      "start_col": 105,
+      "start_col": 95,
       "end_line": 195,
-      "end_col": 111
+      "end_col": 101
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 195,
+      "start_col": 107,
+      "end_line": 195,
+      "end_col": 109
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 195,
+      "start_col": 110,
+      "end_line": 195,
+      "end_col": 112
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 195,
+      "start_col": 113,
+      "end_line": 195,
+      "end_col": 135
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 195,
+      "start_col": 114,
+      "end_line": 195,
+      "end_col": 120
     },
     {
       "kind": "operator",
       "op": "||",
       "start_line": 195,
-      "start_col": 127,
+      "start_col": 136,
       "end_line": 195,
-      "end_col": 129
+      "end_col": 138
     },
     {
       "kind": "command",
       "start_line": 195,
-      "start_col": 130,
+      "start_col": 139,
       "end_line": 195,
-      "end_col": 136
+      "end_col": 145
     },
     {
       "kind": "param-exp",
       "start_line": 195,
-      "start_col": 137,
+      "start_col": 146,
       "end_line": 195,
-      "end_col": 139
+      "end_col": 148
     },
     {
       "kind": "var-assign",
@@ -5973,14 +6049,14 @@
       "end_col": 158
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "string-sq",
       "start_line": 220,
       "start_col": 159,
       "end_line": 220,
       "end_col": 163
     },
     {
-      "kind": "string-sq",
+      "kind": "heredoc-delim",
       "start_line": 220,
       "start_col": 159,
       "end_line": 220,
@@ -6092,15 +6168,15 @@
       "end_col": 25
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 314,
       "start_col": 26,
       "end_line": 314,
       "end_col": 37
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 314,
       "start_col": 26,
       "end_line": 314,

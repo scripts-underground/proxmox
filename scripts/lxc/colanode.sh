@@ -142,7 +142,7 @@ function update_script() {
     exit
   fi
 
-  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' latest_version=''
+  local stage rc=0 cleanup_rc=0 due=0 old_version='' old_source selected_version='' selected_tag='' requested_version=''
   local recovery_file="$HOME/.colanode-update-recovery" prior_stage='' recovery_published=0
   local -a inherited_keeps=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
   local -a CLEAN_INSTALL_KEEP_PATHS=("${inherited_keeps[@]}" .env data)
@@ -166,19 +166,20 @@ function update_script() {
     old_version=$(< /opt/colanode_version.txt)
   fi
   old_version=$(_gh_version_from_tag "$old_version") || rc=$?
-  if [[ "$rc" == 0 ]]; then selected_tag=$(get_latest_github_release "colanode/colanode" false) || rc=$?; fi
-  if [[ "$rc" == 0 ]]; then latest_version=$(_gh_version_from_tag "$selected_tag") || rc=$?; fi
+  selected_tag="${var_appversion:-}"
+  if [[ "$rc" == 0 ]] && [[ -z "$selected_tag" || "$selected_tag" == latest ]]; then selected_tag=$(get_latest_github_release "colanode/colanode" false) || rc=$?; fi
+  if [[ "$rc" == 0 ]]; then requested_version=$(_gh_version_from_tag "$selected_tag") || rc=$?; fi
   if [[ "$rc" == 0 ]]; then
-    [[ -n "$selected_tag" && -n "$latest_version" ]] || rc=250
+    [[ -n "$selected_tag" && -n "$requested_version" ]] || rc=250
   fi
   if [[ "$rc" == 0 ]]; then
-    if [[ -z "$old_version" || "$old_version" != "$latest_version" || "${UPDATE_FORCE:-}" == 1 ]]; then due=1; fi
+    if [[ -z "$old_version" || "$old_version" != "$requested_version" || "${UPDATE_FORCE:-}" == 1 ]]; then due=1; fi
     old_source="$stage/no-old-source"
 
     # Hooks are transported individually. Keep the staged operation and its
     # cleanup in this hook, and explicitly propagate every failure.
     function colanode_update_staged() {
-      local tag entry
+      local entry
       mkdir -p "$stage/home" "$stage/old-home" || return $?
       if [[ -n "$old_version" ]]; then
         if HOME="$stage/old-home" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \
@@ -190,9 +191,8 @@ function update_script() {
       else
         msg_warn "Installed release marker unavailable; proceeding without old-source comparison"
       fi
-      tag="${var_appversion:-$selected_tag}"
-      HOME="$stage/home" FORCE_DEPLOY=1 CLEAN_INSTALL=0 \
-        fetch_and_deploy_gh_release "colanode" "colanode/colanode" "tarball" "$tag" "$stage/new" '' '' "$stage/selected.json" || return $?
+      HOME="$stage/home" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 \
+        fetch_and_deploy_gh_release "colanode" "colanode/colanode" "tarball" "$selected_tag" "$stage/new" '' '' "$stage/selected.json" || return $?
       selected_version=$(< "$stage/home/.colanode") || return $?
       [[ -n "$selected_version" && -s "$stage/selected.json" ]] || return 65
 
