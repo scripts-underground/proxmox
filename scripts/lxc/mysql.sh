@@ -31,7 +31,7 @@ function install_script() {
   fi
 
   msg_info "Installing MySQL"
-  curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg
+  curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg
   if [[ "$(lsb_release -si)" == "Debian" ]]; then
     cat << EOF > /etc/apt/sources.list.d/mysql.sources
 Types: deb
