@@ -299,22 +299,13 @@ fi
 mount --make-rprivate /
 mkdir -p "$work/metadata" "$work/etc-pve/lxc" "$work/vz/template/cache" "$work/subjects/bin" "$work/legacy"
 # Preserve access to the disk workspace while hiding all real framework metadata.
-managed=/var/lib/scripts-underground
-for needed in "$ROOT" "$(realpath -e "$TMPDIR")"; do
-  if [[ "$needed" == "$managed/"* ]]; then
-    relative=${needed#"$managed/"}
-    first=${relative%%/*}
-    if [[ ! -d "$work/metadata/$first" ]]; then
-      mkdir "$work/metadata/$first"
-      mount --bind "$managed/$first" "$work/metadata/$first"
-    fi
-  fi
-done
+python3 "$ROOT/tests/lib/fixture_mounts.py" preserve "$work/metadata" "$work/mount-projection.json" "$ROOT" "$(realpath -e "$TMPDIR")"
 mount --rbind "$work/metadata" /var/lib/scripts-underground
 [[ -r "$0" && -d "$TMPDIR" ]] || {
   printf 'Cannot preserve source/temp paths under managed metadata\n' >&2
   exit 65
 }
+python3 "$ROOT/tests/lib/fixture_mounts.py" verify "$work/mount-projection.json"
 mount --bind "$work/etc-pve" /etc/pve
 mount --bind "$work/vz" /var/lib/vz
 printf 'root:100000:65536\n' > "$work/subuid"
@@ -756,7 +747,8 @@ if [[ "$TEST_MODE" != --baseline ]]; then
     p=/var/lib/scripts-underground/template-locks
     if [[ "$fault" == mode ]]; then chmod 755 "$p"; else
       mv "$p" "$p-aside"
-      mkdir "$CASE_ROOT/unsafe-directory"
+      # This input's expected mode is fixture data, not the supervisor's umask.
+      mkdir -m 0755 "$CASE_ROOT/unsafe-directory"
       ln -s "$CASE_ROOT/unsafe-directory" "$p"
     fi
     export LOCK_ACTION=hold

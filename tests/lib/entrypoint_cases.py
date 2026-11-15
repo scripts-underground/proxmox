@@ -171,6 +171,126 @@ class Entrypoints(unittest.TestCase):
                 dispatch(d, self.context.path, 'workflow-entrypoints', 'fixture', lambda *a: calls.append(a))
             self.assertEqual(calls, [])
 
+    @staticmethod
+    @contextlib.contextmanager
+    def public_effects(cli):
+        with patch('entrypoint.execute') as effects, patch('entrypoint.supervise') as supervisor, patch.dict(cli['main'].__globals__, execute=effects):
+            yield effects, supervisor
+
+    def test_public_effect_recorder_observes_actual_cli_callback(self):
+        cli = runpy.run_path(str(self.source/'tests/run'), run_name='effect_recorder_cli')
+        argv = ['tests/run','--run','--context',str(self.context.path),'--suite','workflow-entrypoints','--mode','fixture']
+        with self.public_effects(cli) as (effects, supervisor):
+            self.assertIs(cli['main'].__globals__['execute'], effects, 'public execution recorder is detached from actual CLI callback')
+            effects.return_value = 79
+            def dispatch(document, path, suite, mode, execute):
+                return execute(['recording-consumer'], {}, self.context)
+            with patch.object(sys,'argv',argv), patch.object(Context,'admit',return_value=self.context), patch.dict(cli['main'].__globals__,dispatch=dispatch):
+                self.assertEqual(cli['main'](),79)
+            effects.assert_called_once_with(['recording-consumer'],{},self.context)
+            supervisor.assert_not_called()
+        print('PUBLIC_EFFECT_RECORDER actual_main_callback observed=1 native_effects=0',flush=True)
+
+    def test_attached_public_and_direct_refuse_before_effects(self):
+        if self.context.document['schema'] != 2:
+            return
+        cli = runpy.run_path(str(self.source/'tests/run'), run_name='attached_refusal_cli')
+        cases = [
+            ('schema', lambda d: d.update(schema=7)),
+            ('kind', lambda d: d['target'].update(kind='unknown')),
+            ('mixed', lambda d: d['target'].update(disks={'vda':'not-authority'})),
+            ('DMI', lambda d: d['target'].update(uuid='wrong')),
+            ('MAC', lambda d: d['target'].update(mac='02:00:00:00:00:00')),
+            ('serial', lambda d: d['target']['work_volume'].update(serial='wrong')),
+            ('UUID', lambda d: d['target']['work_volume'].update(uuid='wrong')),
+            ('bind', lambda d: d['target']['mount'].update(inode=1)),
+            ('owner', lambda d: d['target']['ownership'].update(sha256='0'*64)),
+            ('qualification', lambda d: d['target']['infrastructure_qualification'].update(path='/no-such-qualification')),
+            ('source', lambda d: d['source'].update(tree_sha256='0'*64)),
+            ('history', lambda d: d['source'].update(history_sha256='0'*64)),
+            ('index', lambda d: d['source'].update(index_sha256='0'*64)),
+        ]
+        count = 0
+        for name, mutate in cases:
+            document = copy.deepcopy(self.context.document); mutate(document)
+            path = self.run_owner.directory/('attached-'+name+'.json')
+            path.write_text(json.dumps(document)); path.chmod(0o400)
+            for action in ('--check','--run'):
+                argv = ['tests/run',action,'--context',str(path),'--suite','maintenance-package-force','--mode','fixture']
+                before = self.tree_state(Path(self.context.operation['runs']))
+                with patch.object(sys,'argv',argv), self.public_effects(cli) as (effects, supervisor):
+                    with self.assertRaises(AdmissionError): cli['main']()
+                    effects.assert_not_called(); supervisor.assert_not_called()
+                self.assertEqual(self.tree_state(Path(self.context.operation['runs'])),before)
+                count += 1
+            result, effects = self.direct('maintenance-package-force', [], path)
+            self.assertEqual(result.returncode,65,result.stderr)
+            self.assertEqual(effects,'')
+            count += 1
+        print('ATTACHED_PUBLIC_DIRECT_REFUSAL cases='+str(count)+' check_run_direct locks_consumers_units=0',flush=True)
+
+    def test_attached_native_dispatch_rechecks_changed_attestation(self):
+        if self.context.document['schema'] != 2:
+            return
+        native,calls,argv=self.native_fixture()
+        document=copy.deepcopy(self.context.document)
+        path=native.run.directory/'recheck-context.json'
+        path.write_text(json.dumps(document));path.chmod(0o400)
+        admitted=Context.admit(path,'workflow-entrypoints','fixture')
+        native.run.context.recheck=admitted.recheck
+        document['target']['ownership']['sha256']='0'*64
+        path.write_text(json.dumps(document))
+        with self.assertRaises(AdmissionError):native.dispatch('pct',argv)
+        self.assertEqual(calls,[])
+        print('ATTACHED_NATIVE_RECHECK changed_attestation before_typed_dispatch native_effects=0',flush=True)
+
+    def test_fixture_projection_preserves_nested_mount_graph(self):
+        body = '''import json,pathlib,subprocess,sys
+sys.path.insert(0,sys.argv[1]);import fixture_mounts as f
+root=pathlib.Path(sys.argv[2]);root.mkdir(mode=0o755)
+source=root/'source';tmp=root/'tmp';source.mkdir();tmp.mkdir()
+fresh=source/'previously-unmounted';fresh.mkdir();(fresh/'original').write_text('original-descendant')
+for parent,name in ((source,'source-payload'),(tmp,'tmp-payload')):
+ backing=root/name;backing.mkdir();(backing/'sentinel').write_text(name)
+ leaf=parent/'deep';leaf.mkdir();(leaf/'hidden').write_text('must-not-substitute')
+ subprocess.run(['/bin/mount','--bind',str(backing),str(leaf)],check=True,timeout=10)
+metadata=tmp/'metadata';metadata.mkdir();receipt=root/'projection.json';paths=[source,tmp]
+if sys.argv[3]=='old':
+ snapshot=dict(objects={str(p):f.identity(p) for p in paths},mounts=f.mount_graph(paths),paths=[str(p) for p in paths]);receipt.write_text(json.dumps(snapshot))
+ child=source.relative_to(f.MANAGED).parts[0];(metadata/child).mkdir()
+ subprocess.run(['/bin/mount','--bind',str(f.MANAGED/child),str(metadata/child)],check=True,timeout=10)
+else:f.preserve(metadata,receipt,paths,whole=sys.argv[3]=='whole')
+subprocess.run(['/bin/mount','--rbind',str(metadata),str(f.MANAGED)],check=True,timeout=10)
+try:f.verify(receipt)
+except (OSError,ValueError):
+ if sys.argv[3]=='old':print('OLD_NONRECURSIVE_PROJECTION_REFUSED');sys.exit(65)
+ raise
+assert (source/'deep/sentinel').read_text()=='source-payload'
+assert (tmp/'deep/sentinel').read_text()=='tmp-payload'
+print('NESTED_SOURCE_TMP_CONSUMERS_EXACT')
+foreign=root/'new-subtree';foreign.mkdir();(foreign/'substitution').write_text('foreign-descendant')
+subprocess.run(['/bin/mount','--bind',str(foreign),str(fresh)],check=True,timeout=10)
+try:f.verify(receipt)
+except ValueError:print('ADDED_UNMOUNTED_DESCENDANT_REFUSED')
+else:raise AssertionError('new mount below previously unmounted input descendant admitted')
+subprocess.run(['/bin/umount',str(fresh)],check=True,timeout=10)
+assert (fresh/'original').read_text()=='original-descendant'
+f.verify(receipt)
+foreign=root/'wrong-subtree';foreign.mkdir()
+subprocess.run(['/bin/mount','--bind',str(foreign),str(source/'deep')],check=True,timeout=10)
+try:f.verify(receipt)
+except ValueError:print('CHANGED_NESTED_GRAPH_REFUSED')
+else:raise AssertionError('changed nested graph admitted')
+'''
+        for subject, expected in [('old',65),('new',0),('whole',0)]:
+            parent=self.run_owner.directory/('nested-projection-'+subject)
+            result=subprocess.run(['/usr/bin/unshare','--mount','--propagation','private','/usr/bin/python3','-B','-c',body,str(self.source/'tests/lib'),str(parent),subject],capture_output=True,text=True,timeout=40)
+            self.run_owner.record('nested-mount-projection',dict(subject=subject,status=result.returncode,stdout=result.stdout,stderr=result.stderr))
+            self.assertEqual(result.returncode,expected,result.stdout+result.stderr)
+            self.assertIn('OLD_NONRECURSIVE_PROJECTION_REFUSED' if subject=='old' else 'CHANGED_NESTED_GRAPH_REFUSED',result.stdout)
+            if subject != 'old':self.assertIn('ADDED_UNMOUNTED_DESCENDANT_REFUSED',result.stdout)
+        print('FIXTURE_MOUNT_GRAPH old_refused65 real_nested_source_tmp_bytes new_pass changed_graph_refused',flush=True)
+
     def test_current_hardening_direct_guard_only(self):
         result, effects = self.direct('maintenance-current-hardening', [], self.context.path)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -326,12 +446,12 @@ class Entrypoints(unittest.TestCase):
     def test_obsolete_public_options_zero_effects(self):
         cli=runpy.run_path(str(self.source/'tests/run'),run_name='obsolete_options')
         for option in ('--resume','--native-preflight','--framework-existing'):
-            with patch.object(sys,'argv',['tests/run','--run',option]),patch.object(Context,'admit') as admission,patch('entrypoint.execute') as effects,contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(sys,'argv',['tests/run','--run',option]),patch.object(Context,'admit') as admission,self.public_effects(cli) as (effects, supervisor),contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:cli['main']()
                 self.assertEqual(error.exception.code,2);admission.assert_not_called();effects.assert_not_called()
         self.assertNotIn('model',REGISTRY['maintenance-template-lock'].modes)
         for action in ('--check','--run'):
-            with patch.object(sys,'argv',['tests/run',action,'--context',str(self.context.path),'--suite','maintenance-template-lock','--mode','model']),patch('entrypoint.execute') as effects:
+            with patch.object(sys,'argv',['tests/run',action,'--context',str(self.context.path),'--suite','maintenance-template-lock','--mode','model']),self.public_effects(cli) as (effects, supervisor):
                 with self.assertRaisesRegex(AdmissionError,'not registered'):cli['main']()
                 effects.assert_not_called()
 
@@ -928,6 +1048,42 @@ for i in range(2):
             self.assertEqual((native.run.directory/'2012.state').read_text(),'running' if phase=='shutdown' else 'stopped')
             receipt=json.loads(sorted(self.run_owner.directory.glob('*-failure-preservation.json'))[-1].read_text())
             self.assertEqual((receipt['original_status'],receipt['preservation_status'],receipt['state']),(17,124,'unknown'))
+
+    def test_supervised_consumer_umask_and_private_evidence(self):
+        child = subprocess.run(['/usr/bin/python3', '-B', '-c',
+                                'import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                                'p.mkdir(); (p/"ordinary").write_text("fixture"); '
+                                'print(oct(os.umask(0o022)))',
+                                str(self.run_owner.directory/'consumer-modes')],
+                               capture_output=True, text=True, check=True, timeout=20)
+        self.assertEqual(child.stdout.strip(), '0o22', 'supervisor leaked evidence umask into consumer')
+        fixture = self.run_owner.directory/'consumer-modes'
+        self.assertEqual(fixture.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((fixture/'ordinary').stat().st_mode & 0o777, 0o644)
+        private = [self.run_owner.directory]
+        evidence = list(self.run_owner.directory.glob('*.json'))
+        job = Path(self.context.operation['runs'])/'jobs'/self.context.operation['run_id']
+        if job.exists():
+            private.extend([job.parent, job])
+            evidence.extend(job.glob('*.json'))
+            for name in ('stdout.log', 'stderr.log', 'job.lock'):
+                path = job/name
+                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o600))
+                evidence.append(path)
+        for path in private:
+            self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o700))
+        for path in evidence:
+            if path.suffix == '.json':
+                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o777), (0, 0o400))
+        for path in private + evidence + [self.context.path]:
+            denied = subprocess.run(['/usr/bin/python3', '-B', '-c',
+                                     'import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); '
+                                     'os.listdir(p) if p.is_dir() else p.read_bytes()', str(path)],
+                                    user=65534, group=65534, extra_groups=[],
+                                    capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(denied.returncode, 0, 'non-root accessed private evidence: '+str(path))
+            self.assertIn('PermissionError', denied.stderr)
+        print('SUPERVISED_CONSUMER_UMASK actual_child=022 ordinary=0755/0644 evidence=0700/0600/0400 nonroot=denied job='+str(job.exists()), flush=True)
 
     def test_review_actual_native_process_umask(self):
         native,_,_=self.native_fixture()

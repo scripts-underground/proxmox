@@ -145,4 +145,5 @@ MODELS
   done
 done
 printf '%s failure(s); actual generated cold bundles/config bytes; free/apk/OpenRC/framework lifecycle modeled, no native Alpine deployment claim\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]

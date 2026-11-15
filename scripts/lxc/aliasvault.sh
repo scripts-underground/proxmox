@@ -24,6 +24,7 @@ function install_script() {
     nginx \
     python3 \
     build-essential \
+    clang \
     gettext-base \
     inotify-tools \
     libkrb5-3 \
@@ -339,6 +340,9 @@ function update_script() {
 
   if check_for_gh_release "aliasvault" "aliasvault/aliasvault"; then
     RELEASE=$(get_latest_github_release "aliasvault/aliasvault")
+    msg_info "Preparing Build Toolchain"
+    ensure_dependencies clang
+    msg_ok "Prepared Build Toolchain"
     NODE_VERSION="24" setup_nodejs
 
     msg_info "Stopping Services"

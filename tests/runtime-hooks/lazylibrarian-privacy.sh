@@ -174,5 +174,6 @@ reset();outside=pathlib.Path('/opt/outside').stat()
 check(run('race','race')!=0 and not active(),'path substitution is detected through pinned identity')
 check(pathlib.Path('/opt/outside').stat()==outside,'pinned fchmod never reaches substituted target')
 print(f'LL_PRIVACY_FOCUSED assertions={assertions} failures={failures}; real extracted guide/files/FDs/ACLs, modeled systemctl',flush=True)
+print(f'RUNTIME_HOOKS_RESULT failures={failures}',flush=True)
 raise SystemExit(bool(failures))
 PY

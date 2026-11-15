@@ -359,6 +359,7 @@ required package work permits a release adapter to publish its marker.
 - **`setup_meilisearch()`** — Install/upgrade MeiliSearch. Dump/restore migration for major upgrades.
 - **`setup_mongodb()`** — Install/upgrade MongoDB. AVX check. Reads `MONGO_VERSION`.
 - **`setup_mysql()`** — Install/upgrade MySQL (distro packages or official repo). Reads `MYSQL_VERSION`.
+- **`setup_mysql_db()`** — Provision a MySQL database + `%`-host user with database-only grants on an installed MySQL server. Reads `MYSQL_DB_NAME`/`USER` (required), `PASS` (generated 13-character alphanumeric when empty, a supplied value is used as given) and `MYSQL_DB_CREDS_FILE` (default `~/<app>.creds` from baked `APP`). Appends credentials and exports the DB vars; an existing database/user is an error, nothing is reset.
 - **`setup_nodejs()`** — Install/upgrade configured Node.js via NodeSource, with safe cwd before all npm work and signing-key refresh before same-major apt metadata/upgrade. Retains noncritical key warning, module choices, npm/pnpm pins and safe heap limit.
 - **`setup_php()`** — Install PHP + modules (Sury repo). Reads `PHP_VERSION`, `PHP_MODULE`, `PHP_APACHE`/`PHP_FPM`.
 - **`setup_postgresql()`** — Install/upgrade PostgreSQL (distro packages or PGDG repo). Pre-upgrade dump/restore. Reads `PG_VERSION`, `PG_MODULES`.
