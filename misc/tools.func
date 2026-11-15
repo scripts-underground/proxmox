@@ -972,6 +972,58 @@ EOF
       return 0
       ;;
 
+    mysql)
+      if [[ -z "$repo_url" || -z "$gpg_key_url" ]]; then
+        msg_error "MySQL repository requires repo_url and gpg_key_url"
+        return 65
+      fi
+
+      cleanup_old_repo_files "mysql" || return $?
+
+      if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
+        msg_error "Failed to import MySQL GPG key"
+        return 7
+      fi
+
+      local distro_codename component architecture
+      distro_codename=$(get_os_info codename) || return $?
+      if [[ -z "$distro_id" || -z "$distro_codename" ]]; then
+        msg_error "Unable to determine the OS for the MySQL repository"
+        return 65
+      fi
+
+      if [[ "$distro_id" == "debian" ]]; then
+        case "$distro_codename" in
+          bookworm | bullseye) suite="$distro_codename" ;;
+          *) suite="bookworm" ;;
+        esac
+      else
+        suite=$(get_fallback_suite "$distro_id" "$distro_codename" "$repo_url") || return $?
+      fi
+
+      case "$version" in
+        8.4 | 8.4.*) component="mysql-8.4-lts" ;;
+        8.0 | 8.0.*) component="mysql-8.0" ;;
+        *) component="mysql-${version}" ;;
+      esac
+
+      architecture=$(dpkg --print-architecture) || return $?
+      if [[ -z "$suite" || -z "$architecture" ]]; then
+        msg_error "Unable to determine the MySQL repository suite or architecture"
+        return 65
+      fi
+
+      cat << EOF > /etc/apt/sources.list.d/mysql.sources || return $?
+Types: deb
+URIs: ${repo_url}/
+Suites: ${suite}
+Components: ${component}
+Architectures: ${architecture}
+Signed-By: /etc/apt/keyrings/mysql.gpg
+EOF
+      return 0
+      ;;
+
     postgresql)
       if [[ -z "$gpg_key_url" ]]; then
         msg_error "PostgreSQL repository requires gpg_key_url"
@@ -7282,6 +7334,34 @@ _setup_mariadb_runtime_dir() {
 }
 
 # ------------------------------------------------------------------------------
+# Append credential lines privately when creating a file; retain existing bytes/mode.
+_append_private_credentials() (
+  local file="$1" directory temporary descriptor rc=0
+  shift
+  umask 077
+  if [[ ! -e "$file" ]]; then
+    directory="${file%/*}"
+    [[ "$file" == */* ]] || directory=.
+    [[ -n "$directory" ]] || directory=/
+    # mktemp creates with mode 0600 even under a permissive default ACL. Publish
+    # the empty inode without replacing an operator file that appeared meanwhile.
+    temporary=$(mktemp -- "$directory/.credentials.XXXXXXXX") || return $?
+    if ln -T -- "$temporary" "$file"; then
+      :
+    else
+      rc=$?
+      [[ ! -e "$file" ]] || rc=0
+    fi
+    rm -f -- "$temporary" || return $?
+    [[ "$rc" == 0 ]] || return "$rc"
+  fi
+  # Pin an existing inode without O_CREAT. Append through its descriptor so a
+  # removed pathname cannot be recreated with ACL-derived public permissions.
+  exec {descriptor}< "$file" || return $?
+  printf '%s\n' "$@" >> "/proc/self/fd/$descriptor"
+)
+
+# ------------------------------------------------------------------------------
 # Creates MariaDB database with user, charset and optional extra grants/modes
 #
 # Description:
@@ -7347,12 +7427,8 @@ setup_mariadb_db() {
 
   local app_name="${APPLICATION,,}"
   local CREDS_FILE="${MARIADB_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
-  {
-    echo "MariaDB Credentials"
-    echo "Database: $MARIADB_DB_NAME"
-    echo "User: $MARIADB_DB_USER"
-    echo "Password: $MARIADB_DB_PASS"
-  } >> "$CREDS_FILE"
+  _append_private_credentials "$CREDS_FILE" "MariaDB Credentials" \
+    "Database: $MARIADB_DB_NAME" "User: $MARIADB_DB_USER" "Password: $MARIADB_DB_PASS" || return $?
 
   msg_ok "Set up MariaDB Database"
 
@@ -7923,7 +7999,7 @@ setup_mysql() {
   if [[ "$DISTRO_ID" == "debian" && "$DISTRO_CODENAME" =~ ^(trixie|forky|sid)$ ]]; then
     msg_info "Debian ${DISTRO_CODENAME} detected → using MySQL 8.4 LTS (libaio1t64 compatible)"
 
-    if ! download_gpg_key "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
+    if ! download_gpg_key "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
       msg_error "Failed to import MySQL GPG key"
       return 7
     fi
@@ -7973,7 +8049,7 @@ EOF
 
   # Setup repository
   manage_tool_repository "mysql" "$MYSQL_VERSION" "https://repo.mysql.com/apt/${DISTRO_ID}" \
-    "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023" || {
+    "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025" || {
     msg_error "Failed to setup MySQL repository"
     return 100
   }
@@ -8010,6 +8086,107 @@ EOF
 
   cache_installed_version "mysql" "$MYSQL_VERSION"
   msg_ok "Setup MySQL $MYSQL_VERSION"
+}
+
+# ------------------------------------------------------------------------------
+# Creates a MySQL database and user (for apps that require MySQL, not MariaDB).
+#
+# Description:
+#   - Creates the database (utf8mb4/utf8mb4_unicode_ci), a user with host '%' and
+#     GRANT ALL on that database only, using the mysql root login
+#   - Generates a 13-character alphanumeric password only when none is supplied;
+#     a supplied password is used exactly as given
+#   - Runs all SQL in one mysql session with a session-only sql_mode that makes
+#     backslashes literal, so passwords/names are stored as supplied. The
+#     database name in GRANT is escaped for its pattern wildcards (_ % \)
+#   - Appends labeled credentials to the credentials file and exports the
+#     variables for use in the calling script
+#   - Plain CREATE statements: an existing database or user is an error, nothing
+#     is reused, reset or rolled back. An earlier statement may have taken effect
+#     when a later step fails
+#
+# Usage:
+#   MYSQL_DB_NAME="fleet" MYSQL_DB_USER="fleet" setup_mysql_db
+#
+# Variables:
+#   MYSQL_DB_NAME        - Database name (required)
+#   MYSQL_DB_USER        - Database user (required)
+#   MYSQL_DB_PASS        - User password (optional, auto-generated if empty)
+#   MYSQL_DB_CREDS_FILE  - Credentials file path (optional,
+#                          default: ~/<lowercase APP without spaces>.creds)
+#
+# Exports:
+#   MYSQL_DB_NAME, MYSQL_DB_USER, MYSQL_DB_PASS
+# ------------------------------------------------------------------------------
+
+setup_mysql_db() {
+  local db="${MYSQL_DB_NAME:-}" user="${MYSQL_DB_USER:-}" pass="${MYSQL_DB_PASS:-}"
+  local creds="${MYSQL_DB_CREDS_FILE:-}" rc=0 entropy=""
+
+  if [[ -z "$db" || -z "$user" ]]; then
+    msg_error "MYSQL_DB_NAME and MYSQL_DB_USER must be set before calling setup_mysql_db"
+    return 65
+  fi
+
+  if [[ -z "$creds" ]]; then
+    local app_name="${APP:-}"
+    app_name="${app_name,,}"
+    app_name="${app_name// /}"
+    if [[ -z "$app_name" || -z "${HOME:-}" ]]; then
+      msg_error "APP and HOME, or MYSQL_DB_CREDS_FILE, must be set before calling setup_mysql_db"
+      return 65
+    fi
+    creds="${HOME}/${app_name}.creds"
+  fi
+
+  if [[ -z "$pass" ]]; then
+    while ((${#pass} < 13)); do
+      entropy=$(openssl rand -base64 48) || {
+        rc=$?
+        msg_error "Failed to generate the MySQL password"
+        return "$rc"
+      }
+      entropy="${entropy//[^A-Za-z0-9]/}"
+      if [[ -z "$entropy" ]]; then
+        msg_error "Failed to generate the MySQL password"
+        return 1
+      fi
+      pass+="$entropy"
+    done
+    pass="${pass:0:13}"
+  fi
+
+  local q="'" bt='`' bs='\' us='_' pc='%'
+  local sql_db="${db//"$bt"/"$bt$bt"}"
+  local sql_user="${user//"$q"/"$q$q"}"
+  local sql_pass="${pass//"$q"/"$q$q"}"
+  local grant_db="${db//"$bs"/"$bs$bs"}"
+  grant_db="${grant_db//"$us"/"$bs$us"}"
+  grant_db="${grant_db//"$pc"/"$bs$pc"}"
+  grant_db="${grant_db//"$bt"/"$bt$bt"}"
+  local sql="SET SESSION sql_mode='NO_BACKSLASH_ESCAPES';
+CREATE DATABASE \`${sql_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER '${sql_user}'@'%' IDENTIFIED BY '${sql_pass}';
+GRANT ALL ON \`${grant_db}\`.* TO '${sql_user}'@'%';
+FLUSH PRIVILEGES;"
+
+  msg_info "Setting up MySQL Database"
+  $STD mysql -u root <<< "$sql" || {
+    rc=$?
+    msg_error "Failed to set up the MySQL database and user"
+    return "$rc"
+  }
+
+  _append_private_credentials "$creds" "MySQL Credentials" \
+    "Database: $db" "User: $user" "Password: $pass" || {
+    rc=$?
+    msg_error "Failed to write the MySQL credentials file"
+    return "$rc"
+  }
+
+  MYSQL_DB_PASS="$pass" || return $?
+  export MYSQL_DB_NAME MYSQL_DB_USER MYSQL_DB_PASS || return $?
+  msg_ok "Set up MySQL Database"
 }
 
 # ------------------------------------------------------------------------------
@@ -8909,12 +9086,8 @@ setup_postgresql_db() {
   # Save credentials
   local app_name="${APPLICATION,,}"
   local CREDS_FILE="${PG_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
-  {
-    echo "PostgreSQL Credentials"
-    echo "Database: $PG_DB_NAME"
-    echo "User: $PG_DB_USER"
-    echo "Password: $PG_DB_PASS"
-  } >> "$CREDS_FILE"
+  _append_private_credentials "$CREDS_FILE" "PostgreSQL Credentials" \
+    "Database: $PG_DB_NAME" "User: $PG_DB_USER" "Password: $PG_DB_PASS" || return $?
 
   msg_ok "Set up PostgreSQL Database"
 

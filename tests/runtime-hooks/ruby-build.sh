@@ -101,4 +101,5 @@ CHILD
   fi
 done
 printf '%s failure(s); real setup_ruby and caller selection, modeled network/packages/compiler\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]
