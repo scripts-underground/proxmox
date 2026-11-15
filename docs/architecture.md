@@ -746,6 +746,19 @@ Invalid values exit65 before receiving effects; creation failures retain their
 native status. With no override the receiving default remains `/tmp` and creator
 TMPDIR is discarded without introducing a new inherited-environment policy.
 
+The receiving context is established before the creator runs any package or bootstrap
+command in the CT, not only at bundle preparation. `_prepare_receiving_context` checks
+the lexical value on the creator, then runs the canonical preparer in the CT's `/bin/sh`
+(Alpine's ash included, before Bash exists); its status is fatal and exact, before any
+package, mirror or optional `|| true` site. `_receiving_exec` then runs each initial,
+mirror-retry and in-place repair package command through `exec`, so argv, `sh -c`
+positionals, stdin, output and status are unchanged; it discards only the creator's
+TMPDIR and selects the prepared root (an empty override selects none). The validator,
+path preparer and `_receiving_context_contents` emitter are one POSIX-shell body shared
+with every generated bundle prelude and `_prepare_container_bundles`; inert probes are
+not wrapped and the creator's own TMPDIR is never modified. The independent cron OS
+updater has no per-CT context interface and is not covered by this boundary.
+
 `_prepare_container_bundles` explicitly checks root preparation, every bundle and
 the command aliases for both initial creation and repair. Initial preparation
 retains normal framework error handling. After the user chooses in-place repair,
@@ -753,6 +766,16 @@ a preparation failure reports its exact status and exits preserving that existin
 container, without stale execution or re-entering the host's timed removal prompt.
 Only container execution is placed in the status-capture section. Addons stage
 within their current container's selected TMPDIR.
+
+APT mirror failover has Debian and Ubuntu catalogues only. The pre-bundle base
+stage and `pkg_update` capture the initial APT status, then positively classify
+the `ID` read from the container's current os-release (an inherited `ID` is
+cleared first) before any source rewrite, list wipe, By-Hash setting or
+prompt. Any other ID (for example Devuan) or an unreadable ID returns or exits
+with the original status and unchanged sources. The base stage passes its
+classification to the remote payload, so its exhausted-mirrors status 2 stays
+distinct. The existing `debian.sources`/`sources.list` rewrite scope is
+unchanged; other source layouts are not claimed.
 
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
@@ -1345,6 +1368,16 @@ after the selected source is installed. Concurrent config edits are retained and
 reported. Existing explicit regex intent stays byte-identical. The restart repair
 reads base units and drop-ins, adds only missing defaults and preserves independent
 user `Restart`/`RestartSec` directives, including same-version repair.
+
+The runtime-hook suite discovers sorted regular `tests/runtime-hooks/*.sh` members,
+each in a separate process. App models, setup and assertions live in that app's
+file, including standalone fixtures. `tests/lib/runtime-hooks/harness.sh` owns only
+app-independent cold-child isolation, status checks and pending retries; callbacks
+and declared variants/path mappings supply app differences. Adding an app does not
+edit a shared app switch or registry. The aggregator requires a zero exit and one
+terminal `RUNTIME_HOOKS_RESULT failures=0` per member, and refuses empty discovery.
+Discovery remains inside the existing context-bound suite/source tree and retains
+its declared `MAINTENANCE_REFERENCES` input and public runner contract.
 
 The focused cold-hook tests execute actual helpers/files and native parser/module
 consumers with explicitly modeled compilers, model weights, database provisioning

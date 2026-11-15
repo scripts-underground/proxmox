@@ -55,7 +55,7 @@ if [[ "${1:-}" == --child ]]; then
       exec)
         shift 3
         case "$1" in
-          mkdir | bash | mktemp | mv | rm) command "$@" ;;
+          mkdir | bash | /bin/sh | mktemp | mv | rm) command "$@" ;;
           chmod)
             [[ "$FETCH_FAILURE" != 3 ]] || return 54
             command "$@"

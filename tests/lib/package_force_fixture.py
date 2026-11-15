@@ -151,6 +151,10 @@ def package(case, version='1.0'):
     write(stage / 'opt/su-package-probe/bin/probe', '#!/bin/sh\nprintf "native-' + version + '\\n"\n', 0o755)
     config_version = '1.0' if (case / 'provider').read_text() == 'url' else version
     write(stage / 'etc/su-package-probe.conf', 'vendor=' + config_version + '\n')
+    # Package directory modes are payload metadata, independent of private job
+    # umask. Keep the enclosing case/evidence private, not the package's tree.
+    for directory in [stage, *(p for p in stage.rglob('*') if p.is_dir())]:
+        directory.chmod(0o755)
     result = subprocess.run(['/usr/bin/dpkg-deb', '--build', '--root-owner-group', str(stage), str(case / 'package.deb')],
                             capture_output=True, text=True, timeout=30)
     write(case / ('build-' + version + '.json'), json.dumps(dict(status=result.returncode, stdout=result.stdout, stderr=result.stderr)))

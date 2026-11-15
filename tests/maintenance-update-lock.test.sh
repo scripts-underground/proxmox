@@ -217,17 +217,13 @@ fi
 
 # Hide all real framework metadata while preserving disk source and TMPDIR access.
 mkdir -p "$work/metadata" "$work/home" "$work/cache" "$work/sbin"
-managed=/var/lib/scripts-underground
-for needed in "$ROOT" "$TMPDIR" "$SUBJECT_CORE" "$ALPINE_BUSYBOX"; do
-  if [[ "$needed" == "$managed/"* ]]; then
-    relative=${needed#"$managed/"} first=${relative%%/*}
-    if [[ ! -d "$work/metadata/$first" ]]; then
-      mkdir "$work/metadata/$first"
-      mount --bind "$managed/$first" "$work/metadata/$first"
-    fi
-  fi
-done
-mount --rbind "$work/metadata" "$managed"
+python3 "$ROOT/tests/lib/fixture_mounts.py" preserve "$work/metadata" "$work/mount-projection.json" "$ROOT" "$TMPDIR" "$SUBJECT_CORE" "$ALPINE_BUSYBOX"
+mount --rbind "$work/metadata" /var/lib/scripts-underground
+[[ -r "$0" && -d "$TMPDIR" ]] || {
+  printf 'Cannot preserve source/temp paths under managed metadata\n' >&2
+  exit 65
+}
+python3 "$ROOT/tests/lib/fixture_mounts.py" verify "$work/mount-projection.json"
 mount --bind "$work/home" /root
 mount --bind "$work/cache" /var/cache
 mount --bind "$work/sbin" /usr/local/sbin

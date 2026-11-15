@@ -102,6 +102,133 @@ def filesystem(path):
     return rows[0]
 
 
+def custody_reference(reference):
+    """Read real independently delivered bytes, not an asserted provenance hash."""
+    fields(reference, 'path sha256')
+    require(type(reference['sha256']) is str and re.fullmatch('[a-f0-9]{64}', reference['sha256']), 'attestation hash shape')
+    path = absolute(reference['path'])
+    value = read_custody(path)
+    require(not path.stat().st_mode & 0o222, 'attestation must be read-only')
+    require(sha(path.read_bytes()) == reference['sha256'], 'attestation bytes changed')
+    return value
+
+
+def attached_mount(workspace):
+    rows = load_json(query(['/usr/bin/findmnt', '-J', '-T', str(workspace),
+                            '-o', 'TARGET,SOURCE,FSTYPE,UUID,FSROOT,MAJ:MIN']))['filesystems']
+    require(len(rows) == 1, 'workspace mount ambiguous')
+    row = rows[0]
+    fields(row, 'target source fstype uuid fsroot maj:min')
+    return row
+
+
+def attached_volume(t):
+    volume = t['work_volume']
+    fields(volume, 'device serial uuid')
+    for key in ('serial', 'uuid'):
+        text(volume[key])
+    device = absolute(volume['device']).resolve(strict=True)
+    block = device.stat()
+    require(stat.S_ISBLK(block.st_mode), 'work volume not a block device')
+    rows = load_json(query(['/usr/bin/lsblk', '-J', '-dn', '-p', '-o',
+                            'NAME,TYPE,MAJ:MIN,SERIAL,UUID,FSTYPE', str(device)]))['blockdevices']
+    require(len(rows) == 1, 'work volume ambiguous')
+    row = rows[0]
+    fields(row, 'name type maj:min serial uuid fstype')
+    require(row['name'] == str(device) and row['type'] == 'disk', 'whole work volume required')
+    number = f'{os.major(block.st_rdev)}:{os.minor(block.st_rdev)}'
+    require(row['maj:min'] == number and row['serial'] == volume['serial']
+            and row['uuid'] == volume['uuid'] and row['fstype'] == 'ext4', 'work volume identity mismatch')
+    workspace = absolute(t['workspace'])
+    safe_parents(workspace, root=True)
+    require(workspace != Path('/var/lib/scripts-underground/test-workflow-runs')
+            and workspace.is_relative_to(Path('/var/lib/scripts-underground/test-workflow-runs')), 'attached workspace scope')
+    mounted = attached_mount(workspace)
+    require({k: mounted[k] for k in ('target', 'source', 'fstype', 'uuid')} == t['workspace_fs']
+            and mounted['target'] == str(workspace) and mounted['maj:min'] == number
+            and mounted['fstype'] == 'ext4' and mounted['uuid'] == volume['uuid'], 'workspace backing device mismatch')
+    node = workspace.stat()
+    fields(t['mount'], 'fsroot major_minor device inode')
+    require(all(type(t['mount'][k]) is int and t['mount'][k] > 0 for k in ('device', 'inode')), 'workspace root identity shape')
+    require(node.st_dev == block.st_rdev and t['mount'] == dict(fsroot=mounted['fsroot'], major_minor=number,
+            device=node.st_dev, inode=node.st_ino), 'workspace mount/root identity changed')
+    root = attached_mount(Path('/'))
+    require(root['maj:min'] != number and t['root_fs']['uuid'] != volume['uuid'], 'root/work volume substitution')
+
+
+def attached_attestations(t):
+    owner = custody_reference(t['ownership'])
+    fields(owner, 'schema kind project task droplet volume uuid mac work_volume')
+    require(type(owner['schema']) is int and owner['schema'] == 1 and owner['kind'] == 'ownership', 'ownership attestation kind')
+    for key in ('project', 'task'):
+        text(owner[key])
+    fields(owner['droplet'], 'id name region tags')
+    fields(owner['volume'], 'id name attached_to')
+    droplet, volume = owner['droplet'], owner['volume']
+    require(type(droplet['id']) is int and droplet['id'] > 0 and type(volume['attached_to']) is int
+            and volume['attached_to'] == droplet['id'], 'ownership attachment mismatch')
+    for value in (droplet['name'], droplet['region'], volume['id'], volume['name']):
+        text(value)
+    tags = droplet['tags']
+    require(type(tags) is list and tags and all(type(v) is str and v for v in tags)
+            and tags == sorted(set(tags)), 'ownership tags shape')
+    require(droplet['name'] == t['name'] == owner['project'] + '-' + owner['task']
+            and all(owner[k] == t[k] for k in ('uuid', 'mac', 'work_volume')), 'ownership target binding mismatch')
+    qualification = custody_reference(t['infrastructure_qualification'])
+    fields(qualification, 'schema kind status ownership_sha256 identity evidence')
+    require(type(qualification['schema']) is int and qualification['schema'] == 1
+            and qualification['kind'] == 'infrastructure_qualification'
+            and qualification['status'] == 'infrastructure-qualified', 'infrastructure qualification is not runner readiness')
+    require(qualification['ownership_sha256'] == t['ownership']['sha256']
+            and qualification['identity'] == {k: v for k, v in owner.items() if k not in ('schema', 'kind')}, 'qualification identity binding mismatch')
+    require(type(qualification['evidence']) is list and qualification['evidence'], 'qualification evidence absent')
+    labels = []
+    for fact in qualification['evidence']:
+        fields(fact, 'label sha256')
+        labels.append(text(fact['label']))
+        require(type(fact['sha256']) is str and re.fullmatch('[a-f0-9]{64}', fact['sha256']), 'qualification evidence hash')
+    require(len(set(labels)) == len(labels), 'qualification evidence duplicate')
+
+
+def admit_target(schema, t):
+    """Closed target variants share DMI/filesystem custody, not disk assumptions."""
+    common = 'name uuid mac receipt receipt_sha256 root_fs workspace_fs workspace'
+    fields(t, common + (' disks' if schema == 1 else ' kind work_volume mount ownership infrastructure_qualification'))
+    for key in ('name', 'uuid', 'mac', 'receipt_sha256'):
+        text(t[key])
+    receipt_path = absolute(t['receipt'])
+    receipt = read_custody(receipt_path)
+    require(sha(receipt_path.read_bytes()) == t['receipt_sha256'], 'target receipt bytes')
+    if schema == 1:
+        # Preserve legacy shape and semantics, including its provenance limits.
+        fields(receipt, 'name uuid mac owner_receipt_sha256 readiness_sha256')
+        require(all(t[key] == receipt[key] for key in ('name', 'uuid', 'mac')), 'target expected receipt mismatch')
+    else:
+        require(t['kind'] == 'attached-volume', 'unknown target kind')
+        expected = {k: v for k, v in t.items() if k not in ('receipt', 'receipt_sha256')}
+        require(receipt == expected, 'target expected receipt mismatch')
+        require(not receipt_path.stat().st_mode & 0o222, 'target receipt must be read-only')
+    actual_uuid = Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower()
+    require(actual_uuid == t['uuid'], 'target DMI UUID mismatch')
+    macs = {p.read_text().strip() for p in Path('/sys/class/net').glob('*/address')}
+    require(t['mac'] in macs, 'target MAC mismatch')
+    for key in ('root_fs', 'workspace_fs'):
+        fields(t[key], 'target source fstype uuid')
+        require(all(type(v) is str and v for v in t[key].values()), 'schema filesystem')
+        require(t[key]['fstype'] in ('ext4', 'xfs', 'btrfs'), 'disk-backed filesystem required')
+    workspace = absolute(t['workspace'])
+    safe_parents(workspace)
+    require(filesystem('/') == t['root_fs'] and filesystem(workspace) == t['workspace_fs'], 'target filesystem mismatch')
+    if schema == 1:
+        fields(t['disks'], 'vda vdb')
+        for device, serial in t['disks'].items():
+            require(query(['/usr/bin/lsblk', '-dn', '-o', 'SERIAL', '/dev/' + device]) == text(serial), 'target disk serial mismatch')
+    else:
+        attached_volume(t)
+        attached_attestations(t)
+    return workspace
+
+
 def source_files(root):
     """Exact public projection, including extra files; never follow symlink dirs."""
     rows = []
@@ -140,34 +267,17 @@ class Context:
         except ValueError as error:
             raise AdmissionError(str(error)) from error
         fields(d, 'schema target source operations protection')
-        require(type(d['schema']) is int and d['schema'] == 1, 'schema version')
+        require(type(d['schema']) is int and d['schema'] in (1, 2), 'schema version')
         t = d['target']
-        fields(t, 'name uuid mac receipt receipt_sha256 root_fs workspace_fs workspace disks')
-        for key in ('name', 'uuid', 'mac', 'receipt_sha256'):
-            text(t[key])
-        receipt_path = absolute(t['receipt'])
-        receipt = read_custody(receipt_path)
-        require(sha(receipt_path.read_bytes()) == t['receipt_sha256'], 'target receipt bytes')
-        fields(receipt, 'name uuid mac owner_receipt_sha256 readiness_sha256')
-        require(all(t[key] == receipt[key] for key in ('name', 'uuid', 'mac')), 'target expected receipt mismatch')
-        actual_uuid = Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower()
-        require(actual_uuid == t['uuid'], 'target DMI UUID mismatch')
-        macs = {p.read_text().strip() for p in Path('/sys/class/net').glob('*/address')}
-        require(t['mac'] in macs, 'target MAC mismatch')
-        for key in ('root_fs', 'workspace_fs'):
-            fields(t[key], 'target source fstype uuid')
-            require(all(type(v) is str and v for v in t[key].values()), 'schema filesystem')
-            require(t[key]['fstype'] in ('ext4', 'xfs', 'btrfs'), 'disk-backed filesystem required')
-        workspace = absolute(t['workspace'])
-        safe_parents(workspace)
-        require(filesystem('/') == t['root_fs'] and filesystem(workspace) == t['workspace_fs'], 'target filesystem mismatch')
-        fields(t['disks'], 'vda vdb')
-        for device, serial in t['disks'].items():
-            require(query(['/usr/bin/lsblk', '-dn', '-o', 'SERIAL', '/dev/' + device]) == text(serial), 'target disk serial mismatch')
+        workspace = admit_target(d['schema'], t)
         s = d['source']
         fields(s, 'path base_commit history history_sha256 files tree_sha256 index_sha256 new_files')
         source = absolute(s['path'])
         require(source.is_relative_to(workspace) and source != workspace, 'source path scope')
+        if d['schema'] == 2:
+            custody = [path, Path(t['receipt']), *(Path(t[k]['path']) for k in ('ownership', 'infrastructure_qualification'))]
+            require(all(not p.is_relative_to(source) for p in custody), 'target custody overlaps source')
+            require(not path.stat().st_mode & 0o222, 'context must be read-only')
         safe_parents(source)
         require(type(s['files']) is list and s['files'], 'schema source files')
         names = []
@@ -221,6 +331,8 @@ class Context:
             runs = absolute(op['runs'])
             require(tmp != Path('/tmp') and Path('/tmp') not in tmp.parents, 'unsafe TMPDIR')
             require(runs.is_relative_to(Path('/var/lib/scripts-underground/test-workflow-runs')) and tmp.is_relative_to(runs), 'TMPDIR/run path scope')
+            if d['schema'] == 2:
+                require(runs != workspace and runs.is_relative_to(workspace), 'attached run/workspace scope')
             require(not runs.is_relative_to(source) and not source.is_relative_to(runs), 'run/source path overlap')
             safe_parents(tmp, root=True)
             safe_parents(runs, root=True)
