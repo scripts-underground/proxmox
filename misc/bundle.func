@@ -15,50 +15,105 @@ _framework_cache_dir() {
 
 # Explicit receiver paths are lexical, absolute and non-root. Physical path
 # validation belongs to the receiver, never to the creator's filesystem.
-_validate_lxc_tmpdir() {
-  [[ -n "$1" ]] || return 0
+# The receiving-context owner is one canonical body in POSIX shell syntax: the
+# same emitted text runs in Bash, dash and Alpine's BusyBox ash.
+_validate_lxc_tmpdir() (
+  [ -n "$1" ] || exit 0
+  nl='
+'
+  cr=$(printf '\r')
+  tab=$(printf '\t')
   case "$1" in
     /*) ;;
     *)
       printf 'Invalid receiving temporary directory: expected an absolute non-root normalized path\n' >&2
-      return 65
+      exit 65
       ;;
   esac
   case "$1/" in
-    / | // | *//* | */./* | */../* | *$'\n'* | *$'\r'* | *$'\t'*)
+    / | // | *//* | */./* | */../*)
       printf 'Invalid receiving temporary directory: expected an absolute non-root normalized path\n' >&2
-      return 65
+      exit 65
       ;;
   esac
-}
+  case "$1" in
+    *"$nl"* | *"$cr"* | *"$tab"*)
+      printf 'Invalid receiving temporary directory: expected an absolute non-root normalized path\n' >&2
+      exit 65
+      ;;
+  esac
+)
 
-_prepare_lxc_tmpdir() {
-  _validate_lxc_tmpdir "$1" || return $?
-  [[ -n "$1" ]] || return 0
-  local remaining="${1#/}" path='' component mode
-  # Inspect the complete existing prefix before creating anything. Bash -L also
+# Walks in a subshell so no walking variable reaches the caller.
+_prepare_lxc_tmpdir_path() (
+  # Inspect the complete existing prefix before creating anything. test -L also
   # detects dangling symlinks; no GNU realpath options are required on Alpine.
-  while [[ -n "$remaining" ]]; do
+  remaining=${1#/}
+  path=
+  while [ -n "$remaining" ]; do
     component=${remaining%%/*}
-    path+="/$component"
-    if [[ -L "$path" ]]; then
+    path=$path/$component
+    if [ -L "$path" ]; then
       printf 'Invalid receiving temporary directory: use its canonical non-symlink path\n' >&2
-      return 65
+      exit 65
     fi
-    if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+    case "$remaining" in
+      */*) remaining=${remaining#*/} ;;
+      *) remaining= ;;
+    esac
   done
-  remaining="${1#/}" path=''
-  while [[ -n "$remaining" ]]; do
+  remaining=${1#/}
+  path=
+  while [ -n "$remaining" ]; do
     component=${remaining%%/*}
-    path+="/$component"
+    path=$path/$component
     # Only the selected leaf is shared. New parents must not let app users
     # replace a removed leaf; existing administrator metadata is untouched.
     mode=0755
-    [[ "$remaining" == */* ]] || mode=1777
-    if [[ ! -d "$path" ]]; then mkdir -m "$mode" -- "$path" || return $?; fi
-    if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+    case "$remaining" in
+      */*) ;;
+      *) mode=1777 ;;
+    esac
+    if [ ! -d "$path" ]; then mkdir -m "$mode" -- "$path" || exit $?; fi
+    case "$remaining" in
+      */*) remaining=${remaining#*/} ;;
+      *) remaining= ;;
+    esac
   done
-  export TMPDIR="$1"
+)
+
+_prepare_lxc_tmpdir() {
+  _validate_lxc_tmpdir "$1" || return $?
+  [ -n "$1" ] || return 0
+  _prepare_lxc_tmpdir_path "$1" || return $?
+  TMPDIR=$1
+  export TMPDIR
+}
+
+# Checked single-source emitter for the receiving-context closure: bundles and
+# creator-side receiver commands transport exactly these definitions.
+_receiving_context_contents() {
+  declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir_path _prepare_lxc_tmpdir
+}
+
+# Creator side: lexical check, then the canonical preparer in the CT's /bin/sh
+# (the root is a positional argument, never shell text). Selects the root for
+# _receiving_exec only after preparation succeeded; an empty override selects none.
+_prepare_receiving_context() {
+  local receiving_context
+  _receiving_tmpdir=''
+  _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
+  [[ -n "${var_lxc_tmpdir:-}" ]] || return 0
+  receiving_context=$(_receiving_context_contents) || return $?
+  pct exec "$CTID" -- /bin/sh -c "$receiving_context"$'\n''_prepare_lxc_tmpdir "$1"' _ "$var_lxc_tmpdir" || return $?
+  _receiving_tmpdir=$var_lxc_tmpdir
+}
+
+# Runs one creator-initiated package/bootstrap command in the receiver: argv,
+# shell -c positionals, stdin, output and status pass through exec unchanged; only
+# TMPDIR differs (the creator's value is discarded, the prepared root selected).
+_receiving_exec() {
+  pct exec "$CTID" -- /bin/sh -c 'r=$1; shift; unset TMPDIR; if [ -n "$r" ]; then TMPDIR=$r; export TMPDIR; fi; exec "$@"' _ "${_receiving_tmpdir:-}" "$@"
 }
 
 _framework_cache_ensure() {
@@ -262,7 +317,7 @@ BUNDLE_HEADER
   done
 
   # Run before library source-time effects as well as logs/spinners/hooks.
-  declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir || return $?
+  _receiving_context_contents || return $?
   printf '%s\n' '_prepare_lxc_tmpdir "${var_lxc_tmpdir:-}" || exit $?' || return $?
 
   for f in core error_handler install tools github; do
