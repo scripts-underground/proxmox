@@ -217,30 +217,54 @@ function update_script() {
       local -a legacy_keeps=()
       read -r -a legacy_keeps <<< "${CLEAN_INSTALL_KEEP:-}"
       for entry in "${legacy_keeps[@]}"; do printf '%s\0' "$entry" >> "$stage/keeps" || return $?; done
-      node - "$old_source" "$stage/new" /opt/colanode /var/www/colanode "$stage/keeps" "$stage/recovery.json" "${prior_stage:+$prior_stage/recovery.json}" << 'JS' || return $?
+      # Classification and restoration use the same path/identity owner. A
+      # replacement error alone does not establish that either tree is restored.
+      function colanode_publication_state() {
+        node - "$1" "$old_source" "$stage/new" /opt/colanode /var/www/colanode "$stage/keeps" "$stage/recovery.json" "${prior_stage:+$prior_stage/recovery.json}" << 'JS'
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const [oldRoot, incoming, live, web, keepFile, recordFile, priorFile] = process.argv.slice(2);
+const [mode, oldRoot, incoming, live, web, keepFile, recordFile, priorFile] = process.argv.slice(2);
 const hasBaseline = fs.existsSync(oldRoot);
 const keeps = fs.readFileSync(keepFile).toString().split('\0').filter(Boolean);
 const stat = p => { try { return fs.lstatSync(p); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null; throw e; } };
 const identity = p => {
   const s = stat(p);
   if (!s) return null;
-  if (s.isSymbolicLink()) return {type:'link', target:fs.readlinkSync(p)};
-  if (s.isFile()) return {type:'file', mode:s.mode & 0o7777, hash:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')};
-  return {type:s.isDirectory() ? 'directory' : 'other'};
+  const metadata = {mode:s.mode & 0o7777, uid:s.uid, gid:s.gid};
+  if (s.isSymbolicLink()) return {type:'link', target:fs.readlinkSync(p), ...metadata};
+  if (s.isFile()) return {type:'file', hash:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'), ...metadata};
+  return {type:s.isDirectory() ? 'directory' : 'other', ...metadata};
 };
-const equalIdentity = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Older recovery records omit ownership metadata. Compare their recorded
+// fields for retry admission; fresh restoration records contain every field.
+const equalIdentity = (a, b) => a === null || b === null ? a === b :
+  a.type === b.type && Object.keys(b).every(k => a[k] === b[k]);
+if (mode === 'restored') {
+  const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  if (record.kind !== 'colanode-publication-v1' || !record.roots || !record.app || !record.web) throw Error('Invalid Colanode restoration manifest');
+  for (const [scope, root] of [['app', live], ['web', web]]) {
+    if (!equalIdentity(identity(root), record.roots[scope])) process.exit(65);
+    // Directories precede their children. Stop on a changed ancestor rather
+    // than reading a descendant through an unexpected symlink.
+    for (const [rel, entry] of Object.entries(record[scope])) {
+      if (!equalIdentity(identity(path.join(root, rel)), entry.before)) {
+        console.error(`Colanode restoration unproven: ${path.join(root, rel)}`);
+        process.exit(65);
+      }
+    }
+  }
+  process.exit(0);
+}
+if (mode !== 'classify') throw Error('Invalid Colanode publication mode');
 const prior = priorFile ? JSON.parse(fs.readFileSync(priorFile, 'utf8')) : {app:{}, web:{}};
 if (priorFile && (prior.kind !== 'colanode-publication-v1' || !prior.app || !prior.web)) throw Error('Invalid Colanode recovery manifest');
-const next = {kind:'colanode-publication-v1', app:{}, web:{}};
+const next = {kind:'colanode-publication-v1', roots:{app:identity(live), web:identity(web)}, app:Object.create(null), web:Object.create(null)};
 const same = (a, b) => {
-  const x = stat(a), y = stat(b);
-  if (!x || !y) return false;
-  if (x.isSymbolicLink() && y.isSymbolicLink()) return fs.readlinkSync(a) === fs.readlinkSync(b);
-  return x.isFile() && y.isFile() && (x.mode & 0o111) === (y.mode & 0o111) && fs.readFileSync(a).equals(fs.readFileSync(b));
+  const x = identity(a), y = identity(b);
+  if (!x || !y || x.type !== y.type) return false;
+  if (x.type === 'link') return x.target === y.target;
+  return x.type === 'file' && (x.mode & 0o111) === (y.mode & 0o111) && x.hash === y.hash;
 };
 const lockPath = path.join(live, 'package-lock.json');
 let packages = {};
@@ -280,17 +304,16 @@ function scan(src, dst, rel = '', webMode = false) {
     const r = rel ? `${rel}/${name}` : name;
     const from = path.join(src, name), to = path.join(dst, name);
     const s = fs.lstatSync(from), d = stat(to);
+    const scope = webMode ? 'web' : 'app';
+    next[scope][r] = {before:identity(to), after:identity(from)};
     if (s.isDirectory() && !d) { scan(from, to, r, webMode); continue; }
-    if (!s.isDirectory()) {
-      const scope = webMode ? 'web' : 'app';
-      next[scope][r] = {before:identity(to), after:identity(from)};
-    }
     if (!d) continue;
     if (inMount(to, webMode ? web : live)) { conflict(to); continue; }
     if (!webMode && keeps.some(k => r === k || r.startsWith(k + '/'))) { conflict(to); continue; }
     if (s.isDirectory() && d.isDirectory()) { scan(from, to, r, webMode); continue; }
     if (s.isDirectory() !== d.isDirectory() || s.isSymbolicLink() !== d.isSymbolicLink()) { conflict(to); continue; }
-    const previous = prior[webMode ? 'web' : 'app'][r];
+    const priorScope = prior[webMode ? 'web' : 'app'];
+    const previous = Object.hasOwn(priorScope, r) ? priorScope[r] : null;
     if (previous && (equalIdentity(identity(to), previous.after) || equalIdentity(identity(to), previous.before))) continue;
     if (webMode) {
       if (!same(to, path.join(live, 'apps/web/dist', r))) conflict(to);
@@ -302,7 +325,10 @@ function scan(src, dst, rel = '', webMode = false) {
     const oldArtifact = path.join(oldRoot, r);
     if (stat(oldArtifact)) { if (!same(to, oldArtifact)) conflict(to); continue; }
     if (s.isSymbolicLink()) { if (!same(to, from)) conflict(to); continue; }
-    if (!hasBaseline) continue;
+    if (!hasBaseline) {
+      if (!same(to, from) && !generated(r)) conflict(to);
+      continue;
+    }
     if (!generated(r)) conflict(to);
   }
 }
@@ -310,6 +336,8 @@ scan(incoming, live);
 scan(path.join(incoming, 'apps/web/dist'), web, '', true);
 if (!process.exitCode) fs.writeFileSync(recordFile, JSON.stringify(next), {mode:0o600});
 JS
+      }
+      colanode_publication_state classify || return $?
       [[ -d "$stage/new/apps/web/dist" ]] || return 65
       local recovery_tmp recovery_rc
       recovery_tmp=$(mktemp "$HOME/.colanode-recovery.XXXXXX") || return $?
@@ -325,9 +353,21 @@ JS
       }
       recovery_published=1
       msg_info "Publishing Colanode"
+      local publication_rc=0 service_was_running=0
+      if systemctl is-active --quiet colanode-server; then service_was_running=1; fi
       systemctl stop colanode-server || return $?
-      _deploy_replace_contents "$stage/new" /opt/colanode 0 || return $?
-      _deploy_replace_contents "$stage/new/apps/web/dist" /var/www/colanode 0 || return $?
+      _deploy_replace_contents "$stage/new" /opt/colanode 0 || publication_rc=$?
+      if [[ "$publication_rc" == 0 ]]; then
+        _deploy_replace_contents "$stage/new/apps/web/dist" /var/www/colanode 0 || publication_rc=$?
+      fi
+      if [[ "$publication_rc" != 0 ]]; then
+        if [[ "$service_was_running" == 1 ]] && colanode_publication_state restored; then
+          systemctl start colanode-server || msg_error "Unable to restart restored Colanode; publication status=$publication_rc"
+        else
+          msg_error "Colanode publication failed; restoration or prior running state is unproven; service left stopped"
+        fi
+        return "$publication_rc"
+      fi
       systemctl start colanode-server || return $?
     }
 

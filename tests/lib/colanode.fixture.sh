@@ -42,10 +42,11 @@ if [[ "${1:-}" == --child ]]; then
   }
   curl_download() {
     [[ "$FAULT" != download ]] || return 22
+    [[ "$FAULT" != missing-old* || "$2" != *v1.0.0* ]] || return 22
     case "$2" in *v1.0.0*) cp "$CASE_ROOT/old.tar.gz" "$1" ;; *) cp "$CASE_ROOT/new.tar.gz" "$1" ;; esac
   }
   cp() {
-    if [[ "$FAULT" == publish && "${!#}" == /opt/colanode/* && "$*" == *'/deploy-source.'* ]]; then
+    if [[ "$FAULT" == publish* && "$FAULT" != publish-cleanup && "${!#}" == /opt/colanode/* && "$*" == *'/deploy-source.'* ]]; then
       command cp -a -- "$3" "${!#}" || return $?
       return 41
     fi
@@ -55,6 +56,17 @@ if [[ "${1:-}" == --child ]]; then
     fi
     command cp "$@"
   }
+  rmdir() {
+    if [[ "$FAULT" == publish-incomplete && "${!#}" == /opt/colanode/.deploy-aside.* && "${!#}" != /opt/colanode/.deploy-aside.*/* ]]; then
+      printf 'concurrent source\n' > /opt/colanode/code
+      return 42
+    fi
+    command rmdir "$@"
+  }
+  rm() {
+    if [[ "$FAULT" == publish-cleanup && "$*" == *'/opt/colanode/.deploy-aside.'* ]]; then return 43; fi
+    command rm "$@"
+  }
   npm() {
     [[ "$FAULT" != build && "$FAULT" != silent-build ]] || return 52
     if [[ "$*" == 'run build -w @colanode/web' ]]; then
@@ -63,7 +75,19 @@ if [[ "${1:-}" == --child ]]; then
       printf 'new generated\n' > packages/core/dist/index.js
     fi
   }
-  systemctl() { printf '%s\n' "$*" >> "$CASE_ROOT/services"; }
+  systemctl() {
+    printf '%s\n' "$*" >> "$CASE_ROOT/services"
+    case "$*" in
+      'is-active --quiet colanode-server') [[ "$(cat "$CASE_ROOT/service-state")" == running ]] ;;
+      'stop colanode-server') printf 'stopped\n' > "$CASE_ROOT/service-state" ;;
+      'start colanode-server')
+        [[ "$FAULT" != publish-start-fail ]] || return 53
+        cat /opt/colanode/code > "$CASE_ROOT/started-code"
+        cat /var/www/colanode/index.html > "$CASE_ROOT/started-web"
+        printf 'running\n' > "$CASE_ROOT/service-state"
+        ;;
+    esac
+  }
   nginx() {
     [[ "$1" == -T && "$2" == -c && -f "$3" ]] || return 61
     ! grep -Fq 'client_max_body_size 0;' /etc/nginx/sites-available/colanode || return 62
@@ -90,7 +114,7 @@ if [[ "${1:-}" == --child ]]; then
     {
       declare -f header_info check_container_storage check_container_resources cleanup_lxc get_active_logfile
       declare -f msg_info msg_ok msg_warn msg_error ensure_dependencies getent _gh_release_json curl_download
-      declare -f cp npm systemctl nginx
+      declare -f cp rmdir rm npm systemctl nginx
       printf '%s\n' "CLEAN_INSTALL_KEEP_PATHS=('custom keep')"
     } > "$c/cold-models.sh"
     _write_bundle update update_script "$ROOT/misc" --script-id colanode -- --requirements 0 0 -- \
@@ -118,9 +142,9 @@ check() {
   fi
 }
 if [[ "${COLANODE_COLD:-0}" == 1 ]]; then
-  faults=(none retry-web retry-edit)
+  faults=(none publish publish-incomplete publish-cleanup retry-web retry-edit)
 else
-  faults=(red none build silent-build silent-none download publish conflict markerless legacy current historical current-site lookup forced override override-current override-noop override-latest retry-web retry-edit)
+  faults=(red none build silent-build silent-none download publish publish-incomplete publish-cleanup publish-start-fail publish-stopped conflict markerless markerless-identical missing-old missing-old-identical legacy current historical current-site lookup forced override override-current override-noop override-latest retry-web retry-edit)
 fi
 for fault in "${faults[@]}"; do
   c="$work/$fault"
@@ -129,6 +153,8 @@ for fault in "${faults[@]}"; do
   mkdir -p "$c/etc/alternatives"
   ln -s "$awk_bin" "$c/etc/alternatives/awk"
   : > "$c/services"
+  printf 'running\n' > "$c/service-state"
+  [[ "$fault" != publish-stopped ]] || printf 'stopped\n' > "$c/service-state"
   mkdir -p "$c/"{old/payload/packages/core,new/payload/packages/core,new/payload/apps/web}
   mkdir -p "$c/opt/colanode/node_modules/@colanode" "$c/new/payload/node_modules/@colanode"
   ln -s ../../packages/core "$c/opt/colanode/node_modules/@colanode/core"
@@ -141,13 +167,14 @@ for fault in "${faults[@]}"; do
   [[ "$fault" != conflict ]] || printf 'operator source\n' > "$c/opt/colanode/code"
   [[ "$fault" != forced ]] || cp "$c/new/payload/code" "$c/opt/colanode/code"
   case "$fault" in
-    markerless) ;;
+    markerless*) ;;
     legacy) printf '1.0.0\n' > "$c/opt/colanode_version.txt" ;;
     current | current-site | forced | override-current | override-latest) printf '2.0.0\n' > "$c/home/.colanode" ;;
     override-noop) printf '3.0.0\n' > "$c/home/.colanode" ;;
     *) printf '1.0.0\n' > "$c/home/.colanode" ;;
   esac
   [[ "$fault" != override-current && "$fault" != override-noop ]] || cp "$c/new/payload/code" "$c/opt/colanode/code"
+  [[ "$fault" != *-identical ]] || cp "$c/new/payload/code" "$c/opt/colanode/code"
   printf 'user env\n' > "$c/opt/colanode/.env"
   printf 'upload bytes\n' > "$c/opt/colanode/data/upload"
   printf 'custom bytes\n' > "$c/opt/colanode/custom/state"
@@ -210,7 +237,7 @@ NGINX
   rc=0
   CASE_ROOT="$c" FAULT="$fault" timeout 120s unshare -m --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
   expected=0
-  case "$fault" in build | silent-build) expected=52 ;; download) expected=250 ;; publish | retry-web | retry-edit) expected=252 ;; conflict) expected=65 ;; lookup) expected=1 ;; esac
+  case "$fault" in build | silent-build) expected=52 ;; download) expected=250 ;; publish* | retry-web | retry-edit) expected=252 ;; conflict | markerless | missing-old) expected=65 ;; lookup) expected=1 ;; esac
   check "$rc" "$expected" "$fault hook status"
   if [[ "$rc" != "$expected" ]]; then cat "$c/output" >&2; fi
   if [[ "$fault" == red ]]; then
@@ -223,6 +250,8 @@ NGINX
     check "$(cat "$c/home/.colanode")" 1.0.0 "$fault failed first attempt retains marker"
     check "$(test -f "$c/state/colanode" && printf pending)" pending "$fault first attempt retains pending"
     check "$(cat "$c/opt/colanode/code")" 'new source' "$fault app was published before web failure"
+    check "$(cat "$c/service-state")" stopped "$fault mixed publication stays stopped"
+    check "$(grep -c '^start colanode-server$' "$c/services" || true)" 0 "$fault mixed publication never restarts"
     check "$(test -s "$c/home/.colanode-update-recovery" && printf retained)" retained "$fault recovery record retained"
     if [[ "$fault" == retry-edit ]]; then printf 'operator changed source\n' > "$c/opt/colanode/code"; fi
     retry_rc=0
@@ -238,6 +267,7 @@ NGINX
       check "$(cat "$c/home/.colanode")" 2.0.0 'retry publishes selected marker'
       check "$(test -e "$c/state/colanode" && printf pending || printf clear)" clear 'successful retry clears pending'
       check "$(test -e "$c/home/.colanode-update-recovery" && printf retained || printf clear)" clear 'successful retry retires recovery record'
+      check "$(cat "$c/service-state")" running 'successful retry starts service'
     fi
     check "$(cat "$c/opt/colanode/data/upload")" 'upload bytes' "$fault preserves upload"
     continue
@@ -258,7 +288,7 @@ NGINX
   else
     check "$(cat "$c/nginx/sites-available/colanode")" 'custom nginx' "$fault custom nginx survives"
   fi
-  if [[ "$fault" == none || "$fault" == silent-none || "$fault" == markerless || "$fault" == legacy || "$fault" == historical || "$fault" == forced || "$fault" == override || "$fault" == override-current ]]; then
+  if [[ "$fault" == none || "$fault" == silent-none || "$fault" == *-identical || "$fault" == legacy || "$fault" == historical || "$fault" == forced || "$fault" == override || "$fault" == override-current ]]; then
     check "$(cat "$c/opt/colanode/code")" 'new source' 'new release source published'
     check "$(cat "$c/opt/colanode/packages/core/dist/index.js")" 'new generated' 'new build output published'
     check "$(cat "$c/www/colanode/index.html")" 'new web' 'new web output published'
@@ -277,11 +307,40 @@ NGINX
     check "$(cat "$c/home/.colanode")" "$marker" "$fault current release marker unchanged"
     check "$(grep -c '^stop colanode-server$' "$c/services" 2> /dev/null || true)" 0 'current release does not stop service'
   else
-    check "$(cat "$c/home/.colanode")" 1.0.0 "$fault leaves real marker"
-    if [[ "$fault" != publish ]]; then
-      check "$(test -s "$c/services" && printf started || printf untouched)" untouched "$fault precedes service stop"
+    if [[ "$fault" == markerless ]]; then
+      check "$(test -e "$c/home/.colanode" && printf present || printf absent)" absent "$fault leaves marker absent"
     else
-      check "$(cat "$c/opt/colanode/code")" 'old source' 'publication failure restores old code'
+      check "$(cat "$c/home/.colanode")" 1.0.0 "$fault leaves real marker"
+    fi
+    check "$(test -f "$c/state/colanode" && printf pending)" pending "$fault retains pending flag"
+    if [[ "$fault" != publish* ]]; then
+      check "$(test -s "$c/services" && printf started || printf untouched)" untouched "$fault precedes service stop"
+      if [[ "$fault" == markerless || "$fault" == missing-old ]]; then
+        check "$(cat "$c/opt/colanode/code")" 'old source' "$fault retains unproven collision"
+        check "$(grep -Fc 'Colanode update conflict: /opt/colanode/code' "$c/output" || true)" 1 "$fault identifies unproven collision"
+      fi
+    else
+      check "$(test -s "$c/home/.colanode-update-recovery" && printf retained)" retained "$fault retains recovery record"
+      check "$(cat "$c/www/colanode/index.html")" 'old web' "$fault retains old web"
+      if [[ "$fault" == publish ]]; then
+        check "$(cat "$c/opt/colanode/code")" 'old source' 'publication failure restores old code'
+        check "$(cat "$c/service-state")" running 'complete restoration restarts service'
+        check "$(cat "$c/started-code" 2> /dev/null || true)" 'old source' 'restored service consumes old app'
+        check "$(cat "$c/started-web" 2> /dev/null || true)" 'old web' 'restored service consumes old web'
+      else
+        check "$(cat "$c/service-state")" stopped "$fault unsafe or failed recovery stays stopped"
+        if [[ "$fault" == publish-start-fail ]]; then
+          check "$(grep -c '^start colanode-server$' "$c/services" || true)" 1 'restoration start failure is attempted once'
+          check "$(grep -Fc 'Unable to restart restored Colanode' "$c/output" || true)" 1 'restoration start failure is reported'
+        else
+          check "$(grep -c '^start colanode-server$' "$c/services" || true)" 0 "$fault never starts unproven installation"
+        fi
+        if [[ "$fault" == publish-cleanup ]]; then
+          check "$(cat "$c/opt/colanode/code")" 'new source' 'cleanup failure is not mistaken for rollback'
+        elif [[ "$fault" == publish-incomplete ]]; then
+          check "$(grep -Fc 'Deployment rollback incomplete' "$c/output" || true)" 1 'incomplete restoration is actually injected'
+        fi
+      fi
     fi
   fi
 done
