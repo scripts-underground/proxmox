@@ -190,11 +190,13 @@ function update_script() {
 
   # Preserve the operator's explicit setting; migrate the old installer key only
   # when the upstream key is absent, including on a no-op release update.
-  (
+  local region_migrated
+  region_migrated=$(
     unset GARMIN_IS_CN GARMINCONNECT_IS_CN
-    source /opt/garmin-grafana/.env
+    source /opt/garmin-grafana/.env || exit $?
     if [[ ! ${GARMINCONNECT_IS_CN+x} && ${GARMIN_IS_CN+x} ]]; then
-      printf '\nGARMINCONNECT_IS_CN=%q\n' "$GARMIN_IS_CN" >> /opt/garmin-grafana/.env
+      printf '\nGARMINCONNECT_IS_CN=%q\n' "$GARMIN_IS_CN" >> /opt/garmin-grafana/.env || exit $?
+      printf '1'
     fi
   )
 
@@ -234,6 +236,10 @@ function update_script() {
     $STD systemctl restart grafana-server
     msg_ok "Started Services"
     msg_ok "Updated successfully!"
+  elif [[ "$region_migrated" == 1 ]]; then
+    msg_info "Applying Environment Configuration"
+    systemctl restart garmin-grafana
+    msg_ok "Applied Environment Configuration"
   fi
   exit
 }
