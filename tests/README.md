@@ -145,7 +145,7 @@ The catalogue covers all69 original shell suites, two Kosmozoo consumers, the
 current-hardening, cron-update and package-force fixtures, Dragonfly fixture/native
 consumers, the LazyLibrarian native bundle consumer, two workflow regressions, browser and contribution
 surfaces. Listing a row is not runtime proof. Unknown
-suite/mode/options refuse. There are 100 public suite/mode combinations. The
+suite/mode/options refuse. There are 101 public suite/mode combinations. The
 template-lock `--model` and `--worker` helpers are fixture-internal, invoked only
 by their original owning suite; neither is a public mode or named command input.
 Effecting direct entrypoints require SU_TEST_CONTEXT
