@@ -165,4 +165,5 @@ ENV
   done
 done
 printf '%s failure(s); actual Fleet hooks, generated cold bundles and setup_mysql_db; engine/package/release/systemd/HTTP and the Fleet binary are models, no native MySQL or Fleet claim\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]

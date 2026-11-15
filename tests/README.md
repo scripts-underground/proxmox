@@ -1,5 +1,27 @@
 # Tests
 
+## Per-app runtime hooks
+
+`maintenance-runtime-hooks` remains one registered suite with the same public
+runner and `MAINTENANCE_REFERENCES` binding. Its entrypoint discovers regular
+`tests/runtime-hooks/*.sh` files in sorted order and runs each in its own process.
+Every member must exit zero and end with exactly one
+`RUNTIME_HOOKS_RESULT failures=0` line; missing results and empty discovery fail.
+
+Add or fix an app in its own file only. Cold-hook members source
+`tests/lib/runtime-hooks/harness.sh`, declare `app`, `variants`, and `hook_paths`
+(source path/fixture-relative path pairs), define `runtime_hooks_model`,
+`runtime_hooks_setup`, and `runtime_hooks_assert`, then call
+`runtime_hooks_main "$@"`. Optional `runtime_hooks_expected`,
+`runtime_hooks_retry_needed`, and `runtime_hooks_retry_assert` callbacks customize
+expected status, retry eligibility, and retry checks. Setup may select an
+app-specific fault before invoking the cold hook.
+Callbacks use the current case variables (`c`, `role`, `fault`, `mode`, `variant`,
+`rc`, `expected`); model callbacks run in the isolated cold child. The harness
+owns case directories, namespace setup, generic checks and pending retries, never
+app selection. Standalone app fixtures may instead own their lifecycle and emit
+the same terminal result. Aggregator controls exercise refusal and success paths.
+
 ## Normal guest entrypoint
 
 `tests/run` is the public guest-local catalogue/admission/dispatch CLI. The
@@ -14,7 +36,7 @@ python3 -B tests/run --check --context "$CONTEXT" --suite workflow-entrypoints -
 python3 -B tests/run --run --context "$CONTEXT" --suite workflow-entrypoints --mode fixture
 ```
 
-Context is version1 data, not shell policy: closed fields bind the target receipt,
+Context is versioned data, not shell policy: closed fields bind the target receipt,
 DMI/MAC/root/workspace/disks, selected source bytes/modes/index/history,
 operation scope/inputs/deadline/TMPDIR and exact nested resources. The trusted
 outer route installs it root-owned/read-only outside source, under root-owned
@@ -22,6 +44,93 @@ nonsymlink ancestors without group/world writes. Fixtures cannot bless their own
 facts. Deliver standalone history and explicitly intended new files; exclude
 credentials, ignored files and host Git configuration. Archive source/context
 revisions instead of silently refreshing admission.
+
+### Target schemas and external-owner custody
+
+Both context schemas have exactly `schema`, `target`, `source`, `operations` and
+`protection`. Source/index/standalone-main-history, protected/input hashes,
+operation scopes, run locks and every before-effect recheck are identical.
+Unknown versions/kinds/fields and mixed target shapes refuse. No JSON field
+selects commands, a native adapter or a cloud provider.
+
+| # | Schema | Exact target fields |
+|---|---|---|
+| 1 | Integer `1` (legacy) | `name uuid mac receipt receipt_sha256 root_fs workspace_fs workspace disks` |
+| 2 | Integer `2` | `name uuid mac receipt receipt_sha256 root_fs workspace_fs workspace kind work_volume mount ownership infrastructure_qualification` |
+
+Schema1 retains its original exact `disks:{vda:<nonempty serial>,vdb:<nonempty
+serial>}` checks against actual lsblk observations. Its target receipt remains
+exactly `name uuid mac owner_receipt_sha256 readiness_sha256`. Those old hash
+fields do not independently authenticate provenance/readiness: legacy admission
+does not read their underlying documents. Existing publishers remain compatible.
+
+Schema2 has exactly `kind:"attached-volume"`. It does not excuse empty serials
+or invent a root-disk serial. Root/workspace filesystem records remain exactly
+`{target,source,fstype,uuid}` and must match actual findmnt records. DMI UUID and
+NIC MAC must match the guest. Additional fields are:
+
+| # | Field | Closed shape and actual check |
+|---|---|---|
+| 1 | `work_volume` | `{device,serial,uuid}`: absolute device resolving to one whole block disk, real nonempty serial and ext4 UUID. lsblk NAME/TYPE/major:minor/serial/UUID/filesystem and block st_rdev must agree. |
+| 2 | `mount` | `{fsroot,major_minor,device,inode}`: findmnt FSROOT and major:minor, plus integer workspace st_dev/st_ino. Workspace backing device must equal that exact block disk, not another device with an independently matching name. Root and work volume must differ. |
+| 3 | `ownership` | `{path,sha256}`: actual root-custody read-only ownership attestation bytes, lowercase SHA256. |
+| 4 | `infrastructure_qualification` | Same reference shape, to independently delivered qualification bytes, not a readiness placeholder. |
+
+Schema2's read-only target receipt is exactly the target object without `receipt`
+and `receipt_sha256`; its actual bytes must match receipt_sha256. Each referenced
+attestation is read and hashed on every admission/recheck, with root-safe ancestry,
+no symlink/hardlink, and no writable leaf. They are supplied by the trusted
+external owner, never a fixture or the guest application blessing itself.
+
+Ownership has exactly `schema kind project task droplet volume uuid mac
+work_volume`. Its integer schema is1, kind is `ownership`, project/task are
+nonempty strings, and its exact subobjects are:
+
+```json
+{
+  "droplet": {"id": 123, "name": "project-task", "region": "region", "tags": ["owned-tag"]},
+  "volume": {"id": "external-volume-id", "name": "work-volume-name", "attached_to": 123},
+  "work_volume": {"device": "/dev/sda", "serial": "actual-serial", "uuid": "actual-ext4-uuid"}
+}
+```
+
+Droplet ID is a positive integer; attached_to must equal it. Name must equal
+project + `-` + task and the target name; tags are sorted, unique, nonempty.
+UUID/MAC/work_volume must equal the target. Qualification has exactly `schema
+kind status ownership_sha256 identity evidence`: integer schema1, kind
+`infrastructure_qualification`, status `infrastructure-qualified`, exact ownership
+document hash, and identity equal to the ownership object without schema/kind.
+Evidence is a nonempty list of exactly `{label,sha256}` with unique labels and
+lowercase SHA256s of independently reviewed pilot evidence. It asserts reviewed
+infrastructure preconditions, never successful runner acceptance.
+
+The external owner must first verify current control-plane ownership/tags and
+exclusive volume attachment, then associate that volume with the guest's actual
+device using provider device mapping and targeted instance metadata. A matching
+name alone is insufficient. The owner delivers those independently verified
+claims through trusted root custody. Hashing a guest's self-asserted API facts
+does not authenticate them; the runner neither receives an API token nor queries
+the cloud API. Admission is not full readiness. Publish the external readiness
+receipt only after the required real consumer gates, with source/result hashes.
+
+Schema2 workspace is a dedicated root-managed mount beneath
+`/var/lib/scripts-underground/test-workflow-runs/<task>`. The owner may root-create
+a separate task directory on a builder-owned work volume and bind only that
+directory there, never over shared framework metadata. Source, history, custody
+and separate operation runs/TMPDIR children live below this one pinned mount;
+source and operation runs must not overlap. All path ancestors through the mount
+are root-owned, nonsymlink and not group/world writable. A root child below a
+builder-owned pathname alone is not custody: the root-managed bind pins the
+object, checked by filesystem/device/inode/FSROOT each time. Use traversable
+directory modes for real nonroot fixture consumers; do not inherit a private
+umask accidentally. Do not chown the helper-owned volume root.
+
+The task bind is not persistent infrastructure. Retire it only after jobs finish
+and evidence is externally preserved, without force/lazy unmount. Contexts then
+fail closed until a verified remount of the pinned object. A completed readiness
+receipt records qualification, not a promise that the task bind remains active.
+Cloud lifecycle helpers may unmount alternate device mounts: do not invoke them
+while a task bind is active. Existing pinned SSH/read-only status remain usable.
 
 | # | Registry class | Consumer / permission boundary |
 |---|---|---|
@@ -585,6 +694,17 @@ uv range and runs the real uv/project Python consumer. `github-force-deploy.test
 uses live release metadata/assets. Run these only in the assigned VM's disk-backed
 namespace with writable runtime/profile/cache/completion paths isolated. Network
 or rate-limit failure is a recorded live-proof blocker, not a passing mocked test.
+
+Template/update-lock and Arr private metadata projections share `lib/fixture_mounts.py`.
+Before isolation it records source/TMPDIR and original mounted-subtree object
+identities/backing facts, recursively clones required managed subtrees, then
+checks the canonical consumers after projection. A nested task bind must survive;
+a foreign overmount or unreachable source/temp still refuses. The entrypoint
+regression exercises real nested source and TMPDIR mounts, an old nonrecursive
+negative control and changed-mount refusal. Inputs with asserted public modes
+are created explicitly; private supervisor umask and evidence modes stay intact.
+The same explicit input-mode contract applies to native package trees and the
+Kosmozoo fixture's synthetic OS, before its deliberate denied-access controls.
 
 End-to-end test scripts for community scripts against the PVE VM. Each
 script installs a community LXC script on the PVE testbed, validates the

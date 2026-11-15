@@ -198,4 +198,5 @@ check "$(cat "$c/curl-args")" '-fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-20
 check "$(cat "$c/gpg-input")" KEY "$L key bytes reach gpg --dearmor"
 check "$(grep -c '^Components: mysql-8.0$' "$c/apt/sources.list.d/mysql.sources" || true)" 1 "$L component unchanged"
 printf '%s failure(s); actual mysql branch, get_os_info and cleanup_old_repo_files in a private /etc/apt; key transport, fallback probe and dpkg are models, no APT signature/package claim\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]

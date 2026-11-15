@@ -293,4 +293,5 @@ for STD_MODE in no yes; do
   done
 done
 printf '%s failure(s); actual setup_mysql_db and silent wrapper, mysql/openssl-failure models; no native MySQL parsing or grant claim\n' "$failures"
+printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]
