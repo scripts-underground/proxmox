@@ -551,7 +551,7 @@ preflight_template_available() {
 
   # Check online catalog
   local online_match=0
-  if pveam available -section system 2> /dev/null | awk '{print $2}' | grep -qE "^${search_pattern}[._-]"; then
+  if [[ -n "$(_template_catalog_names "$search_pattern" "")" ]]; then
     online_match=1
   fi
 
@@ -562,13 +562,7 @@ preflight_template_available() {
 
   # Gather available versions for the hint
   local available_versions
-  available_versions=$(
-    pveam available -section system 2> /dev/null |
-      awk '{print $2}' |
-      grep -oE "^${os}-[0-9]+(\.[0-9]+)?" |
-      sed "s/^${os}-//" |
-      sort -uV 2> /dev/null | tr '\n' ', ' | sed 's/,$//' | sed 's/,/, /g'
-  )
+  available_versions=$(_template_catalog_versions "$os" | tr '\n' ' ' | sed 's/ *$//; s/ /, /g')
 
   preflight_fail "No template found for ${os} ${version}" 225
   if [[ -n "$available_versions" ]]; then
@@ -3881,7 +3875,7 @@ _gpu_select_indices() {
 # Shared checked preparation: callers may handle failures without disabling checks
 # inside the writer or entering the host's unrelated container-removal prompt.
 _prepare_container_bundles() {
-  local install_bundle="$1" receiving_context
+  local install_bundle="$1"
   local _pcb_script_id=${2-}
   local _pcb_required_cpu=${3-} _pcb_required_ram=${4-}
   local -a _pcb_requirements=(--requirements "$_pcb_required_cpu" "$_pcb_required_ram" --)
@@ -3890,11 +3884,7 @@ _prepare_container_bundles() {
     _validate_lxc_script_id "$_pcb_script_id" || return $?
     _pcb_identity=(--script-id "$_pcb_script_id" --)
   fi
-  _validate_lxc_tmpdir "${var_lxc_tmpdir:-}" || return $?
-  if [[ -n "${var_lxc_tmpdir:-}" ]]; then
-    receiving_context=$(declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir) || return $?
-    pct exec "$CTID" -- bash -c "$receiving_context"$'\n''_prepare_lxc_tmpdir "$1"' -- "$var_lxc_tmpdir" || return $?
-  fi
+  _prepare_receiving_context || return $?
   build_bundle install install_script "$install_bundle" 0700 "${_pcb_identity[@]}" "${_pcb_requirements[@]}" \
     setting_up_container network_check update_os install_script motd_ssh setup_lxc cleanup_lxc || return $?
   if declare -F update_script > /dev/null 2>&1; then
@@ -4391,17 +4381,24 @@ EOF
   fi
 
   msg_info "Customizing LXC Container"
+  # The receiving temporary context must exist before any package or bootstrap hook runs.
+  local _rc_status=0
+  _prepare_receiving_context || _rc_status=$?
+  if ((_rc_status != 0)); then
+    msg_error "Receiving temporary context preparation failed (status ${_rc_status}); no package command was run"
+    exit "$_rc_status"
+  fi
   # Continue with standard container setup
   if [ "$var_os" == "alpine" ]; then
     sleep 3
-    pct exec "$CTID" -- /bin/sh -c 'cat <<EOF >/etc/apk/repositories
+    _receiving_exec /bin/sh -c 'cat <<EOF >/etc/apk/repositories
 http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
 http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF'
-    pct exec "$CTID" -- ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
+    _receiving_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
       msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
       local alpine_exit=0
-      pct exec "$CTID" -- ash -c '
+      _receiving_exec ash -c '
         ALPINE_MIRRORS="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
         for m in $(printf "%s\n" $ALPINE_MIRRORS | shuf); do
           if wget -q --spider --timeout=2 "http://$m/alpine/latest-stable/main/" 2>/dev/null; then
@@ -4436,13 +4433,13 @@ EOF
 
     # Devuan templates don't include locales package by default - install it first
     if [ "$var_os" == "devuan" ]; then
-      pct exec "$CTID" -- bash -c "${_ct_env} apt-get update >/dev/null && apt-get install -y locales >/dev/null" || true
+      _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null && apt-get install -y locales >/dev/null" || true
     fi
 
     # Only configure locale if locale.gen exists (some minimal templates don't have it)
     if pct exec "$CTID" -- test -f /etc/locale.gen 2> /dev/null; then
-      pct exec "$CTID" -- bash -c "${_ct_env} sed -i \"/$LANG/ s/^# //\" /etc/locale.gen"
-      pct exec "$CTID" -- bash -c "${_ct_env} locale_line=\$(grep -v '^#' /etc/locale.gen | grep -E '^[a-zA-Z]' | awk '{print \$1}' | head -n 1) && \
+      _receiving_exec bash -c "${_ct_env} sed -i \"/$LANG/ s/^# //\" /etc/locale.gen"
+      _receiving_exec bash -c "${_ct_env} locale_line=\$(grep -v '^#' /etc/locale.gen | grep -E '^[a-zA-Z]' | awk '{print \$1}' | head -n 1) && \
       echo LANG=\$locale_line >/etc/default/locale && \
       locale-gen >/dev/null && \
       export LANG=\$locale_line"
@@ -4467,14 +4464,32 @@ EOF
       pct exec "$CTID" -- bash -c "echo -e 'nameserver 8.8.8.8\nnameserver 1.1.1.1' >/etc/resolv.conf"
     fi
 
-    pct exec "$CTID" -- bash -c "${_ct_env} apt-get update >/dev/null 2>&1 && apt-get install -y sudo curl mc gnupg2 jq >/dev/null 2>&1" || {
+    local apt_base_rc=0
+    _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null 2>&1 && apt-get install -y sudo curl mc gnupg2 jq >/dev/null 2>&1" || apt_base_rc=$?
+    if ((apt_base_rc != 0)); then
+      # Mirror failover only has Debian and Ubuntu catalogues: any other or
+      # unreadable ID keeps the original failure and leaves sources untouched.
+      local apt_distro="" apt_distro_rc=0
+      apt_distro=$(pct exec "$CTID" -- bash -c 'unset ID && . /etc/os-release 2>/dev/null && printf "%s" "${ID-}"') || apt_distro_rc=$?
+      case "$apt_distro_rc:$apt_distro" in
+        0:debian | 0:ubuntu) ;;
+        0:*)
+          msg_error "apt-get base packages installation failed (pct exec status ${apt_base_rc}); mirror failover supports only Debian and Ubuntu, not '${apt_distro:-unknown}'. Package sources were not changed."
+          exit "$apt_base_rc"
+          ;;
+        *)
+          msg_error "apt-get base packages installation failed (pct exec status ${apt_base_rc}) and the container distribution ID could not be read (pct exec status ${apt_distro_rc}). Package sources were not changed."
+          exit "$apt_base_rc"
+          ;;
+      esac
+
       local failed_mirror
       failed_mirror=$(pct exec "$CTID" -- bash -c "grep -m1 -oP '(?<=URIs: https?://)[^/]+' /etc/apt/sources.list.d/debian.sources 2>/dev/null || grep -m1 -oP '(?<=deb https?://)[^/]+' /etc/apt/sources.list 2>/dev/null" 2> /dev/null || echo "unknown")
       msg_warn "apt-get update failed (${failed_mirror}), trying alternate mirrors..."
       local mirror_exit=0
-      pct exec "$CTID" -- bash -c '
+      _receiving_exec bash -c '
         APT_BASE="sudo curl mc gnupg2 jq"
-        DISTRO=$(. /etc/os-release 2>/dev/null && echo "$ID" || echo "debian")
+        DISTRO=$1
 
         if [ "$DISTRO" = "ubuntu" ]; then
           EU_MIRRORS="de.archive.ubuntu.com fr.archive.ubuntu.com se.archive.ubuntu.com nl.archive.ubuntu.com it.archive.ubuntu.com ch.archive.ubuntu.com mirrors.xtom.de"
@@ -4561,10 +4576,10 @@ EOF
         done
 
         exit 2
-      ' && mirror_exit=0 || mirror_exit=$?
+      ' _ "$apt_distro" && mirror_exit=0 || mirror_exit=$?
       if [[ $mirror_exit -eq 2 ]]; then
         msg_warn "Multiple mirrors failed (possible CDN synchronization issue)."
-        if [[ "$var_os" == "ubuntu" ]]; then
+        if [[ "$apt_distro" == "ubuntu" ]]; then
           msg_warn "Find Ubuntu mirrors at: https://launchpad.net/ubuntu/+archivemirrors"
         else
           msg_warn "Find Debian mirrors at: https://www.debian.org/mirror/list"
@@ -4578,7 +4593,7 @@ EOF
             msg_warn "Invalid hostname format."
             continue
           }
-          pct exec "$CTID" -- bash -c "
+          _receiving_exec bash -c "
             for src in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do
               [ -f \"\$src\" ] && sed -i \"s|URIs: http[s]*://[^/]*/|URIs: http://${custom_mirror}/|g; s|deb http[s]*://[^/]*/|deb http://${custom_mirror}/|g\" \"\$src\"
             done
@@ -4595,7 +4610,7 @@ EOF
         msg_error "apt-get base packages installation failed"
         exit 1
       fi
-    }
+    fi
   else
     # Non-apt, non-apk systems: Fedora/Rocky/Alma/CentOS/openEuler/openSUSE/Arch/Gentoo
     sleep 3
@@ -4649,16 +4664,16 @@ PROFILE
     # Ensure curl is present for install.func bootstrap (most templates have it, but be safe)
     case "$var_os" in
       fedora | rocky | rockylinux | alma | almalinux | centos | openeuler)
-        pct exec "$CTID" -- bash -c "command -v curl >/dev/null 2>&1 || (command -v dnf >/dev/null 2>&1 && dnf install -y curl >/dev/null 2>&1) || (command -v yum >/dev/null 2>&1 && yum install -y curl >/dev/null 2>&1)" || true
+        _receiving_exec bash -c "command -v curl >/dev/null 2>&1 || (command -v dnf >/dev/null 2>&1 && dnf install -y curl >/dev/null 2>&1) || (command -v yum >/dev/null 2>&1 && yum install -y curl >/dev/null 2>&1)" || true
         ;;
       opensuse)
-        pct exec "$CTID" -- bash -c "command -v curl >/dev/null 2>&1 || zypper -n install curl >/dev/null 2>&1" || true
+        _receiving_exec bash -c "command -v curl >/dev/null 2>&1 || zypper -n install curl >/dev/null 2>&1" || true
         ;;
       archlinux | arch)
-        pct exec "$CTID" -- bash -c "command -v curl >/dev/null 2>&1 || pacman -Sy --noconfirm curl >/dev/null 2>&1" || true
+        _receiving_exec bash -c "command -v curl >/dev/null 2>&1 || pacman -Sy --noconfirm curl >/dev/null 2>&1" || true
         ;;
       gentoo)
-        pct exec "$CTID" -- bash -c "command -v curl >/dev/null 2>&1 || emerge --quiet net-misc/curl >/dev/null 2>&1" || true
+        _receiving_exec bash -c "command -v curl >/dev/null 2>&1 || emerge --quiet net-misc/curl >/dev/null 2>&1" || true
         ;;
     esac
   fi
@@ -4984,10 +4999,17 @@ PROFILE
 
           if [[ -n "${APT_OPTION}" && "${response}" == "${APT_OPTION}" ]]; then
             # Package manager in-place repair: fix broken state and re-run install script
+            local _repair_context_status=0
+            _prepare_receiving_context || _repair_context_status=$?
+            if ((_repair_context_status != 0)); then
+              msg_error "Receiving temporary context preparation failed (status ${_repair_context_status}); container ${CTID} preserved" || true
+              CONTAINER_INSTALLING=false
+              exit "$_repair_context_status"
+            fi
             handled=true
             if [[ "$var_os" == "alpine" ]]; then
               echo -e "\n${TAB}${HOLD}${YW}Repairing APK state in container ${CTID}...${CL}"
-              pct exec "$CTID" -- ash -c "
+              _receiving_exec ash -c "
               apk fix 2>/dev/null || true
               apk cache clean 2>/dev/null || true
               apk update 2>/dev/null || true
@@ -4995,7 +5017,7 @@ PROFILE
               echo -e "${BFR}${CM}${GN}APK state repaired in container ${CTID}${CL}"
             else
               echo -e "\n${TAB}${HOLD}${YW}Repairing APT/DPKG state in container ${CTID}...${CL}"
-              pct exec "$CTID" -- bash -c "
+              _receiving_exec bash -c "
               DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
               apt-get -f install -y 2>/dev/null || true
               apt-get clean 2>/dev/null
@@ -5570,6 +5592,43 @@ _template_lock_release() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# _template_catalog_names()
+#
+# - Single reader of the online catalog for template discovery
+# - Current `pveam available` lines are "<section> <name> <arch>"; the archive
+#   name is column 2 and the architecture column 3 (amd64 and arm64 rows coexist).
+#   Lines without an architecture column (older layout) are accepted as before.
+# - Prints archive names of the host architecture that start with SEARCH on a
+#   [._-] boundary (already present for an open prefix such as fedora-) and contain
+#   PATTERN (empty PATTERN matches any), oldest first
+# - Prints nothing and succeeds when the catalog is unavailable or has no match
+# ------------------------------------------------------------------------------
+_template_catalog_names() {
+  local search="$1" pattern="${2:-}" arch
+  arch=$(dpkg --print-architecture 2> /dev/null) || return 0
+  pveam available -section system 2> /dev/null |
+    awk -v arch="$arch" -v search="$search" -v pattern="$pattern" '
+      NF >= 2 && (NF < 3 || $3 == arch) && $2 ~ /\.(tar\.zst|tar\.xz|tar\.gz)$/ &&
+      index($2, search) == 1 && (search ~ /[._-]$/ || substr($2, length(search) + 1, 1) ~ /[._-]/) &&
+      (pattern == "" || index($2, pattern) > 0) { print $2 }
+    ' | sort -V || true
+  return 0
+}
+
+# ------------------------------------------------------------------------------
+# _template_catalog_versions()
+#
+# - Lists the versions the catalog offers for one OS type, for the host arch
+# - Versions may be dotted or plain (fedora-43, debian-13, ubuntu-24.04)
+# ------------------------------------------------------------------------------
+_template_catalog_versions() {
+  local os="$1"
+  _template_catalog_names "$os" "" |
+    sed -E "s/^${os}-([0-9]+(\.[0-9]+)*).*/\1/" |
+    sort -uV || true
+}
+
 # All archive consumers/producers below run under the descriptor, with no
 # background UI children. Productive synchronous children inherit it deliberately:
 # launcher death must not expose an archive while its producer is still alive.
@@ -5897,7 +5956,7 @@ create_lxc_container() {
     fi
 
     ONLINE_TEMPLATES=()
-    mapfile -t ONLINE_TEMPLATES < <(pveam available -section system 2> /dev/null | grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' | awk '{print $2}' | grep -E "^${TEMPLATE_SEARCH}.*${TEMPLATE_PATTERN}" | sort -t - -k 2 -V 2> /dev/null || true)
+    mapfile -t ONLINE_TEMPLATES < <(_template_catalog_names "$TEMPLATE_SEARCH" "$TEMPLATE_PATTERN")
     [[ ${#ONLINE_TEMPLATES[@]} -gt 0 ]] && ONLINE_TEMPLATE="${ONLINE_TEMPLATES[-1]}"
 
     TEMPLATE="$ONLINE_TEMPLATE"
@@ -5912,14 +5971,7 @@ create_lxc_container() {
 
     # Get all available versions for this OS type
     AVAILABLE_VERSIONS=()
-    mapfile -t AVAILABLE_VERSIONS < <(
-      pveam available -section system 2> /dev/null |
-        grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
-        awk -F'\t' '{print $1}' |
-        grep "^${PCT_OSTYPE}-" |
-        sed -E "s/.*${PCT_OSTYPE}-([0-9]+(\.[0-9]+)?).*/\1/" |
-        sort -u -V 2> /dev/null
-    )
+    mapfile -t AVAILABLE_VERSIONS < <(_template_catalog_versions "$PCT_OSTYPE")
 
     if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
       echo ""
@@ -5928,20 +5980,21 @@ create_lxc_container() {
         echo "  [$((i + 1))] ${AVAILABLE_VERSIONS[$i]}"
       done
       echo ""
-      read -p "Select version [1-${#AVAILABLE_VERSIONS[@]}] or press Enter to cancel: " choice
+      if is_unattended || [[ ! -t 0 ]]; then
+        msg_error "Template ${PCT_OSTYPE} ${PCT_OSVERSION} not found; no terminal to choose another version"
+        exit 225
+      fi
+      if ! read -r -p "Select version [1-${#AVAILABLE_VERSIONS[@]}] or press Enter to cancel: " choice; then
+        msg_error "No version selection was read; aborting"
+        exit 225
+      fi
 
       if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#AVAILABLE_VERSIONS[@]} ]]; then
         PCT_OSVERSION="${AVAILABLE_VERSIONS[$((choice - 1))]}"
         TEMPLATE_SEARCH="${PCT_OSTYPE}-${PCT_OSVERSION}"
 
         ONLINE_TEMPLATES=()
-        mapfile -t ONLINE_TEMPLATES < <(
-          pveam available -section system 2> /dev/null |
-            grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
-            awk '{print $2}' |
-            grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |
-            sort -t - -k 2 -V 2> /dev/null || true
-        )
+        mapfile -t ONLINE_TEMPLATES < <(_template_catalog_names "$TEMPLATE_SEARCH" "$TEMPLATE_PATTERN")
 
         if [[ ${#ONLINE_TEMPLATES[@]} -gt 0 ]]; then
           TEMPLATE="${ONLINE_TEMPLATES[-1]}"
@@ -5976,16 +6029,14 @@ create_lxc_container() {
       msg_error "Template ${PCT_OSTYPE} ${PCT_OSVERSION} not available"
 
       # Get available versions
-      mapfile -t AVAILABLE_VERSIONS < <(
-        pveam available -section system 2> /dev/null |
-          grep "^${PCT_OSTYPE}-" |
-          sed -E 's/.*'"${PCT_OSTYPE}"'-([0-9]+\.[0-9]+).*/\1/' |
-          grep -E '^[0-9]+\.[0-9]+$' |
-          sort -u -V 2> /dev/null || sort -u
-      )
+      mapfile -t AVAILABLE_VERSIONS < <(_template_catalog_versions "$PCT_OSTYPE")
 
       if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
-        # Use prompt_select for version selection (supports unattended mode)
+        if is_unattended || [[ ! -t 0 ]]; then
+          msg_error "Template ${PCT_OSTYPE} ${PCT_OSVERSION} not found; not switching version without a terminal"
+          exit 225
+        fi
+        # Use prompt_select for version selection (interactive, with timeout)
         local selected_version
         selected_version=$(prompt_select "Select ${PCT_OSTYPE} version:" 1 60 "${AVAILABLE_VERSIONS[@]}")
 
@@ -6002,13 +6053,7 @@ create_lxc_container() {
             awk -v search="${TEMPLATE_SEARCH}-" -v pattern="${TEMPLATE_PATTERN}" '$1 ~ search && $1 ~ pattern {print $1}' |
             sed 's|.*/||' | sort -t - -k 2 -V
         )
-        mapfile -t ONLINE_TEMPLATES < <(
-          pveam available -section system 2> /dev/null |
-            grep -E '\.(tar\.zst|tar\.xz|tar\.gz)$' |
-            awk '{print $2}' |
-            grep -E "^${TEMPLATE_SEARCH}-.*${TEMPLATE_PATTERN}" |
-            sort -t - -k 2 -V 2> /dev/null || true
-        )
+        mapfile -t ONLINE_TEMPLATES < <(_template_catalog_names "$TEMPLATE_SEARCH" "$TEMPLATE_PATTERN")
         ONLINE_TEMPLATE=""
         [[ ${#ONLINE_TEMPLATES[@]} -gt 0 ]] && ONLINE_TEMPLATE="${ONLINE_TEMPLATES[-1]}"
 

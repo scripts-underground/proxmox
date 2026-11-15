@@ -142,11 +142,13 @@ def supervise(context,deadline):
     require(state=='not-found' and not job.exists(),'owned job already exists; inspect rather than duplicate')
     if not job.parent.exists():job.parent.mkdir(mode=0o700)
     safe_parents(job.parent,root=True);job.mkdir(mode=0o700)
-    for name in ('stdout.log','stderr.log'):(job/name).touch(mode=0o600,exist_ok=False)
+    for name in ('stdout.log','stderr.log','job.lock'):(job/name).touch(mode=0o600,exist_ok=False)
     argv=['/usr/bin/python3','-B',str(source/'tests/run'),'--run','--context',str(context.path),'--suite',op['suite'],'--mode',op['mode']]
     body='exec 9>'+shlex.quote(str(job/'job.lock'))+'; /usr/bin/flock -n 9 || exit 75; exec '+shlex.join(argv)
     exclusive_json(job/'intent.json',dict(unit=unit,argv=argv,source=context.document['source']['tree_sha256'],context_sha256=sha(context.path.read_bytes()),ctid=op['nested'][0]['ctid'] if op['nested'] else None,deadline_seconds=deadline,started_wall=time.time(),cwd=str(source)))
-    args=['/usr/bin/systemd-run','--quiet','--unit',unit,'--property','Type=exec','--property','Restart=no','--property',f'RuntimeMaxSec={deadline}','--property','TimeoutStopSec=120','--property','SendSIGKILL=no','--property','KillMode=control-group','--property','MemoryMax='+('5G' if contribution else '1G'),'--property','CPUQuota='+('400%' if contribution else '200%'),'--property','TasksMax='+('512' if contribution else '256'),'--property','UMask=0077','--property','WorkingDirectory='+str(source),'--property','StandardOutput=append:'+str(job/'stdout.log'),'--property','StandardError=append:'+str(job/'stderr.log'),'--setenv','TMPDIR='+op['tmpdir'],'--setenv','PYTHONDONTWRITEBYTECODE=1','--setenv','PATH=/usr/local/go/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','/bin/bash','-c',body]
+    # Private evidence belongs to the 0700 job/run directories, not to a
+    # process-wide mask that changes fixture and native-tool semantics.
+    args=['/usr/bin/systemd-run','--quiet','--unit',unit,'--property','Type=exec','--property','Restart=no','--property',f'RuntimeMaxSec={deadline}','--property','TimeoutStopSec=120','--property','SendSIGKILL=no','--property','KillMode=control-group','--property','MemoryMax='+('5G' if contribution else '1G'),'--property','CPUQuota='+('400%' if contribution else '200%'),'--property','TasksMax='+('512' if contribution else '256'),'--property','UMask=0022','--property','WorkingDirectory='+str(source),'--property','StandardOutput=append:'+str(job/'stdout.log'),'--property','StandardError=append:'+str(job/'stderr.log'),'--setenv','TMPDIR='+op['tmpdir'],'--setenv','PYTHONDONTWRITEBYTECODE=1','--setenv','PATH=/usr/local/go/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','/bin/bash','-c',body]
     subprocess.run(args,check=True,timeout=30)
     state=subprocess.run(['/usr/bin/systemctl','show',unit,'-p','MainPID','-p','ControlGroup','-p','ActiveState','-p','SubState'],capture_output=True,text=True,check=True,timeout=20).stdout
     pid=int(next(line.split('=',1)[1] for line in state.splitlines() if line.startswith('MainPID=')))

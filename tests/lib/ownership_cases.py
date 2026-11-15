@@ -7,6 +7,7 @@ import sys
 import unittest
 import time
 import hashlib
+from unittest.mock import patch
 
 from test_context import AdmissionError, Context, NestedOwner, Resource, Run, load_json, sha
 
@@ -113,6 +114,193 @@ class Ownership(unittest.TestCase):
 
     def test_wrong_uuid(self):
         self.changed(lambda d: d['target'].__setitem__('uuid', '00000000-0000-0000-0000-000000000000'), 'target')
+
+    def test_legacy_target_observation_compatibility(self):
+        from test_context import query, read_custody
+        original = self.admitted.document
+        target = original['target']
+        if original['schema'] == 1:
+            Context.admit(self.context_path, 'workflow-ownership', 'fixture')
+        # Parsed legacy target and recorded serial-query seam only. DMI, MAC,
+        # mounts/source/history/custody remain the real admitted guest's facts;
+        # no device is changed and DO is never presented as an Ark VM.
+        legacy = {k: copy.deepcopy(target[k]) for k in ('name', 'uuid', 'mac', 'receipt', 'receipt_sha256', 'root_fs', 'workspace_fs', 'workspace')}
+        legacy['disks'] = dict(vda='recorded-legacy-system', vdb='recorded-legacy-work')
+        receipt = {k: legacy[k] for k in ('name', 'uuid', 'mac')}
+        receipt.update(owner_receipt_sha256='legacy-unchanged', readiness_sha256='legacy-unchanged')
+        observed = []
+        def reading(path):
+            return receipt if path == Path(legacy['receipt']) else read_custody(path)
+        def observation(argv):
+            if argv[:4] == ['/usr/bin/lsblk', '-dn', '-o', 'SERIAL']:
+                observed.append(argv)
+                return legacy['disks'].get(Path(argv[-1]).name, '')
+            return query(argv)
+        candidate = copy.deepcopy(original)
+        candidate.update(schema=1, target=legacy)
+        with patch('test_context.read_custody', side_effect=reading), patch('test_context.query', side_effect=observation):
+            Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture')
+            for device in ('vda', 'vdb'):
+                serial = legacy['disks'][device]
+                legacy['disks'][device] = ''
+                self.refuse(lambda: Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture'), 'schema text')
+                legacy['disks'][device] = serial
+                with patch('test_context.query', side_effect=lambda a: 'wrong-serial' if a[-1] == '/dev/' + device else observation(a)):
+                    self.refuse(lambda: Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture'), 'serial mismatch')
+            legacy['extra'] = True
+            self.refuse(lambda: Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture'), 'schema fields')
+        self.assertTrue(observed)
+        print('LEGACY_SCHEMA1 valid_empty_wrong_serial_closed_fields observation=recorded read_only actual_guest_identity_retained', flush=True)
+
+    def test_attached_target_refusals_at_observation_owner(self):
+        if self.admitted.document['schema'] != 2:
+            return  # Schema-1 publishers need not supply schema-2 authority.
+        from test_context import read_custody, query
+        original = self.admitted.document
+        mutations = [
+            ('kind', lambda t: t.update(kind='unknown')),
+            ('extra', lambda t: t.update(disks={'vda': 'mixed'})),
+            ('DMI', lambda t: t.update(uuid='00000000-0000-0000-0000-000000000000')),
+            ('MAC', lambda t: t.update(mac='02:00:00:00:00:00')),
+            ('empty-serial', lambda t: t['work_volume'].update(serial='')),
+            ('serial', lambda t: t['work_volume'].update(serial='wrong')),
+            ('UUID', lambda t: t['work_volume'].update(uuid='wrong')),
+            ('device', lambda t: t['work_volume'].update(device='/dev/null')),
+            ('missing-device', lambda t: t['work_volume'].update(device='/dev/no-such-work-volume')),
+            ('other-device', lambda t: t['work_volume'].update(device='/dev/vda')),
+            ('inode', lambda t: t['mount'].update(inode=t['mount']['inode'] + 1)),
+            ('device-number', lambda t: t['mount'].update(device=t['mount']['device'] + 1)),
+            ('FSROOT', lambda t: t['mount'].update(fsroot='/foreign-bind-root')),
+            ('mount-number', lambda t: t['mount'].update(major_minor='0:1')),
+            ('RAM', lambda t: t['workspace_fs'].update(fstype='tmpfs')),
+            ('root', lambda t: t.update(root_fs=copy.deepcopy(t['workspace_fs']))),
+        ]
+        for name, mutate in mutations:
+            candidate = copy.deepcopy(original)
+            mutate(candidate['target'])
+            # Only receipt correspondence is modeled to reach deeper actual
+            # read-only device/mount checks, never to bless a new target.
+            def reading(path):
+                if path == Path(candidate['target']['receipt']):
+                    return {k: v for k, v in candidate['target'].items() if k not in ('receipt', 'receipt_sha256')}
+                return read_custody(path)
+            with self.subTest(case=name), patch('test_context.read_custody', side_effect=reading):
+                with self.assertRaises((AdmissionError, OSError)):
+                    Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture')
+                self.assertEqual(self.native.calls, [])
+        # Exercise observed mount/device substitution and ambiguity independently
+        # of the declaration, so receipt mismatch cannot mask these regressions.
+        for defect in ('backing', 'ambiguous', 'partition', 'empty-serial'):
+            def observation(argv):
+                raw = query(argv)
+                if argv[0] == '/usr/bin/lsblk' and '-J' in argv:
+                    data = json.loads(raw)
+                    if defect == 'ambiguous': data['blockdevices'] *= 2
+                    elif defect == 'partition': data['blockdevices'][0]['type'] = 'part'
+                    elif defect == 'empty-serial': data['blockdevices'][0]['serial'] = ''
+                    return json.dumps(data)
+                if argv[0] == '/usr/bin/findmnt' and 'TARGET,SOURCE,FSTYPE,UUID,FSROOT,MAJ:MIN' in argv and argv[argv.index('-T')+1] != '/':
+                    data = json.loads(raw)
+                    if defect == 'backing': data['filesystems'][0]['maj:min'] = '0:1'
+                    return json.dumps(data)
+                return raw
+            with self.subTest(observation=defect), patch('test_context.query', side_effect=observation):
+                self.refuse(lambda: Context.admit(self.context_path, 'workflow-ownership', 'fixture'), 'volume|workspace')
+        print('ATTACHED_DEVICE_REFUSAL declared=16 observed=4 native_effects=0', flush=True)
+
+    def test_attached_attestation_bytes_claims_and_custody(self):
+        if self.admitted.document['schema'] != 2:
+            return
+        from test_context import read_custody
+        target = self.admitted.document['target']
+        for field in ('ownership', 'infrastructure_qualification'):
+            reference = target[field]
+            path = Path(reference['path'])
+            for defect in ('missing', 'hash', 'changed', 'writable', 'symlink', 'ancestor'):
+                candidate = copy.deepcopy(self.admitted.document)
+                parent = self.root / (field + '-' + defect)
+                parent.mkdir(mode=0o700)
+                leaf = parent / 'negative-attestation.json'
+                leaf.write_bytes(path.read_bytes()); leaf.chmod(0o400)
+                if defect == 'missing': leaf.unlink()
+                elif defect == 'hash': candidate['target'][field]['sha256'] = '0' * 64
+                elif defect == 'changed': leaf.write_bytes(path.read_bytes() + b' ')
+                elif defect == 'writable': leaf.chmod(0o600)
+                elif defect == 'symlink': leaf.unlink(); leaf.symlink_to(path)
+                elif defect == 'ancestor': parent.chmod(0o777)
+                candidate['target'][field]['path'] = str(leaf)
+                def reading(p):
+                    if p == Path(target['receipt']):
+                        return {k: v for k, v in candidate['target'].items() if k not in ('receipt', 'receipt_sha256')}
+                    return read_custody(p)
+                with self.subTest(field=field, defect=defect), patch('test_context.read_custody', side_effect=reading):
+                    self.refuse(lambda: Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture'), 'attestation|custody')
+                parent.chmod(0o700)
+        # Closed parsed-claim seams reach cross-document checks without editing
+        # either genuine external-owner attestation.
+        for field, key, value in [('ownership', 'kind', 'readiness'),
+                                 ('ownership', 'uuid', 'wrong'),
+                                 ('ownership', 'project', 'wrong'),
+                                 ('ownership', 'extra', True),
+                                 ('infrastructure_qualification', 'status', 'runner-ready'),
+                                 ('infrastructure_qualification', 'ownership_sha256', '0'*64),
+                                 ('infrastructure_qualification', 'identity', {}),
+                                 ('infrastructure_qualification', 'evidence', [])]:
+            p = Path(target[field]['path'])
+            wrong = read_custody(p); wrong[key] = value
+            with patch('test_context.read_custody', side_effect=lambda path: wrong if path == p else read_custody(path)):
+                self.refuse(lambda: Context.admit(self.context_path, 'workflow-ownership', 'fixture'), 'ownership|qualification|schema')
+        p = Path(target['ownership']['path']); wrong = read_custody(p)
+        wrong['volume']['attached_to'] += 1
+        with patch('test_context.read_custody', side_effect=lambda path: wrong if path == p else read_custody(path)):
+            self.refuse(lambda: Context.admit(self.context_path, 'workflow-ownership', 'fixture'), 'attachment')
+        print('ATTACHED_ATTESTATIONS bytes_custody=12 closed_claims=9 placeholder_readiness_refused effects=0', flush=True)
+
+    def test_schema_unknown_and_mixed_are_closed(self):
+        for version in (0, 3, '2', True):
+            self.changed(lambda d: d.update(schema=version), 'schema')
+        self.changed(lambda d: d.update(schema=2 if d['schema'] == 1 else 1), 'schema')
+
+    def test_context_mutation_rechecked_before_process_and_nested_effect(self):
+        for field in ('target', 'source', 'history', 'index', 'protected', 'input', 'attestation'):
+            candidate = copy.deepcopy(self.admitted.document)
+            bound = self.root / (field + '-input'); bound.write_bytes(b'original')
+            candidate['operations'][0]['inputs'] = [dict(path=str(bound), sha256=sha(bound.read_bytes()))]
+            candidate['protection']['files'] = [dict(path=str(bound), sha256=sha(bound.read_bytes()))]
+            path = self.root / (field + '-context.json'); path.write_text(json.dumps(candidate)); path.chmod(0o400)
+            admitted = Context.admit(path, 'workflow-ownership', 'fixture')
+            guard = Run(admitted); guard.directory = self.root
+            native = RecordingNative(self.root)
+            owner = NestedOwner(guard, self.spec, native)
+            if field == 'target': candidate['target']['uuid'] = 'wrong'
+            elif field == 'source': candidate['source']['files'][0]['sha256'] = '0'*64
+            elif field == 'history': candidate['source']['history_sha256'] = '0'*64
+            elif field == 'index': candidate['source']['index_sha256'] = '0'*64
+            elif field == 'attestation' and candidate['schema'] == 2: candidate['target']['ownership']['sha256'] = '0'*64
+            else: bound.write_bytes(b'changed')
+            path.write_text(json.dumps(candidate))
+            original_process = __import__('subprocess').Popen
+            effects = []
+            def process(argv, *args, **kwargs):
+                if argv == ['/bin/true']:
+                    effects.append(argv)
+                    self.fail('changed context reached process effect')
+                return original_process(argv, *args, **kwargs)
+            with patch('test_context.subprocess.Popen', side_effect=process):
+                with self.assertRaises(AdmissionError): guard.execute(['/bin/true'], 1)
+                self.assertEqual(effects, [])
+            with self.assertRaises(AdmissionError): owner.create()
+            self.assertEqual(native.calls, [])
+        print('BEFORE_EFFECT_RECHECK process_nested=7 changed_contexts effects=0', flush=True)
+
+    def test_nonroot_run_ancestry_refuses(self):
+        root = self.root/'builder-owned'
+        root.mkdir(mode=0o755)
+        tmp = root/'tmp'; tmp.mkdir(mode=0o755)
+        os.chown(root, 65534, 65534)
+        candidate = copy.deepcopy(self.admitted.document)
+        candidate['operations'][0].update(runs=str(root), tmpdir=str(tmp))
+        self.refuse(lambda: Context.validate(candidate, self.context_path, 'workflow-ownership', 'fixture'), 'not root-owned')
 
     def test_changed_source_bytes(self):
         self.changed(lambda d: d['source']['files'][0].__setitem__('sha256', '0' * 64), 'source')

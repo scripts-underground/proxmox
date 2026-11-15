@@ -31,6 +31,9 @@ export var_lxc_tmpdir=/data/testtmp
 
 prepare_cold_case() {
   mkdir -p "$c/root/"{usr,etc/systemd/system,opt,root,var/log,var/lib,data/testtmp,data/state,data/cache,data/plugins,data/tmp,proc,dev,sys,fixture,sources/images}
+  # The synthetic OS starts with public traversable directories. The case and
+  # evidence stay private; intentional denied/mode inputs are applied below.
+  find "$c/root" -type d -exec chmod 0755 {} +
   ln -s usr/bin "$c/root/bin"
   ln -s usr/sbin "$c/root/sbin"
   ln -s usr/lib "$c/root/lib"
@@ -52,7 +55,10 @@ prepare_cold_case() {
   cp /usr/bin/sleep "$c/root/fixture/old"
   printf '\nOLD\n' >> "$c/root/fixture/old"
   sha256sum "$c/root/fixture/new" | cut -d ' ' -f1 > "$c/root/fixture/digest"
+  # Read dynamically by _write_bundle's container-variable serializer below.
+  # shellcheck disable=SC2034
   var_lxc_kosmozoo_state=/data/state var_lxc_kosmozoo_cache=/data/cache
+  # shellcheck disable=SC2034
   var_lxc_kosmozoo_hosts=${seed:-} var_lxc_kosmozoo_initial_release=latest
   _write_bundle install install_script "$ROOT/misc" 'source /fixture/models.sh' 'install_script' > "$c/root/fixture/install.sh"
   _write_bundle update update_script "$ROOT/misc" --requirements "${var_cpu-}" "${var_ram-}" -- 'source /fixture/models.sh' 'run_update_script' > "$c/root/fixture/update.sh"
@@ -342,7 +348,7 @@ mount_before=$(grep ' /data/cache ' /proc/self/mountinfo)
 source /fixture/models.sh
 kind=update
 if [[ "$scenario" == install ]]; then kind=install; chown 3456:3457 /data /data/state /data/cache /data/plugins /data/tmp; before=$(stat -c '%d:%i:%a:%u:%g' /data/state /data/cache /data/cache/user); else
-  mkdir -p /opt/kosmozoo /etc/kosmozoo
+  mkdir -m 0755 -p /opt/kosmozoo /etc/kosmozoo
   command cp /fixture/old /opt/kosmozoo/kosmozoo
   printf '0.2.1\n' > /root/.kosmozoo
   printf 'OPERATOR ENV\n' > /etc/kosmozoo/env
@@ -427,7 +433,7 @@ export FAULT=none PIN=0.2.2 CURRENT_VERSION=0.2.1
 source /fixture/models.sh
 : > /fixture/events
 printf inactive > /fixture/active; printf disabled > /fixture/enabled; printf 0 > /fixture/pid
-mkdir -p /opt/kosmozoo /etc/kosmozoo
+mkdir -m 0755 -p /opt/kosmozoo /etc/kosmozoo
 command cp /fixture/old /opt/kosmozoo/kosmozoo
 printf '0.2.1\n' > /root/.kosmozoo
 printf 'OPERATOR ENV\n' > /etc/kosmozoo/env; chmod 0600 /etc/kosmozoo/env

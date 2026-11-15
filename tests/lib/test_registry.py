@@ -25,7 +25,7 @@ maintenance-retry-callers maintenance-retry-preservation maintenance-runtime-hoo
 maintenance-service-edges maintenance-service-uninstall maintenance-silent
 maintenance-uninstall maintenance-uv-range maintenance-webtrees maintenance-zigbee2mqtt
 migration-dragonfly nvidia-userspace ollama-keep-install release-check-errors requested-release
-restore-backup ssh-default-keys strata tools-retry-timer update-pending
+restore-backup ssh-default-keys strata template-discovery tools-retry-timer update-pending
 wanderer-plugin-dirs'''.split()
 REGISTRY = {name: Suite(f'tests/{name}.test.sh', ('fixture',)) for name in FIXTURES}
 REGISTRY.update({
