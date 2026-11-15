@@ -286,3 +286,5 @@ SHIM
 done
 printf '%s failure(s); actual pkg_update and actual pre-bundle apt fragment; apt-get/pct/reachability/prompt models, no native Devuan or deb822 claim\n' "$failures"
 [[ "$failures" == 0 ]]
+
+printf 'RUNTIME_HOOKS_RESULT failures=0\n'

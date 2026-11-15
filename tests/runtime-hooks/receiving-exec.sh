@@ -267,3 +267,5 @@ else
 fi
 printf '%s failure(s); actual customization/repair regions and receiving-context owner; pct/CT/package managers modeled\n' "$failures"
 [[ "$failures" == 0 ]]
+
+printf 'RUNTIME_HOOKS_RESULT failures=0\n'
