@@ -28,6 +28,10 @@ if [[ "${1:-}" == --child ]]; then
   }
   mariadb() { return 0; }
   sudo() { return 0; }
+  ln() {
+    command ln "$@" || return $?
+    stat -c '%a %s' "${!#}" >> "$c/credentials-created"
+  }
   openssl() {
     local n
     n=$(count openssl)
@@ -239,6 +243,41 @@ for engine in mysql mariadb postgresql; do
     check "$rc" 0 "$L $engine append status"
     check "$(stat -c %a "$path")" 640 "$L $engine operator mode preserved"
     check "$(grep -c '^Password: [xy]$' "$path")" 2 "$L $engine prior and new credentials retained"
+  done
+done
+
+# Default ACLs override umask. Observe each real link publication before any write.
+for engine in mysql mariadb postgresql; do
+  case "$engine" in mysql) prefix=MYSQL ;; mariadb) prefix=MARIADB ;; postgresql) prefix=PG ;; esac
+  for acl in basic named; do
+    parent="$work/$engine-$acl"
+    mkdir "$parent"
+    python3 - "$parent" "$acl" << 'PY'
+import os,struct,sys
+rows=[(1,7,0xffffffff),(4,5,0xffffffff),(32,5,0xffffffff)]
+if sys.argv[2]=='named':rows=[(1,7,0xffffffff),(2,4,65534),(4,5,0xffffffff),(16,5,0xffffffff),(32,5,0xffffffff)]
+raw=struct.pack('<I',2)+b''.join(struct.pack('<HHI',*entry) for entry in rows)
+os.setxattr(sys.argv[1],'system.posix_acl_default',raw)
+assert os.getxattr(sys.argv[1],'system.posix_acl_default')==raw
+PY
+    for mask in 000 022 077; do
+      path="$parent/$mask.creds"
+      go default-acl DB_ENGINE="$engine" CALLER_UMASK="$mask" APP=Fleet APPLICATION=Fleet \
+        "${prefix}_DB_NAME=d" "${prefix}_DB_USER=u" "${prefix}_DB_PASS=x" "${prefix}_DB_CREDS_FILE=$path"
+      check "$rc" 0 "$L $engine $acl ACL status"
+      check "$(stat -c %a "$path")" 600 "$L $engine $acl default ACL creates private credentials with umask $mask"
+      check "$(rd "$c/credentials-created")" '600 0' "$L $engine $acl new file is private and empty at atomic publication"
+      check "$(grep -c '^Password: x$' "$path")" 1 "$L $engine $acl password published"
+      check "$(rd "$c/umask-after")" "0$mask" "$L $engine $acl caller umask preserved"
+      chmod 640 "$path"
+      go existing-acl DB_ENGINE="$engine" CALLER_UMASK="$mask" APP=Fleet APPLICATION=Fleet \
+        "${prefix}_DB_NAME=d" "${prefix}_DB_USER=u" "${prefix}_DB_PASS=y" "${prefix}_DB_CREDS_FILE=$path"
+      check "$rc" 0 "$L $engine $acl existing-file append status"
+      check "$(stat -c %a "$path")" 640 "$L $engine $acl existing mode unchanged"
+      check "$(grep -c '^Password: [xy]$' "$path")" 2 "$L $engine $acl existing credentials retained"
+      check "$(has_file "$c/credentials-created")" absent "$L $engine $acl existing file is not recreated"
+      check "$(find "$parent" -maxdepth 1 -name '.credentials.*' | wc -l)" 0 "$L $engine $acl no private staging file retained"
+    done
   done
 done
 

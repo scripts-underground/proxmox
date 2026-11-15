@@ -7336,10 +7336,29 @@ _setup_mariadb_runtime_dir() {
 # ------------------------------------------------------------------------------
 # Append credential lines privately when creating a file; retain existing bytes/mode.
 _append_private_credentials() (
-  local file="$1"
+  local file="$1" directory temporary descriptor rc=0
   shift
   umask 077
-  printf '%s\n' "$@" >> "$file"
+  if [[ ! -e "$file" ]]; then
+    directory="${file%/*}"
+    [[ "$file" == */* ]] || directory=.
+    [[ -n "$directory" ]] || directory=/
+    # mktemp creates with mode 0600 even under a permissive default ACL. Publish
+    # the empty inode without replacing an operator file that appeared meanwhile.
+    temporary=$(mktemp -- "$directory/.credentials.XXXXXXXX") || return $?
+    if ln -T -- "$temporary" "$file"; then
+      :
+    else
+      rc=$?
+      [[ ! -e "$file" ]] || rc=0
+    fi
+    rm -f -- "$temporary" || return $?
+    [[ "$rc" == 0 ]] || return "$rc"
+  fi
+  # Pin an existing inode without O_CREAT. Append through its descriptor so a
+  # removed pathname cannot be recreated with ACL-derived public permissions.
+  exec {descriptor}< "$file" || return $?
+  printf '%s\n' "$@" >> "/proc/self/fd/$descriptor"
 )
 
 # ------------------------------------------------------------------------------
