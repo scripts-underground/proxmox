@@ -1700,88 +1700,67 @@ prompt_for_github_token() {
 # GitHub API call with authentication and rate limit handling
 # ------------------------------------------------------------------------------
 github_api_call() {
-  local url="$1"
-  local output_file="${2:-/dev/stdout}"
-  local max_retries=3
-  local retry_delay=2
+  local url="$1" output_file="${2:-/dev/stdout}" response code rc=0
+  response=$(mktemp "${TMPDIR:-/tmp}/github-api.XXXXXX") || return 252
+  _github_api_request "$url" "$response" code || rc=$?
+  if [[ $rc -eq 0 ]]; then cat -- "$response" > "$output_file" || rc=$?; fi
+  rm -f -- "$response" || true
+  return "$rc"
+}
 
-  local header_args=()
-  [[ -n "${GITHUB_TOKEN:-}" ]] && header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
-
-  local attempt=1
-  while ((attempt <= max_retries)); do
-    local http_code
-    http_code=$(curl -sSL -w "%{http_code}" -o "$output_file" \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "${header_args[@]}" \
-      "$url" 2> /dev/null) || true
-
-    case "$http_code" in
-      200)
-        return 0
-        ;;
-      401)
-        msg_error "GitHub API authentication failed (HTTP 401)."
-        if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-          msg_error "Your GITHUB_TOKEN appears to be invalid or expired."
-        else
-          msg_error "The repository may require authentication."
-        fi
-        if prompt_for_github_token; then
-          header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
-          continue
-        fi
-        return 22
-        ;;
-      403)
-        # Rate limit - check if we can retry
-        if [[ $attempt -lt $max_retries ]]; then
-          msg_warn "GitHub API rate limit, waiting ${retry_delay}s... (attempt $attempt/$max_retries)"
-          sleep "$retry_delay"
-          retry_delay=$((retry_delay * 2))
-          ((attempt++))
-          continue
-        fi
-        msg_error "GitHub API rate limit exceeded (HTTP 403)."
-        if prompt_for_github_token; then
-          header_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
-          retry_delay=2
-          attempt=1
-          continue
-        fi
-        msg_error "To increase the limit, export a GitHub token before running the script:"
-        msg_error "  export GITHUB_TOKEN=\"ghp_your_token_here\""
-        return 22
-        ;;
-      404)
-        msg_error "GitHub repository or release not found (HTTP 404): $url"
-        return 22
-        ;;
-      000 | "")
-        if [[ $attempt -lt $max_retries ]]; then
-          sleep "$retry_delay"
-          ((attempt++))
-          continue
-        fi
-        msg_error "GitHub API connection failed (no response)."
-        msg_error "Check your network/DNS: curl -sSL https://api.github.com/rate_limit"
-        return 22
-        ;;
-      *)
-        if [[ $attempt -lt $max_retries ]]; then
-          sleep "$retry_delay"
-          ((attempt++))
-          continue
-        fi
-        msg_error "GitHub API call failed (HTTP $http_code)."
-        return 22
-        ;;
-    esac
-    ((attempt++))
+# Shared completed HTTP boundary for generic/tag and release consumers. A rejected
+# configured token or an explicit organization refusal gets one request-local
+# unauthenticated retry. Neither case clears credentials for another repository.
+_github_api_request() {
+  local url="$1" out="$2" _api_http='' _api_rc=0 attempt recovery=0 anonymous=0
+  local token="${GITHUB_TOKEN:-${var_github_token:-}}"
+  local configured=no
+  [[ -n "${GITHUB_TOKEN:-}" || -z "$token" ]] || configured=yes
+  local -n _api_status="$3"
+  _api_status=''
+  local -a headers=() timeouts=(60 120 240)
+  for attempt in 0 1 2; do
+    headers=()
+    [[ -z "$token" ]] || headers=(-H "Authorization: Bearer $token")
+    : > "$out" || return 252
+    _api_rc=0
+    _api_http=$(curl --connect-timeout 10 --max-time "${timeouts[$attempt]}" -sSL -w '%{http_code}' -o "$out" \
+      -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${headers[@]}" "$url" 2> /dev/null) || _api_rc=$?
+    _api_status="$_api_http"
+    # A truncated body may still carry HTTP 200; never recover from its contents.
+    [[ $_api_rc -eq 0 ]] || break
+    [[ "$_api_http" != 200 ]] || return 0
+    if [[ -n "$token" && $anonymous -eq 0 ]]; then
+      if [[ "$_api_http" == 401 && "$configured" == yes ]]; then
+        msg_warn 'GitHub rejected var_github_token (HTTP=401); retrying this request without it.' >&2
+        token='' anonymous=1
+        continue
+      elif [[ "$_api_http" == 403 ]] && grep -qiE 'IP allow list|SAML enforcement' "$out"; then
+        msg_warn 'GitHub organization token restriction (SSO/IP allow list, HTTP=403); retrying this request without the token.' >&2
+        token='' anonymous=1
+        continue
+      fi
+    fi
+    if [[ ("$_api_http" == 401 || "$_api_http" == 403) && $recovery -eq 0 && $anonymous -eq 0 ]] && declare -F prompt_for_github_token > /dev/null; then
+      recovery=1
+      if prompt_for_github_token >&2; then
+        token="${GITHUB_TOKEN:-}" configured=no
+        continue
+      fi
+    fi
+    [[ "$_api_http" != 401 && "$_api_http" != 404 ]] || break
+    [[ $attempt -eq 2 ]] || sleep "$((2 << attempt))"
   done
-
-  msg_error "GitHub API call failed after ${max_retries} attempts: ${url}"
+  if [[ $_api_rc -ne 0 ]]; then
+    msg_error "GitHub transfer failed or incomplete (curl=$_api_rc HTTP=$_api_http)" >&2
+    return "$_api_rc"
+  fi
+  case "$_api_http" in
+    401) msg_error 'GitHub authentication failed (HTTP=401). Check that GITHUB_TOKEN is valid and has access to this repository.' >&2 ;;
+    403 | 429) msg_error "GitHub metadata request denied (HTTP=$_api_http): check API rate limits and repository permissions; set a valid GITHUB_TOKEN or retry after the rate-limit reset." >&2 ;;
+    404) msg_error 'GitHub release not found (HTTP=404): check the repository and requested tag, and token access for private repositories.' >&2 ;;
+    *) msg_error "GitHub metadata request failed (HTTP=$_api_http). Check GitHub connectivity and service status." >&2 ;;
+  esac
   return 22
 }
 
@@ -2631,49 +2610,65 @@ extract_version_from_json() {
 #   Latest tag name (stdout), or returns 1 on failure
 # ------------------------------------------------------------------------------
 get_latest_gh_tag() {
-  local repo="$1"
-  local prefix="${2:-}"
-  local temp_file
-  temp_file=$(mktemp)
-
-  local tag=""
-
+  local repo="$1" prefix="${2:-}" stage endpoint field page=1 count signature tags tag rc=0 encoded url
+  local -A seen=()
+  ensure_dependencies jq >&2 || return 100
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/gh-tags.XXXXXX") || return 252
+  endpoint="https://api.github.com/repos/$repo/tags" field=name
   if [[ -n "$prefix" ]]; then
-    # Use git/matching-refs API for server-side prefix filtering. This avoids
-    # paging through unrelated tags (e.g. mongodb/mongo-tools where 100.x tags
-    # only appear after page 4 of /tags). Returns ALL tags matching the prefix
-    # in a single call, sorted lexicographically ascending; we pick the
-    # highest version using `sort -V`.
-    if ! github_api_call "https://api.github.com/repos/${repo}/git/matching-refs/tags/${prefix}" "$temp_file"; then
-      rm -f "$temp_file"
+    encoded=$(jq -rn --arg prefix "$prefix" '$prefix | @uri') || {
+      rm -rf -- "$stage"
       return 22
-    fi
-
-    local count
-    count=$(jq 'length' "$temp_file" 2> /dev/null || echo 0)
-    if [[ "$count" -gt 0 ]]; then
-      tag=$(jq -r '.[].ref' "$temp_file" |
-        sed 's|^refs/tags/||' |
-        sort -V |
-        tail -n1)
-    fi
-  else
-    # No prefix: just take the first (newest) tag from /tags
-    if ! github_api_call "https://api.github.com/repos/${repo}/tags?per_page=1" "$temp_file"; then
-      rm -f "$temp_file"
-      return 22
-    fi
-    tag=$(jq -r '.[0].name // empty' "$temp_file")
+    }
+    endpoint="https://api.github.com/repos/$repo/git/matching-refs/tags/$encoded" field=ref
   fi
-
-  rm -f "$temp_file"
-
+  : > "$stage/tags" || rc=252
+  while [[ $rc -eq 0 ]]; do
+    url="$endpoint"
+    [[ "$field" != name ]] || url+="?per_page=100&page=$page"
+    github_api_call "$url" "$stage/page" || rc=$?
+    [[ $rc -eq 0 ]] || break
+    count=$(jq -er --arg field "$field" --arg prefix "$prefix" 'if type=="array" and all(.[];
+      type=="object" and (.[$field] | type=="string" and length>0 and (explode | all(.>32 and .!=127)) and
+      (if $field=="ref" then startswith("refs/tags/"+$prefix) else true end)))
+      then length else error("invalid tag page") end' "$stage/page") || {
+      rc=22
+      break
+    }
+    signature=$(sha256sum "$stage/page") || {
+      rc=252
+      break
+    }
+    signature=${signature%% *}
+    if [[ -n "${seen[$signature]:-}" ]]; then
+      rc=22
+      break
+    fi
+    seen[$signature]=1
+    jq -r --arg field "$field" '.[] | .[$field] | if $field=="ref" then ltrimstr("refs/tags/") else . end' "$stage/page" >> "$stage/tags" || {
+      rc=22
+      break
+    }
+    # matching-refs is the complete server-filtered response, not /tags pages.
+    [[ "$field" == name && "$count" -eq 100 ]] || break
+    page=$((page + 1))
+  done
+  if [[ $rc -eq 0 ]]; then
+    # Stable tag spelling, not release state. Keep word/date tags literal, but
+    # exclude conventional numeric development/prerelease suffixes in any case.
+    tags=$(awk 'tolower($0) !~ /[0-9][-._+]?(dev|alpha|beta|preview|pre|rc)([-._0-9]|$)/' "$stage/tags") || rc=22
+    if [[ -n "$prefix" ]]; then
+      tags=$(printf '%s\n' "$tags" | sort -Vr) || rc=22
+    fi
+    tag=${tags%%$'\n'*}
+  fi
+  rm -rf -- "$stage" || true
+  [[ $rc -eq 0 ]] || return "$rc"
   if [[ -z "$tag" ]]; then
-    msg_error "No tags found for ${repo}"
+    msg_error "No stable tags found for ${repo}" >&2
     return 250
   fi
-
-  echo "$tag"
+  printf '%s\n' "$tag"
 }
 
 # ------------------------------------------------------------------------------
@@ -2683,6 +2678,24 @@ _gh_version_from_tag() {
   local tag="$1"
   if [[ "$tag" =~ ^v[0-9] ]]; then tag="${tag:1}"; fi
   printf '%s\n' "$tag"
+}
+
+# An explicit requested identity always wins. Only an exact normalized script
+# identity may consume the ambient app pin; prerequisites never inherit it.
+_app_release_version() {
+  local selected_app="${1,,}" requested="${2:-latest}" identity
+  selected_app="${selected_app// /}"
+  if [[ "$requested" == latest && -n "${var_appversion:-}" ]]; then
+    for identity in "${NSAPP:-}" "${APP_SLUG:-}" "${APP:-}"; do
+      identity="${identity,,}"
+      identity="${identity// /}"
+      if [[ -n "$identity" && "$selected_app" == "$identity" ]]; then
+        printf '%s\n' "$var_appversion"
+        return 0
+      fi
+    done
+  fi
+  printf '%s\n' "$requested"
 }
 
 # Get latest GitHub release version with fallback to tags
@@ -2708,7 +2721,7 @@ get_latest_codeberg_release() {
   local repo="$1"
   local strip_v="${2:-true}"
   local json version
-  ensure_dependencies jq || return $?
+  ensure_dependencies jq >&2 || return $?
   if json=$(_codeberg_release_json "$repo"); then
     version=$(jq -r '.tag_name' <<< "$json")
   else
@@ -2784,7 +2797,8 @@ verify_gpg_fingerprint() {
 fetch_and_deploy_gh_tag() {
   local app="$1"
   local repo="$2"
-  local version="${3:-latest}"
+  local version
+  version=$(_app_release_version "$app" "${3:-latest}") || return $?
   local target="${4:-/opt/$app}"
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
@@ -2872,7 +2886,8 @@ check_for_gh_tag() {
   msg_info "Checking for update: ${app}"
 
   local latest=""
-  latest=$(get_latest_gh_tag "$repo" "$prefix") || return 22
+  latest=$(_app_release_version "$app" latest) || return $?
+  if [[ "$latest" == latest ]]; then latest=$(get_latest_gh_tag "$repo" "$prefix") || return $?; fi
 
   local current=""
   [[ -f "$current_file" ]] && current="$(< "$current_file")"
@@ -2914,48 +2929,16 @@ check_for_gh_tag() {
 # One completed JSON request. Named HTTP output keeps token recovery in the
 # calling shell, so later asset downloads retain the recovered authentication.
 _github_release_request() {
-  local url="$1" out="$2" http_status='' curl_rc=0 attempt token_retry=0
-  local -n _request_status="$3"
-  _request_status=''
-  local -a headers=() timeouts=(60 120 240)
-  [[ -z "${GITHUB_TOKEN:-}" ]] || headers=(-H "Authorization: token $GITHUB_TOKEN")
-  for attempt in 0 1 2; do
-    : > "$out" || return 252
-    curl_rc=0
-    http_status=$(curl --connect-timeout 10 --max-time "${timeouts[$attempt]}" -sSL -w '%{http_code}' -o "$out" \
-      -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${headers[@]}" "$url" 2> /dev/null) || curl_rc=$?
-    _request_status="$http_status"
-    if [[ $curl_rc -eq 0 && "$http_status" == 200 ]]; then
-      if jq -e 'def release:
+  local url="$1" out="$2"
+  _github_api_request "$url" "$out" "$3" || return $?
+  if jq -e 'def release:
         type=="object" and ((.tag_name // .name) | type=="string" and length>0) and
         ((.assets // []) | type=="array") and ((.body // "") | type=="string") and
         (.draft==null or (.draft | type=="boolean")) and
         (.prerelease==null or (.prerelease | type=="boolean")) and
         all(.assets[]?; type=="object" and (.browser_download_url | type=="string"));
         if type=="array" then all(.[]; release) else release end' "$out" > /dev/null 2>&1; then return 0; fi
-      msg_error "GitHub returned invalid or empty release JSON for $url" >&2
-      return 22
-    fi
-    if [[ ("$http_status" == 401 || "$http_status" == 403) && $token_retry -eq 0 ]] && declare -F prompt_for_github_token > /dev/null; then
-      if prompt_for_github_token >&2; then
-        token_retry=1
-        headers=(-H "Authorization: token $GITHUB_TOKEN")
-        continue
-      fi
-    fi
-    [[ "$http_status" != 401 && "$http_status" != 404 ]] || break
-    [[ $attempt -eq 2 ]] || sleep "$((2 << attempt))"
-  done
-  if [[ $curl_rc -ne 0 ]]; then
-    msg_error "GitHub transfer failed or incomplete (curl=$curl_rc HTTP=$http_status)" >&2
-    return "$curl_rc"
-  fi
-  case "$http_status" in
-    401) msg_error "GitHub authentication failed (HTTP=401). Check that GITHUB_TOKEN is valid and has access to this repository." >&2 ;;
-    403 | 429) msg_error "GitHub metadata request denied (HTTP=$http_status): check API rate limits and repository permissions; set a valid GITHUB_TOKEN or retry after the rate-limit reset." >&2 ;;
-    404) msg_error "GitHub release not found (HTTP=404): check the repository and requested tag, and token access for private repositories." >&2 ;;
-    *) msg_error "GitHub metadata request failed (HTTP=$http_status). Check GitHub connectivity and service status." >&2 ;;
-  esac
+  msg_error "GitHub returned invalid or empty release JSON for $url" >&2
   return 22
 }
 
@@ -3025,15 +3008,18 @@ _gh_release_tag_fallback() {
 # Emits one selected release, preserving raw tags. Prefix limits latest only;
 # explicit requests are checked against the returned tag, never substituted.
 _gh_release_select() {
-  local repo="$1" version="$2" prefix="$3" raw="$4" code rc tag tags encoded wanted actual_tag
+  local repo="$1" version="$2" prefix="$3" raw="$4" code rc tag tags encoded wanted actual_tag alternate
   local base="https://api.github.com/repos/$repo/releases"
   if [[ "$version" != latest ]]; then
     encoded=$(jq -rn --arg tag "$version" '$tag | @uri') || return 250
     rc=0
     _github_release_request "$base/tags/$encoded" "$raw" code || rc=$?
-    if [[ $rc -eq 22 && "$code" == 404 && "$version" =~ ^[0-9] ]]; then
+    alternate=''
+    if [[ "$version" =~ ^[0-9] ]]; then alternate="v$version"; elif [[ "$version" =~ ^v[0-9] ]]; then alternate="${version:1}"; fi
+    if [[ $rc -eq 22 && "$code" == 404 && -n "$alternate" ]]; then
+      encoded=$(jq -rn --arg tag "$alternate" '$tag | @uri') || return 250
       rc=0
-      _github_release_request "$base/tags/v$encoded" "$raw" code || rc=$?
+      _github_release_request "$base/tags/$encoded" "$raw" code || rc=$?
     fi
     if [[ $rc -ne 0 ]]; then
       [[ $rc -eq 22 && "$code" != 200 ]] || return "$rc"
@@ -3050,15 +3036,13 @@ _gh_release_select() {
     jq -ce '.' "$raw"
     return $?
   fi
-  if [[ -z "$prefix" ]]; then
-    rc=0
-    _github_release_request "$base/latest" "$raw" code || rc=$?
-    if [[ $rc -eq 0 ]] && jq -e 'type=="object" and .draft!=true and .prerelease!=true and (.tag_name | type=="string" and length>0)' "$raw" > /dev/null 2>&1; then
-      jq -ce '.' "$raw"
-      return $?
-    fi
-    [[ $rc -eq 0 || ($rc -eq 22 && "$code" != 200) ]] || return "$rc"
+  rc=0
+  _github_release_request "$base/latest" "$raw" code || rc=$?
+  if [[ $rc -eq 0 ]] && jq -e --arg prefix "$prefix" 'type=="object" and .draft!=true and .prerelease!=true and (.tag_name | type=="string" and length>0 and startswith($prefix))' "$raw" > /dev/null 2>&1; then
+    jq -ce '.' "$raw"
+    return $?
   fi
+  [[ $rc -eq 0 || ($rc -eq 22 && "$code" != 200) ]] || return "$rc"
   rc=0
   _github_release_list "$repo" "$raw" code || rc=$?
   if [[ $rc -ne 0 ]]; then
@@ -3085,7 +3069,7 @@ _gh_release_select() {
 # Private per-call response owner shared by check and deploy; no cross-call sink.
 _gh_release_json() {
   local repo="$1" version="${2:-latest}" prefix="${3:-}" out="$4" raw rc=0
-  ensure_dependencies jq || return 100
+  ensure_dependencies jq >&2 || return 100
   getent hosts api.github.com > /dev/null 2>&1 || {
     msg_error "Cannot resolve api.github.com. Check the container's DNS and network connectivity." >&2
     return 6
@@ -3100,9 +3084,10 @@ check_for_gh_release() {
   CHECK_UPDATE_RELEASE=""
   local app="$1"
   local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
-  local tag_prefix="${5:-}"        # optional stable latest line
+  local pinned_version_in
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  local pin_reason="${4:-}" # optional reason shown to user
+  local tag_prefix="${5:-}" # optional stable latest line
   local app_lc=""
   app_lc="$(echo "${app,,}" | tr -d ' ')"
   local current_file="$HOME/.${app_lc}"
@@ -3230,8 +3215,9 @@ check_for_gh_release() {
 check_for_codeberg_release() {
   local app="$1"
   local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
+  local pinned_version_in
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  local pin_reason="${4:-}" # optional reason shown to user
   local app_lc="${app,,}"
   app_lc="${app_lc// /}"
   local current_file="$HOME/.${app_lc}"
@@ -3944,7 +3930,8 @@ fetch_and_deploy_codeberg_release() {
   local app="$1"
   local repo="$2"
   local mode="${3:-tarball}" # tarball | binary | prebuild | singlefile | tag
-  local version="${var_appversion:-${4:-latest}}"
+  local version
+  version=$(_app_release_version "$app" "${4:-latest}") || return $?
   local target="${5:-/opt/$app}"
   local asset_pattern="${6:-}"
 
@@ -4573,7 +4560,8 @@ fetch_and_deploy_gh_release() {
   local app="$1"
   local repo="$2"
   local mode="${3:-tarball}" # tarball | binary | prebuild | singlefile
-  local version="${var_appversion:-${4:-latest}}"
+  local version
+  version=$(_app_release_version "$app" "${4:-latest}") || return $?
   local target="${5:-/opt/$app}"
   local asset_pattern="${6:-}"
   local tag_prefix="${7:-}" metadata_out="${8:-}"
@@ -9968,6 +9956,7 @@ EOF
 get_latest_gitlab_release() {
   local repo="$1"
   local strip_v="${2:-true}"
+  ensure_dependencies jq >&2 || return 100
 
   local repo_encoded
   repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
@@ -9982,7 +9971,11 @@ get_latest_gitlab_release() {
   http_code=$(curl --connect-timeout 10 --max-time 30 -sSL \
     -w "%{http_code}" -o "$temp_file" \
     "${header[@]}" \
-    "https://gitlab.com/api/v4/projects/$repo_encoded/releases?per_page=1&order_by=released_at&sort=desc" 2> /dev/null) || true
+    "https://gitlab.com/api/v4/projects/$repo_encoded/releases?per_page=1&order_by=released_at&sort=desc" 2> /dev/null) || {
+    local rc=$?
+    rm -f -- "$temp_file"
+    return "$rc"
+  }
 
   if [[ "$http_code" != "200" ]]; then
     rm -f "$temp_file"
@@ -9991,7 +9984,10 @@ get_latest_gitlab_release() {
   fi
 
   local version
-  version=$(jq -r '.[0].tag_name // empty' "$temp_file")
+  version=$(jq -er 'if type=="array" then .[0].tag_name // empty else error("invalid release list") end | select(type=="string" and length>0)' "$temp_file") || {
+    rm -f -- "$temp_file"
+    return 250
+  }
   rm -f "$temp_file"
 
   if [[ -z "$version" ]]; then
@@ -10030,8 +10026,9 @@ check_for_gl_release() {
   CHECK_UPDATE_RELEASE=""
   local app="$1"
   local source="$2"
-  local pinned_version_in="${3:-}" # optional
-  local pin_reason="${4:-}"        # optional reason shown to user
+  local pinned_version_in
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  local pin_reason="${4:-}" # optional reason shown to user
   local app_lc="${app,,}"
   local current_file="$HOME/.${app_lc}"
   if [[ "$pinned_version_in" == latest ]]; then
@@ -10303,7 +10300,8 @@ fetch_and_deploy_gl_release() {
   local app="$1"
   local repo="$2"
   local mode="${3:-tarball}"
-  local version="${var_appversion:-${4:-latest}}"
+  local version
+  version=$(_app_release_version "${app:-${repo##*/}}" "${4:-latest}") || return $?
   local target="${5:-/opt/$app}"
   local asset_pattern="${6:-}"
 
@@ -10325,6 +10323,32 @@ fetch_and_deploy_gl_release() {
   [[ -f "$version_file" ]] && current_version=$(< "$version_file")
 
   ensure_dependencies jq
+
+  # Tag-only GitLab projects have no release object. The selected source still
+  # crosses the same checked replacement owner and main-app pin boundary.
+  if [[ "$mode" == tag ]]; then
+    [[ "$version" != latest ]] || {
+      msg_error "Mode 'tag' requires an explicit version"
+      return 65
+    }
+    local tag_version
+    tag_version=$(_gh_version_from_tag "$version") || return $?
+    if [[ "$current_version" == "$tag_version" && "${FORCE_DEPLOY:-0}" != 1 ]]; then return 0; fi
+    local tag_stage tag_rc=0 tag_url tag_root
+    tag_stage=$(mktemp -d "${TMPDIR:-/tmp}/gl-tag.XXXXXX") || return 252
+    tag_url="https://gitlab.com/$repo/-/archive/$version/${app_lc}-${version//\//-}.tar.gz"
+    download_file "$tag_url" "$tag_stage/source.tar.gz" || tag_rc=$?
+    if [[ $tag_rc -eq 0 ]]; then tar --no-same-owner -xzf "$tag_stage/source.tar.gz" -C "$tag_stage" || tag_rc=$?; fi
+    if [[ $tag_rc -eq 0 ]]; then
+      tag_root=$(find "$tag_stage" -mindepth 1 -maxdepth 1 -type d -print -quit) || tag_rc=$?
+      if [[ -z "$tag_root" || -z "$(find "$tag_root" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then tag_rc=251; fi
+    fi
+    if [[ $tag_rc -eq 0 ]]; then _deploy_replace_contents "$tag_root" "$target" "${CLEAN_INSTALL:-0}" || tag_rc=$?; fi
+    rm -rf -- "$tag_stage" || true
+    [[ $tag_rc -eq 0 ]] || return "$tag_rc"
+    printf '%s\n' "$tag_version" > "$version_file" || return $?
+    return 0
+  fi
 
   local repo_encoded
   repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')

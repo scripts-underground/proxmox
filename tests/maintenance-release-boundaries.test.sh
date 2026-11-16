@@ -149,7 +149,7 @@ check_for_gh_release paged-prefix owner/app '' '' v4.
 check "$CHECK_UPDATE_RELEASE" v4.10.0 'prefix checker enumerates beyond the first hundred releases'
 fetch_and_deploy_gh_release paged-prefix owner/app tarball latest "$work/paged-prefix" '' v4.
 check "$(cat "$work/paged-prefix/origin")" https://github.com/owner/app/archive/refs/tags/v4.10.0.tar.gz 'page-two prefix selection reaches actual source consumer'
-check "$(wc -l < "$work/urls")" 4 'both prefix consumers complete pagination, independently of bounded asset scan'
+check "$(wc -l < "$work/urls")" 6 'both prefix consumers check designation and complete pagination, independently of bounded asset scan'
 scenario=empty
 rc=0
 check_for_gh_release missing-pin owner/app v8.0.0 || rc=$?
@@ -211,5 +211,6 @@ PY
   fi
   check "$(grep -c do-not-print-fixture-secret "$c/output" "$c/active.log" | cut -d: -f2 | paste -sd, -)" 0,0 "$spinner_case diagnostics never print token value"
 done
+bash "$ROOT/tests/lib/core-release.fixture.sh" || failures=$((failures + 1))
 printf '%s failure(s); actual release consumers and spinner, modeled HTTP/Git\n' "$failures"
 [[ "$failures" == 0 ]]

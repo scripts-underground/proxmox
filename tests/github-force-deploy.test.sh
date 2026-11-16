@@ -15,6 +15,12 @@ export HOME="$work/home" INSTALL_LOG="$work/helper.log"
 mkdir "$HOME"
 target="$work/assets"
 
+# Numeric-v compatibility must return the actual release object, with assets,
+# rather than an empty Git-tag fallback. uv publishes unprefixed release tags.
+_gh_release_json astral-sh/uv v0.12.13 '' "$work/reverse.json"
+jq -e '.tag_name=="0.12.13" and any(.assets[]; .name=="uv-x86_64-unknown-linux-gnu.tar.gz")' "$work/reverse.json" > /dev/null
+printf 'PASS reverse numeric-v lookup retains actual uv asset metadata\n'
+
 fetch_and_deploy_gh_release force-probe astral-sh/uv prebuild 0.12.13 \
   "$target" 'uv-x86_64-unknown-linux-gnu.tar.gz' '' "$work/selected.json"
 test "$(< "$HOME/.force-probe")" == 0.12.13
