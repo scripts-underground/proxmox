@@ -482,16 +482,9 @@ The addon shim runs INSIDE an existing LXC container. Every line is a source,
 a guard, or a framework function call:
 
 ```bash
-source install.func   # self-bootstraps: core+error_handler, load_functions,
-                      # catch_errors, get_lxc_ip, detect_os
-source tools.func     # fetch_and_deploy_*, setup_*, check_for_gh_release
-source github.func    # clone_and_deploy_gh_commit, token helpers
 source addon_lxc.func
-
-command -v addon_guard || FATAL   # explicit failure if a fetch went silent
-addon_guard          # container-only check
-addon_init           # APP_SLUG derivation, render_header
-addon_dispatch       # installed-guard → install path
+declare -F _addon_bootstrap || FATAL
+_addon_bootstrap "$@"
 ```
 
 Ordering notes:
@@ -499,11 +492,18 @@ Ordering notes:
 - A script-defined `header_info()` survives framework sourcing: `core.func`'s
   same-named fallback stub is guarded (`declare -F` check), so
   `render_header` dispatches to the script's ASCII art.
-- `install.func`'s `_bootstrap` runs at source time and calls `catch_errors`
-  before `render_header` — the reverse of the LXC ordering. Acceptable: the
-  addon path has no whiptail stage that could conflict with active traps.
+- Every maintained source footer passes `--script-id <literal-stem> -- "$@"`.
+  The entry admits root/LXC context and binds identity before initialization.
+  Maintenance/installed identity remains `file-browser` for source `filebrowser`
+  and `mqttx-web` for `mqttx`; other source stems are unchanged keys. NSAPP is
+  explicitly rebound, not inherited from another app or derived from display text.
+- The entry loads the definition-only bundle owner, prepares the CT's selected
+  temporary root, fetches and syntax-checks the shared addon inventory, then checks
+  required function APIs. `install.func` supports a scoped definition-only load;
+  ordinary source callers retain its initialization behavior. Only after API
+  admission does the entry initialize logs/traps, detect OS and render the header.
 - `source <(curl …)` via process substitution swallows curl failures (empty
-  input sources cleanly). The `command -v addon_guard` check turns a silent
+  input sources cleanly). The `declare -F _addon_bootstrap` check turns a silent
   empty-source into an explicit fatal error.
 - The script itself must ensure `curl` exists before the bootstrap line
   (containers may lack it). This is the one per-script preamble block —
@@ -934,44 +934,56 @@ addon script begins
   curl-ensure block (per-script transport preamble)
 
 source bootstrap/addon_lxc
-  source install.func → _bootstrap runs:
-    curl fallback ensure → source core.func, error_handler.func
-    load_functions, catch_errors, get_lxc_ip, detect_os
-  source tools.func, github.func, addon_lxc.func
-  load check (addon_guard defined)
+  source addon_lxc.func (definitions only), check _addon_bootstrap
+  root/LXC admission, literal identity, shared TMPDIR preparation
+  checked inventory fetch, parse and definition-only loading
+  full entry API admission, then initialization and OS detection
 
 addon_guard
-  → /proc/1/environ must contain container=lxc, else exit 1
+  → root required; /proc/1/environ must contain container=lxc
 
 addon_init
-  → APP_SLUG = normalized APP (lowercase, spaces→dashes)
-  → restore script header_info, render_header
+  → literal source ID selects the established APP_SLUG and NSAPP key
 
 addon_dispatch
   → addon_guard_installed
-      marker /var/lib/scripts-underground/addons/<slug> absent → return 1
+      classify completed, broken-command and unmarked occupied state
       marker present → prompt [u]pdate/[x]uninstall/[a]bort
         (ADDON_ACTION env bypasses; non-interactive stdin aborts safely)
-        u → exec /usr/local/sbin/update_<slug>
-        x → exec /usr/local/sbin/uninstall_<slug>
+        u → exec /usr/local/sbin/update_<slug> with forwarded argv
+        x → exec /usr/local/sbin/uninstall_<slug> with forwarded argv
+        refresh → acquire owner, recover saved settings as data, republish only
         a → exit 0
   → addon_run_install
-      execute_mandatory_hook install_script     ◀ USER HOOK
-      execute_optional_hook post_install_script ◀ USER HOOK
+      acquire fresh maintenance owner and reclassify absence
+      prepare/publish generated commands before app effects
+      addon_baseline, execute_mandatory_hook install_script
       addon_assemble_bundles
         load bundle.func's content owner when not already available
         fetch the shared addon profile (including addon_lxc.func) to stage dir
         compose update bundle    → /usr/local/sbin/update_<slug>
         compose uninstall bundle → /usr/local/sbin/uninstall_<slug>
         alias both into /usr/bin (update-<slug>, uninstall-<slug>)
-      addon_marker_write   ← LAST: any earlier failure leaves no marker,
-                              so a re-run retries the install path
+      addon_marker_write (checked atomic publication)
+      execute_optional_hook post_install_script
+      framework final completion message
 ```
 
-Failure semantics: with `catch_errors` active (`set -Ee -o pipefail`), any
-unhandled error aborts before the marker write. The already-installed guard
-keyed on the marker therefore never routes to half-built bundles after a
-failed install.
+Failure semantics: markers establish completion, not absence. Existing commands,
+configured app paths, service files and package/binary evidence prevent automatic
+reinstallation without a marker. Broken or unmarked installations require explicit
+refresh/adoption. Refresh never calls install, sources an old executable or resets
+app configuration: it decodes only the known `%q` declaration block and refuses
+unknown, missing or conflicting saved settings. Surviving addon settings must
+agree; generation metadata may differ after per-command publication. Pending-update
+bytes are untouched by install/refresh/uninstall admission.
+Refresh also preserves completion-marker bytes and existence: publishing commands
+cannot certify a previously unmarked installation as complete. Unmarked state
+remains an explicit adoption case, never an automatic reinstall.
+All terminal operations use core's same fresh maintenance owner; exec dispatch
+does not acquire a descriptor its destination cannot borrow. Old unguarded
+generations must finish before relying on refreshed serialization. Per-command
+atomic publication is retained, not promoted to a multi-command transaction.
 
 
 ### 4.3 PVE install path
@@ -1059,8 +1071,8 @@ needed for the install artifact.
 
 #### Script-level variables
 
-- **`APP`** — required; `addon_init` derives `APP_SLUG` from it (lowercase,
-  spaces to dashes) for bundle/marker naming.
+- **`APP`** - required display label. Literal source identity selects the stable
+  `APP_SLUG`/`NSAPP` key independently; labels do not rename installed commands.
 - **`var_addon_*`** — bundle-consumed configuration. Declared as
   `var_addon_x="${var_addon_x:-default}"` so values are overridable from the
   environment AND baked into the update/uninstall bundles. The whole set is
@@ -1083,16 +1095,20 @@ re-implementing OS detection.
 
 Each bundle carries, after its `set -euo pipefail` + PATH header:
 
-1. **Context block** — `declare -- APP=…`, `APP_SLUG=…`, `REPO_BASE=…` and
+1. **Context block** - `APP`, `APP_SLUG`, explicit `NSAPP`, `ADDON_SCRIPT_ID`, `REPO_BASE` and
    every `var_addon_*` variable, emitted with `printf %q` (same pattern as
    the LXC `build_bundle`).
 2. **Framework libraries** — all 6 `.func` files inlined verbatim. The
-   embedded install.func `_bootstrap` re-runs at bundle execution, initializes
-   the already inlined core/error APIs and fetches only missing libraries.
+    embedded install.func is definition-loaded before checked runtime init;
+    its initializer retains the already inlined core/error APIs.
    It therefore keeps the frozen generation both online and offline.
-   Assembly loads `bundle.func` only when producing commands, not while those
-   frozen commands run. Both addon and LXC serializers use its shared inventory
-   and library emitter; addon fetching applies the same size/sentinel checks.
+    Assembly loads `bundle.func` only when producing commands, not while those
+    frozen commands run. Both profiles use its shared content producer, inventory,
+    receiving preparer and root execution prelude. Missing/empty HOME, USER and
+    LOGNAME receive root defaults; legitimate supplied values remain unchanged.
+    Addons honor same-CT TMPDIR, with saved `var_addon_tmpdir` taking priority;
+    LXC continues discarding its foreign creator TMPDIR. Selected roots are
+    prepared before source-time effects, including when removed between calls.
 3. **Hook body** — `declare -f <hook>`. Only the named function is copied:
    hooks must be self-contained (framework helpers OK, script-local helpers
    are NOT available).
@@ -1166,8 +1182,9 @@ pre-install check). The seam is `addon_dispatch` / `addon_run_install` in
 `addon_lxc.func`.
 
 **Modifying bundle composition** (new baked variables, extra inlined files,
-different self-destruct behavior). The seam is `_addon_bundle_write` in
-`addon_lxc.func` for addon-specific context and role semantics. Framework file
+different self-destruct behavior). The seam is `_bundle_contents` in
+`bundle.func`, with a closed lxc/addon profile. `_addon_bundle_write` owns only
+local staging/publication; `build_bundle` owns pct delivery. Framework file
 membership, ordering, fetching and inlining belong only to `bundle.func`'s
 `_framework_library_inventory`, `_framework_library_fetch` and
 `_framework_library_contents`; adapters do not carry separate file lists.

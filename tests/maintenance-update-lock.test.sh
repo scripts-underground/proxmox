@@ -183,6 +183,7 @@ if [[ "${1:-}" == --worker ]]; then
       lxc_setup "${@:2}"
       ;;
     addon-exec)
+      source "$ROOT/misc/bundle.func"
       source "$ROOT/misc/addon_lxc.func"
       export APP_SLUG=lock-probe ADDON_ACTION=update
       addon_guard_installed

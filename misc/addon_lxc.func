@@ -17,9 +17,8 @@
 #   - Self-contained update/uninstall bundle assembly
 #     (/usr/local/sbin/{update,uninstall}_<slug>, aliased to /usr/bin/)
 #
-# Sourced by misc/bootstrap/addon AFTER install.func, tools.func, github.func.
-# install.func's source-time _bootstrap has already provided: core.func,
-# error_handler.func, load_functions, catch_errors, get_lxc_ip, detect_os.
+# The shim loads this definition-only entry first. Its checked loader admits
+# context and APIs before initializing the shared installation framework.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -27,6 +26,9 @@
 # ------------------------------------------------------------------------------
 
 ADDON_MARKER_DIR="/var/lib/scripts-underground/addons"
+
+_addon_command_path() { printf '/usr/local/sbin/%s_%s\n' "$1" "$APP_SLUG"; }
+_addon_alias_path() { printf '/usr/bin/%s-%s\n' "$1" "$APP_SLUG"; }
 
 # ------------------------------------------------------------------------------
 # SECTION 2: GUARD & INIT
@@ -39,6 +41,10 @@ ADDON_MARKER_DIR="/var/lib/scripts-underground/addons"
 # anywhere else (PVE host, VM, bare metal).
 # ------------------------------------------------------------------------------
 addon_guard() {
+  [[ "$EUID" == 0 ]] || {
+    printf 'Addon scripts require root\n' >&2
+    return 77
+  }
   if ! grep -q container=lxc /proc/1/environ 2> /dev/null; then
     echo "Error: addon scripts must run inside an LXC container" >&2
     exit 1
@@ -48,24 +54,96 @@ addon_guard() {
 # ------------------------------------------------------------------------------
 # addon_init()
 #
-# Derives APP_SLUG from APP (lowercase, spaces to dashes) and renders the
-# script's header. load_functions/catch_errors/get_lxc_ip/detect_os already
-# ran via install.func's source-time _bootstrap.
+# Binds the source-owned installed key independently of labels and ambient NSAPP.
+# The legacy no-argument helper remains available for existing direct callers.
 # ------------------------------------------------------------------------------
 addon_init() {
-  APP_SLUG="$(echo "${APP:-}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
+  local identity=${1:-}
+  if [[ -n "$identity" ]]; then
+    [[ "$identity" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ && "$identity" != *.sh ]] || return 65
+    ADDON_SCRIPT_ID=$identity
+    case "$identity" in filebrowser) APP_SLUG=file-browser ;; mqttx) APP_SLUG=mqttx-web ;; *) APP_SLUG=$identity ;; esac
+  else
+    # Compatibility for callers of the old public init helper. Published source
+    # entries always supply a literal identity; never inherit APP_SLUG or NSAPP.
+    APP_SLUG="$(echo "${APP:-}" | tr '[:upper:] ' '[:lower:]-' | sed 's/--*/-/g; s/-$//')"
+  fi
   if [[ -z "$APP_SLUG" ]]; then
     echo "Error: APP is not defined — addon scripts must set APP" >&2
     exit 1
   fi
+  NSAPP=$APP_SLUG
+}
+
+# The shim loads only this definition-only owner before actual CT/root admission.
+# Fetch/parse every dependency, then load definitions under the install owner's
+# deferral seam. No logs, OS probes, headers, baseline or app hooks precede API
+# admission. The local seam cannot leak into a subsequent command.
+_addon_bootstrap() {
+  [[ $# -ge 3 && "$1" == --script-id && "$3" == -- ]] || {
+    printf 'Expected literal addon source identity: --script-id ID --\n' >&2
+    return 65
+  }
+  local _ab_identity=$2
+  shift 3
+  addon_guard || return $?
+  addon_init "$_ab_identity" || return $?
+  local _ab_support _ab_stage _ab_file _ab_sentinel _ab_inventory _ab_api _ab_status=0
+  local -a _ab_apis=(load_functions catch_errors color render_header _bootstrap detect_os pkg_update pkg_install get_lxc_ip fetch_and_deploy_gh_release clone_and_deploy_gh_commit app_maintenance_begin _run_update_script)
+  # bundle.func is definition-only and owns the shared receiving preparer and
+  # inventory. Read transport output before sourcing, rather than trusting a
+  # successful source of an empty process substitution.
+  _ab_support=$(curl -fsSL "${REPO_BASE}/misc/bundle.func") || return $?
+  [[ -n "$_ab_support" ]] || return 111
+  source /dev/stdin <<< "$_ab_support"
+  for _ab_api in _bundle_execution_environment _prepare_addon_context _framework_library_fetch _framework_library_inventory _bundle_contents; do
+    declare -F "$_ab_api" > /dev/null || return 111
+  done
+  _bundle_execution_environment || return $?
+  _prepare_addon_context || return $?
+  _ab_stage=$(mktemp -d "${TMPDIR:-/tmp}/.addon-entry.XXXXXX") || return $?
+  _framework_library_fetch addon "$_ab_stage" || _ab_status=$?
+  if [[ "$_ab_status" == 0 ]]; then
+    _ab_inventory=$(_framework_library_inventory addon) || _ab_status=$?
+  fi
+  if [[ "$_ab_status" == 0 ]]; then
+    while read -r _ab_file _ab_sentinel; do
+      bash -n "$_ab_stage/$_ab_file" || {
+        _ab_status=$?
+        break
+      }
+    done <<< "$_ab_inventory"
+  fi
+  if [[ "$_ab_status" != 0 ]]; then
+    rm -rf -- "$_ab_stage"
+    return "$_ab_status"
+  fi
+  local _INSTALL_DEFER_BOOTSTRAP=1
+  unset -f "${_ab_apis[@]}"
+  while read -r _ab_file _ab_sentinel; do
+    # shellcheck source=/dev/null
+    source "$_ab_stage/$_ab_file"
+  done <<< "$_ab_inventory"
+  rm -rf -- "$_ab_stage"
+  for _ab_api in "${_ab_apis[@]}"; do
+    declare -F "$_ab_api" > /dev/null || {
+      printf 'Missing addon API: %s\n' "$_ab_api" >&2
+      return 111
+    }
+  done
+  _INSTALL_DEFER_BOOTSTRAP=0
+  _bootstrap
+  detect_os
+  color
   render_header
+  addon_dispatch "$@"
 }
 
 # ------------------------------------------------------------------------------
 # SECTION 3: INSTALL MARKER
 #
-# The marker records a completed addon install. It is written only after
-# install_script AND post_install_script both succeed, and is removed by the
+# The marker records completed app installation and command publication. It is
+# written before post-install instructions and final completion, and removed by the
 # uninstall bundle's self-destruct. The marker directory doubles as a registry
 # of installed addons (`ls /var/lib/scripts-underground/addons/`).
 # ------------------------------------------------------------------------------
@@ -75,14 +153,17 @@ addon_marker_path() {
 }
 
 addon_marker_write() {
-  mkdir -p "$ADDON_MARKER_DIR"
-  {
-    echo "APP=${APP}"
-    echo "SLUG=${APP_SLUG}"
-    echo "INSTALLED_AT=$(date -Is)"
-    echo "REPO_BASE=${REPO_BASE}"
-  } > "$(addon_marker_path)"
-  chmod 0644 "$(addon_marker_path)"
+  mkdir -p "$ADDON_MARKER_DIR" || return $?
+  local stage installed_at status=0
+  stage=$(mktemp "${ADDON_MARKER_DIR}/.${APP_SLUG}.XXXXXX") || return $?
+  installed_at=$(date -Is) || status=$?
+  if [[ "$status" == 0 ]]; then
+    printf '%s\n' "APP=${APP}" "SLUG=${APP_SLUG}" "INSTALLED_AT=${installed_at}" "REPO_BASE=${REPO_BASE}" > "$stage" || status=$?
+  fi
+  if [[ "$status" == 0 ]]; then chmod 0644 "$stage" || status=$?; fi
+  if [[ "$status" == 0 ]]; then mv -f -- "$stage" "$(addon_marker_path)" || status=$?; fi
+  rm -f -- "$stage" || true
+  return "$status"
 }
 
 addon_marker_remove() {
@@ -101,9 +182,131 @@ addon_marker_remove() {
 # Otherwise the install path runs.
 # ------------------------------------------------------------------------------
 addon_dispatch() {
-  # addon_guard_installed returns 1 only when no install marker exists.
-  # Marker-present paths never return here (exec into bundle, or exit).
-  addon_guard_installed || addon_run_install
+  local state
+  _addon_installed_state state || return $?
+  if [[ "$state" != absent || -n "${ADDON_ACTION:-}" ]]; then
+    addon_guard_installed "$@"
+    return $?
+  fi
+  [[ $# == 0 ]] || return 65
+  addon_run_install
+}
+
+# Completion markers and generated commands are distinct evidence. An occupied
+# app path is never permission to reinstall. Shared parent directories and source
+# roots (notably /) are deliberately not treated as addon-owned footprints.
+_addon_installed_state() {
+  local _ais_out=$1 _ais_state=absent _ais_role _ais_path _ais_name _ais_value
+  local -A _ais_context=()
+  if [[ -e "$(addon_marker_path)" || -L "$(addon_marker_path)" ]]; then
+    _ais_state=valid
+    for _ais_role in update uninstall; do
+      if declare -F "${_ais_role}_script" > /dev/null; then
+        _ais_path=$(_addon_command_path "$_ais_role")
+        [[ -f "$_ais_path" && -x "$_ais_path" ]] && bash -n "$_ais_path" || _ais_state=broken
+        if [[ "$_ais_state" == valid ]]; then
+          _addon_saved_context_read "$_ais_path" _ais_context &&
+            grep -Eq "^${_ais_role}_script[[:space:]]*\\(\\)" "$_ais_path" || _ais_state=broken
+        fi
+      fi
+    done
+  else
+    for _ais_role in update uninstall; do
+      _ais_path=$(_addon_command_path "$_ais_role")
+      [[ ! -e "$_ais_path" && ! -L "$_ais_path" ]] || _ais_state=unmarked
+    done
+    for _ais_name in "${!var_addon_@}"; do
+      case "$_ais_name" in
+        *_install_path | *_install_dir_* | *_app_dir | *_bin_path | *_config_path | *_conf_path | *_service_path | *_creds_path | *_db_path | *_compose_file | *_compose_env | *_env_file | *_profile_d | *_auth_token_file | *_pyenv_root | *_brew_home)
+          _ais_value=${!_ais_name}
+          [[ -z "$_ais_value" || "$_ais_value" == / || (! -e "$_ais_value" && ! -L "$_ais_value") ]] || _ais_state=unmarked
+          ;;
+        *_service)
+          _ais_value=${!_ais_name}
+          [[ ! -e "/etc/systemd/system/${_ais_value}.service" && ! -e "/etc/init.d/${_ais_value}" ]] || _ais_state=unmarked
+          ;;
+        *_pkg)
+          _ais_value=${!_ais_name}
+          if command -v dpkg-query > /dev/null && [[ "$(dpkg-query -W -f='${Status}' "$_ais_value" 2> /dev/null)" == 'install ok installed' ]]; then _ais_state=unmarked; fi
+          if command -v apk > /dev/null && apk info -e "$_ais_value" > /dev/null 2>&1; then _ais_state=unmarked; fi
+          ;;
+      esac
+    done
+    if command -v "$APP_SLUG" > /dev/null 2>&1; then _ais_state=unmarked; fi
+  fi
+  printf -v "$_ais_out" '%s' "$_ais_state"
+}
+
+# Read only the generated declaration block, never source an installed command.
+_addon_saved_context_read() {
+  local _asr_file=$1 _asr_out=$2 _asr_line _asr_name _asr_value _asr_started=0
+  local -n _asr_result=$_asr_out
+  _asr_result=()
+  [[ -f "$_asr_file" && ! -L "$_asr_file" ]] || return 65
+  while IFS= read -r _asr_line; do
+    if [[ "$_asr_started" == 0 ]]; then
+      [[ "$_asr_line" != '# '*runtime\ context* ]] || _asr_started=1
+      continue
+    fi
+    [[ "$_asr_line" == declare\ --\ * ]] || break
+    [[ "$_asr_line" =~ ^declare\ --\ ([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$ ]] || return 65
+    _asr_name=${BASH_REMATCH[1]}
+    case "$_asr_name" in APP | APP_SLUG | NSAPP | REPO_BASE | ADDON_SCRIPT_ID | var_addon_*) ;; *) return 65 ;; esac
+    [[ ! -v '_asr_result[$_asr_name]' ]] || return 65
+    _bundle_scalar_decode _asr_value "${BASH_REMATCH[2]}" || return $?
+    _asr_result[$_asr_name]=$_asr_value
+  done < "$_asr_file"
+  [[ "$_asr_started" == 1 && -v '_asr_result[APP]' && -v '_asr_result[REPO_BASE]' && "${_asr_result[APP_SLUG]:-}" == "$APP_SLUG" ]] || return 65
+  [[ ! -v '_asr_result[NSAPP]' || "${_asr_result[NSAPP]}" == "$APP_SLUG" ]] || return 65
+  [[ -z "${_asr_result[ADDON_SCRIPT_ID]:-}" || "${_asr_result[ADDON_SCRIPT_ID]}" == "${ADDON_SCRIPT_ID:-}" ]] || return 65
+}
+
+addon_refresh() {
+  [[ $# == 0 ]] || return 65
+  app_maintenance_begin "$APP_SLUG" || return $?
+  local _ar_role _ar_path _ar_name _ar_found=0
+  local -A _ar_saved=() _ar_candidate=()
+  for _ar_role in update uninstall; do
+    _ar_path=$(_addon_command_path "$_ar_role")
+    [[ -e "$_ar_path" || -L "$_ar_path" ]] || continue
+    _addon_saved_context_read "$_ar_path" _ar_candidate || {
+      printf 'Cannot recover generated settings from %s; explicit adoption is required\n' "$_ar_path" >&2
+      return 65
+    }
+    if [[ "$_ar_found" == 0 ]]; then
+      for _ar_name in "${!_ar_candidate[@]}"; do _ar_saved[$_ar_name]=${_ar_candidate[$_ar_name]}; done
+      _ar_found=1
+    else
+      for _ar_name in "${!_ar_saved[@]}" "${!_ar_candidate[@]}"; do
+        # Library/source generations and display labels can differ after a
+        # per-command publication failure. Only saved addon settings must agree;
+        # each command's installed/source identity was already checked above.
+        [[ "$_ar_name" == var_addon_* ]] || continue
+        [[ "${_ar_saved[$_ar_name]+present}" == "${_ar_candidate[$_ar_name]+present}" && "${_ar_saved[$_ar_name]:-}" == "${_ar_candidate[$_ar_name]:-}" ]] || {
+          printf 'Generated command contexts disagree; explicit adoption is required\n' >&2
+          return 65
+        }
+      done
+    fi
+  done
+  [[ "$_ar_found" == 1 ]] || {
+    printf 'No generated settings to recover; explicit adoption is required\n' >&2
+    return 65
+  }
+  for _ar_name in "${!var_addon_@}"; do
+    [[ "$_ar_name" == var_addon_tmpdir || -v '_ar_saved[$_ar_name]' ]] || {
+      printf 'No saved value for %s; explicit adoption is required\n' "$_ar_name" >&2
+      return 65
+    }
+  done
+  for _ar_name in "${!_ar_saved[@]}"; do
+    [[ "$_ar_name" != var_addon_* ]] || printf -v "$_ar_name" '%s' "${_ar_saved[$_ar_name]}"
+  done
+  _prepare_addon_context || return $?
+  addon_assemble_bundles || return $?
+  # Refresh publishes code, not a new installation-completion assertion. Keep a
+  # prior marker byte-identical, and never promote partial/unmarked app state.
+  msg_ok "${APP} commands refreshed"
 }
 
 # ------------------------------------------------------------------------------
@@ -118,11 +321,20 @@ addon_dispatch() {
 # prompt. Non-interactive stdin without ADDON_ACTION aborts safely.
 # ------------------------------------------------------------------------------
 addon_guard_installed() {
-  [[ -f "$(addon_marker_path)" ]] || return 1
+  local state
+  _addon_installed_state state || return $?
+  [[ "$state" != absent || -n "${ADDON_ACTION:-}" ]] || return 1
 
-  local update_bin="/usr/local/sbin/update_${APP_SLUG}"
-  local uninstall_bin="/usr/local/sbin/uninstall_${APP_SLUG}"
+  local update_bin uninstall_bin
+  update_bin=$(_addon_command_path update)
+  uninstall_bin=$(_addon_command_path uninstall)
   local action="${ADDON_ACTION:-}"
+
+  if [[ -z "$action" && "$state" != valid ]]; then
+    app_maintenance_begin "$APP_SLUG" || return $?
+    printf 'Existing addon state (%s); use ADDON_ACTION=refresh or explicit adoption, not reinstall\n' "$state" >&2
+    return 65
+  fi
 
   if [[ -z "$action" ]]; then
     msg_warn "${APP} is already installed."
@@ -141,22 +353,29 @@ addon_guard_installed() {
 
   case "${action,,}" in
     u | update)
-      [[ -x "$update_bin" ]] || {
+      [[ "$state" == valid && -x "$update_bin" ]] || {
         msg_error "No update bundle found for ${APP} (${update_bin})"
         exit 1
       }
-      exec "$update_bin"
+      exec "$update_bin" "$@"
       ;;
     x | uninstall)
-      [[ -x "$uninstall_bin" ]] || {
+      [[ "$state" == valid && -x "$uninstall_bin" ]] || {
         msg_error "No uninstall bundle found for ${APP} (${uninstall_bin})"
         exit 1
       }
-      exec "$uninstall_bin"
+      exec "$uninstall_bin" "$@"
       ;;
-    *)
+    r | refresh)
+      addon_refresh "$@"
+      ;;
+    a | abort)
       msg_info "No action selected. Exiting."
       exit 0
+      ;;
+    *)
+      printf 'Unknown ADDON_ACTION: %s\n' "$action" >&2
+      return 65
       ;;
   esac
 }
@@ -192,18 +411,31 @@ addon_baseline() {
 # ------------------------------------------------------------------------------
 # addon_run_install()
 #
-# Runs the install path: baseline → install_script (required) →
-# post_install_script (optional) → bundle assembly → marker write. The marker
-# is written LAST so a failure anywhere leaves the container marker-less and
-# a re-run retries the install path instead of dispatching to
-# missing/half-built bundles.
+# Acquires the shared operation owner and admits absence again under that owner.
+# Prepublication prevents a failed hook from masquerading as an empty target;
+# final publication captures settings resolved by installation. App instructions
+# and the framework completion message follow both commands and marker.
 # ------------------------------------------------------------------------------
 addon_run_install() {
+  app_maintenance_begin "$APP_SLUG" || return $?
+  local state
+  _addon_installed_state state || return $?
+  [[ "$state" == absent ]] || {
+    printf 'Existing addon state (%s); use ADDON_ACTION=refresh or explicit adoption, not reinstall\n' "$state" >&2
+    return 65
+  }
+  declare -F install_script > /dev/null || return 110
+  # Validate every required library and both hook producers before app effects.
+  # Publication precedes install so a failed hook is no longer mistaken for an
+  # empty target. Re-entry requires explicit refresh/adoption, never reinstall.
+  addon_assemble_bundles
   addon_baseline
   execute_mandatory_hook install_script
-  execute_optional_hook post_install_script
+  # Hooks may resolve settings at install time; freeze their resulting values.
   addon_assemble_bundles
   addon_marker_write
+  execute_optional_hook post_install_script
+  msg_ok "${APP} addon installation complete"
 }
 
 # ------------------------------------------------------------------------------
@@ -277,67 +509,7 @@ addon_assemble_bundles() {
 # and refreshes its /usr/bin alias.
 # ------------------------------------------------------------------------------
 _addon_bundle_contents() {
-  local name="$1" hook="$2" stage_dir="$3"
-  local tag="${name:0:4}" _v
-  tag="${tag^^}"
-
-  # Like the LXC writer, every producer checks itself even under an if/|| caller.
-  cat << BUNDLE_HEADER || return $?
-#!/usr/bin/env bash
-set -euo pipefail
-# pct exec / cron / non-login shells provide a minimal PATH; bundles must be
-# self-sufficient (setup_uv/setup_nodejs install to /usr/local/bin).
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-BUNDLE_HEADER
-
-  printf '%s\n' "# ═══ runtime context (baked at bundle build time) ═══" || return $?
-  printf 'declare -- APP=%q\n' "$APP" || return $?
-  printf 'declare -- APP_SLUG=%q\n' "$APP_SLUG" || return $?
-  printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE" || return $?
-  for _v in "${!var_addon_@}"; do
-    printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
-  done
-  printf '\n' || return $?
-
-  _framework_library_contents addon "$stage_dir" || return $?
-
-  cat << BUNDLE_INIT || return $?
-# ═══ runtime init ═══
-command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
-command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
-command -v pkg_install >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
-command -v fetch_and_deploy_gh_release >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
-command -v clone_and_deploy_gh_commit >/dev/null 2>&1 || { echo "FATAL: github.func not loaded" >&2; exit 111; }
-command -v addon_baseline >/dev/null 2>&1 || { echo "FATAL: addon_lxc.func not loaded" >&2; exit 111; }
-
-load_functions
-catch_errors
-color
-
-BUNDLE_INIT
-
-  printf '%s\n' "# ═══ hook: ${hook} ═══" || return $?
-  declare -f "$hook" || return $?
-  printf '\n' || return $?
-
-  if [[ "$name" == "uninstall" ]]; then
-    cat << BUNDLE_FOOTER || return $?
-# ═══ uninstall (normal hook, success-only self-destruct) ═══
-${hook}
-  # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —
-  # resolve to the real bundle file so self-destruct removes both
-  _addon_self="\$(readlink -f "\${BASH_SOURCE[0]}" 2> /dev/null || echo "\${BASH_SOURCE[0]}")"
-  rm -f "\${BASH_SOURCE[0]}" "\${_addon_self}"
-  rm -f "/usr/local/sbin/update_${APP_SLUG}"
-  rm -f "/usr/bin/update-${APP_SLUG}" "/usr/bin/uninstall-${APP_SLUG}"
-  rm -f "${ADDON_MARKER_DIR}/${APP_SLUG}"
-  rmdir --ignore-fail-on-non-empty "${ADDON_MARKER_DIR}" "/var/lib/scripts-underground" 2> /dev/null || true
-  echo "[${tag}] uninstall complete, removed self" >&2
-BUNDLE_FOOTER
-  else
-    printf '%s\n' "# ═══ update pipeline ═══" '_run_update_script addon_baseline "$@"' || return $?
-  fi
+  _bundle_contents addon "$@"
 }
 
 _addon_bundle_write() {
@@ -347,6 +519,7 @@ _addon_bundle_write() {
   # command. Validate mode and alias before atomic publication of complete bytes.
   output=$(mktemp "${dest}.XXXXXX") || return $?
   _addon_bundle_contents "$name" "$hook" "$stage_dir" > "$output" || status=$?
+  if [[ $status -eq 0 ]]; then bash -n "$output" || status=$?; fi
   if [[ $status -eq 0 ]]; then chmod 0755 "$output" || status=$?; fi
   if [[ $status -eq 0 ]]; then ln -sf "$dest" "/usr/bin/${name}-${APP_SLUG}" || status=$?; fi
   if [[ $status -eq 0 ]]; then mv -f -- "$output" "$dest" || status=$?; fi

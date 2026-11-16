@@ -96,6 +96,87 @@ _receiving_context_contents() {
   declare -f _validate_lxc_tmpdir _prepare_lxc_tmpdir_path _prepare_lxc_tmpdir
 }
 
+# Addons stay on the caller's CT filesystem. Unlike LXC transport, a legitimate
+# inherited TMPDIR remains meaningful; a saved explicit choice takes priority.
+_prepare_addon_context() {
+  _prepare_lxc_tmpdir "${var_addon_tmpdir:-${TMPDIR:-}}"
+}
+
+# One execution-environment owner for both frozen bundle profiles. Do not bake a
+# creator's HOME or invent XDG/session state for a root maintenance command.
+_bundle_execution_environment() {
+  export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  export HOME="${HOME:-/root}" USER="${USER:-root}" LOGNAME="${LOGNAME:-root}"
+}
+
+_bundle_runtime_header() {
+  case "$1" in lxc | addon) ;; *) return 65 ;; esac
+  cat << 'HEADER' || return $?
+#!/usr/bin/env bash
+set -euo pipefail
+HEADER
+  declare -f _bundle_execution_environment || return $?
+  printf '%s\n' '_bundle_execution_environment' || return $?
+  if [[ "$1" == lxc ]]; then printf '%s\n' 'unset TMPDIR' || return $?; fi
+}
+
+# Decode only the canonical scalar format emitted by Bash printf %q. No shell
+# evaluator, command substitution, parameter expansion or old code is executed.
+# Re-encoding rejects alternate shell syntax and malformed/ambiguous encodings.
+_bundle_scalar_decode() {
+  local _bsd_out=$1 _bsd_token=$2 _bsd_value='' _bsd_body _bsd_char _bsd_escape _bsd_piece _bsd_canonical
+  if [[ "$_bsd_token" == "''" ]]; then
+    _bsd_value=''
+  elif [[ "$_bsd_token" == \$\'*\' ]]; then
+    _bsd_body=${_bsd_token:2:${#_bsd_token}-3}
+    while [[ -n "$_bsd_body" ]]; do
+      _bsd_char=${_bsd_body:0:1}
+      _bsd_body=${_bsd_body:1}
+      if [[ "$_bsd_char" != '\' ]]; then
+        _bsd_value+=$_bsd_char
+        continue
+      fi
+      [[ -n "$_bsd_body" ]] || return 65
+      _bsd_escape=${_bsd_body:0:1}
+      _bsd_body=${_bsd_body:1}
+      case "$_bsd_escape" in
+        "'" | '\') _bsd_value+=$_bsd_escape ;;
+        a | b | e | E | f | n | r | t | v)
+          printf -v _bsd_piece '%b' "\\$_bsd_escape" || return $?
+          _bsd_value+=$_bsd_piece
+          ;;
+        [0-7])
+          [[ "$_bsd_body" =~ ^[0-7]{2} ]] || return 65
+          _bsd_escape+=${_bsd_body:0:2}
+          _bsd_body=${_bsd_body:2}
+          [[ "$_bsd_escape" != 000 ]] || return 65
+          printf -v _bsd_piece '%b' "\\0$_bsd_escape" || return $?
+          _bsd_value+=$_bsd_piece
+          ;;
+        *) return 65 ;;
+      esac
+    done
+  else
+    _bsd_body=$_bsd_token
+    while [[ -n "$_bsd_body" ]]; do
+      _bsd_char=${_bsd_body:0:1}
+      _bsd_body=${_bsd_body:1}
+      if [[ "$_bsd_char" == '\' ]]; then
+        [[ -n "$_bsd_body" ]] || return 65
+        _bsd_char=${_bsd_body:0:1}
+        _bsd_body=${_bsd_body:1}
+      fi
+      _bsd_value+=$_bsd_char
+    done
+  fi
+  printf -v _bsd_canonical '%q' "$_bsd_value" || return $?
+  if [[ "$_bsd_canonical" != "$_bsd_token" ]]; then
+    LC_ALL=C printf -v _bsd_canonical '%q' "$_bsd_value" || return $?
+    [[ "$_bsd_canonical" == "$_bsd_token" ]] || return 65
+  fi
+  printf -v "$_bsd_out" '%s' "$_bsd_value"
+}
+
 # Creator side: lexical check, then the canonical preparer in the CT's /bin/sh
 # (the root is a positional argument, never shell text). Selects the root for
 # _receiving_exec only after preparation succeeded; an empty override selects none.
@@ -139,11 +220,11 @@ _framework_library_fetch() {
     curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${directory}/${f}" || return $?
     size=$(stat -c%s "${directory}/${f}") || return $?
     if [[ $size -lt 100 ]]; then
-      msg_error "${f}: too small (${size}b), fetch likely failed"
+      printf '%s: too small (%sb), fetch likely failed\n' "$f" "$size" >&2
       return 1
     fi
     grep -q "$sentinel" "${directory}/${f}" || {
-      msg_error "${f} missing ${sentinel}"
+      printf '%s missing %s\n' "$f" "$sentinel" >&2
       return 1
     }
   done <<< "$inventory"
@@ -272,7 +353,10 @@ _lxc_bundle_args() {
   printf -v "$_lba_count_out" '%s' "$_lba_count" || return $?
 }
 
-_write_bundle() {
+_bundle_contents() {
+  local profile=$1
+  shift
+  case "$profile" in lxc | addon) ;; *) return 65 ;; esac
   local name="$1" hook="$2" cache_dir="$3"
   shift 3
   local _bundle_source_id='' _bundle_prefix_count=0
@@ -284,60 +368,74 @@ _write_bundle() {
   tag="${tag^^}"
   # Every producer checks its own status. The caller deliberately handles failure,
   # so neither errexit nor a checked compound block can enforce this boundary.
-  cat << BUNDLE_HEADER || return $?
-#!/usr/bin/env bash
-set -euo pipefail
-# pct exec / cron / non-login shells provide a minimal PATH; bundles must be
-# self-sufficient (setup_uv/setup_nodejs install to /usr/local/bin).
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# The creator's temporary directory belongs to a different filesystem context.
-unset TMPDIR
-
-BUNDLE_HEADER
+  _bundle_runtime_header "$profile" || return $?
 
   printf '%s\n' "# ═══ runtime context (baked at bundle build time) ═══" || return $?
 
   printf 'declare -- APP=%q\n' "$APP" || return $?
-  printf 'declare -- NSAPP=%q\n' "$NSAPP" || return $?
-  if [[ "$name" == update && -n "$_bundle_source_id" ]]; then
+  if [[ "$profile" == addon ]]; then
+    printf 'declare -- APP_SLUG=%q\n' "$APP_SLUG" || return $?
+    printf 'declare -- NSAPP=%q\n' "$APP_SLUG" || return $?
+    printf 'declare -- ADDON_SCRIPT_ID=%q\n' "${ADDON_SCRIPT_ID:-}" || return $?
+  else
+    printf 'declare -- NSAPP=%q\n' "$NSAPP" || return $?
+  fi
+  if [[ "$profile" == lxc && "$name" == update && -n "$_bundle_source_id" ]]; then
     printf 'declare -- LXC_SCRIPT_ID=%q\n' "$_bundle_source_id" || return $?
   fi
-  if [[ "$name" == update ]]; then
+  if [[ "$profile" == lxc && "$name" == update ]]; then
     printf 'declare -- LXC_REQUIRED_CPU=%q\n' "$_bundle_required_cpu" || return $?
     printf 'declare -- LXC_REQUIRED_RAM=%q\n' "$_bundle_required_ram" || return $?
   fi
   printf 'declare -- REPO_BASE=%q\n' "$REPO_BASE" || return $?
-  printf 'declare -- ENABLE_GPU=%q\n' "${ENABLE_GPU:-no}" || return $?
-  printf 'declare -- GPU_TYPE=%q\n' "${GPU_TYPE:-}" || return $?
-  printf 'declare -- INSTALL_NVIDIA_DRIVERS=%q\n' "${INSTALL_NVIDIA_DRIVERS:-}" || return $?
-  printf 'declare -- CTTYPE=%q\n' "${CT_TYPE:-${CTTYPE:-1}}" || return $?
-
-  for _v in "${!var_lxc_@}"; do
-    printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
-  done
+  if [[ "$profile" == lxc ]]; then
+    printf 'declare -- ENABLE_GPU=%q\n' "${ENABLE_GPU:-no}" || return $?
+    printf 'declare -- GPU_TYPE=%q\n' "${GPU_TYPE:-}" || return $?
+    printf 'declare -- INSTALL_NVIDIA_DRIVERS=%q\n' "${INSTALL_NVIDIA_DRIVERS:-}" || return $?
+    printf 'declare -- CTTYPE=%q\n' "${CT_TYPE:-${CTTYPE:-1}}" || return $?
+    for _v in "${!var_lxc_@}"; do
+      printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
+    done
+  else
+    for _v in "${!var_addon_@}"; do
+      printf 'declare -- %s=%q\n' "$_v" "${!_v}" || return $?
+    done
+  fi
 
   # Run before library source-time effects as well as logs/spinners/hooks.
   _receiving_context_contents || return $?
-  printf '%s\n' '_prepare_lxc_tmpdir "${var_lxc_tmpdir:-}" || exit $?' || return $?
+  if [[ "$profile" == lxc ]]; then
+    printf '%s\n' '_prepare_lxc_tmpdir "${var_lxc_tmpdir:-}" || exit $?' || return $?
+  else
+    declare -f _prepare_addon_context || return $?
+    printf '%s\n' '_prepare_addon_context || exit $?' || return $?
+  fi
 
-  _framework_library_contents lxc "$cache_dir" || return $?
+  printf '%s\n' '_INSTALL_DEFER_BOOTSTRAP=1' || return $?
+  _framework_library_contents "$profile" "$cache_dir" || return $?
 
   cat << BUNDLE_INIT || return $?
 # ═══ runtime init ═══
 command -v load_functions >/dev/null 2>&1 || { echo "FATAL: core.func not loaded" >&2; exit 111; }
 command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not loaded" >&2; exit 111; }
-command -v setup_lxc >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
-command -v setup_uv >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
 command -v clone_and_deploy_gh_commit >/dev/null 2>&1 || { echo "FATAL: github.func not loaded" >&2; exit 111; }
-
-load_functions
-catch_errors
-color
 BUNDLE_INIT
+
+  if [[ "$profile" == lxc ]]; then
+    printf '%s\n' 'declare -F setup_lxc >/dev/null || exit 111' 'declare -F setup_uv >/dev/null || exit 111' || return $?
+  else
+    printf '%s\n' 'declare -F pkg_install >/dev/null || exit 111' 'declare -F fetch_and_deploy_gh_release >/dev/null || exit 111' 'declare -F addon_baseline >/dev/null || exit 111' || return $?
+  fi
+  printf '%s\n' '_INSTALL_DEFER_BOOTSTRAP=0' \
+    'if declare -F _bootstrap >/dev/null; then _bootstrap; detect_os; fi' \
+    'unset _INSTALL_DEFER_BOOTSTRAP' 'load_functions' 'catch_errors' 'color' || return $?
 
   printf '%s\n' "# ═══ hook: ${hook} ═══" || return $?
   declare -f "$hook" || return $?
 
+  if [[ "$profile" == addon ]]; then
+    printf '%s\n' 'declare -F addon_baseline >/dev/null || exit 111' || return $?
+  fi
   case "$name" in
     install)
       printf '%s\n' "# ═══ install pipeline ═══" || return $?
@@ -348,21 +446,33 @@ BUNDLE_INIT
       ;;
     update)
       printf '%s\n' "# ═══ update pipeline ═══" || return $?
-      for step in "${pipeline[@]}"; do
-        printf '%s\n' "$step" || return $?
-      done
+      if [[ "$profile" == addon ]]; then
+        printf '%s\n' '_run_update_script addon_baseline "$@"' || return $?
+      else
+        for step in "${pipeline[@]}"; do printf '%s\n' "$step" || return $?; done
+      fi
       ;;
     uninstall)
       printf '%s\n' "# ═══ uninstall (normal hook, success-only self-destruct) ═══" || return $?
+      printf '%s\n' '[[ $# == 0 ]] || { printf "Uninstall takes no options\n" >&2; exit 65; }' || return $?
+      printf '%s\n' 'app_maintenance_begin "$NSAPP" || exit $?' || return $?
       printf '%s\n' "$hook" || return $?
       printf '%s\n' "  # Invoked via the /usr/bin alias, BASH_SOURCE[0] is the symlink path —" || return $?
       printf '%s\n' "  # resolve to the real bundle file so self-destruct removes both" || return $?
       printf '%s\n' "  _self=\"\$(readlink -f \"\${BASH_SOURCE[0]}\" 2>/dev/null || echo \"\${BASH_SOURCE[0]}\")\"" || return $?
       printf '%s\n' "  rm -f \"\${BASH_SOURCE[0]}\" \"\$_self\"" || return $?
-      printf '%s\n' "  rm -f /usr/local/sbin/update /usr/bin/update /usr/bin/uninstall" || return $?
+      if [[ "$profile" == addon ]]; then
+        printf '  rm -f %q %q %q %q\n' "$(_addon_command_path update)" "$(_addon_alias_path update)" "$(_addon_alias_path uninstall)" "${ADDON_MARKER_DIR}/${APP_SLUG}" || return $?
+      else
+        printf '%s\n' "  rm -f /usr/local/sbin/update /usr/bin/update /usr/bin/uninstall" || return $?
+      fi
       printf '%s\n' "  echo \"[${tag}] uninstall complete, removed self\" >&2" || return $?
       ;;
   esac
+}
+
+_write_bundle() {
+  _bundle_contents lxc "$@"
 }
 
 build_bundle() {

@@ -71,4 +71,4 @@ command -v curl > /dev/null 2>&1 || {
 # framework bootstrap
 # shellcheck disable=SC1090
 # Dynamic URL resolved at runtime - shellcheck cannot follow
-source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon_lxc")
+source <(curl -fsSL "$REPO_BASE/misc/bootstrap/addon_lxc") --script-id olivetin -- "$@"
