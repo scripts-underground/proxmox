@@ -1314,6 +1314,14 @@ app-hook stops before migrations. Template units and user units are not started.
 Required query/reload/control failures propagate without advancing the release
 marker or retrying package work. The URL route keeps normal package-owned init
 behavior without introducing SYSTEMD_OFFLINE or extra service control.
+The package owner records outstanding fresh/restart actions as private, checked
+data under `/var/lib/scripts-underground/release-services/<package>` before
+package effects. Failed package, reload or control attempts retain the obligation
+for the next invocation, even after installed/active state changes. Successful
+completion removes it. Fresh actions still require positive enablement; existing
+inactive services without an obligation stay inactive. Unsafe/malformed records
+or units absent from the selected package refuse before package effects. This
+extends pending-operation ownership, not a package rollback transaction.
 
 All three singlefile adapters use `_deploy_single_file`: download privately,
 decode gzip/bzip2/xz/zstd single-binary assets, then prepare the completed file

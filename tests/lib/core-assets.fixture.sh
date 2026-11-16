@@ -7,7 +7,8 @@ ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
 work=$(mktemp -d "$TMPDIR/core-assets.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/home" "$work/payload" "$work/live"
-sed "s|/tmp/gl_rel.json|$work/gl_rel.json|g" "$ROOT/misc/tools.func" > "$work/subject.func"
+sed -e "s|/tmp/gl_rel.json|$work/gl_rel.json|g" \
+  -e "s|/var/lib/scripts-underground/release-services|$work/release-services|g" "$ROOT/misc/tools.func" > "$work/subject.func"
 source "$work/subject.func"
 source "$ROOT/misc/github.func"
 export HOME="$work/home" STD=''
@@ -190,7 +191,7 @@ systemctl() {
       printf 'LoadState=loaded\nActiveState=%s\nUnitFileState=%s\n' "$fixture_active" "$fixture_enabled"
       return "$query_rc"
       ;;
-    daemon-reload) return 0 ;;
+    daemon-reload) return "${reload_rc:-0}" ;;
     start | restart) return "$service_rc" ;;
   esac
   return 86
@@ -205,6 +206,7 @@ dpkg() {
 }
 for adapter in github codeberg gitlab url; do
   for state in fresh active stopped disabled; do
+    rm -f -- "$work/release-services/su-fixture"
     fixture_installed=installed fixture_active=inactive fixture_enabled=enabled query_rc=0 service_rc=0 apt_rc=0 dpkg_rc=0
     case "$state" in fresh) fixture_installed=not-installed ;; active) fixture_active=active ;; disabled) fixture_installed=not-installed fixture_enabled=disabled ;; esac
     : > "$work/init-calls"
@@ -221,6 +223,7 @@ for adapter in github codeberg gitlab url; do
 done
 fixture_installed=installed fixture_active=active fixture_enabled=enabled
 for fault in fallback package query service; do
+  rm -f -- "$work/release-services/su-fixture"
   apt_rc=0 dpkg_rc=0 query_rc=0 service_rc=0 expected=0
   case "$fault" in fallback) apt_rc=42 ;; package) apt_rc=42 dpkg_rc=47 expected=100 ;; query) query_rc=49 expected=49 ;; service) service_rc=50 expected=50 ;; esac
   : > "$work/init-calls"
@@ -233,6 +236,61 @@ for fault in fallback package query service; do
   elif [[ "$fault" == service ]]; then
     check "$(grep -c '^dpkg ' "$work/package-calls" || true)" 0 'F14 restart failure never triggers dpkg fallback'
   fi
+done
+
+# A failed post-package action must survive a new helper invocation after the
+# package database changes. Inactive is not proof of intentional operator stop.
+for adapter in github codeberg gitlab; do
+  for lifecycle in fresh active; do
+    for failed_step in reload service; do
+      rm -f -- "$work/release-services/su-fixture"
+      fixture_installed=not-installed fixture_active=inactive fixture_enabled=enabled
+      [[ "$lifecycle" != active ]] || {
+        fixture_installed=installed
+        fixture_active=active
+      }
+      apt_rc=0 dpkg_rc=0 query_rc=0 service_rc=0 reload_rc=51
+      [[ "$failed_step" != service ]] || {
+        reload_rc=0
+        service_rc=51
+      }
+      : > "$work/init-calls"
+      rc=0
+      _deploy_release_deb "$work/package.deb" "$adapter" || rc=$?
+      check "$rc" 51 "F14 $adapter $lifecycle $failed_step failure propagates"
+      # The package installation completed. A new process now sees it installed
+      # but inactive (also the state after a failed service restart).
+      fixture_installed=installed fixture_active=inactive reload_rc=0 service_rc=0
+      : > "$work/init-calls"
+      rc=0
+      _deploy_release_deb "$work/package.deb" "$adapter" || rc=$?
+      action=start
+      [[ "$lifecycle" != active ]] || action=restart
+      check "$rc/$(grep -E '^(start|restart) ' "$work/init-calls" || true)" "0/$action -- probe.service" "F14 $adapter $lifecycle retry completes original obligation"
+      check "$(test -e "$work/release-services/su-fixture" && echo pending || echo clear)" clear "F14 $adapter $lifecycle successful retry retires obligation"
+    done
+  done
+done
+
+# Existing inactive services still have no obligation, and unsafe/corrupt saved
+# state cannot authorize package or service effects.
+for unsafe in symlink malformed public; do
+  rm -f -- "$work/release-services/su-fixture"
+  case "$unsafe" in
+    symlink) ln -s "$work/operator" "$work/release-services/su-fixture" ;;
+    malformed)
+      printf 'execute\tprobe.service\n' > "$work/release-services/su-fixture"
+      chmod 600 "$work/release-services/su-fixture"
+      ;;
+    public)
+      printf 'fresh\tprobe.service\n' > "$work/release-services/su-fixture"
+      chmod 644 "$work/release-services/su-fixture"
+      ;;
+  esac
+  : > "$work/package-calls"
+  rc=0
+  _deploy_release_deb "$work/package.deb" github || rc=$?
+  check "$rc/$(cat "$work/package-calls")" '65/' "F14 $unsafe pending state refuses before package effects"
 done
 printf 'CORE_ASSETS_RESULT failures=%s\n' "$failures"
 ((failures == 0))

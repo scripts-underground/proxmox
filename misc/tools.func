@@ -3983,9 +3983,51 @@ _release_deb_state() {
   printf '%s\t%s\n' "$active" "$enabled"
 }
 
+# Like update-pending, this is an outstanding obligation, not a version marker.
+# Keep it before package effects so a later invocation cannot mistake a failed
+# start/restart for an operator-owned inactive service. Contents are data only.
+_release_deb_pending_path() {
+  local _rdp_out="$1" _rdp_package="$2" _rdp_dir=/var/lib/scripts-underground/release-services
+  local _rdp_entry _rdp_meta _rdp_uid _rdp_mode _rdp_links
+  for _rdp_entry in /var /var/lib /var/lib/scripts-underground "$_rdp_dir"; do
+    if [[ ! -e "$_rdp_entry" && ! -L "$_rdp_entry" ]]; then mkdir -m 700 -- "$_rdp_entry" || return $?; fi
+    [[ -d "$_rdp_entry" && ! -L "$_rdp_entry" ]] || return 65
+    _rdp_meta=$(stat -c '%u %a' -- "$_rdp_entry") || return $?
+    read -r _rdp_uid _rdp_mode <<< "$_rdp_meta"
+    [[ "$_rdp_uid" == 0 && "$_rdp_mode" =~ ^[0-7]{3,4}$ ]] || return 65
+    (((8#$_rdp_mode & 022) == 0)) || return 65
+  done
+  _rdp_entry="$_rdp_dir/$_rdp_package"
+  if [[ -e "$_rdp_entry" || -L "$_rdp_entry" ]]; then
+    [[ -f "$_rdp_entry" && ! -L "$_rdp_entry" ]] || return 65
+    _rdp_meta=$(stat -c '%u %a %h' -- "$_rdp_entry") || return $?
+    read -r _rdp_uid _rdp_mode _rdp_links <<< "$_rdp_meta"
+    [[ "$_rdp_uid/$_rdp_mode/$_rdp_links" == 0/600/1 ]] || return 65
+  fi
+  printf -v "$_rdp_out" '%s' "$_rdp_entry"
+}
+
+_release_deb_pending_write() {
+  local path="$1" key stage rc=0 cleanup_rc=0
+  local -n actions="$2"
+  stage=$(mktemp "${path%/*}/.pending.XXXXXXXX") || return $?
+  for key in "${!actions[@]}"; do
+    printf '%s\t%s\n' "${actions[$key]}" "$key" >> "$stage" || {
+      rc=$?
+      break
+    }
+  done
+  if [[ $rc == 0 ]]; then mv -fT -- "$stage" "$path" || rc=$?; fi
+  rm -f -- "$stage" || cleanup_rc=$?
+  [[ $rc != 0 ]] || rc=$cleanup_rc
+  return "$rc"
+}
+
 _deploy_release_deb() {
   local package="$1" adapter="$2" pkg='' inventory='' listing='' entry unit state status installed=0 rc=0
   local -a units=() was_active=() apt_options=() dpkg_options=()
+  local pending='' action extra
+  local -A pending_actions=()
   case "$adapter" in
     github | gitlab)
       [[ "${DPKG_FORCE_CONFOLD:-}" != 1 ]] || apt_options=(-o Dpkg::Options::=--force-confold)
@@ -4031,6 +4073,26 @@ _deploy_release_deb() {
           ;;
       esac
     done <<< "$listing"
+    if ((${#units[@]})) || [[ -e "/var/lib/scripts-underground/release-services/$pkg" || -L "/var/lib/scripts-underground/release-services/$pkg" ]]; then
+      _release_deb_pending_path pending "$pkg" || return $?
+      if [[ -e "$pending" ]]; then
+        while IFS=$'\t' read -r action unit extra; do
+          [[ "$action" == fresh || "$action" == restart ]] || return 65
+          _deploy_asset_name "$unit" && [[ -z "$extra" && -z "${pending_actions[$unit]+present}" ]] || return 65
+          [[ " ${units[*]} " == *" $unit "* ]] || {
+            msg_error "Pending package service $unit is absent from the selected package; inspect $pending"
+            return 65
+          }
+          pending_actions[$unit]=$action
+        done < "$pending"
+      fi
+      for unit in "${units[@]}"; do
+        if [[ " ${was_active[*]} " == *" $unit "* ]]; then
+          pending_actions[$unit]=restart
+        elif [[ "$installed" == 0 ]]; then pending_actions[$unit]=fresh; fi
+      done
+      if ((${#pending_actions[@]})); then _release_deb_pending_write "$pending" pending_actions || return $?; fi
+    fi
   fi
   if [[ "$adapter" == url ]]; then
     _apt_install_release_package "$package" || { $STD dpkg -i "$package" || rc=$?; }
@@ -4051,9 +4113,9 @@ _deploy_release_deb() {
   if ((${#units[@]})); then
     SYSTEMD_OFFLINE=0 $STD systemctl daemon-reload || return $?
     for unit in "${units[@]}"; do
-      if [[ " ${was_active[*]} " == *" $unit "* ]]; then
+      if [[ "${pending_actions[$unit]:-}" == restart ]]; then
         SYSTEMD_OFFLINE=0 $STD systemctl restart -- "$unit" || return $?
-      elif [[ "$installed" == 0 ]]; then
+      elif [[ "${pending_actions[$unit]:-}" == fresh ]]; then
         state=$(_release_deb_state "$unit") || return $?
         case "${state#*$'\t'}" in
           enabled | enabled-runtime) SYSTEMD_OFFLINE=0 $STD systemctl start -- "$unit" || return $? ;;
@@ -4061,6 +4123,7 @@ _deploy_release_deb() {
       fi
     done
   fi
+  if [[ -n "$pending" ]]; then rm -f -- "$pending" || return $?; fi
 }
 
 _codeberg_deploy_tree() {

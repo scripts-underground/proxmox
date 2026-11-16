@@ -70,6 +70,10 @@ sha256sum "$target/uv" "$HOME/.force-probe"
 printf 'NATIVE_PACKAGE_EVIDENCE %s\n' "$work"
 systemctl() {
   printf '%s\n' "$*" >> "$work/systemctl.log"
+  if [[ "${native_restart_fail:-0}" == 1 && "$1" == restart ]]; then
+    command systemctl stop "${@:2}"
+    return 51
+  fi
   command systemctl "$@"
 }
 curl() { :; }
@@ -93,6 +97,21 @@ after_pid=$(command systemctl show --value --property=MainPID OliveTin.service)
 [[ "$before_pid" != 0 && "$after_pid" != 0 && "$before_pid" != "$after_pid" ]]
 curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:1337/ -o "$work/olivetin-updated.html"
 grep -qi OliveTin "$work/olivetin-updated.html"
+native_restart_fail=1
+printf prior-native-marker > "$HOME/.olivetin"
+rc=0
+FORCE_DEPLOY=1 fetch_and_deploy_gh_release olivetin OliveTin/OliveTin binary latest || rc=$?
+[[ "$rc" == 51 && "$(cat "$HOME/.olivetin")" == prior-native-marker ]]
+[[ "$(command systemctl show --value --property=ActiveState OliveTin.service)" == inactive ]]
+test -s /var/lib/scripts-underground/release-services/olivetin
+native_restart_fail=0
+: > "$work/systemctl.log"
+FORCE_DEPLOY=1 fetch_and_deploy_gh_release olivetin OliveTin/OliveTin binary latest
+grep -Fx 'restart -- OliveTin.service' "$work/systemctl.log"
+test ! -e /var/lib/scripts-underground/release-services/olivetin
+curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:1337/ -o "$work/olivetin-retried.html"
+grep -qi OliveTin "$work/olivetin-retried.html"
+printf 'PASS native failed restart preserves marker and retry restores real HTTP consumer\n'
 command systemctl stop OliveTin.service
 : > "$work/systemctl.log"
 FORCE_DEPLOY=1 fetch_and_deploy_gh_release olivetin OliveTin/OliveTin binary latest
