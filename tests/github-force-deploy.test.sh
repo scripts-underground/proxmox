@@ -122,3 +122,39 @@ curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:1337/ 
 grep -qi OliveTin "$work/olivetin-restored.html"
 printf 'PASS native OliveTin app install/HTTP, active package restart and stopped-hook preservation\n'
 command systemctl show --property=LoadState,ActiveState,UnitFileState,MainPID OliveTin.service
+
+# A complete real frontend build selected by its own deployed packageManager.
+# Homer is intentionally built here rather than using its precompiled asset.
+ensure_dependencies curl ca-certificates gnupg python3 build-essential
+fetch_and_deploy_gh_release homer bastienwirtz/homer tarball latest /opt/homer '' '' "$work/homer-selected.json"
+node_modules=$(jq -er '.packageManager | select(startswith("pnpm@"))' /opt/homer/package.json)
+NODE_VERSION=24 NODE_MODULE="$node_modules" setup_nodejs
+selected_pnpm="${node_modules#pnpm@}"
+[[ "$(pnpm --version)" == "${selected_pnpm%%+*}" ]]
+cd /opt/homer
+pnpm install --frozen-lockfile > "$work/homer-install.log" 2>&1
+pnpm run build > "$work/homer-build.log" 2>&1
+cp dist/assets/config.yml.dist dist/assets/config.yml
+systemd-run --unit=core-homer-native --property=WorkingDirectory=/opt/homer \
+  /usr/bin/python3 -m http.server 8080 --bind 127.0.0.1 --directory /opt/homer/dist
+curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/ -o "$work/homer.html"
+python3 - "$work/homer.html" << 'PY'
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.request import urlopen
+import sys
+class Assets(HTMLParser):
+    def __init__(self):super().__init__();self.urls=[]
+    def handle_starttag(self,tag,attrs):
+        for key,value in attrs:
+            if tag in ('script','link') and key in ('src','href') and value and not value.startswith(('http:', 'https:', '//')):
+                self.urls.append(value)
+html=Path(sys.argv[1]).read_text();assert 'Homer' in html
+p=Assets();p.feed(html);assert any('.js' in u for u in p.urls)
+for asset in p.urls:
+    with urlopen('http://127.0.0.1:8080/'+asset.lstrip('./'),timeout=10) as r:
+        data=r.read();assert r.status==200 and len(data)>0
+print('PASS native Homer selected-source packageManager, real dependency/build and served asset consumers',len(p.urls))
+PY
+printf 'RUNTIME_HOMER_PACKAGE_MANAGER %s\n' "$node_modules"
+sha256sum /opt/homer/package.json /opt/homer/pnpm-lock.yaml /opt/homer/dist/index.html

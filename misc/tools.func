@@ -1258,6 +1258,27 @@ get_system_arch() {
 # ------------------------------------------------------------------------------
 # Create temporary directory with automatic cleanup
 # ------------------------------------------------------------------------------
+# Large source/download/build scratch. An explicitly selected receiving root is
+# authoritative, including tmpfs. Otherwise admit an existing writable disk root;
+# never silently let mktemp choose a RAM-backed default.
+_tools_stage_dir() {
+  local label="${1:-tools-stage}" root kind
+  [[ "$label" =~ ^[a-zA-Z0-9_-]+$ ]] || return 65
+  if [[ -n "${TMPDIR:-}" ]]; then
+    mktemp -d -- "$TMPDIR/$label.XXXXXXXX"
+    return $?
+  fi
+  for root in /var/tmp /opt; do
+    [[ -d "$root" && -w "$root" && -x "$root" ]] || continue
+    kind=$(findmnt -rn -T "$root" -o FSTYPE) || continue
+    case "$kind" in '' | tmpfs | ramfs) continue ;; esac
+    mktemp -d -- "$root/$label.XXXXXXXX"
+    return $?
+  done
+  msg_error "No writable disk staging root; select receiving TMPDIR explicitly"
+  return 252
+}
+
 create_temp_dir() {
   local tmp_dir=$(mktemp -d)
   # Set trap to cleanup on EXIT, ERR, INT, TERM
@@ -2824,7 +2845,7 @@ fetch_and_deploy_gh_tag() {
   fi
 
   local tmpdir
-  tmpdir=$(mktemp -d) || return 1
+  tmpdir=$(_tools_stage_dir gh-tag) || return 1
   local tarball_url="https://github.com/${repo}/archive/refs/tags/${version}.tar.gz"
   local filename="${app_lc}-${version}.tar.gz"
 
@@ -3575,7 +3596,7 @@ _deploy_replace_contents() {
       rest=${rest#*/}
     done
   done
-  stage=$(mktemp -d "${TMPDIR:-/tmp}/deploy-source.XXXXXX") || return 252
+  stage=$(_tools_stage_dir deploy-source) || return 252
   if ! find "$source" -mindepth 1 -maxdepth 1 -print0 > "$stage/input"; then
     _deploy_remove_owned_trees "$stage"
     return 252
@@ -4176,7 +4197,7 @@ fetch_and_deploy_codeberg_release() {
     fi
 
     local tmpdir
-    tmpdir=$(mktemp -d) || return 252
+    tmpdir=$(_tools_stage_dir cb-tag) || return 252
 
     msg_info "Fetching Codeberg tag: $app ($tag_name)"
 
@@ -4256,7 +4277,7 @@ fetch_and_deploy_codeberg_release() {
   fi
 
   local tmpdir
-  tmpdir=$(mktemp -d) || return 252
+  tmpdir=$(_tools_stage_dir cb-release) || return 252
   local filename="" url=""
 
   msg_info "Fetching Codeberg release: $app ($version)"
@@ -4406,7 +4427,7 @@ fetch_and_deploy_codeberg_release() {
     }
 
     local unpack_tmp
-    unpack_tmp=$(mktemp -d) || {
+    unpack_tmp=$(_tools_stage_dir cb-unpack) || {
       rm -rf "$tmpdir"
       return 252
     }
@@ -4729,7 +4750,7 @@ _gh_deploy_wanderer_plugin() {
     [[ $rc == 1 ]] || return "$rc"
     if [[ "${FORCE_DEPLOY:-0}" != 1 ]] && _wanderer_plugin_valid "$target" "$plugin"; then return 0; fi
   fi
-  stage=$(mktemp -d "${TMPDIR:-/tmp}/wanderer-plugin.XXXXXX") || return $?
+  stage=$(_tools_stage_dir wanderer-plugin) || return $?
   rc=0
   # A main-app pin and marker must not select or certify an independent plugin.
   HOME="$stage" var_appversion='' FORCE_DEPLOY=1 CLEAN_INSTALL=0 fetch_and_deploy_gh_release "$app" open-wanderer/wanderer prebuild "$selected" "$stage/payload" "$app.tar.gz" || rc=$?
@@ -4777,7 +4798,7 @@ fetch_and_deploy_gh_release() {
   [[ -f "$version_file" ]] && current_version=$(< "$version_file")
 
   local tmpdir json tag_name rc=0
-  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/gh-deploy.XXXXXX") || return 252
+  tmpdir=$(_tools_stage_dir gh-deploy) || return 252
   _gh_release_json "$repo" "$version" "$tag_prefix" "$tmpdir/selected.json" || rc=$?
   if [[ $rc -ne 0 ]]; then
     rm -rf -- "$tmpdir"
@@ -5013,7 +5034,10 @@ fetch_and_deploy_gh_release() {
     }
 
     local unpack_tmp
-    unpack_tmp=$(mktemp -d)
+    unpack_tmp=$(_tools_stage_dir gh-unpack) || {
+      rm -rf -- "$tmpdir"
+      return 252
+    }
     if [[ "$filename" == *.zip ]]; then
       ensure_dependencies unzip
       unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
@@ -5674,7 +5698,8 @@ EOF
 # ------------------------------------------------------------------------------
 
 setup_ffmpeg() {
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
+  TMP_DIR=$(_tools_stage_dir ffmpeg) || return $?
   local GITHUB_REPO="FFmpeg/FFmpeg"
   local VERSION="${FFMPEG_VERSION:-latest}"
   local TYPE="${FFMPEG_TYPE:-full}"
@@ -5989,30 +6014,32 @@ setup_go() {
 
   local TARBALL="go${GO_VERSION}.linux-${ARCH}.tar.gz"
   local URL="https://go.dev/dl/${TARBALL}"
-  local TMP_TAR=$(mktemp)
+  local TMP_TAR go_stage
+  go_stage=$(_tools_stage_dir go-download) || return $?
+  TMP_TAR="$go_stage/go.tar.gz"
 
   if ! CURL_TIMEOUT=300 curl_with_retry "$URL" "$TMP_TAR"; then
     msg_error "Failed to download Go $GO_VERSION"
     msg_error "Hint: Check connectivity to go.dev/dl — URL: $URL"
-    rm -f "$TMP_TAR"
+    rm -rf -- "$go_stage"
     return 250
   fi
 
   tar -tzf "$TMP_TAR" > /dev/null || {
-    rm -f -- "$TMP_TAR"
+    rm -rf -- "$go_stage"
     return 251
   }
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$GO_VERSION" ]]; then remove_old_tool_version "go"; fi
 
   $STD tar -C /usr/local -xzf "$TMP_TAR" || {
     msg_error "Failed to extract Go tarball"
-    rm -f "$TMP_TAR"
+    rm -rf -- "$go_stage"
     return 251
   }
 
   ln -sf /usr/local/go/bin/go /usr/local/bin/go
   ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-  rm -f "$TMP_TAR"
+  rm -rf -- "$go_stage"
 
   cache_installed_version "go" "$GO_VERSION"
   ensure_usr_local_bin_persist
@@ -6037,7 +6064,8 @@ _go_version_at_least() {
 # ------------------------------------------------------------------------------
 
 setup_gs() {
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
+  TMP_DIR=$(_tools_stage_dir ghostscript) || return $?
   local CURRENT_VERSION=$(gs --version 2> /dev/null || echo "0")
 
   ensure_dependencies jq
@@ -6976,7 +7004,8 @@ _setup_gpu_permissions() {
 #   - Requires: build-essential, libtool, libjpeg-dev, libpng-dev, etc.
 # ------------------------------------------------------------------------------
 setup_imagemagick() {
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
+  TMP_DIR=$(_tools_stage_dir imagemagick) || return $?
   local BINARY_PATH="/usr/local/bin/magick"
 
   # Get currently installed version
@@ -8372,6 +8401,65 @@ FLUSH PRIVILEGES;"
 #   NODE_MODULE    - Comma-separated list of global modules (e.g. "yarn,@vue/cli@5.0.0")
 # ------------------------------------------------------------------------------
 
+# Resolve declarations without treating a Corepack integrity suffix as an npm
+# version. Installed metadata owns executable names, not the package's spelling.
+_node_module_bins_ready() {
+  local root="$1" name="$2" metadata bins bin rel resolved executable
+  metadata="$root/$name/package.json"
+  [[ -f "$metadata" ]] || return 127
+  bins=$(jq -er --arg name "$name" '
+    if .name != $name or (.version | type != "string") then error("invalid package")
+    elif .bin == null then []
+    elif (.bin | type) == "string" then [{key:($name | split("/") | last),value:.bin}]
+    elif (.bin | type) == "object" then .bin | to_entries
+    else error("invalid bin") end |
+    map(if (.key | test("^[A-Za-z0-9_.-]+$")) and (.value | type == "string")
+        and (.value | length > 0) then [.key,.value] | @tsv else error("invalid bin") end) | .[]' "$metadata") || {
+    # jq -e returns 4 for a valid empty bin set. Library-only modules have no CLI.
+    jq -e --arg name "$name" '.name == $name and (.bin == null or .bin == {})' "$metadata" > /dev/null || return 127
+    return 0
+  }
+  while IFS=$'\t' read -r bin rel; do
+    case "/$rel/" in //* | */../* | *$'\n'* | *$'\r'* | *$'\t'*) return 127 ;; esac
+    executable="$root/$name/$rel"
+    [[ -x "$executable" ]] || return 127
+    resolved=$(command -v "$bin") || return 127
+    [[ "$(readlink -f -- "$resolved")" == "$(readlink -f -- "$executable")" ]] || return 127
+  done <<< "$bins"
+}
+
+_node_setup_module() {
+  local spec="$1" name req root installed='' rc=0
+  if [[ "$spec" == @*/*@* || "$spec" != @* && "$spec" == *@* ]]; then
+    name="${spec%@*}" req="${spec##*@}"
+  else
+    name="$spec" req=latest
+  fi
+  [[ "$name" =~ ^(@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9._-]+$ && -n "$req" ]] || return 65
+  # Keep the existing default, but never rewrite an explicit source/caller pin.
+  if [[ "$name" == pnpm && "$req" == latest ]]; then req='^10'; fi
+  if [[ "$req" =~ ^(.+)\+sha[0-9]+\.[a-zA-Z0-9+/=_-]+$ ]]; then req="${BASH_REMATCH[1]}"; fi
+  root=$(npm root -g) || return $?
+  [[ "$root" == /* && -d "$root" ]] || return 127
+  if [[ -f "$root/$name/package.json" ]]; then
+    installed=$(jq -er --arg name "$name" 'select(.name == $name) | .version | select(type == "string")' "$root/$name/package.json") || installed=''
+  fi
+  if [[ "$installed" != "$req" ]] || ! _node_module_bins_ready "$root" "$name"; then
+    msg_info "Installing $name@$req"
+    $STD npm install -g "$name@$req" || rc=$?
+    [[ $rc == 0 ]] || return "$rc"
+    hash -r
+  fi
+  _node_module_bins_ready "$root" "$name" || {
+    msg_error "Declared executable missing after installing $name@$req"
+    return 127
+  }
+  if [[ "$req" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+    installed=$(jq -er '.version' "$root/$name/package.json") || return 127
+    [[ "$installed" == "$req" ]] || return 127
+  fi
+}
+
 setup_nodejs() {
   local NODE_VERSION="${NODE_VERSION:-24}"
   local NODE_MODULE="${NODE_MODULE:-}"
@@ -8409,6 +8497,13 @@ setup_nodejs() {
 
     # Upgrade to the latest minor/patch release from NodeSource
     $STD apt-get install -y --only-upgrade nodejs 2> /dev/null || true
+
+    # An installed Node major is not proof that npm survived. Recover it through
+    # the selected package owner before using npm, without changing its pin.
+    if ! command -v npm > /dev/null 2>&1; then
+      $STD apt install -y --reinstall nodejs || return $?
+      command -v npm > /dev/null 2>&1 || return 127
+    fi
 
     # Pin npm to 11.11.0 to work around Node.js 22.22.2 regression (nodejs/node#62425)
     $STD npm install -g npm@11.11.0 2> /dev/null || true
@@ -8524,61 +8619,19 @@ setup_nodejs() {
   if [[ -n "$NODE_MODULE" ]]; then
     IFS=',' read -ra MODULES <<< "$NODE_MODULE"
 
-    # Pin pnpm to v10 to avoid breaking changes from newer major versions
-    for i in "${!MODULES[@]}"; do
-      if [[ "${MODULES[$i]}" =~ ^pnpm(@.*)?$ ]]; then
-        MODULES[$i]="pnpm@^10"
-      fi
-    done
-
     local failed_modules=0
     for mod in "${MODULES[@]}"; do
-      local MODULE_NAME MODULE_REQ_VERSION MODULE_INSTALLED_VERSION
-      if [[ "$mod" == @*/*@* ]]; then
-        # Scoped package with version, e.g. @vue/cli-service@latest
-        MODULE_NAME="${mod%@*}"
-        MODULE_REQ_VERSION="${mod##*@}"
-      elif [[ "$mod" == *"@"* ]]; then
-        # Unscoped package with version, e.g. yarn@latest
-        MODULE_NAME="${mod%@*}"
-        MODULE_REQ_VERSION="${mod##*@}"
-      else
-        # No version specified
-        MODULE_NAME="$mod"
-        MODULE_REQ_VERSION="latest"
-      fi
-
-      # Check if the module is already installed
-      if $STD npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep -q "$MODULE_NAME@"; then
-        MODULE_INSTALLED_VERSION="$(npm list -g --depth=0 "$MODULE_NAME" 2>&1 | grep "$MODULE_NAME@" | awk -F@ '{print $2}' 2> /dev/null | tr -d '[:space:]' || echo '')"
-        if [[ "$MODULE_REQ_VERSION" != "latest" && "$MODULE_REQ_VERSION" != "$MODULE_INSTALLED_VERSION" ]]; then
-          msg_info "Updating $MODULE_NAME from v$MODULE_INSTALLED_VERSION to v$MODULE_REQ_VERSION"
-          if ! $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2> /dev/null; then
-            msg_warn "Failed to update $MODULE_NAME to version $MODULE_REQ_VERSION"
-            ((failed_modules++)) || true
-            continue
-          fi
-        elif [[ "$MODULE_REQ_VERSION" == "latest" ]]; then
-          msg_info "Updating $MODULE_NAME to latest version"
-          if ! $STD npm install -g "${MODULE_NAME}@latest" 2> /dev/null; then
-            msg_warn "Failed to update $MODULE_NAME to latest version"
-            ((failed_modules++)) || true
-            continue
-          fi
-        fi
-      else
-        msg_info "Installing $MODULE_NAME@$MODULE_REQ_VERSION"
-        if ! $STD npm install -g "${MODULE_NAME}@${MODULE_REQ_VERSION}" 2> /dev/null; then
-          msg_warn "Failed to install $MODULE_NAME@$MODULE_REQ_VERSION"
-          ((failed_modules++)) || true
-          continue
-        fi
+      local module_rc=0
+      _node_setup_module "$mod" || module_rc=$?
+      if [[ $module_rc != 0 ]]; then
+        msg_warn "Failed to establish Node module $mod (status $module_rc)"
+        [[ $failed_modules != 0 ]] || failed_modules=$module_rc
       fi
     done
     if [[ $failed_modules -eq 0 ]]; then
       msg_ok "Installed Node.js modules: $NODE_MODULE"
     else
-      msg_warn "Installed Node.js modules with $failed_modules failure(s): $NODE_MODULE"
+      return "$failed_modules"
     fi
   fi
 }
@@ -8614,6 +8667,22 @@ setup_nodejs() {
 #       are part of php-common
 #   - Unavailable modules are skipped with a warning, not an error
 # ------------------------------------------------------------------------------
+
+_php_enable_fpm() {
+  local unit="php${1}-fpm.service" state
+  state=$(systemctl show --property=LoadState --value -- "$unit") || return $?
+  case "$state" in
+    loaded)
+      $STD systemctl enable "${unit%.service}" || return $?
+      safe_service_restart "${unit%.service}" || return $?
+      ;;
+    not-found) return 0 ;;
+    *)
+      msg_error "Cannot establish PHP-FPM unit $unit (LoadState=$state)"
+      return 65
+      ;;
+  esac
+}
 
 setup_php() {
   local PHP_VERSION="${PHP_VERSION:-8.4}"
@@ -8866,10 +8935,7 @@ EOF
 
   # Enable and restart PHP-FPM if requested
   if [[ "$PHP_FPM" == "YES" ]]; then
-    if systemctl list-unit-files | grep -q "php${PHP_VERSION}-fpm.service"; then
-      $STD systemctl enable php${PHP_VERSION}-fpm
-      safe_service_restart php${PHP_VERSION}-fpm
-    fi
+    _php_enable_fpm "$PHP_VERSION" || return $?
   fi
 
   # Verify PHP installation - critical check
@@ -9286,7 +9352,7 @@ setup_ruby() {
   local RBENV_DIR="$HOME/.rbenv"
   local RBENV_BIN="$RBENV_DIR/bin/rbenv"
   local PROFILE_FILE="$HOME/.profile"
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
 
   # Get currently installed Ruby version
   local CURRENT_RUBY_VERSION=""
@@ -9310,6 +9376,7 @@ setup_ruby() {
   fi
 
   ensure_apt_working || return 100
+  TMP_DIR=$(_tools_stage_dir ruby-build) || return $?
 
   # Install build dependencies with fallbacks
   local ruby_deps=()
@@ -9425,9 +9492,11 @@ setup_ruby() {
   eval "$("$RBENV_BIN" init - bash)" 2> /dev/null || true
 
   if ! "$RBENV_BIN" versions --bare 2> /dev/null | grep -qx "$RUBY_VERSION"; then
-    $STD "$RBENV_BIN" install "$RUBY_VERSION" || {
+    mkdir -p "$TMP_DIR/build" "$TMP_DIR/cache" || return $?
+    TMPDIR="$TMP_DIR" RUBY_BUILD_BUILD_PATH="$TMP_DIR/build" RUBY_BUILD_CACHE_PATH="$TMP_DIR/cache" \
+      $STD "$RBENV_BIN" install "$RUBY_VERSION" || {
       msg_error "Failed to install Ruby $RUBY_VERSION"
-      rm -rf "$TMP_DIR"
+      msg_error "Ruby build evidence retained at $TMP_DIR"
       return 150
     }
   fi
@@ -9485,11 +9554,23 @@ setup_rust() {
   # Scenario 1: Rustup not installed - fresh install
   if ! command -v rustup &> /dev/null; then
     msg_info "Setup Rust ($RUST_TOOLCHAIN, profile: $RUST_PROFILE)"
-    curl -fsSL https://sh.rustup.rs | $STD sh -s -- -y --profile "$RUST_PROFILE" --default-toolchain "$RUST_TOOLCHAIN" || {
-      msg_error "Failed to install Rust"
-      msg_error "Hint: Check connectivity to sh.rustup.rs and static.rust-lang.org"
-      return 7
-    }
+    local rust_stage attempt rust_rc=0
+    rust_stage=$(_tools_stage_dir rustup-install) || return $?
+    for attempt in 1 2 3; do
+      rust_rc=0
+      # A partial download must never execute. Retry the same selected boundary.
+      curl -fsSL -o "$rust_stage/rustup.sh" https://sh.rustup.rs || rust_rc=$?
+      if [[ $rust_rc == 0 ]]; then
+        $STD sh "$rust_stage/rustup.sh" -y --profile "$RUST_PROFILE" --default-toolchain "$RUST_TOOLCHAIN" || rust_rc=$?
+      fi
+      [[ $rust_rc != 0 ]] || break
+      [[ $attempt == 3 ]] || sleep 2
+    done
+    if [[ $rust_rc != 0 ]]; then
+      msg_error "Failed to install Rust after $attempt attempts (status $rust_rc); evidence: $rust_stage"
+      return "$rust_rc"
+    fi
+    rm -rf -- "$rust_stage"
     export PATH="$CARGO_BIN:$PATH"
     echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$HOME/.profile"
 
@@ -9725,6 +9806,19 @@ _uv_pick_version() {
   return 250
 }
 
+_uv_publish_completion() {
+  local shell="$1" destination="$2" stage rc=0
+  mkdir -p -- "${destination%/*}" || return $?
+  stage=$(mktemp "${destination%/*}/.uv-completion.XXXXXXXX") || return $?
+  uv generate-shell-completion "$shell" > "$stage" 2> /dev/null || rc=$?
+  if [[ $rc == 0 ]]; then [[ -s "$stage" ]] || rc=65; fi
+  if [[ $rc == 0 ]]; then
+    chmod 644 "$stage" && mv -fT -- "$stage" "$destination" || rc=$?
+  fi
+  rm -f -- "$stage"
+  return "$rc"
+}
+
 setup_uv() {
   export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-600}"
   local PROJECT_DIR="${UV_PROJECT_DIR:-}"
@@ -9838,7 +9932,7 @@ setup_uv() {
     msg_info "Setup uv $TARGET_VERSION"
   fi
 
-  TMP_DIR=$(mktemp -d) || return 252
+  TMP_DIR=$(_tools_stage_dir uv-download) || return 252
   local UV_URL="https://github.com/astral-sh/uv/releases/download/${TARGET_VERSION}/${UV_TAR}"
 
   if ! curl_with_retry "$UV_URL" "$TMP_DIR/uv.tar.gz"; then
@@ -9884,9 +9978,9 @@ setup_uv() {
   fi
 
   # Optional: Generate shell completions
-  $STD uv generate-shell-completion bash > /etc/bash_completion.d/uv 2> /dev/null || true
+  _uv_publish_completion bash /etc/bash_completion.d/uv || true
   if [[ -d /usr/share/zsh/site-functions ]]; then
-    $STD uv generate-shell-completion zsh > /usr/share/zsh/site-functions/_uv 2> /dev/null || true
+    _uv_publish_completion zsh /usr/share/zsh/site-functions/_uv || true
   fi
 
   # Optional: Install specific Python version if requested
@@ -9928,7 +10022,8 @@ EOF
 # ------------------------------------------------------------------------------
 
 setup_yq() {
-  local TMP_DIR=$(mktemp -d)
+  local TMP_DIR
+  TMP_DIR=$(_tools_stage_dir yq-download) || return $?
   local BINARY_PATH="/usr/local/bin/yq"
   local GITHUB_REPO="mikefarah/yq"
 
@@ -10030,7 +10125,7 @@ fetch_and_deploy_from_url() {
   msg_info "Downloading from $url"
 
   local tmpdir
-  tmpdir=$(mktemp -d) || {
+  tmpdir=$(_tools_stage_dir url-download) || {
     msg_error "Failed to create temporary directory"
     return 252
   }
@@ -10099,7 +10194,10 @@ fetch_and_deploy_from_url() {
   msg_info "Extracting archive to $directory"
 
   local unpack_tmp
-  unpack_tmp=$(mktemp -d)
+  unpack_tmp=$(_tools_stage_dir url-unpack) || {
+    rm -rf -- "$tmpdir"
+    return 252
+  }
 
   if [[ "$archive_type" == "zip" ]]; then
     ensure_dependencies unzip
@@ -10544,7 +10642,7 @@ fetch_and_deploy_gl_release() {
     if [[ "$current_version" == "$tag_version" && "${FORCE_DEPLOY:-0}" != 1 ]]; then return 0; fi
     local tag_stage tag_rc=0 tag_url tag_root tag_encoded tag_http=''
     tag_encoded=$(jq -rn --arg ref "$version" '$ref | @uri') || return 250
-    tag_stage=$(mktemp -d "${TMPDIR:-/tmp}/gl-tag.XXXXXX") || return 252
+    tag_stage=$(_tools_stage_dir gl-tag) || return 252
     tag_url="https://gitlab.com/api/v4/projects/$repo_encoded/repository/archive.tar.gz?sha=$tag_encoded&ref_type=tags"
     # The archive API serves the selected tag directly. Do not forward a custom
     # PRIVATE-TOKEN header through redirects to another origin.
@@ -10640,7 +10738,7 @@ fetch_and_deploy_gl_release() {
   fi
 
   local tmpdir
-  tmpdir=$(mktemp -d) || return 1
+  tmpdir=$(_tools_stage_dir gl-release) || return 1
   local filename=""
 
   msg_info "Fetching GitLab release: $app ($version)"
@@ -10825,7 +10923,10 @@ fetch_and_deploy_gl_release() {
     }
 
     local unpack_tmp
-    unpack_tmp=$(mktemp -d)
+    unpack_tmp=$(_tools_stage_dir gl-unpack) || {
+      rm -rf -- "$tmpdir"
+      return 252
+    }
     if [[ "$filename" == *.zip ]]; then
       ensure_dependencies unzip
       unzip -q "$tmpdir/$filename" -d "$unpack_tmp" || {
@@ -10968,7 +11069,7 @@ setup_nltk() {
   local pkg
   for pkg in $nltk_pkg_ids; do
     msg_info "Downloading NLTK: $pkg"
-    local pkg_line subdir pkg_url do_unzip tmp_zip
+    local pkg_line subdir pkg_url do_unzip tmp_zip tmp_stage
 
     pkg_line=$(echo "$index_xml" | grep "id=\"${pkg}\"" | head -1)
     if [[ -z "$pkg_line" ]]; then
@@ -10988,7 +11089,8 @@ setup_nltk() {
     fi
 
     mkdir -p "${target_dir}/${subdir}"
-    tmp_zip=$(mktemp --suffix=.zip)
+    tmp_stage=$(_tools_stage_dir nltk-download) || return $?
+    tmp_zip="$tmp_stage/package.zip"
 
     if CURL_TIMEOUT=120 curl_with_retry "$pkg_url" "$tmp_zip"; then
       if [[ "$do_unzip" == "1" ]]; then
@@ -11003,6 +11105,7 @@ setup_nltk() {
       rm -f "$tmp_zip"
       rc=1
     fi
+    rmdir -- "$tmp_stage" || return $?
   done
 
   return $rc
