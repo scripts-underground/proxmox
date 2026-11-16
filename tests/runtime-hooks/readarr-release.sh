@@ -186,7 +186,9 @@ MODELS
         context_ok=no
         if [[ -s "$c/transport-context" ]]; then
           IFS='|' read -r temporary home destination < "$c/transport-context"
-          [[ "$temporary" == "$receiver"/readarr.* && "$home" == "$temporary" && "$destination" == "$temporary"/download/* ]] && context_ok=yes
+          # The shared singlefile owner now downloads privately before checked
+          # publication into download/. Both stages remain under the receiver.
+          [[ "$temporary" == "$receiver"/readarr.* && "$home" == "$temporary" && "$destination" == "$temporary"/gh-deploy.*/* ]] && context_ok=yes
         fi
         check "$context_ok" yes "$label real helper staging is receiver-owned"
       else

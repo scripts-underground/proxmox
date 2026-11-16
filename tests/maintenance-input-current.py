@@ -61,10 +61,13 @@ systemctl() {
       write(c/'home'/('.wanderer-plugin-'+plugin),'4.0\n')
      write(c/'home/.meilisearch','4.0\n')
      if scenario.startswith('search-'):write(c/'home/.meilisearch','1.0\n')
+     # Native metadata input, with no system units; APT remains a recording model.
+     write(c/'package/DEBIAN/control','Package: su-search-probe\nVersion: 4.0\nArchitecture: amd64\nMaintainer: Fixture <fixture@example.invalid>\nDescription: search fixture\n')
+     subprocess.run(['dpkg-deb','--build',str(c/'package'),str(c/'search.deb')],check=True,stdout=subprocess.DEVNULL)
      model+=r'''
 curl_download() {
  printf '%s\n' "$2" >> "$CASE_ROOT/downloads"
- if [[ "$2" == *meilisearch* ]]; then printf 'modeled search package\n' > "$1"; else command cp "$CASE_ROOT/release.tar.gz" "$1"; fi
+  if [[ "$2" == *meilisearch* ]]; then command cp "$CASE_ROOT/search.deb" "$1"; else command cp "$CASE_ROOT/release.tar.gz" "$1"; fi
 }
 '''
     pack(c/'incoming',c/'release.tar.gz')
