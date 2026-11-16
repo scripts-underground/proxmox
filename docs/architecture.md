@@ -1304,6 +1304,41 @@ route also supports this opt-in force behavior, without a version marker or any
 change to unforced URL installs. This contract does not change repository
 dependency installation or other package backends.
 
+`_deploy_release_deb` encloses the primary APT operation and existing dpkg
+fallback with one package lifecycle boundary. For the offline GitHub, Codeberg
+and GitLab routes, checked package/database metadata and direct system-unit
+queries capture prior activity before installation. After successful package
+work and daemon reload, previously active services restart; a fresh package's
+enabled services start. Existing inactive services stay inactive, including
+app-hook stops before migrations. Template units and user units are not started.
+Required query/reload/control failures propagate without advancing the release
+marker or retrying package work. The URL route keeps normal package-owned init
+behavior without introducing SYSTEMD_OFFLINE or extra service control.
+The package owner records outstanding fresh/restart actions as private, checked
+data under `/var/lib/scripts-underground/release-services/<package>` before
+package effects. Failed package, reload or control attempts retain the obligation
+for the next invocation, even after installed/active state changes. Successful
+completion removes it. Fresh actions still require positive enablement; existing
+inactive services without an obligation stay inactive. Unsafe/malformed records
+or units absent from the selected package refuse before package effects. This
+extends pending-operation ownership, not a package rollback transaction.
+
+All three singlefile adapters use `_deploy_single_file`: download privately,
+decode gzip/bzip2/xz/zstd single-binary assets, then prepare the completed file
+and mode in a private same-filesystem stage before rename. Tarballs and jars
+are not mistaken for compressed single binaries; decoded jars retain0644.
+Original-filename mode removes only a decoded compression suffix. Transfer,
+decoder, copy, mode or publication failures leave the previous consumer intact
+and do not advance its marker. URL bare-ELF deployment uses that same publisher,
+with content identification and a validated optional destination basename;
+filenames alone never make arbitrary URL content executable.
+
+GitHub clone/pin flows in `github.func` complete a checked private checkout before
+calling `_deploy_replace_contents`. Failed clone/checkout/publication does not
+advance the ref marker, even through conditional callers. Clean branch updates
+use the same staged checkout and existing keep-path contract, never git clean;
+ordinary pull and tag/commit update semantics stay unchanged.
+
 ### Checked replacement and application persistence
 
 `_deploy_replace_contents` is the shared source/archive replacement owner for

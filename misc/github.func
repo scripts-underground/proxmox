@@ -34,17 +34,30 @@ clone_and_deploy_gh_commit() {
   app_lc=$(echo "${app,,}" | tr -d ' ')
   local track_file="$HOME/.${app_lc}"
 
-  if [[ -n "$commit" ]]; then
-    $STD git clone --branch "$branch" "https://github.com/$repo.git" "$target"
-    $STD git -C "$target" checkout "$commit"
-    echo "commit:$commit" > "$track_file"
-  elif [[ -n "$tag" ]]; then
-    $STD git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$target"
-    echo "tag:$tag" > "$track_file"
-  else
-    $STD git clone --depth 1 --branch "$branch" "https://github.com/$repo.git" "$target"
-    echo "branch:$branch" > "$track_file"
+  _git_deploy_checkout "https://github.com/$repo.git" "$branch" "$tag" "$commit" "$target" || return $?
+  local selected="branch:$branch"
+  [[ -z "$tag" ]] || selected="tag:$tag"
+  [[ -z "$commit" ]] || selected="commit:$commit"
+  printf '%s\n' "$selected" > "$track_file"
+}
+
+# Complete the remote checkout before the persistence-aware publication owner
+# sees it. Every producer is checked even when the public API is conditional.
+_git_deploy_checkout() {
+  local remote="$1" branch="$2" tag="$3" commit="$4" target="$5" stage rc=0 cleanup_rc=0
+  local -a args=(--depth 1 --branch "${tag:-$branch}")
+  [[ -z "$commit" ]] || args=(--branch "$branch")
+  stage=$(mktemp -d) || return $?
+  $STD git clone "${args[@]}" -- "$remote" "$stage/repo" || rc=$?
+  if [[ $rc == 0 && -n "$commit" ]]; then
+    $STD git -C "$stage/repo" checkout "$commit" || rc=$?
   fi
+  if [[ $rc == 0 ]]; then
+    _deploy_replace_contents "$stage/repo" "$target" "${CLEAN_INSTALL:-0}" || rc=$?
+  fi
+  _deploy_remove_owned_trees "$stage" || cleanup_rc=$?
+  [[ $rc != 0 ]] || rc=$cleanup_rc
+  return "$rc"
 }
 
 # ------------------------------------------------------------------------------
@@ -60,15 +73,22 @@ git_update_checkout() {
   local dir="$1" mode="$2" ref="$3"
   case "$mode" in
     branch)
-      $STD git -C "$dir" pull origin "$ref"
+      if [[ "${CLEAN_INSTALL:-0}" == 1 ]]; then
+        local remote
+        remote=$(git -C "$dir" remote get-url origin) || return $?
+        _git_deploy_checkout "$remote" "$ref" '' '' "$dir" || return $?
+      else
+        $STD git -C "$dir" pull origin "$ref" || return $?
+      fi
       ;;
     tag)
-      $STD git -C "$dir" fetch --depth 1 origin tag "$ref"
-      $STD git -C "$dir" checkout "tags/$ref"
+      $STD git -C "$dir" fetch --depth 1 origin tag "$ref" || return $?
+      $STD git -C "$dir" checkout "tags/$ref" || return $?
       ;;
     commit)
-      $STD git -C "$dir" fetch origin
-      $STD git -C "$dir" checkout "$ref"
+      $STD git -C "$dir" fetch origin || return $?
+      $STD git -C "$dir" checkout "$ref" || return $?
       ;;
+    *) return 65 ;;
   esac
 }

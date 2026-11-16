@@ -8,6 +8,10 @@ script_type=lxc
 variants=(fresh update download copy runtime)
 hook_paths=(/usr/share/thingsboard thingsboard)
 runtime_hooks_model() {
+  curl_download() {
+    [[ "$APP_FAULT" != download ]] || return 22
+    command cp "$c/package.deb" "$1"
+  }
   apt() {
     local arg
     for arg in "$@"; do
@@ -61,6 +65,9 @@ runtime_hooks_model() {
 }
 runtime_hooks_expected() { [[ "$variant" != copy ]] || expected=0; }
 runtime_hooks_setup() {
+  mkdir -p "$c/package/DEBIAN"
+  printf 'Package: su-thingsboard-probe\nVersion: 2.0\nArchitecture: amd64\nMaintainer: Fixture <fixture@example.invalid>\nDescription: package fixture without system units\n' > "$c/package/DEBIAN/control"
+  dpkg-deb --build "$c/package" "$c/package.deb" > /dev/null
   printf '17\n' > "$c/java-version"
   if [[ "$role" == update ]]; then
     mkdir -p "$c/thingsboard" "$c/etc/thingsboard/conf"

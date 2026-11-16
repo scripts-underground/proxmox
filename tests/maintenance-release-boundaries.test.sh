@@ -212,5 +212,6 @@ PY
   check "$(grep -c do-not-print-fixture-secret "$c/output" "$c/active.log" | cut -d: -f2 | paste -sd, -)" 0,0 "$spinner_case diagnostics never print token value"
 done
 bash "$ROOT/tests/lib/core-release.fixture.sh" || failures=$((failures + 1))
+bash "$ROOT/tests/lib/core-assets.fixture.sh" || failures=$((failures + 1))
 printf '%s failure(s); actual release consumers and spinner, modeled HTTP/Git\n' "$failures"
 [[ "$failures" == 0 ]]

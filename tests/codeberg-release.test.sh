@@ -296,6 +296,12 @@ quiet_binary_fallback() {
   export STD=silent
   INSTALL_LOG="$CASE_ROOT/quiet.log"
   RELEASES_JSON='[{"draft":false,"prerelease":false,"tag_name":"v2.0.0","assets":[{"browser_download_url":"https://codeberg.org/test/app/releases/download/v2.0.0/app-amd64.deb"}]}]'
+  # APT/dpkg are recording models, but package metadata remains a real input
+  # to the shared lifecycle boundary. This fixture intentionally has no units.
+  mkdir -p "$CASE_ROOT/package/DEBIAN"
+  printf 'Package: su-codeberg-probe\nVersion: 2.0.0\nArchitecture: amd64\nMaintainer: Fixture <fixture@example.invalid>\nDescription: fallback fixture\n' > "$CASE_ROOT/package/DEBIAN/control"
+  dpkg-deb --build "$CASE_ROOT/package" "$CASE_ROOT/package.deb" > /dev/null
+  ASSET="$CASE_ROOT/package.deb"
   apt() { return 7; }
   dpkg() {
     if [[ "$1" == --print-architecture ]]; then

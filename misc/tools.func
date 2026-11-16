@@ -3922,6 +3922,210 @@ _apt_install_release_package() {
   $STD apt install -y "${reinstall[@]}" "$@"
 }
 
+# A single file is never downloaded/decoded over the live consumer. The complete
+# payload and its mode are prepared on the destination filesystem before rename.
+_deploy_asset_name() {
+  [[ -n "$1" && "$1" != . && "$1" != .. && "$1" != */* && ! "$1" =~ [[:cntrl:]] ]]
+}
+
+_deploy_single_file() {
+  local source="$1" filename="$2" target="$3" name="$4" decode='' dependency='' stage rc=0 mode=755
+  case "$filename" in
+    *.tar.* | *.tgz | *.txz | *.jar) ;;
+    *.gz) decode=gzip dependency=gzip ;;
+    *.bz2) decode=bzip2 dependency=bzip2 ;;
+    *.xz) decode=xz dependency=xz-utils ;;
+    *.zst) decode=zstd dependency=zstd ;;
+  esac
+  if [[ -n "$decode" ]]; then
+    [[ "$name" != "$filename" ]] || name="${name%.*}"
+    ensure_dependencies "$dependency" >&2 || return 100
+  fi
+  _deploy_asset_name "$name" || return 65
+  [[ -f "$source" && -s "$source" ]] || return 251
+  mkdir -p -- "$target" || return 252
+  stage=$(mktemp "$target/.asset-file.XXXXXX") || return 252
+  if [[ -n "$decode" ]]; then
+    "$decode" -dc -- "$source" > "$stage" || rc=251
+  else
+    cp -- "$source" "$stage" || rc=252
+  fi
+  [[ "$name" != *.jar ]] || mode=644
+  if [[ $rc == 0 ]]; then
+    [[ -s "$stage" ]] && chmod "$mode" "$stage" && mv -fT -- "$stage" "$target/$name" || rc=252
+  fi
+  rm -f -- "$stage"
+  return "$rc"
+}
+
+# Package service handling belongs around the entire apt/fallback operation, not
+# the apt attempt: a required restart failure must never retry package installation.
+# URL installs deliberately retain their ordinary package-owned init behavior.
+_release_deb_state() {
+  local unit="$1" output key value load='' active='' enabled=''
+  local -A seen=()
+  output=$(SYSTEMD_OFFLINE=0 systemctl show --property=LoadState,ActiveState,UnitFileState -- "$unit") || return $?
+  while IFS='=' read -r key value; do
+    [[ -n "$key" ]] || return 65
+    [[ -z "${seen[$key]+present}" ]] || return 65
+    seen[$key]=1
+    case "$key" in
+      LoadState) load="$value" ;;
+      ActiveState) active="$value" ;;
+      UnitFileState) enabled="$value" ;;
+      *) return 65 ;;
+    esac
+  done <<< "$output"
+  [[ ${#seen[@]} == 3 ]] || return 65
+  case "$load" in loaded | not-found | masked | error | bad-setting) ;; *) return 65 ;; esac
+  case "$active" in active | inactive | failed) ;; *) return 65 ;; esac
+  case "$enabled" in enabled | enabled-runtime | disabled | static | indirect | masked | masked-runtime | alias | linked | linked-runtime | generated | transient | '') ;; *) return 65 ;; esac
+  printf '%s\t%s\n' "$active" "$enabled"
+}
+
+# Like update-pending, this is an outstanding obligation, not a version marker.
+# Keep it before package effects so a later invocation cannot mistake a failed
+# start/restart for an operator-owned inactive service. Contents are data only.
+_release_deb_pending_path() {
+  local _rdp_out="$1" _rdp_package="$2" _rdp_dir=/var/lib/scripts-underground/release-services
+  local _rdp_entry _rdp_meta _rdp_uid _rdp_mode _rdp_links
+  for _rdp_entry in /var /var/lib /var/lib/scripts-underground "$_rdp_dir"; do
+    if [[ ! -e "$_rdp_entry" && ! -L "$_rdp_entry" ]]; then mkdir -m 700 -- "$_rdp_entry" || return $?; fi
+    [[ -d "$_rdp_entry" && ! -L "$_rdp_entry" ]] || return 65
+    _rdp_meta=$(stat -c '%u %a' -- "$_rdp_entry") || return $?
+    read -r _rdp_uid _rdp_mode <<< "$_rdp_meta"
+    [[ "$_rdp_uid" == 0 && "$_rdp_mode" =~ ^[0-7]{3,4}$ ]] || return 65
+    (((8#$_rdp_mode & 022) == 0)) || return 65
+  done
+  _rdp_entry="$_rdp_dir/$_rdp_package"
+  if [[ -e "$_rdp_entry" || -L "$_rdp_entry" ]]; then
+    [[ -f "$_rdp_entry" && ! -L "$_rdp_entry" ]] || return 65
+    _rdp_meta=$(stat -c '%u %a %h' -- "$_rdp_entry") || return $?
+    read -r _rdp_uid _rdp_mode _rdp_links <<< "$_rdp_meta"
+    [[ "$_rdp_uid/$_rdp_mode/$_rdp_links" == 0/600/1 ]] || return 65
+  fi
+  printf -v "$_rdp_out" '%s' "$_rdp_entry"
+}
+
+_release_deb_pending_write() {
+  local path="$1" key stage rc=0 cleanup_rc=0
+  local -n actions="$2"
+  stage=$(mktemp "${path%/*}/.pending.XXXXXXXX") || return $?
+  for key in "${!actions[@]}"; do
+    printf '%s\t%s\n' "${actions[$key]}" "$key" >> "$stage" || {
+      rc=$?
+      break
+    }
+  done
+  if [[ $rc == 0 ]]; then mv -fT -- "$stage" "$path" || rc=$?; fi
+  rm -f -- "$stage" || cleanup_rc=$?
+  [[ $rc != 0 ]] || rc=$cleanup_rc
+  return "$rc"
+}
+
+_deploy_release_deb() {
+  local package="$1" adapter="$2" pkg='' inventory='' listing='' entry unit state status installed=0 rc=0
+  local -a units=() was_active=() apt_options=() dpkg_options=()
+  local pending='' action extra
+  local -A pending_actions=()
+  case "$adapter" in
+    github | gitlab)
+      [[ "${DPKG_FORCE_CONFOLD:-}" != 1 ]] || apt_options=(-o Dpkg::Options::=--force-confold)
+      [[ "${DPKG_FORCE_CONFNEW:-}" != 1 ]] || apt_options=(-o Dpkg::Options::=--force-confnew)
+      ;;
+    codeberg)
+      apt_options=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+      dpkg_options=(--force-confdef --force-confold)
+      ;;
+    url) ;;
+    *) return 65 ;;
+  esac
+  if [[ "$adapter" != url && -d /run/systemd/system ]]; then
+    pkg=$(dpkg-deb -f "$package" Package) || return $?
+    [[ "$pkg" =~ ^[a-z0-9][a-z0-9+.-]+$ ]] || return 65
+    # Query the complete database so absence is data, not an ambiguous failed
+    # dpkg query. Residual conffiles count as an existing operator installation.
+    inventory=$(dpkg-query -W '-f=${Package}\t${db:Status-Status}\n') || return $?
+    while IFS=$'\t' read -r entry status; do
+      [[ -n "$entry" ]] || continue
+      [[ "$entry" =~ ^[a-z0-9][a-z0-9+.-]+$ ]] || return 65
+      case "$status" in not-installed | config-files | half-installed | unpacked | half-configured | triggers-awaited | triggers-pending | installed) ;; *) return 65 ;; esac
+      if [[ "$entry" == "$pkg" && "$status" != not-installed ]]; then installed=1; fi
+    done <<< "$inventory"
+    listing=$(
+      set -o pipefail
+      dpkg-deb --fsys-tarfile "$package" | tar -tf -
+    ) || return $?
+    while IFS= read -r entry; do
+      entry="${entry#./}"
+      case "$entry" in
+        lib/systemd/system/*.service | usr/lib/systemd/system/*.service | etc/systemd/system/*.service)
+          case "${entry%/*}" in lib/systemd/system | usr/lib/systemd/system | etc/systemd/system) ;; *) continue ;; esac
+          unit="${entry##*/}"
+          [[ "$unit" != *@.service ]] || continue
+          _deploy_asset_name "$unit" || return 65
+          [[ " ${units[*]} " != *" $unit "* ]] || continue
+          units+=("$unit")
+          if [[ "$installed" == 1 ]]; then
+            state=$(_release_deb_state "$unit") || return $?
+            [[ "${state%%$'\t'*}" != active ]] || was_active+=("$unit")
+          fi
+          ;;
+      esac
+    done <<< "$listing"
+    if ((${#units[@]})) || [[ -e "/var/lib/scripts-underground/release-services/$pkg" || -L "/var/lib/scripts-underground/release-services/$pkg" ]]; then
+      _release_deb_pending_path pending "$pkg" || return $?
+      if [[ -e "$pending" ]]; then
+        while IFS=$'\t' read -r action unit extra; do
+          [[ "$action" == fresh || "$action" == restart ]] || return 65
+          _deploy_asset_name "$unit" && [[ -z "$extra" && -z "${pending_actions[$unit]+present}" ]] || return 65
+          [[ " ${units[*]} " == *" $unit "* ]] || {
+            msg_error "Pending package service $unit is absent from the selected package; inspect $pending"
+            return 65
+          }
+          pending_actions[$unit]=$action
+        done < "$pending"
+      fi
+      for unit in "${units[@]}"; do
+        if [[ " ${was_active[*]} " == *" $unit "* ]]; then
+          pending_actions[$unit]=restart
+        elif [[ "$installed" == 0 ]]; then pending_actions[$unit]=fresh; fi
+      done
+      if ((${#pending_actions[@]})); then _release_deb_pending_write "$pending" pending_actions || return $?; fi
+    fi
+  fi
+  if [[ "$adapter" == url ]]; then
+    _apt_install_release_package "$package" || { $STD dpkg -i "$package" || rc=$?; }
+  elif [[ "$adapter" == codeberg ]]; then
+    (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package "${apt_options[@]}" "$package") || {
+      (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD dpkg "${dpkg_options[@]}" -i "$package") || rc=$?
+    }
+  else
+    DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package "${apt_options[@]}" "$package" || {
+      SYSTEMD_OFFLINE=1 $STD dpkg -i "$package" || rc=$?
+    }
+  fi
+  if [[ $rc != 0 ]]; then
+    _diagnose_deb_failure "$package"
+    [[ "$adapter" != gitlab ]] || return 1
+    return 100
+  fi
+  if ((${#units[@]})); then
+    SYSTEMD_OFFLINE=0 $STD systemctl daemon-reload || return $?
+    for unit in "${units[@]}"; do
+      if [[ "${pending_actions[$unit]:-}" == restart ]]; then
+        SYSTEMD_OFFLINE=0 $STD systemctl restart -- "$unit" || return $?
+      elif [[ "${pending_actions[$unit]:-}" == fresh ]]; then
+        state=$(_release_deb_state "$unit") || return $?
+        case "${state#*$'\t'}" in
+          enabled | enabled-runtime) SYSTEMD_OFFLINE=0 $STD systemctl start -- "$unit" || return $? ;;
+        esac
+      fi
+    done
+  fi
+  if [[ -n "$pending" ]]; then rm -f -- "$pending" || return $?; fi
+}
+
 _codeberg_deploy_tree() {
   local source="$1" target="$2"
   _deploy_replace_contents "$source" "$target" "${CLEAN_INSTALL:-0}" || {
@@ -4160,12 +4364,10 @@ fetch_and_deploy_codeberg_release() {
     }
 
     chmod 644 "$tmpdir/$filename"
-    (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$tmpdir/$filename") || {
-      (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD dpkg --force-confdef --force-confold -i "$tmpdir/$filename") || {
-        _diagnose_deb_failure "$tmpdir/$filename"
-        rm -rf "$tmpdir"
-        return 100
-      }
+    _deploy_release_deb "$tmpdir/$filename" codeberg || {
+      local package_rc=$?
+      rm -rf "$tmpdir"
+      return "$package_rc"
     }
 
   ### Prebuild Mode ###
@@ -4274,8 +4476,6 @@ fetch_and_deploy_codeberg_release() {
     }
 
     filename="${asset_url##*/}"
-    mkdir -p "$target"
-
     local use_filename="${USE_ORIGINAL_FILENAME:-false}"
     local target_file="$app"
     [[ "$use_filename" == "true" ]] && target_file="$filename"
@@ -4286,25 +4486,11 @@ fetch_and_deploy_codeberg_release() {
       return 250
     }
 
-    local staged_file
-    staged_file=$(mktemp "$target/.codeberg-file.XXXXXX") || {
+    _deploy_single_file "$tmpdir/$filename" "$filename" "$target" "$target_file" || {
+      local publish_rc=$?
       rm -rf "$tmpdir"
-      return 252
+      return "$publish_rc"
     }
-    cp "$tmpdir/$filename" "$staged_file" || {
-      msg_error "Failed to deploy $target_file to $target"
-      rm -f "$staged_file"
-      rm -rf "$tmpdir"
-      return 252
-    }
-
-    local file_mode=755
-    [[ "$target_file" == *.jar ]] && file_mode=644
-    if ! chmod "$file_mode" "$staged_file" || ! mv -T "$staged_file" "$target/$target_file"; then
-      rm -f "$staged_file"
-      rm -rf "$tmpdir"
-      return 252
-    fi
 
   else
     msg_error "Unknown mode: $mode"
@@ -4756,17 +4942,10 @@ fetch_and_deploy_gh_release() {
     }
 
     chmod 644 "$tmpdir/$filename"
-    # SYSTEMD_OFFLINE=1 prevents systemd-tmpfiles failures in unprivileged LXC (Debian 13+/systemd 257+)
-    # Support DPKG_CONFOLD/DPKG_CONFNEW env vars for config file handling during .deb upgrades
-    local dpkg_opts=""
-    [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
-    [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
-    DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package $dpkg_opts "$tmpdir/$filename" || {
-      SYSTEMD_OFFLINE=1 $STD dpkg -i "$tmpdir/$filename" || {
-        _diagnose_deb_failure "$tmpdir/$filename"
-        rm -rf "$tmpdir"
-        return 100
-      }
+    _deploy_release_deb "$tmpdir/$filename" github || {
+      local package_rc=$?
+      rm -rf "$tmpdir"
+      return "$package_rc"
     }
 
     ### Prebuild Mode ###
@@ -4942,21 +5121,21 @@ fetch_and_deploy_gh_release() {
     }
 
     filename="${asset_url##*/}"
-    mkdir -p "$target"
-
     local use_filename="${USE_ORIGINAL_FILENAME:-false}"
     local target_file="$app"
     [[ "$use_filename" == "true" ]] && target_file="$filename"
 
-    curl_download "$target/$target_file" "$asset_url" || {
+    curl_download "$tmpdir/$filename" "$asset_url" || {
       msg_error "Download failed: $asset_url"
       rm -rf "$tmpdir"
       return 250
     }
 
-    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
-      chmod +x "$target/$target_file"
-    fi
+    _deploy_single_file "$tmpdir/$filename" "$filename" "$target" "$target_file" || {
+      local publish_rc=$?
+      rm -rf "$tmpdir"
+      return "$publish_rc"
+    }
 
   else
     msg_error "Unknown mode: $mode"
@@ -9815,12 +9994,13 @@ setup_yq() {
 
 # ------------------------------------------------------------------------------
 # Fetch and deploy from URL
-# Downloads an archive (zip, tar.gz, or .deb) from a URL and extracts/installs it
+# Downloads an archive, .deb or content-identified bare ELF from a URL.
 #
-# Usage: fetch_and_deploy_from_url "url" "directory"
+# Usage: fetch_and_deploy_from_url "url" "directory" ["binary_name"]
 #   url       - URL to the archive (zip, tar.gz, or .deb)
 #   directory - Destination path where the archive will be extracted
 #               (not used for .deb packages)
+#   binary_name - Optional bare ELF destination basename (default: URL basename)
 #
 # Examples:
 #   fetch_and_deploy_from_url "https://example.com/app.tar.gz" "/opt/myapp"
@@ -9830,13 +10010,22 @@ setup_yq() {
 fetch_and_deploy_from_url() {
   local url="$1"
   local directory="${2:-}"
+  local binary_name="${3:-}"
 
   if [[ -z "$url" ]]; then
     msg_error "URL parameter is required"
     return 65
   fi
 
-  local filename="${url##*/}"
+  local url_path="${url%%[?#]*}"
+  local filename="${url_path##*/}"
+  _deploy_asset_name "$filename" || {
+    # Redirect/download endpoints need no usable URL basename with an explicit
+    # binary name; the private download name is not a publication destination.
+    [[ -n "$binary_name" ]] || return 65
+    filename=download
+  }
+  [[ -z "$binary_name" ]] || { _deploy_asset_name "$binary_name" || return 65; }
 
   msg_info "Downloading from $url"
 
@@ -9854,7 +10043,10 @@ fetch_and_deploy_from_url() {
 
   # Auto-detect archive type using file description
   local file_desc
-  file_desc=$(file -b "$tmpdir/$filename")
+  file_desc=$(file -b "$tmpdir/$filename") || {
+    rm -rf "$tmpdir"
+    return 65
+  }
 
   local archive_type="unknown"
 
@@ -9866,6 +10058,8 @@ fetch_and_deploy_from_url() {
     archive_type="deb"
   elif [[ "$file_desc" =~ POSIX.*tar.*archive|tar\ archive ]]; then
     archive_type="tar"
+  elif [[ "$file_desc" =~ ^ELF.*(executable|shared\ object) ]]; then
+    archive_type="binary"
   else
     msg_error "Unsupported or unknown archive type: $file_desc"
     rm -rf "$tmpdir"
@@ -9878,12 +10072,10 @@ fetch_and_deploy_from_url() {
     msg_info "Installing .deb package"
 
     chmod 644 "$tmpdir/$filename"
-    _apt_install_release_package "$tmpdir/$filename" || {
-      $STD dpkg -i "$tmpdir/$filename" || {
-        _diagnose_deb_failure "$tmpdir/$filename"
-        rm -rf "$tmpdir"
-        return 100
-      }
+    _deploy_release_deb "$tmpdir/$filename" url || {
+      local package_rc=$?
+      rm -rf "$tmpdir"
+      return "$package_rc"
     }
 
     rm -rf "$tmpdir"
@@ -9895,6 +10087,13 @@ fetch_and_deploy_from_url() {
     msg_error "Directory parameter is required for archive extraction"
     rm -rf "$tmpdir"
     return 65
+  fi
+
+  if [[ "$archive_type" == binary ]]; then
+    local publish_rc=0
+    _deploy_single_file "$tmpdir/$filename" '' "$directory" "${binary_name:-$filename}" || publish_rc=$?
+    rm -rf "$tmpdir"
+    return "$publish_rc"
   fi
 
   msg_info "Extracting archive to $directory"
@@ -10565,15 +10764,10 @@ fetch_and_deploy_gl_release() {
     }
 
     chmod 644 "$tmpdir/$filename"
-    local dpkg_opts=""
-    [[ "${DPKG_FORCE_CONFOLD:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confold"
-    [[ "${DPKG_FORCE_CONFNEW:-}" == "1" ]] && dpkg_opts="-o Dpkg::Options::=--force-confnew"
-    DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package $dpkg_opts "$tmpdir/$filename" || {
-      SYSTEMD_OFFLINE=1 $STD dpkg -i "$tmpdir/$filename" || {
-        _diagnose_deb_failure "$tmpdir/$filename"
-        rm -rf "$tmpdir"
-        return 1
-      }
+    _deploy_release_deb "$tmpdir/$filename" gitlab || {
+      local package_rc=$?
+      rm -rf "$tmpdir"
+      return "$package_rc"
     }
 
   ### Prebuild Mode ###
@@ -10717,21 +10911,21 @@ fetch_and_deploy_gl_release() {
     }
 
     filename="${asset_url##*/}"
-    mkdir -p "$target"
-
     local use_filename="${USE_ORIGINAL_FILENAME:-false}"
     local target_file="$app"
     [[ "$use_filename" == "true" ]] && target_file="$filename"
 
-    curl $download_timeout -fsSL "${header[@]}" -o "$target/$target_file" "$asset_url" || {
+    curl $download_timeout -fsSL "${header[@]}" -o "$tmpdir/$filename" "$asset_url" || {
       msg_error "Download failed: $asset_url"
       rm -rf "$tmpdir"
       return 1
     }
 
-    if [[ "$target_file" != *.jar && -f "$target/$target_file" ]]; then
-      chmod +x "$target/$target_file"
-    fi
+    _deploy_single_file "$tmpdir/$filename" "$filename" "$target" "$target_file" || {
+      local publish_rc=$?
+      rm -rf "$tmpdir"
+      return "$publish_rc"
+    }
 
   else
     msg_error "Unknown mode: $mode"
