@@ -34,6 +34,19 @@ bad_identity() (
   addon_init ../foreign || rc=$?
   [[ "$rc" == 65 ]]
 )
+empty_bootstrap_identity() (
+  source "$ROOT/misc/addon_lxc.func"
+  APP=Probe
+  addon_guard() {
+    : > "$work/empty-identity-effect"
+    return 77
+  }
+  rc=0
+  _addon_bootstrap --script-id "" -- || rc=$?
+  [[ "$rc" == 65 && ! -e "$work/empty-identity-effect" ]] || return 1
+  addon_init
+  [[ "$APP_SLUG" == probe && "$NSAPP" == probe ]]
+)
 admission() (
   source "$ROOT/misc/addon_lxc.func"
   grep() { return 1; }
@@ -153,6 +166,7 @@ marker_publication() (
 )
 check 'G5 literal identity ignores display label and ambient NSAPP' identity
 check 'G5 invalid literal identity refuses' bad_identity
+check 'G5 empty bootstrap identity refuses before effects; legacy helper stays compatible' empty_bootstrap_identity
 check 'G2 early context admission entry' admission
 check 'G6 shared preparer recreates selected same-CT TMPDIR' temporary_context
 check 'G7 saved scalars are decoded as data only' scalar_data
