@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# External HTTP/package/service models; real release/backup/pending owners.
+# shellcheck disable=SC2034,SC2154
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
+app=cronmaster
+script_type=addon
+variants=(fresh update checker download uninstall)
+hook_paths=()
+runtime_hooks_variant() {
+  case "$variant" in checker) fault=checker ;; uninstall) role=uninstall ;; esac
+}
+runtime_hooks_model() {
+  node() { printf 'v22.0.0\n'; }
+  curl() {
+    [[ "$APP_FAULT" != checker ]] || return 17
+    local out='' format='' url='' tag=v2.0.0 body
+    while (($#)); do
+      case "$1" in -o)
+        out=$2
+        shift
+        ;;
+      -w)
+        format=$2
+        shift
+        ;;
+      https:*) url=$1 ;; esac
+      shift
+    done
+    [[ "$url" != *'/tags/'* ]] || tag=${url##*/}
+    printf '%s\n' "$url" >> "$c/requests"
+    body="{\"tag_name\":\"$tag\",\"assets\":[{\"name\":\"cronmaster_2_prebuild.tar.gz\",\"browser_download_url\":\"https://fixture.invalid/cronmaster_2_prebuild.tar.gz\"}]}"
+    if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; else printf '%s' "$body"; fi
+    [[ -z "$format" ]] || printf 200
+  }
+  curl_download() {
+    [[ "$APP_FAULT" != download ]] || return 22
+    tar -czf "$1" -C "$c/payload" .
+  }
+}
+runtime_hooks_setup() {
+  mkdir -p "$c/config"
+  printf 'var_addon_install_path=/opt/cronmaster\nvar_addon_config_path=%q\nvar_addon_service_path=%q\nvar_addon_service=custom-cron\nvar_addon_repo=fixture/cronmaster\nvar_addon_backup_dir=%q\nvar_addon_creds_path=%q\nvar_addon_default_port=8182\n' "$c/config/operator.env" "$c/etc/systemd/system/custom-cron.service" "$c/backup" "$c/config/creds" > "$c/context.sh"
+  printf 'new cron consumer\n' > "$c/payload/server.js"
+  : > "$c/requests"
+  if [[ "$role" != install ]]; then
+    printf 'operator cron configuration\n' > "$c/config/operator.env"
+    chmod 0600 "$c/config/operator.env"
+    printf 'operator saved credential\n' > "$c/config/creds"
+    : > "$c/etc/systemd/system/custom-cron.service"
+    printf '1.0.0\n' > "$c/home/.cronmaster"
+  fi
+}
+runtime_hooks_expected() { [[ "$fault" != checker ]] || expected=17; }
+runtime_hooks_assert() {
+  if [[ "$role" == uninstall ]]; then
+    check "$(test -d "$c/opt/cronmaster" && printf present || printf absent)" absent "$app scoped uninstall removes app"
+    check "$(test -e "$c/config/creds" && printf present || printf absent)" absent "$app scoped uninstall removes own credential"
+  elif [[ "$role" == update ]]; then
+    check "$(cat "$c/config/operator.env")" 'operator cron configuration' "$app/$variant configured bytes retained"
+    check "$(stat -c %a "$c/config/operator.env")" 600 "$app/$variant configured mode retained"
+    if [[ "$rc" == 0 ]]; then
+      check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app selected source reaches consumer"
+      check "$(grep -c 'fixture/cronmaster/releases/tags/v2.0.0$' "$c/requests" || true)" 1 "$app selected release and baked repository reach deployment"
+    fi
+  else
+    check "$(grep -c '^PORT=8182$' "$c/config/operator.env")" 1 "$app install applies nondefault port"
+    check "$(stat -c %a "$c/config/creds")" 600 "$app install writes private credential"
+  fi
+}
+runtime_hooks_retry_assert() {
+  check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app pending retry reaches consumer"
+  check "$(cat "$c/config/operator.env")" 'operator cron configuration' "$app pending retry retains configuration"
+}
+runtime_hooks_main "$@"

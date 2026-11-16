@@ -1,47 +1,54 @@
 #!/usr/bin/env bash
-# Cold actual addon uninstall; Docker is a stateful model, not native proof.
+# External installer/Docker models, cold shared-producer lifecycle commands.
+# shellcheck disable=SC2034,SC2154
 set -euo pipefail
-ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
-if [[ "${1:-}" == --child ]]; then
-  source "$ROOT/misc/core.func"
-  load_functions
-  curl() { :; }
-  source "${ADDON_OWNER_ROOT:-$ROOT}/scripts/addon/coolify.sh"
-  unset -f curl
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
+app=coolify
+script_type=addon
+variants=(fresh update installer-release-error)
+hook_paths=()
+runtime_hooks_variant() { [[ "$variant" != installer-release-error ]] || fault=checker; }
+runtime_hooks_model() {
   msg_info() { :; }
   msg_ok() { printf 'ok %s\n' "$*"; }
   msg_error() { printf 'error %s\n' "$*"; }
   msg_warn() { printf 'warn %s\n' "$*"; }
-  export PATH="$CASE_ROOT/bin:$PATH"
-  uninstall_script
-  exit
-fi
-systemd-detect-virt --vm --quiet || exit 1
-: "${TMPDIR:?disk-backed TMPDIR required}"
-case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
-work=$(mktemp -d "$TMPDIR/coolify-uninstall.XXXXXXXX")
-trap 'rm -rf -- "$work"' EXIT
-failures=0
-check() {
-  if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
-    printf 'FAIL %s expected <%s> got <%s>\n' "$3" "$2" "$1" >&2
-    failures=$((failures + 1))
+  apt() { :; }
+  if [[ "$APP_ROLE" == uninstall ]]; then export PATH="$c/bin:$PATH"; else
+    docker() { :; }
   fi
+  curl() {
+    # Exercise the external installer's release failure, not the unchecked
+    # process-substitution transport (a separate phase-E application issue).
+    if [[ "$APP_FAULT" == checker ]]; then printf 'exit 17\n'; else printf 'printf "new installer consumer\\n" > "$APP_FIXTURE/consumer"\n'; fi
+  }
 }
-for mode in no yes; do
-  for fault in none compose network missing agents proxy; do
-    c="$work/$mode $fault"
-    mkdir -p "$c"/{bin,tmp,app/source,app/services/foreign/data,state}
-    printf 'foreign bind data\n' > "$c/app/services/foreign/data/canary"
-    for name in docker-compose.yml docker-compose.prod.yml docker-compose.custom.yml docker-compose.postgres-upgrade.yml .env; do
-      : > "$c/app/source/$name"
-    done
-    [[ "$fault" != missing ]] || rm "$c/app/source/docker-compose.prod.yml"
-    printf 'saved configuration\n' > "$c/app/data"
-    mkdir -p "$c/app/proxy"
-    : > "$c/app/proxy/docker-compose.yml"
-    for name in foreign-container foreign-volume foreign-network foreign-unused-network coolify-user-app coolify-container coolify-volume coolify-network coolify-sentinel coolify-proxy-error-pages coolify-proxy; do : > "$c/state/$name"; done
-    cat > "$c/bin/docker" << 'MODEL'
+runtime_hooks_setup() {
+  mkdir -p "$c/app"
+  printf 'var_addon_install_path=%q\nvar_addon_installer_url=https://fixture.invalid/install.sh\n' "$c/app" > "$c/context.sh"
+  printf 'yes\n' > "$c/stdin"
+  printf 'old installer consumer\n' > "$c/consumer"
+}
+runtime_hooks_expected() { [[ "$fault" != checker ]] || expected=17; }
+runtime_hooks_assert() {
+  check "$(cat "$c/consumer")" "$([[ "$rc" == 0 ]] && printf 'new installer consumer' || printf 'old installer consumer')" "$app/$variant external installer result reaches consumer"
+}
+runtime_hooks_retry_assert() { check "$(cat "$c/consumer")" 'new installer consumer' "$app ordinary pending retry executes installer"; }
+runtime_hooks_more_cases() {
+  for mode in no yes; do
+    for fault in none compose network missing agents proxy; do
+      c="$work/$mode $fault"
+      mkdir -p "$c"/{bin,tmp,app/source,app/services/foreign/data,state}
+      printf 'foreign bind data\n' > "$c/app/services/foreign/data/canary"
+      for name in docker-compose.yml docker-compose.prod.yml docker-compose.custom.yml docker-compose.postgres-upgrade.yml .env; do
+        : > "$c/app/source/$name"
+      done
+      [[ "$fault" != missing ]] || rm "$c/app/source/docker-compose.prod.yml"
+      printf 'saved configuration\n' > "$c/app/data"
+      mkdir -p "$c/app/proxy"
+      : > "$c/app/proxy/docker-compose.yml"
+      for name in foreign-container foreign-volume foreign-network foreign-unused-network coolify-user-app coolify-container coolify-volume coolify-network coolify-sentinel coolify-proxy-error-pages coolify-proxy; do : > "$c/state/$name"; done
+      cat > "$c/bin/docker" << 'MODEL'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$CASE_ROOT/events"
@@ -77,31 +84,33 @@ case "$1 $2" in
   *) exit 94 ;;
 esac
 MODEL
-    chmod +x "$c/bin/docker"
-    rc=0
-    env -i PATH="$PATH" HOME="$c" TMPDIR="$c/tmp" CASE_ROOT="$c" FAULT="$fault" VERBOSE="$mode" \
-      ADDON_OWNER_ROOT="${ADDON_OWNER_ROOT:-$ROOT}" var_addon_install_path="$c/app" BUILD_LOG="$c/build.log" \
-      bash "$0" --child > "$c/output" 2>&1 || rc=$?
-    expected=0
-    case "$fault" in compose) expected=47 ;; network) expected=48 ;; missing) expected=1 ;; agents) expected=49 ;; proxy) expected=50 ;; esac
-    check "$rc" "$expected" "coolify/$mode/$fault status"
-    check "$(cat "$c/app/services/foreign/data/canary" 2> /dev/null || true)" 'foreign bind data' "coolify/$mode/$fault retains inside-root bind data"
-    for name in foreign-container foreign-volume foreign-network foreign-unused-network coolify-user-app; do
-      check "$(test -e "$c/state/$name" && printf kept || printf lost)" kept "coolify/$fault retains $name"
-    done
-    if [[ "$fault" == none ]]; then
-      for name in coolify-container coolify-volume coolify-network coolify-sentinel coolify-proxy-error-pages coolify-proxy; do
-        check "$(test -e "$c/state/$name" && printf present || printf absent)" absent "coolify/$mode removes $name"
+      chmod +x "$c/bin/docker"
+      rc=0
+      role=uninstall variant=$fault
+      printf 'var_addon_install_path=%q\n' "$c/app" > "$c/context.sh"
+      runtime_hooks_prepare
+      runtime_hooks_invoke uninstall "$fault" "$c/output" "$c/build.log" "$c/errors.log" || rc=$?
+      expected=0
+      case "$fault" in compose) expected=47 ;; network) expected=48 ;; missing) expected=1 ;; agents) expected=49 ;; proxy) expected=50 ;; esac
+      check "$rc" "$expected" "coolify/$mode/$fault status"
+      runtime_hooks_uninstall_assert
+      check "$(cat "$c/app/services/foreign/data/canary" 2> /dev/null || true)" 'foreign bind data' "coolify/$mode/$fault retains inside-root bind data"
+      for name in foreign-container foreign-volume foreign-network foreign-unused-network coolify-user-app; do
+        check "$(test -e "$c/state/$name" && printf kept || printf lost)" kept "coolify/$fault retains $name"
       done
-      check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify retains install directory after Docker success"
-      check "$(grep -Fxc "warn Retained directory $c/app; it may contain deployment data." "$c/output" || true)" 1 "coolify notice names the exact retained directory and deployment data"
-      printf -v remove_command 'rm -rf -- %q' "$c/app"
-      check "$(grep -Fxc "warn To remove it manually: $remove_command" "$c/output" || true)" 1 "coolify notice provides a shell-quoted removal command"
-    else
-      check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify/$fault retains configuration on failure"
-      check "$(grep -c 'has been uninstalled' "$c/output" || true)" 0 "coolify/$fault no false success"
-    fi
+      if [[ "$fault" == none ]]; then
+        for name in coolify-container coolify-volume coolify-network coolify-sentinel coolify-proxy-error-pages coolify-proxy; do
+          check "$(test -e "$c/state/$name" && printf present || printf absent)" absent "coolify/$mode removes $name"
+        done
+        check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify retains install directory after Docker success"
+        check "$(grep -Fxc "warn Retained directory $c/app; it may contain deployment data." "$c/output" || true)" 1 "coolify notice names the exact retained directory and deployment data"
+        printf -v remove_command 'rm -rf -- %q' "$c/app"
+        check "$(grep -Fxc "warn To remove it manually: $remove_command" "$c/output" || true)" 1 "coolify notice provides a shell-quoted removal command"
+      else
+        check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify/$fault retains configuration on failure"
+        check "$(grep -c 'has been uninstalled' "$c/output" || true)" 0 "coolify/$fault no false success"
+      fi
+    done
   done
-done
-printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
-[[ "$failures" == 0 ]]
+}
+runtime_hooks_main "$@"

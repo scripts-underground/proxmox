@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# External HTTP/package/service models; actual release and binary publishers.
+# shellcheck disable=SC2034,SC2154
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
+app=filebrowser
+script_type=addon
+variants=(fresh update checker download uninstall)
+hook_paths=()
+runtime_hooks_variant() {
+  case "$variant" in checker) fault=checker ;; uninstall) role=uninstall ;; esac
+}
+runtime_hooks_model() {
+  apt() { :; }
+  filebrowser() { printf '%s\n' "$*" >> "$c/binary-calls"; }
+  curl() {
+    [[ "$APP_FAULT" != checker ]] || return 17
+    local out='' format='' url='' tag=v2.0.0 body
+    while (($#)); do
+      case "$1" in -o)
+        out=$2
+        shift
+        ;;
+      -w)
+        format=$2
+        shift
+        ;;
+      https:*) url=$1 ;; esac
+      shift
+    done
+    [[ "$url" != *'/tags/'* ]] || tag=${url##*/}
+    printf '%s\n' "$url" >> "$c/requests"
+    body="{\"tag_name\":\"$tag\",\"assets\":[{\"name\":\"linux-amd64-filebrowser.tar.gz\",\"browser_download_url\":\"https://fixture.invalid/linux-amd64-filebrowser.tar.gz\"}]}"
+    if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; else printf '%s' "$body"; fi
+    [[ -z "$format" ]] || printf 200
+  }
+  curl_download() {
+    [[ "$APP_FAULT" != download ]] || return 22
+    tar -czf "$1" -C "$c/payload" filebrowser
+  }
+}
+runtime_hooks_setup() {
+  mkdir -p "$c/db" "$c/local/bin"
+  printf 'var_addon_bin_path=/usr/local/bin/filebrowser\nvar_addon_db_dir=%q\nvar_addon_db_path=%q\nvar_addon_default_port=8181\n' "$c/db" "$c/db/custom.db" > "$c/context.sh"
+  printf '#!/usr/bin/env bash\nprintf "new binary consumer\\n"\n' > "$c/payload/filebrowser"
+  chmod 0755 "$c/payload/filebrowser"
+  : > "$c/requests"
+  if [[ "$role" != install ]]; then
+    printf 'operator database\n' > "$c/db/custom.db"
+    printf '#!/usr/bin/env bash\nprintf "old binary consumer\\n"\n' > "$c/local/bin/filebrowser"
+    chmod 0755 "$c/local/bin/filebrowser"
+    printf '1.0.0\n' > "$c/home/.filebrowser"
+    : > "$c/etc/systemd/system/filebrowser.service"
+  fi
+}
+runtime_hooks_expected() { [[ "$fault" != checker ]] || expected=17; }
+runtime_hooks_assert() {
+  if [[ "$role" == uninstall ]]; then
+    check "$(test -e "$c/db/custom.db" && printf present || printf absent)" absent "$app scoped uninstall removes configured DB"
+    check "$(test -e "$c/local/bin/filebrowser" && printf present || printf absent)" absent "$app scoped uninstall removes configured binary"
+  elif [[ "$role" == update ]]; then
+    check "$(cat "$c/db/custom.db")" 'operator database' "$app/$variant configured DB retained"
+    if [[ "$rc" == 0 ]]; then
+      check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app selected binary reaches executable consumer"
+      check "$(grep -c '/tags/v2.0.0$' "$c/requests" || true)" 1 "$app update deploys the selected release"
+    elif [[ "$fault" == checker ]]; then
+      check "$("$c/local/bin/filebrowser")" 'old binary consumer' "$app release error retains executable"
+    fi
+  else
+    check "$(grep -c -- '-p 8181' "$c/binary-calls")" 2 "$app nondefault setting reaches config consumer"
+    check "$(stat -c %a "$c/db/custom.db")" 644 "$app install creates configured database"
+  fi
+}
+runtime_hooks_retry_assert() {
+  check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app ordinary retry publishes executable"
+  check "$(cat "$c/db/custom.db")" 'operator database' "$app retry retains configured DB"
+}
+runtime_hooks_main "$@"

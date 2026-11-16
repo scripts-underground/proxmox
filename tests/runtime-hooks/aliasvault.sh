@@ -4,6 +4,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=aliasvault
+script_type=lxc
 variants=(fresh update download build copy runtime)
 hook_paths=()
 baseline_runtime_hooks_model() {

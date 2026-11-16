@@ -1424,6 +1424,14 @@ edit a shared app switch or registry. The aggregator requires a zero exit and on
 terminal `RUNTIME_HOOKS_RESULT failures=0` per member, and refuses empty discovery.
 Discovery remains inside the existing context-bound suite/source tree and retains
 its declared `MAINTENANCE_REFERENCES` input and public runner contract.
+Harness members declare `script_type=lxc|addon`; install, update and uninstall
+execute cold commands emitted by the shared bundle producer with the actual
+profile inventory. Fixture state/path mappings and external-effect models do not
+replace the framework's release, pending, lock or retirement owners. Addon cases
+use source-declared settings and stable owner-bound identity, preserve the frozen
+updater across retry and assert success-only command/alias/marker removal. The
+generated install-hook pipeline is not a full source-bootstrap/publication proof;
+the existing repository-backed producer-chain fixtures retain that responsibility.
 
 The focused cold-hook tests execute actual helpers/files and native parser/module
 consumers with explicitly modeled compilers, model weights, database provisioning
