@@ -14,7 +14,8 @@ if [[ "${1:-}" == --child ]]; then
   mount --bind "$CASE_ROOT/share" /usr/share
   [[ "$(awk 'BEGIN { print "ready" }')" == ready ]]
   source "$ROOT/misc/tools.func"
-  export HOME="$CASE_ROOT/home" STD=''
+  export HOME="$CASE_ROOT/home" STD=silent
+  silent() { "$@" >> "$CASE_ROOT/quiet-log" 2>&1; }
   msg_info() { :; }
   msg_ok() { :; }
   msg_warn() { :; }
@@ -53,7 +54,7 @@ if [[ "${1:-}" == --child ]]; then
     v=${v%%/*}
     printf '%s\n' "$v" > "$CASE_ROOT/selected"
     mkdir -p "$CASE_ROOT/artifact/uv-fixture"
-    printf '#!/bin/sh\nif [ "$1" = --version ]; then printf "uv %s\\n"; fi\n' "$v" > "$CASE_ROOT/artifact/uv-fixture/uv"
+    printf '#!/bin/sh\nif [ "$1" = --version ]; then printf "uv %s\\n"; else printf "completion bytes for %%s\\n" "$2"; fi\n' "$v" > "$CASE_ROOT/artifact/uv-fixture/uv"
     chmod 0755 "$CASE_ROOT/artifact/uv-fixture/uv"
     tar -czf "$2" -C "$CASE_ROOT/artifact" uv-fixture
   }
@@ -96,6 +97,7 @@ PY
   check "$rc" "${statuses[$i]}" "case-$i actual setup status"
   if [[ "${versions[$i]}" != none ]]; then
     check "$(cat "$c/consumer" 2> /dev/null || true)" "uv ${versions[$i]}" "case-$i installed executable observes compatible version"
+    check "$(cat "$c/etc/bash_completion.d/uv" 2> /dev/null || true)" 'completion bytes for bash' "case-$i actual setup publishes completion stdout"
     check "$(cat "$c/cache/app-versions/uv_version.txt" 2> /dev/null || true)" "${versions[$i]}" "case-$i cache records same selection"
   else
     check "$(test -e "$c/consumer" && printf reached || printf absent)" absent "case-$i incompatible latest never reaches consumer"
