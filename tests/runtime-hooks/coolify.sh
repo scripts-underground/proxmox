@@ -11,6 +11,7 @@ if [[ "${1:-}" == --child ]]; then
   msg_info() { :; }
   msg_ok() { printf 'ok %s\n' "$*"; }
   msg_error() { printf 'error %s\n' "$*"; }
+  msg_warn() { printf 'warn %s\n' "$*"; }
   export PATH="$CASE_ROOT/bin:$PATH"
   uninstall_script
   exit
@@ -29,8 +30,9 @@ check() {
 }
 for mode in no yes; do
   for fault in none compose network missing agents proxy; do
-    c="$work/$mode-$fault"
-    mkdir -p "$c"/{bin,tmp,app/source,state}
+    c="$work/$mode $fault"
+    mkdir -p "$c"/{bin,tmp,app/source,app/services/foreign/data,state}
+    printf 'foreign bind data\n' > "$c/app/services/foreign/data/canary"
     for name in docker-compose.yml docker-compose.prod.yml docker-compose.custom.yml docker-compose.postgres-upgrade.yml .env; do
       : > "$c/app/source/$name"
     done
@@ -83,6 +85,7 @@ MODEL
     expected=0
     case "$fault" in compose) expected=47 ;; network) expected=48 ;; missing) expected=1 ;; agents) expected=49 ;; proxy) expected=50 ;; esac
     check "$rc" "$expected" "coolify/$mode/$fault status"
+    check "$(cat "$c/app/services/foreign/data/canary" 2> /dev/null || true)" 'foreign bind data' "coolify/$mode/$fault retains inside-root bind data"
     for name in foreign-container foreign-volume foreign-network foreign-unused-network coolify-user-app; do
       check "$(test -e "$c/state/$name" && printf kept || printf lost)" kept "coolify/$fault retains $name"
     done
@@ -90,7 +93,10 @@ MODEL
       for name in coolify-container coolify-volume coolify-network coolify-sentinel coolify-proxy-error-pages coolify-proxy; do
         check "$(test -e "$c/state/$name" && printf present || printf absent)" absent "coolify/$mode removes $name"
       done
-      check "$(test -e "$c/app" && printf present || printf absent)" absent "coolify removes app after Docker success"
+      check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify retains install directory after Docker success"
+      check "$(grep -Fxc "warn Retained directory $c/app; it may contain deployment data." "$c/output" || true)" 1 "coolify notice names the exact retained directory and deployment data"
+      printf -v remove_command 'rm -rf -- %q' "$c/app"
+      check "$(grep -Fxc "warn To remove it manually: $remove_command" "$c/output" || true)" 1 "coolify notice provides a shell-quoted removal command"
     else
       check "$(cat "$c/app/data" 2> /dev/null || true)" 'saved configuration' "coolify/$fault retains configuration on failure"
       check "$(grep -c 'has been uninstalled' "$c/output" || true)" 0 "coolify/$fault no false success"

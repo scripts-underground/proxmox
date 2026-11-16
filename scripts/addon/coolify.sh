@@ -106,8 +106,13 @@ function uninstall_script() {
   fi
   msg_ok "Stopped and removed Coolify Docker resources"
 
-  rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
+  # Deployments can bind-mount files beneath this root, independently of the
+  # core Compose project. A directory location does not prove data ownership.
+  local remove_command
+  printf -v remove_command 'rm -rf -- %q' "$var_addon_install_path"
+  msg_warn "Retained directory ${var_addon_install_path}; it may contain deployment data."
+  msg_warn "To remove it manually: ${remove_command}"
 }
 
 # Addons run inside arbitrary containers that may lack curl — ensure the
