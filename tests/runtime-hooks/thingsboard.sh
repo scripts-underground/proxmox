@@ -4,6 +4,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=thingsboard
+script_type=lxc
 variants=(fresh update download copy runtime)
 hook_paths=(/usr/share/thingsboard thingsboard)
 runtime_hooks_model() {

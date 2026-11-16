@@ -9,18 +9,41 @@ Every member must exit zero and end with exactly one
 `RUNTIME_HOOKS_RESULT failures=0` line; missing results and empty discovery fail.
 
 Add or fix an app in its own file only. Cold-hook members source
-`tests/lib/runtime-hooks/harness.sh`, declare `app`, `variants`, and `hook_paths`
+`tests/lib/runtime-hooks/harness.sh`, declare `script_type=lxc` or
+`script_type=addon`, `app`, `variants`, and `hook_paths`
 (source path/fixture-relative path pairs), define `runtime_hooks_model`,
 `runtime_hooks_setup`, and `runtime_hooks_assert`, then call
 `runtime_hooks_main "$@"`. Optional `runtime_hooks_expected`,
 `runtime_hooks_retry_needed`, and `runtime_hooks_retry_assert` callbacks customize
-expected status, retry eligibility, and retry checks. Setup may select an
-app-specific fault before invoking the cold hook.
+expected status, retry eligibility, and retry checks. `runtime_hooks_variant`
+selects a role (`install`, `update`, `uninstall`) or fault before setup;
+`fresh` defaults to install and other variants default to update. Setup may write
+`$c/context.sh` with nondefault producer-supported settings and `$c/stdin` with
+prompt answers. `runtime_hooks_more_cases` can retain an app's larger fault matrix
+while using `runtime_hooks_prepare` and `runtime_hooks_invoke` for each role.
 Callbacks use the current case variables (`c`, `role`, `fault`, `mode`, `variant`,
 `rc`, `expected`); model callbacks run in the isolated cold child. The harness
 owns case directories, namespace setup, generic checks and pending retries, never
-app selection. Standalone app fixtures may instead own their lifecycle and emit
-the same terminal result. Aggregator controls exercise refusal and success paths.
+app selection. Every harness role uses `misc/bundle.func`'s actual closed-profile
+inventory and content producer, then execs the generated command with no extracted
+hook definitions crossing exec. Only supported declarations are baked. The same
+frozen updater is execed on pending retry. Addon identity comes from its owner,
+including File Browser's established `file-browser` key. Generated uninstall owns
+command, alias and marker retirement; failed hooks retain them.
+
+Repository libraries remain real, with fixture-only state/path mapping and an
+app-model initialization suffix. HTTP, package, service, external installer and
+Docker effects are models, not native app qualification. The generated install
+pipeline tests the hook/baseline/marker contract, not the complete source bootstrap
+or multi-command publication (covered by the producer-chain fixtures). Coolify's
+external-installer release failure, Dokploy's release-transport failure and
+Dockge's image-pull failure are distinct from GitHub checker tri-state coverage in
+File Browser and CronMaster. Dokploy's existing quiet pipeline redirects its
+downloaded script; its quiet retry proves transport/status only, not installer
+execution. That application fix belongs to phase E.
+
+Standalone LXC fixtures retain their existing lifecycle and terminal result.
+Aggregator controls exercise refusal and success paths.
 
 ## Normal guest entrypoint
 
