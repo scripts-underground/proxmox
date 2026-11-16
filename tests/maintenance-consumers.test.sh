@@ -7,6 +7,7 @@ systemd-detect-virt --vm --quiet || exit 1
 case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
 case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+source "$ROOT/misc/bundle.func"
 
 if [[ "${1:-}" == --aria ]]; then
   source "$CASE_ROOT/core.func"
@@ -77,7 +78,7 @@ for mode in no yes; do
     sed -n '/^svc_prepare_uninstall() {/,/^}/p' "$ROOT/misc/install.func" >> "$c/stage/install.func"
     printf 'fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
-    cat > "$c/stage/addon.func" << 'STUBS'
+    cat > "$c/stage/addon_lxc.func" << 'STUBS'
 addon_baseline() { :; }
 stop_spinner() { :; }
 msg_info() { :; }
@@ -95,9 +96,9 @@ STUBS
     sed -n '/^function uninstall_script() {/,/^}/p' "$ROOT/scripts/addon/mqttx.sh" |
       sed -e "s|/etc/nginx|$c/nginx|g" -e "s|/etc/systemd/system|$c/systemd|g" > "$c/hook.sh"
     sed -e "s|/usr/local/sbin|$c/sbin|g" -e "s|/usr/bin|$c/bin|g" \
-      "$ROOT/misc/addon_lxc.func" > "$c/addon.func"
+      "$ROOT/misc/addon_lxc.func" > "$c/addon-owner.func"
     (
-      source "$c/addon.func"
+      source "$c/addon-owner.func"
       source "$c/hook.sh"
       export APP=MQTTX APP_SLUG=mqttx REPO_BASE=offline ADDON_MARKER_DIR="$c/markers"
       export var_addon_app_dir="$c/app" var_addon_service=mqttx

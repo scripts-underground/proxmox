@@ -177,7 +177,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
         printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
         printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
         cat "$work/model.sh" >> "$c/stage/github.func"
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon.func"
+        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$script" |
           sed -e "s|/etc/systemd/system|$c/units|g" -e "s|/etc/init.d|$c/units|g" -e "s|/etc/lighttpd|$c/lighttpd|g" \
             -e "s|/opt/scanopy|$c/app|g" -e "s|/usr/bin/scanopy|$c/bin/scanopy|g" > "$c/hook.sh"
@@ -187,6 +187,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
           export var_addon_service="$service" var_addon_install_path="$c/app" var_addon_config_path="$c/config"
           export var_addon_service_path="$c/units/$service.service" var_addon_install_dir_debian="$c/app" var_addon_install_dir_alpine="$c/app"
           source "$c/hook.sh"
+          source "$ROOT/misc/bundle.func"
           if [[ "$app" != netvisor ]]; then
             sed -e "s|/usr/local/sbin|$c/sbin|g" -e "s|/usr/bin|$c/bin|g" "$ROOT/misc/addon_lxc.func" > "$c/owner.func"
             source "$c/owner.func"
