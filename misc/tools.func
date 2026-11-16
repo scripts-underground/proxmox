@@ -2660,7 +2660,7 @@ get_latest_gh_tag() {
   if [[ $rc -eq 0 ]]; then
     # Stable tag spelling, not release state. Keep word/date tags literal, but
     # exclude conventional numeric development/prerelease suffixes in any case.
-    tags=$(awk 'tolower($0) !~ /[0-9][-._+]?(dev|alpha|beta|preview|pre|rc)([-._0-9]|$)/' "$stage/tags") || rc=22
+    tags=$(awk 'tolower($0) !~ /[0-9][-._+]?(dev|alpha|beta|preview|pre|rc)([-._+0-9]|$)/' "$stage/tags") || rc=22
     if [[ -n "$prefix" ]]; then
       tags=$(printf '%s\n' "$tags" | sort -Vr) || rc=22
     fi
@@ -4561,7 +4561,7 @@ _gh_deploy_wanderer_plugin() {
 }
 
 fetch_and_deploy_gh_release() {
-  local app="$1"
+  local app="${1:-${2##*/}}"
   local repo="$2"
   local mode="${3:-tarball}" # tarball | binary | prebuild | singlefile
   local version
@@ -10301,7 +10301,7 @@ _gl_scan_older_releases() {
 }
 
 fetch_and_deploy_gl_release() {
-  local app="$1"
+  local app="${1:-${2##*/}}"
   local repo="$2"
   local mode="${3:-tarball}"
   local version
@@ -10326,7 +10326,12 @@ fetch_and_deploy_gl_release() {
   local current_version=""
   [[ -f "$version_file" ]] && current_version=$(< "$version_file")
 
-  ensure_dependencies jq
+  ensure_dependencies jq || return 100
+
+  local repo_encoded
+  repo_encoded=$(jq -rn --arg repo "$repo" '$repo | @uri') || return 250
+  local header=()
+  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
 
   # Tag-only GitLab projects have no release object. The selected source still
   # crosses the same checked replacement owner and main-app pin boundary.
@@ -10338,10 +10343,16 @@ fetch_and_deploy_gl_release() {
     local tag_version
     tag_version=$(_gh_version_from_tag "$version") || return $?
     if [[ "$current_version" == "$tag_version" && "${FORCE_DEPLOY:-0}" != 1 ]]; then return 0; fi
-    local tag_stage tag_rc=0 tag_url tag_root
+    local tag_stage tag_rc=0 tag_url tag_root tag_encoded tag_http=''
+    tag_encoded=$(jq -rn --arg ref "$version" '$ref | @uri') || return 250
     tag_stage=$(mktemp -d "${TMPDIR:-/tmp}/gl-tag.XXXXXX") || return 252
-    tag_url="https://gitlab.com/$repo/-/archive/$version/${app_lc}-${version//\//-}.tar.gz"
-    download_file "$tag_url" "$tag_stage/source.tar.gz" || tag_rc=$?
+    tag_url="https://gitlab.com/api/v4/projects/$repo_encoded/repository/archive.tar.gz?sha=$tag_encoded&ref_type=tags"
+    # The archive API serves the selected tag directly. Do not forward a custom
+    # PRIVATE-TOKEN header through redirects to another origin.
+    tag_http=$(curl --connect-timeout 15 --max-time 900 -fsS -w '%{http_code}' -o "$tag_stage/source.tar.gz" \
+      "${header[@]}" "$tag_url" 2> /dev/null) || tag_rc=$?
+    if [[ $tag_rc -eq 0 && "$tag_http" != 200 ]]; then tag_rc=22; fi
+    if [[ $tag_rc -ne 0 ]]; then msg_error "GitLab tag archive transfer failed (HTTP=$tag_http status=$tag_rc)"; fi
     if [[ $tag_rc -eq 0 ]]; then tar --no-same-owner -xzf "$tag_stage/source.tar.gz" -C "$tag_stage" || tag_rc=$?; fi
     if [[ $tag_rc -eq 0 ]]; then
       tag_root=$(find "$tag_stage" -mindepth 1 -maxdepth 1 -type d -print -quit) || tag_rc=$?
@@ -10354,9 +10365,6 @@ fetch_and_deploy_gl_release() {
     return 0
   fi
 
-  local repo_encoded
-  repo_encoded=$(printf '%s' "$repo" | sed 's|/|%2F|g')
-
   local api_base="https://gitlab.com/api/v4/projects/$repo_encoded/releases"
   local api_url
   if [[ "$version" != "latest" ]]; then
@@ -10364,9 +10372,6 @@ fetch_and_deploy_gl_release() {
   else
     api_url="$api_base?per_page=1&order_by=released_at&sort=desc"
   fi
-
-  local header=()
-  [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
 
   local max_retries=3 retry_delay=2 attempt=1 success=false http_code
 

@@ -27,7 +27,7 @@ ensure_dependencies() {
 git() { return 1; }
 scenario=normal
 curl() {
-  local out='' url='' auth=no body='{}' code=200
+  local out='' url='' auth=no private=no body='{}' code=200
   while (($#)); do
     case "$1" in
       -o)
@@ -36,6 +36,7 @@ curl() {
         ;;
       -H)
         [[ "$2" != Authorization:* ]] || auth=yes
+        [[ "$2" != PRIVATE-TOKEN:* ]] || private=yes
         shift
         ;;
       https:*) url="$1" ;;
@@ -43,6 +44,18 @@ curl() {
     shift
   done
   printf '%s %s\n' "$auth" "$url" >> "$work/requests"
+  if [[ "$url" == *gitlab.com/api/v4/projects/*/repository/archive.tar.gz\?* ]]; then
+    printf '%s %s\n' "$private" "$url" >> "$work/gitlab-archives"
+    if [[ -n "${GITLAB_TOKEN:-}" && "$private" != yes || "$scenario" == gl-denied ]]; then
+      printf 403
+      return 22
+    fi
+    printf '%s\n' "$url" > "$work/archive/source/origin"
+    tar -czf "$out" -C "$work/archive" source
+    printf 200
+    [[ "$scenario" != gl-partial ]] || return 18
+    return 0
+  fi
   case "$scenario" in
     token-first) [[ "$auth" == yes ]] || code=401 ;;
     rejected) [[ "$auth" == no ]] || code=401 ;;
@@ -74,7 +87,7 @@ curl() {
   esac
   if [[ "$code" == 200 ]]; then
     case "$url" in
-      *git/matching-refs*) body='[{"ref":"refs/tags/v2.0.0-rc1"},{"ref":"refs/tags/v1.9.0"},{"ref":"refs/tags/v2.0.0-beta2"}]' ;;
+      *git/matching-refs*) body='[{"ref":"refs/tags/v2.0.0-rc1"},{"ref":"refs/tags/v1.9.0"},{"ref":"refs/tags/v2.0.0-beta2"},{"ref":"refs/tags/v3.0.0-rc+build.1"}]' ;;
       */tags\?*)
         if [[ "$scenario" == malformed ]]; then
           body='[{"name":null}]'
@@ -95,13 +108,13 @@ curl() {
         ;;
       */releases/tags/1.2.3) body='{"tag_name":"1.2.3","assets":[],"body":"unprefixed asset release"}' ;;
       */releases/tags/*) body=$(command jq -cn --arg tag "${url##*/}" '{tag_name:$tag,assets:[]}') ;;
-      *codeberg.org*/releases*) body='[{"tag_name":"v1.2.3","assets":[]}]' ;;
+      *codeberg.org*/releases*) body='[{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]}]' ;;
     esac
   fi
   if [[ "$code" == 200 && "$url" == */repos/owner/dependency/* ]]; then
     if [[ "$url" == */latest ]]; then
       body='{"tag_name":"v8.0.0","assets":[]}'
-    elif [[ "$url" == *releases\?* ]]; then body='[{"tag_name":"v8.0.0","assets":[]}]'; fi
+    elif [[ "$url" == *releases\?* || "$url" == *codeberg.org*/releases ]]; then body='[{"tag_name":"v8.0.0","draft":false,"prerelease":false,"assets":[]}]'; fi
   fi
   printf '%s' "$body" > "$out"
   printf '%s' "$code"
@@ -202,15 +215,42 @@ fetch_and_deploy_gh_tag mainapp owner/app latest "$work/main-tag" || true
 check "$(cat "$work/main-tag/origin" 2> /dev/null || true)" https://github.com/owner/app/archive/refs/tags/v1.2.3.tar.gz 'F8 main-app tag consumes app pin'
 fetch_and_deploy_gh_tag dependency owner/app v7.0.0 "$work/dependency-tag"
 check "$(cat "$work/dependency-tag/origin")" https://github.com/owner/app/archive/refs/tags/v7.0.0.tar.gz 'F8 prerequisite tag retains independent explicit identity'
+export GITLAB_TOKEN=fixture-gitlab-token-do-not-log
 fetch_and_deploy_gl_release mainapp owner/app tag latest "$work/gitlab-tag" || true
-check "$(cat "$work/gitlab-tag/origin" 2> /dev/null || true)" https://gitlab.com/owner/app/-/archive/v1.2.3/mainapp-v1.2.3.tar.gz 'F8 GitLab tag-only source consumes main-app pin'
+check "$(cat "$work/gitlab-tag/origin" 2> /dev/null || true)" 'https://gitlab.com/api/v4/projects/owner%2Fapp/repository/archive.tar.gz?sha=v1.2.3&ref_type=tags' 'F8 GitLab tag-only source consumes main-app pin'
+check "$(head -n1 "$work/gitlab-archives" 2> /dev/null | cut -d' ' -f1 || true)" yes 'GitLab tag archive receives existing private authentication'
 fetch_and_deploy_gl_release dependency owner/app tag v7.0.0 "$work/gitlab-dependency" || true
-check "$(cat "$work/gitlab-dependency/origin" 2> /dev/null || true)" https://gitlab.com/owner/app/-/archive/v7.0.0/dependency-v7.0.0.tar.gz 'F8 GitLab prerequisite tag retains explicit identity'
+check "$(cat "$work/gitlab-dependency/origin" 2> /dev/null || true)" 'https://gitlab.com/api/v4/projects/owner%2Fapp/repository/archive.tar.gz?sha=v7.0.0&ref_type=tags' 'F8 GitLab prerequisite tag retains explicit identity'
+fetch_and_deploy_gl_release encoded owner/app tag 'v3.0%23#x?y/part' "$work/gitlab-encoded" || true
+check "$(cat "$work/gitlab-encoded/origin" 2> /dev/null || true)" 'https://gitlab.com/api/v4/projects/owner%2Fapp/repository/archive.tar.gz?sha=v3.0%2523%23x%3Fy%2Fpart&ref_type=tags' 'GitLab archive ref percent-encodes URL delimiters as query data'
+for scenario in gl-denied gl-partial; do
+  rc=0
+  FORCE_DEPLOY=1 CLEAN_INSTALL=1 fetch_and_deploy_gl_release dependency owner/app tag v8.0.0 "$work/gitlab-dependency" || rc=$?
+  expected=22
+  [[ "$scenario" != gl-partial ]] || expected=18
+  check "$rc" "$expected" "$scenario keeps exact archive producer failure"
+  check "$(cat "$HOME/.dependency")" 7.0.0 "$scenario never advances marker"
+  check "$(cat "$work/gitlab-dependency/origin")" 'https://gitlab.com/api/v4/projects/owner%2Fapp/repository/archive.tar.gz?sha=v7.0.0&ref_type=tags' "$scenario preserves existing source"
+done
+scenario=normal
+unset GITLAB_TOKEN
+mkdir -p "$work/empty-home"
+rc=0
+HOME="$work/empty-home" var_appversion=v6.0.0 fetch_and_deploy_gh_release '' owner/mainapp tarball latest "$work/derived" || rc=$?
+check "$rc" 0 'derived main-app deployment succeeds'
+check "$(cat "$work/derived/origin" 2> /dev/null || true)" https://github.com/owner/mainapp/archive/refs/tags/v6.0.0.tar.gz 'derived main app consumes its exact pin before resolving latest'
 for provider in gh codeberg; do
-  fetch_and_deploy_${provider}_release mainapp owner/app tarball v7.0.0 "$work/$provider-explicit" || true
+  mkdir -p "$work/home-$provider"
+  export HOME="$work/home-$provider"
+  rc=0
+  fetch_and_deploy_${provider}_release mainapp owner/app tarball v7.0.0 "$work/$provider-explicit" || rc=$?
+  check "$rc" 0 "F8 $provider explicit deployment succeeds independently"
   check "$(cat "$HOME/.mainapp")" 7.0.0 "F8 $provider explicit requested release outranks ambient app pin"
-  fetch_and_deploy_${provider}_release mainapp-helper owner/dependency tarball latest "$work/$provider-dependency" || true
+  rc=0
+  fetch_and_deploy_${provider}_release mainapp-helper owner/dependency tarball latest "$work/$provider-dependency" || rc=$?
+  check "$rc" 0 "F8 $provider prerequisite deployment succeeds independently"
   check "$(cat "$HOME/.mainapp-helper" 2> /dev/null || true)" 8.0.0 "F8 $provider prerequisite uses its own latest"
+  check "$(test -s "$work/$provider-dependency/origin" && printf present || printf absent)" present "F8 $provider publishes its own prerequisite payload"
 done
 printf '%s failure(s); U1 actual release selection/publication with modeled HTTP\n' "$failures"
 [[ "$failures" == 0 ]]
