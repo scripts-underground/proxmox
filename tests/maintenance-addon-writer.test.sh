@@ -86,5 +86,6 @@ for fault in cat missing context write chmod link publish none; do
   fi
 done
 bash "$ROOT/tests/lib/addon-producer-chain.fixture.sh" || failures=$((failures + 1))
+bash "$ROOT/tests/lib/addon-operations.fixture.sh" || failures=$((failures + 1))
 printf '%s failure(s); actual addon writer/files/publication, injected fault boundaries\n' "$failures"
 [[ "$failures" == 0 ]]

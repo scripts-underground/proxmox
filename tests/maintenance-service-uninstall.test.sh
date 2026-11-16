@@ -170,7 +170,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
           rm -f "$c/enabled"
           ;;
         esac
-        cp "$ROOT/misc/core.func" "$c/stage/core.func"
+        sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
         cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
         sed -n '/^svc_enable() {/,/^# SECTION 4:/p' "$ROOT/misc/install.func" > "$c/stage/install.func"
         printf '\npkg_install() { :; }; setup_lxc() { :; }\n' >> "$c/stage/install.func"

@@ -72,7 +72,7 @@ for mode in no yes; do
     mkdir -p "$c/stage" "$c/sbin" "$c/bin" "$c/markers" "$c/nginx/sites-enabled" "$c/nginx/sites-available" "$c/systemd" "$c/app"
     printf 'retained app\n' > "$c/app/data"
     printf 'installed\n' > "$c/markers/mqttx"
-    cp "$ROOT/misc/core.func" "$c/stage/core.func"
+    sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
     cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
     printf 'pkg_install() { :; }\n' > "$c/stage/install.func"
     sed -n '/^svc_prepare_uninstall() {/,/^}/p' "$ROOT/misc/install.func" >> "$c/stage/install.func"

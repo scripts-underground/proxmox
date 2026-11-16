@@ -25,7 +25,7 @@ for owner in addon lxc; do
       printf 'user data\n' > "$c/app/data"
       : > "$c/app/compose.yaml"
       : > "$c/markers/dockge"
-      cp "$ROOT/misc/core.func" "$c/stage/core.func"
+      sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
       cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
       printf 'pkg_install() { :; }; setup_lxc() { :; }\n' > "$c/stage/install.func"
       printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
