@@ -249,6 +249,14 @@ The public CLI never takes the baseline path as an extra command-line argument.
 
 ## Focused maintenance contracts
 
+`maintenance-addon-writer/fixture` includes the repository-backed addon producer
+chain: source footer, real bootstrap shim and framework modules, install hooks,
+shared inventory fetches, local command publication, marker and a cold update
+alias with a nondefault saved setting. Missing-library transport fails before
+command/marker publication. Transport, CT admission and package commands are
+models; module names and bytes come from the actual repository. Private mounts
+isolate aliases and maintenance state. This fixture does not prove a native app.
+
 `maintenance-runtime-hooks/fixture` also runs `tests/lib/mysql-repo.fixture.sh`,
 `tests/lib/mysql-db.fixture.sh` and `tests/lib/fleet-mysql.fixture.sh`. The repository
 fixture runs the actual `manage_tool_repository mysql` branch in a private `/etc/apt`

@@ -3,7 +3,7 @@
 # License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE
 
 # ==============================================================================
-# ADDON.FUNC - ADDON FRAMEWORK (in-container addon lifecycle)
+# ADDON_LXC.FUNC - ADDON FRAMEWORK (in-container addon lifecycle)
 # ==============================================================================
 #
 # Framework module for addon scripts (scripts/addon/*.sh). Addons run inside
@@ -211,7 +211,7 @@ addon_run_install() {
 #
 # Self-contained update/uninstall bundles, baked at install time. Each bundle
 # inlines the 6 framework files (core, error_handler, install, tools, github,
-# addon), a runtime context block (APP, APP_SLUG, REPO_BASE, var_addon_*), and
+# addon_lxc), a runtime context block (APP, APP_SLUG, REPO_BASE, var_addon_*), and
 # the hook body via `declare -f`. Bundles need zero network I/O for framework
 # loading — they work offline and never drift from the installed version.
 #
@@ -237,15 +237,27 @@ addon_assemble_bundles() {
 
   local stage_dir
   stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/.addon-bundle.XXXXXX") || return $?
-  local f
-  for f in core error_handler install tools github addon; do
-    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}.func" -o "${stage_dir}/${f}.func" || {
-      local fetch_exit=$?
-      echo "[addon] FAILED to fetch ${f}.func from ${REPO_BASE}" >&2 || true
+  # Content ownership lives in bundle.func; load it only for production, never
+  # while a frozen update/uninstall command initializes its inlined libraries.
+  if ! declare -F _framework_library_fetch > /dev/null 2>&1 ||
+    ! declare -F _framework_library_contents > /dev/null 2>&1; then
+    local support_exit=0
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/bundle.func" -o "$stage_dir/bundle.func" || support_exit=$?
+    if [[ $support_exit -eq 0 ]]; then source "$stage_dir/bundle.func" || support_exit=$?; fi
+    if [[ $support_exit -eq 0 ]]; then
+      declare -F _framework_library_fetch > /dev/null 2>&1 &&
+        declare -F _framework_library_contents > /dev/null 2>&1 || support_exit=111
+    fi
+    if [[ $support_exit -ne 0 ]]; then
       rm -rf -- "$stage_dir" || true
-      return "$fetch_exit"
-    }
-  done
+      return "$support_exit"
+    fi
+  fi
+  _framework_library_fetch addon "$stage_dir" || {
+    local fetch_exit=$?
+    rm -rf -- "$stage_dir" || true
+    return "$fetch_exit"
+  }
 
   local pair
   for pair in "${hooks[@]}"; do
@@ -266,7 +278,7 @@ addon_assemble_bundles() {
 # ------------------------------------------------------------------------------
 _addon_bundle_contents() {
   local name="$1" hook="$2" stage_dir="$3"
-  local tag="${name:0:4}" _v f
+  local tag="${name:0:4}" _v
   tag="${tag^^}"
 
   # Like the LXC writer, every producer checks itself even under an if/|| caller.
@@ -288,11 +300,7 @@ BUNDLE_HEADER
   done
   printf '\n' || return $?
 
-  for f in core error_handler install tools github addon; do
-    printf '%s\n' "# ═══ framework: ${f}.func ═══" || return $?
-    cat "${stage_dir}/${f}.func" || return $?
-    printf '\n' || return $?
-  done
+  _framework_library_contents addon "$stage_dir" || return $?
 
   cat << BUNDLE_INIT || return $?
 # ═══ runtime init ═══
@@ -301,7 +309,7 @@ command -v catch_errors >/dev/null 2>&1 || { echo "FATAL: error_handler.func not
 command -v pkg_install >/dev/null 2>&1 || { echo "FATAL: install.func not loaded" >&2; exit 111; }
 command -v fetch_and_deploy_gh_release >/dev/null 2>&1 || { echo "FATAL: tools.func not loaded" >&2; exit 111; }
 command -v clone_and_deploy_gh_commit >/dev/null 2>&1 || { echo "FATAL: github.func not loaded" >&2; exit 111; }
-command -v addon_baseline >/dev/null 2>&1 || { echo "FATAL: addon.func not loaded" >&2; exit 111; }
+command -v addon_baseline >/dev/null 2>&1 || { echo "FATAL: addon_lxc.func not loaded" >&2; exit 111; }
 
 load_functions
 catch_errors

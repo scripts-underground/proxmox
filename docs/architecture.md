@@ -792,8 +792,13 @@ The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
 
 1. **Cache framework libs on the host** (once per session):
     `core.func`, `error_handler.func`, `install.func`, `tools.func`, `github.func` are
-   fetched from `$REPO_BASE` and verified (size > 100 bytes, sentinel
-   functions present).
+    fetched from `$REPO_BASE` and verified (size > 100 bytes, sentinel
+    functions present).
+
+   `bundle.func` owns the ordered library inventory, fetch validation and library
+   inlining for both delivery adapters. Its `lxc` profile selects these five files;
+   `addon` extends that same inventory with the repository's `addon_lxc.func`.
+   Invalid profiles fail before fetching or emitting any library content.
 
 2. **Inline everything into a single script**:
     - Shebang, `set -euo pipefail`, minimal PATH and receiving temporary context
@@ -954,7 +959,8 @@ addon_dispatch
       execute_mandatory_hook install_script     ◀ USER HOOK
       execute_optional_hook post_install_script ◀ USER HOOK
       addon_assemble_bundles
-        fetch core/error_handler/install/tools/github .func to stage dir
+        load bundle.func's content owner when not already available
+        fetch the shared addon profile (including addon_lxc.func) to stage dir
         compose update bundle    → /usr/local/sbin/update_<slug>
         compose uninstall bundle → /usr/local/sbin/uninstall_<slug>
         alias both into /usr/bin (update-<slug>, uninstall-<slug>)
@@ -1084,6 +1090,9 @@ Each bundle carries, after its `set -euo pipefail` + PATH header:
    embedded install.func `_bootstrap` re-runs at bundle execution, initializes
    the already inlined core/error APIs and fetches only missing libraries.
    It therefore keeps the frozen generation both online and offline.
+   Assembly loads `bundle.func` only when producing commands, not while those
+   frozen commands run. Both addon and LXC serializers use its shared inventory
+   and library emitter; addon fetching applies the same size/sentinel checks.
 3. **Hook body** — `declare -f <hook>`. Only the named function is copied:
    hooks must be self-contained (framework helpers OK, script-local helpers
    are NOT available).
@@ -1158,9 +1167,10 @@ pre-install check). The seam is `addon_dispatch` / `addon_run_install` in
 
 **Modifying bundle composition** (new baked variables, extra inlined files,
 different self-destruct behavior). The seam is `_addon_bundle_write` in
-`addon_lxc.func`. Note the parallel with `build_bundle` in `bundle.func` — keep
-the context-block conventions (`printf %q`, `compgen -v var_<type>_`) in
-sync across both.
+`addon_lxc.func` for addon-specific context and role semantics. Framework file
+membership, ordering, fetching and inlining belong only to `bundle.func`'s
+`_framework_library_inventory`, `_framework_library_fetch` and
+`_framework_library_contents`; adapters do not carry separate file lists.
 
 
 ### 6.3 PVE

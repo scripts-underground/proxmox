@@ -413,10 +413,11 @@ for name,body in [('install','setup_lxc() { :; }; pkg_install() { :; }\n'),('too
 pkg_clean() { printf 'cleanup %s\\n' "$ACTOR" >> "$CASE_ROOT/events"; }
 addon_baseline() { printf 'prepare %s\\n' "$ACTOR" >> "$CASE_ROOT/events"; }
 ''')
-(stage/'addon.func').write_text((root/'misc/addon_lxc.func').read_text()+'\nsource "$CASE_ROOT/bundle-models.sh"\n')
+(stage/'addon_lxc.func').write_text((root/'misc/addon_lxc.func').read_text()+'\nsource "$CASE_ROOT/bundle-models.sh"\n')
 build='''set -euo pipefail
 source "$1/misc/bundle.func"
 source "$1/misc/addon_lxc.func"
+source "$1/misc/bundle.func"
 APP=LockProbe NSAPP=lock-probe APP_SLUG=lock-probe REPO_BASE=offline
 var_lxc_tmpdir=$2
 update_script() {
