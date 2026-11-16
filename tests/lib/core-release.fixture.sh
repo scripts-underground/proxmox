@@ -64,6 +64,13 @@ curl() {
       printf 200
       return 18
       ;;
+    transient)
+      if [[ "$(wc -l < "$work/requests")" == 1 ]]; then
+        printf '{"tag_name":"v1.2.3"}' > "$out"
+        printf 200
+        return 18
+      fi
+      ;;
   esac
   if [[ "$code" == 200 ]]; then
     case "$url" in
@@ -136,6 +143,17 @@ value=$(get_latest_gh_tag owner/app) || rc=$?
 check "$rc" 18 'F10 completed transfer status wins over plausible JSON'
 check "$value" '' 'F10 partial producer emits no tag'
 for request in generic release; do
+  scenario=transient
+  : > "$work/requests"
+  unset GITHUB_TOKEN var_github_token
+  rc=0
+  if [[ "$request" == generic ]]; then
+    github_api_call https://api.github.com/repos/owner/app/releases/latest "$work/response" || rc=$?
+  else
+    _github_release_request https://api.github.com/repos/owner/app/releases/latest "$work/response" status || rc=$?
+  fi
+  check "$rc" 0 "F6 $request retains existing bounded transfer retry"
+  check "$(wc -l < "$work/requests")" 2 "F6 $request consumes a completed retry, never partial JSON"
   for scenario in token-first rejected saml ip forbidden; do
     : > "$work/requests"
     unset GITHUB_TOKEN
