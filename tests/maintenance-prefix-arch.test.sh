@@ -42,7 +42,7 @@ curl() {
     *'/tags/'*) body='{"tag_name":"v2.0.0","draft":false,"prerelease":false}' ;;
     *'releases?per_page='*) body='[{"tag_name":"v5.0.0","draft":false,"prerelease":false},{"tag_name":"v4.9.0","draft":false,"prerelease":false},{"tag_name":"v4.10.0","draft":false,"prerelease":false},{"tag_name":"v4.99.0","draft":false,"prerelease":true},{"tag_name":"v4.98.0","draft":true,"prerelease":false}]' ;;
   esac
-  if [[ "${prefix_line:-no}" == yes ]]; then
+  if [[ "${prefix_line:-no}" == yes && "$url" == *'releases?per_page='* ]]; then
     body='[{"tag_name":"v1.20.0"},{"tag_name":"v1.2.3"}]'
   fi
   if [[ "${word_case:-no}" == yes ]]; then body='{"tag_name":"version/4.2","draft":false,"prerelease":false}'; fi
@@ -75,7 +75,7 @@ check_for_gh_release pin-probe owner/app v2.0.0 reason v4.
 check "$CHECK_UPDATE_RELEASE" v2.0.0 'explicit pin retains priority over optional latest prefix'
 fetch_and_deploy_gh_release pin-probe owner/app tarball v2.0.0 "$work/pin" '' v4.
 check "$(cat "$HOME/.pin-probe")" 2.0.0 'deployer retains explicit pin with optional prefix'
-var_appversion=v2.0.0 fetch_and_deploy_gh_release override-probe owner/app tarball latest "$work/override" '' v4.
+APP=override-probe var_appversion=v2.0.0 fetch_and_deploy_gh_release override-probe owner/app tarball latest "$work/override" '' v4.
 check "$(cat "$HOME/.override-probe")" 2.0.0 'environment app pin retains priority'
 check_for_gh_release default-probe owner/app
 check "$CHECK_UPDATE_RELEASE" v5.0.0 'unfiltered default retains designated latest behavior'

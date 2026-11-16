@@ -1213,8 +1213,9 @@ GitHub version lookup, checking and deployment share a small request/selection
 boundary, not a cross-forge coordinator. Completed curl status and JSON shape are
 checked before selection. HTTP status is a named output so token recovery stays
 in the caller for subsequent asset downloads; diagnostics never enter JSON output.
-An unfiltered latest request honors the designated `/latest` object; an optional
-stable tag-prefix selects from the release list. Prefix means raw `startswith`,
+Latest requests honor the designated stable `/latest` object when it satisfies
+the optional literal tag prefix; otherwise they enumerate the complete checked
+release list. Prefix means raw `startswith`,
 not numeric/component matching: include the actual leading `v` and the desired
 separator (`v1.2.` excludes `v1.20.0`, whereas `v1.2` matches both). Pins retain priority and raw tags
 are preserved; one numeric-v compatibility helper handles comparisons and markers
@@ -1242,6 +1243,24 @@ the actually selected release object on success, including no-op success and
 older-asset fallback. Internal response files/stages are private and removed by
 their owners. No global temporary metadata file or exported last-response state
 is used.
+
+Generic GitHub API, tag and release requests share a completed HTTP owner.
+`GITHUB_TOKEN` takes precedence over `var_github_token`, and either is used on
+the first request. A rejected configured token or a response explicitly naming
+organization SAML/IP restrictions can trigger one request-local anonymous retry;
+credentials for other repositories remain unchanged. Response bodies and token
+values never enter diagnostics. Public version parsers establish jq with
+dependency output on stderr. Tag enumeration validates complete responses and
+pages before selecting a tag, excluding numeric dev/alpha/beta/preview/pre/rc
+spellings while preserving literal word/date tags and caller prefixes.
+
+Tag/release checkers and deployers use one main-app pin selector. An explicit
+requested version wins; only an exact normalized APP/NSAPP/APP_SLUG identity may
+consume `var_appversion` for a latest request. Substring matching and unknown
+script identity never propagate app pins into prerequisites. GitLab tag mode
+requires a resolved explicit/main-app pin and publishes the source archive
+through the existing checked replacement owner without requiring a release.
+Numeric-v release compatibility is bidirectional; word tags remain literal.
 
 Intel metadata consumers allocate their own file, pass it through the existing
 optional-command subshell, call `_resolve_igc_tag(outvar, selected_json_file)` and

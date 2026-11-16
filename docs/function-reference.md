@@ -315,7 +315,7 @@ Typical update flow: `create_backup /opt/app/.env /opt/app/data` before the upgr
 - **`prompt_for_github_token()`** — Interactive PAT entry; exports `GITHUB_TOKEN`.
 - **`github_api_call()`** — Authenticated GET with rate-limit backoff. Reads `GITHUB_TOKEN`.
 - **`codeberg_api_call()`** — Codeberg API GET (no auth needed).
-- **`get_latest_gh_tag()`**, **`get_latest_github_release()`**, **`get_latest_codeberg_release()`**, **`get_latest_gitlab_release()`** — Latest version probes.
+- **`get_latest_gh_tag()`**, **`get_latest_github_release()`**, **`get_latest_codeberg_release()`**, **`get_latest_gitlab_release()`** — Latest version probes. Parser dependency output stays on stderr. GitHub tags exclude numeric prerelease spellings and validate complete tag responses/pages before selection.
 - **`extract_version_from_json()`** — `jq` field extraction from release JSON.
 
 ### Version comparators (for update_script authors)
@@ -331,7 +331,7 @@ Each compares latest against cached version and sets `CHECK_UPDATE_RELEASE`. Wit
 - **`fetch_and_deploy_gh_release(app, repo, mode?, version?, target?, asset?, prefix?, selected_json_file?)`** — Modes: `tarball`/`binary`/`prebuild`/`singlefile`. Uses private completed/parsed metadata; latest asset fallback stays in the optional raw tag-prefix and cannot replace an explicit pin. Older-asset fallback uses one checked request for at most15 releases, in API order; complete pagination remains for uv/prefix enumeration. The optional caller-owned JSON output is cleared at entry, filled on success with the actual selected object, and survives optional subshell calls without shared state. FORCE_DEPLOY, same-version idempotency and checked-copy/marker protections remain.
 - **`_github_release_request(url, body_file, status_var)` / `_gh_release_json(repo, version, prefix, selected_file)`** — Small internal request/selection and private response ownership boundaries. Check transfer status and JSON before use; retain token recovery in the calling shell. Version getter, checker and deployer share selection instead of separate unchecked response paths.
 - **`_resolve_igc_tag(outvar, selected_json_file)`** — Resolve the compiler tag from the explicitly supplied selected compute-runtime release, clearing output when absent/unusable. No shared-file lookup. Callers own/remove the metadata file; no hardware policy change.
-- **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Same contract for Codeberg/GitLab.
+- **`fetch_and_deploy_codeberg_release()`**, **`fetch_and_deploy_gl_release()`** — Provider-specific release deployment; `tag` mode accepts an explicit/main-app pin without a release object. Shared pin selection gives explicit requested versions priority over `var_appversion`; only exact normalized APP/NSAPP/APP_SLUG identity consumes an ambient main-app pin. Prerequisites retain independent versions.
 - **`fetch_and_deploy_from_url()`** — Plain URL download with archive-type auto-detection and checked extraction, then the same replacement/persistence helper as release/source providers. Failed extraction never clears the target.
 
 For binary `.deb` assets, the GitHub/Codeberg/GitLab release adapters request an
