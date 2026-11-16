@@ -192,7 +192,51 @@ function post_install_script() {
 }
 
 function update_script() {
-  if check_for_gh_release "copyparty-sfx.py" "9001/copyparty"; then
+  local source_url="${var_addon_src_url:-https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py}"
+  local managed_release=0 update_status=0 stage bin_dir marker_stage=""
+
+  # The stock source is release-managed. A saved custom URL remains the
+  # operator's source; GitHub cannot describe or certify its version.
+  if [[ "$source_url" == https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py ]]; then
+    if check_for_gh_release "copyparty-sfx.py" "9001/copyparty"; then
+      managed_release=1
+    else
+      local release_status=$?
+      [[ "$release_status" == 1 ]] || return "$release_status"
+    fi
+    [[ "$managed_release" == 1 ]] || return 0
+    msg_info "Updating ${APP} to ${CHECK_UPDATE_RELEASE}"
+  else
+    msg_info "Updating ${APP} from custom source; version is operator-managed"
+  fi
+
+  # Prepare the complete executable, owner and mode beside its final path.
+  # Neither a partial custom download nor a failed preparation touches the old
+  # executable. Private HOME keeps managed-release metadata staged as well.
+  bin_dir=$(dirname -- "$var_addon_bin_path") || return $?
+  stage=$(mktemp -d "$bin_dir/.copyparty-update.XXXXXXXX") || return $?
+  if [[ "$managed_release" == 1 ]]; then
+    HOME="$stage" fetch_and_deploy_gh_release "copyparty-sfx.py" "9001/copyparty" "singlefile" "$CHECK_UPDATE_RELEASE" "$stage" "copyparty-sfx.py" || update_status=$?
+  else
+    curl_download "$stage/copyparty-sfx.py" "$source_url" || update_status=$?
+  fi
+  if [[ "$update_status" == 0 ]]; then
+    [[ -f "$stage/copyparty-sfx.py" && -s "$stage/copyparty-sfx.py" ]] || update_status=251
+  fi
+  if [[ "$update_status" == 0 ]]; then chmod 0755 "$stage/copyparty-sfx.py" || update_status=$?; fi
+  if [[ "$update_status" == 0 ]]; then chown "$var_addon_svc_user:$var_addon_svc_group" "$stage/copyparty-sfx.py" || update_status=$?; fi
+  if [[ "$update_status" == 0 && "$managed_release" == 1 ]]; then
+    marker_stage=$(mktemp "$HOME/.copyparty-marker.XXXXXXXX") || update_status=$?
+    if [[ "$update_status" == 0 ]]; then cp -- "$stage/.copyparty-sfx.py" "$marker_stage" || update_status=$?; fi
+  fi
+  if [[ "$update_status" == 0 && "$managed_release" == 0 ]]; then
+    # Custom bytes must not retain a managed-release claim. Invalidate before
+    # publication so even an invalidation failure leaves the old binary intact;
+    # returning to the stock source will perform a fresh release selection.
+    rm -f -- "$HOME/.copyparty-sfx.py" || update_status=$?
+  fi
+
+  if [[ "$update_status" == 0 ]]; then
     msg_info "Stopping Service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
       rc-service copyparty stop &> /dev/null || true
@@ -200,22 +244,24 @@ function update_script() {
       systemctl stop copyparty &> /dev/null || true
     fi
     msg_ok "Stopped Service"
-
-    msg_info "Updating ${APP}"
-    curl -fsSL "$var_addon_src_url" -o "$var_addon_bin_path"
-    chmod +x "$var_addon_bin_path"
-    chown "$var_addon_svc_user:$var_addon_svc_group" "$var_addon_bin_path"
-    msg_ok "Updated ${APP}"
-
-    msg_info "Starting Service"
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service copyparty start
-    else
-      systemctl start copyparty
-    fi
-    msg_ok "Started Service"
-    msg_ok "Updated successfully!"
+    mv -fT -- "$stage/copyparty-sfx.py" "$var_addon_bin_path" || update_status=$?
   fi
+  if [[ "$update_status" == 0 && "$managed_release" == 1 ]]; then
+    mv -fT -- "$marker_stage" "$HOME/.copyparty-sfx.py" || update_status=$?
+  fi
+  [[ -z "$marker_stage" ]] || rm -f -- "$marker_stage" || true
+  rm -rf -- "$stage" || true
+  [[ "$update_status" == 0 ]] || return "$update_status"
+  msg_ok "Updated ${APP}"
+
+  msg_info "Starting Service"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service copyparty start
+  else
+    systemctl start copyparty
+  fi
+  msg_ok "Started Service"
+  msg_ok "Updated successfully!"
   exit
 }
 

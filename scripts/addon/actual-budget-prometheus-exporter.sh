@@ -106,7 +106,7 @@ function update_script() {
     systemctl stop actual-budget-prometheus-exporter
     msg_ok "Stopped service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "latest"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE"
     NODE_VERSION="22" setup_nodejs
 
     msg_info "Building Actual-Budget-Prometheus-Exporter"
@@ -119,6 +119,9 @@ function update_script() {
     systemctl start actual-budget-prometheus-exporter
     msg_ok "Started service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

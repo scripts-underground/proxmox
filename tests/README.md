@@ -42,6 +42,20 @@ File Browser and CronMaster. Dokploy's existing quiet pipeline redirects its
 downloaded script; its quiet retry proves transport/status only, not installer
 execution. That application fix belongs to phase E.
 
+Release-check addon members share the HTTP/archive effect model in
+`tests/lib/runtime-hooks/addon-release.sh`, with app-owned declarations, setup
+and consumer assertions in each discovered member. Their checker-error,
+no-update and selected-tag cases run both STD modes through cold generated
+commands. The HTTP model moves latest after the check to detect a second
+unbound lookup. Package-manager effects and builds are modeled; real release
+selection, archive/binary publication, markers, pending retention and frozen
+retry remain inlined. The contribution-owned AST fixtures separately exercise
+the bounded direct-call policy and explicitly show its dynamic/indirect limits.
+Copyparty additionally covers stock/unset sources, a saved custom URL and binary
+path, partial downloads, mode/owner/publication failures, old executable
+retention and cold pending retry. Its custom-source assertions require no GitHub
+request or marker change and an explicit operator-managed version message.
+
 Standalone LXC fixtures retain their existing lifecycle and terminal result.
 Aggregator controls exercise refusal and success paths.
 

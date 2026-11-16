@@ -8,6 +8,43 @@ import (
 	"testing"
 )
 
+func TestAddonReleaseCheckPolicy(t *testing.T) {
+	good := `if check_for_gh_release app owner/repo; then :; else
+local release_status=$?
+[[ "$release_status" == 1 ]] || return "$release_status"
+fi`
+	cases := []struct {
+		name, body string
+		bad        bool
+	}{
+		{"tri-state", good, false},
+		{"no-else", `if check_for_gh_release app owner/repo; then :; fi; exit`, true},
+		{"boolean", `check_for_gh_release app owner/repo || true`, true},
+		{"lost-status", strings.Replace(good, "local release_status=$?", "true; local release_status=$?", 1), true},
+		{"inverted", strings.Replace(good, "== 1", "!= 1", 1), true},
+		{"returns-success", strings.Replace(good, `return "$release_status"`, "return 0", 1), true},
+		{"negated", `if ! check_for_gh_release app owner/repo; then return 0; fi`, true},
+		{"substitution", "echo \"$(" + good + "\n)\"", true},
+		{"subshell", "(" + good + "; ) || true", true},
+		{"background", good + " &\nwait; exit 0", true},
+		{"pipeline", "{ " + good + "; } | cat", true},
+		{"nested-helper", "helper() { " + good + "; }; helper || true", true},
+		{"comment", `# check_for_gh_release app owner/repo`, false},
+		{"quoted-text", `echo 'check_for_gh_release app owner/repo'`, false},
+		{"dynamic-command-outside-static-view", `"$checker" app owner/repo`, false},
+		{"indirect-helper-outside-static-view", `app_release_check app owner/repo`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var violations []string
+			analyzeScript("REPO_BASE=offline\nupdate_script() {\n:\n"+c.body+"\n}\n", TypeAddon, "fixture", &violations)
+			if (len(violations) > 0) != c.bad {
+				t.Fatalf("violations=%v; want invalid=%v", violations, c.bad)
+			}
+		})
+	}
+}
+
 func TestLXCSourceIdentityPolicy(t *testing.T) {
 	prefix := "#!/usr/bin/env bash\nREPO_BASE=offline\nAPP=Scanopy\ninstall_script() { :; }\n"
 	valid := `source <(curl -fsSL "$REPO_BASE/misc/bootstrap/lxc") --script-id "netvisor" -- "$@"`

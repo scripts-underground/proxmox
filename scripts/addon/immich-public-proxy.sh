@@ -130,7 +130,7 @@ function update_script() {
       NODE_VERSION="24" setup_nodejs
     fi
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy" "tarball" "latest" "$var_addon_install_path"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
 
     BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
@@ -168,6 +168,9 @@ EOF
     systemctl start immich-proxy
     msg_ok "Started service"
     msg_ok "Updated successfully"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

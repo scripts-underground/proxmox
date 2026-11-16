@@ -38,9 +38,12 @@ function post_install_script() {
 function update_script() {
   if check_for_gh_release "$var_addon_pkg" "$var_addon_gh_repo"; then
     msg_info "Updating ${APP}"
-    fetch_and_deploy_gh_release "$var_addon_pkg" "$var_addon_gh_repo" "binary"
+    fetch_and_deploy_gh_release "$var_addon_pkg" "$var_addon_gh_repo" "binary" "$CHECK_UPDATE_RELEASE"
     systemctl restart "$var_addon_service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

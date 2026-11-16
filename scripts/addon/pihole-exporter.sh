@@ -125,7 +125,7 @@ function update_script() {
     fi
     msg_ok "Stopped service"
 
-    fetch_and_deploy_gh_release "pihole-exporter" "$var_addon_repo" "tarball" "latest" "$var_addon_install_path"
+    fetch_and_deploy_gh_release "pihole-exporter" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
     setup_go
 
     msg_info "Building Pihole-Exporter"
@@ -141,6 +141,9 @@ function update_script() {
     fi
     msg_ok "Started service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }
