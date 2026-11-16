@@ -118,7 +118,7 @@ curl() {
       install.func) printf 'setup_lxc() { :; }\n' ;;
       tools.func) printf 'setup_uv() { :; }\n' ;;
       github.func) printf 'clone_and_deploy_gh_commit() { :; }\n' ;;
-      addon.func) printf 'addon_baseline() { :; }\n' ;;
+      addon_lxc.func) printf 'addon_baseline() { :; }\n' ;;
       *) return 98 ;;
     esac
   } > "$output"

@@ -7,6 +7,7 @@ systemd-detect-virt --vm --quiet || exit 1
 case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
 case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+source "$ROOT/misc/bundle.func"
 work=$(mktemp -d "$TMPDIR/maintenance-uninstall.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 failures=0
@@ -37,8 +38,8 @@ docker() {
 }
 MODEL
       if [[ "$owner" == addon ]]; then
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon.func"
-        cat "$c/model.sh" >> "$c/stage/addon.func"
+        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
+        cat "$c/model.sh" >> "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$ROOT/scripts/addon/dockge.sh" > "$c/hook.sh"
       else
         cat "$c/model.sh" >> "$c/stage/github.func"

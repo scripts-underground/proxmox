@@ -6,6 +6,7 @@ systemd-detect-virt --vm --quiet || exit 1
 case "$(realpath -e "$TMPDIR")" in /tmp | /tmp/*) exit 1 ;; esac
 case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
+source "$ROOT/misc/bundle.func"
 work=$(mktemp -d "$TMPDIR/maintenance-addon-writer.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 failures=0
@@ -15,6 +16,10 @@ check() {
     failures=$((failures + 1))
   fi
 }
+rc=0
+_framework_library_contents unknown "$work" > "$work/unknown-profile" || rc=$?
+check "$rc" 65 'unknown library profile refuses before emission'
+check "$(stat -c %s "$work/unknown-profile")" 0 'unknown profile emits no partial library content'
 for fault in cat missing context write chmod link publish none; do
   c="$work/$fault"
   mkdir -p "$c/stage" "$c/sbin" "$c/bin"
@@ -23,7 +28,7 @@ for fault in cat missing context write chmod link publish none; do
   printf 'pkg_install() { :; }\n' > "$c/stage/install.func"
   printf 'fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
   printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
-  printf 'addon_baseline() { printf "baseline\\n" >> "$ORDER_FILE"; }\n' > "$c/stage/addon.func"
+  printf 'addon_baseline() { printf "baseline\\n" >> "$ORDER_FILE"; }\n' > "$c/stage/addon_lxc.func"
   printf '#!/bin/bash\nprintf "PREVIOUS_VALID\\n"\n' > "$c/sbin/update_probe"
   chmod 0755 "$c/sbin/update_probe"
   cp -p "$c/sbin/update_probe" "$c/previous"
@@ -80,5 +85,6 @@ for fault in cat missing context write chmod link publish none; do
     done < "$c/owned-stages"
   fi
 done
+bash "$ROOT/tests/lib/addon-producer-chain.fixture.sh" || failures=$((failures + 1))
 printf '%s failure(s); actual addon writer/files/publication, injected fault boundaries\n' "$failures"
 [[ "$failures" == 0 ]]

@@ -5,7 +5,7 @@
 # ------------------------------------------------------------------------------
 # _framework_cache_ensure()
 #
-# Ensures the 5 framework .func files are cached on the host at
+# Ensures the LXC profile's framework files are cached on the host at
 # ${TMPDIR:-/tmp}/framework-$SESSION_ID/. Fetches once per selected root/session.
 # Verifies size (> 100 bytes) and sentinel function presence.
 # ------------------------------------------------------------------------------
@@ -116,62 +116,62 @@ _receiving_exec() {
   pct exec "$CTID" -- /bin/sh -c 'r=$1; shift; unset TMPDIR; if [ -n "$r" ]; then TMPDIR=$r; export TMPDIR; fi; exec "$@"' _ "${_receiving_tmpdir:-}" "$@"
 }
 
-_framework_cache_ensure() {
-  local cache_dir
-  cache_dir=$(_framework_cache_dir) || return $?
-
-  if [[ -d "$cache_dir" ]] &&
-    [[ -s "$cache_dir/core.func" ]] &&
-    [[ -s "$cache_dir/error_handler.func" ]] &&
-    [[ -s "$cache_dir/install.func" ]] &&
-    [[ -s "$cache_dir/tools.func" ]] &&
-    [[ -s "$cache_dir/github.func" ]]; then
-    msg_debug "framework cache hit: ${cache_dir}"
-    return 0
+# One inventory owns framework membership, order and fetch sentinels for both
+# delivery adapters. Capture its output before looping so invalid profiles fail.
+_framework_library_inventory() {
+  case "$1" in lxc | addon) ;; *) return 65 ;; esac
+  printf '%s\n' \
+    'core.func load_functions' \
+    'error_handler.func catch_errors' \
+    'install.func setup_lxc' \
+    'tools.func setup_uv' \
+    'github.func clone_and_deploy_gh_commit' || return $?
+  if [[ "$1" == addon ]]; then
+    printf '%s\n' 'addon_lxc.func addon_baseline' || return $?
   fi
+}
 
-  msg_debug "framework cache miss: fetching from REPO_BASE=${REPO_BASE:-<unset>}"
-  mkdir -p "$cache_dir" || return $?
-
-  for f in core.func error_handler.func install.func tools.func github.func; do
-    msg_debug "  fetching ${f} ..."
-    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${cache_dir}/${f}" 2> /dev/null || {
-      msg_error "Failed to fetch ${f}"
-      return 1
-    }
-    local size
-    size=$(stat -c%s "${cache_dir}/${f}" 2> /dev/null || echo 0)
+_framework_library_fetch() {
+  local profile=$1 directory=$2 inventory f sentinel size
+  inventory=$(_framework_library_inventory "$profile") || return $?
+  mkdir -p "$directory" || return $?
+  while read -r f sentinel; do
+    curl -fsSL --connect-timeout 10 "${REPO_BASE}/misc/${f}" -o "${directory}/${f}" || return $?
+    size=$(stat -c%s "${directory}/${f}") || return $?
     if [[ $size -lt 100 ]]; then
       msg_error "${f}: too small (${size}b), fetch likely failed"
       return 1
     fi
-  done
+    grep -q "$sentinel" "${directory}/${f}" || {
+      msg_error "${f} missing ${sentinel}"
+      return 1
+    }
+  done <<< "$inventory"
+}
 
-  grep -q 'load_functions' "${cache_dir}/core.func" ||
-    {
-      msg_error "core.func missing load_functions"
-      return 1
-    }
-  grep -q 'catch_errors' "${cache_dir}/error_handler.func" ||
-    {
-      msg_error "error_handler.func missing catch_errors"
-      return 1
-    }
-  grep -q 'setup_lxc' "${cache_dir}/install.func" ||
-    {
-      msg_error "install.func missing setup_lxc"
-      return 1
-    }
-  grep -q 'setup_uv' "${cache_dir}/tools.func" ||
-    {
-      msg_error "tools.func missing setup_uv"
-      return 1
-    }
-  grep -q 'clone_and_deploy_gh_commit' "${cache_dir}/github.func" ||
-    {
-      msg_error "github.func missing clone_and_deploy_gh_commit"
-      return 1
-    }
+_framework_library_contents() {
+  local profile=$1 directory=$2 inventory f sentinel
+  inventory=$(_framework_library_inventory "$profile") || return $?
+  while read -r f sentinel; do
+    printf '# framework: %s\n' "$f" || return $?
+    cat "${directory}/${f}" || return $?
+    printf '\n' || return $?
+  done <<< "$inventory"
+}
+
+_framework_cache_ensure() {
+  local cache_dir inventory f sentinel hit=1
+  cache_dir=$(_framework_cache_dir) || return $?
+  inventory=$(_framework_library_inventory lxc) || return $?
+  while read -r f sentinel; do
+    [[ -s "$cache_dir/$f" ]] || hit=0
+  done <<< "$inventory"
+  if [[ $hit == 1 ]]; then
+    msg_debug "framework cache hit: ${cache_dir}"
+    return 0
+  fi
+  msg_debug "framework cache miss: fetching from REPO_BASE=${REPO_BASE:-<unset>}"
+  _framework_library_fetch lxc "$cache_dir" || return 1
 }
 
 # ------------------------------------------------------------------------------
@@ -280,7 +280,7 @@ _write_bundle() {
   _lxc_bundle_args _bundle_source_id _bundle_required_cpu _bundle_required_ram _bundle_prefix_count "$@" || return $?
   shift "$_bundle_prefix_count"
   local pipeline=("$@")
-  local tag="${name:0:4}" _v step f
+  local tag="${name:0:4}" _v step
   tag="${tag^^}"
   # Every producer checks its own status. The caller deliberately handles failure,
   # so neither errexit nor a checked compound block can enforce this boundary.
@@ -320,10 +320,7 @@ BUNDLE_HEADER
   _receiving_context_contents || return $?
   printf '%s\n' '_prepare_lxc_tmpdir "${var_lxc_tmpdir:-}" || exit $?' || return $?
 
-  for f in core error_handler install tools github; do
-    printf '%s\n' "# ═══ framework: ${f}.func ═══" || return $?
-    cat "${cache_dir}/${f}.func" || return $?
-  done
+  _framework_library_contents lxc "$cache_dir" || return $?
 
   cat << BUNDLE_INIT || return $?
 # ═══ runtime init ═══
