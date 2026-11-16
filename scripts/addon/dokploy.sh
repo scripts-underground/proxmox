@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2046
-# SC2046: container-id list in uninstall_script is intentionally word-split (upstream pattern)
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
 
 # Copyright (c) 2021-2026 community-scripts ORG
@@ -89,11 +87,43 @@ function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
   if command -v docker &> /dev/null; then
-    msg_info "Stopping and removing Docker containers"
-    $STD docker stop $(docker ps -aq) 2> /dev/null || true
-    $STD docker rm $(docker ps -aq) 2> /dev/null || true
-    $STD docker network prune -f 2> /dev/null || true
-    msg_ok "Stopped and removed Docker containers"
+    msg_info "Stopping and removing Dokploy Docker resources"
+    local services containers networks volumes secrets name
+    # Dokploy's installer creates named Swarm services, not a Compose project.
+    # Check each inventory before effects; failed queries are not absence.
+    services=$(docker service ls --format '{{.Name}}')
+    containers=$(docker container ls -a --format '{{.Names}}')
+    networks=$(docker network ls --format '{{.Name}}')
+    volumes=$(docker volume ls --format '{{.Name}}')
+    secrets=$(docker secret ls --format '{{.Name}}')
+    for name in dokploy dokploy-postgres dokploy-redis dokploy-traefik; do
+      if grep -Fxq "$name" <<< "$services"; then
+        # Converge to zero tasks before removing the service so it cannot
+        # recreate a container or keep a volume/network busy during cleanup.
+        $STD docker service scale --detach=false "${name}=0"
+        $STD docker service rm "$name"
+      fi
+    done
+    if grep -Fxq dokploy-traefik <<< "$containers"; then
+      $STD docker container rm -f dokploy-traefik
+    fi
+    if grep -Fxq dokploy-network <<< "$networks"; then
+      $STD docker network rm dokploy-network
+    fi
+    for name in dokploy dokploy-postgres dokploy-redis; do
+      if grep -Fxq "$name" <<< "$volumes"; then
+        $STD docker volume rm "$name"
+      fi
+    done
+    for name in dokploy_postgres_password dokploy_auth_secret; do
+      if grep -Fxq "$name" <<< "$secrets"; then
+        $STD docker secret rm "$name"
+      fi
+    done
+    msg_ok "Stopped and removed Dokploy Docker resources"
+  else
+    msg_error "Docker is unavailable; retaining ${var_addon_install_path}"
+    return 1
   fi
 
   rm -rf "$var_addon_install_path"

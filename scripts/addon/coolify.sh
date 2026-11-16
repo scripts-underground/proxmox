@@ -70,14 +70,41 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
-  if command -v docker &> /dev/null; then
-    msg_info "Stopping and removing Docker containers"
-    (cd "${var_addon_install_path}/source" 2> /dev/null && $STD docker compose down --remove-orphans) || true
-    docker ps -aq | xargs -r docker stop &> /dev/null || true
-    docker ps -aq | xargs -r docker rm &> /dev/null || true
-    $STD docker network prune -f || true
-    msg_ok "Stopped and removed Docker containers"
+  # Use the same installed Compose layers as Coolify's upgrade command. The
+  # base file alone omits persistent volumes and the production configuration.
+  local source_path="${var_addon_install_path}/source" layer networks containers name
+  local -a compose_files=(-f docker-compose.yml -f docker-compose.prod.yml)
+  if ! command -v docker &> /dev/null || [[ ! -f "$source_path/docker-compose.yml" || ! -f "$source_path/docker-compose.prod.yml" || ! -f "$source_path/.env" ]]; then
+    msg_error "Docker or the installed Coolify Compose configuration is missing; retaining ${var_addon_install_path}"
+    return 1
   fi
+  for layer in docker-compose.custom.yml docker-compose.postgres-upgrade.yml; do
+    [[ ! -f "$source_path/$layer" ]] || compose_files+=(-f "$layer")
+  done
+
+  msg_info "Stopping and removing Coolify Docker resources"
+  (
+    cd "$source_path" || exit 1
+    $STD docker compose --env-file .env "${compose_files[@]}" down --volumes --remove-orphans
+  )
+  # These core agents are started by Coolify itself outside the Compose stack.
+  # Do not select every coolify.managed resource: user deployments have it too.
+  containers=$(docker container ls -a --filter label=coolify.managed=true --format '{{.Names}}')
+  for name in coolify-sentinel coolify-proxy-error-pages; do
+    if grep -Fxq "$name" <<< "$containers"; then
+      $STD docker container rm -f "$name"
+    fi
+  done
+  if [[ -f "${var_addon_install_path}/proxy/docker-compose.yml" ]]; then
+    $STD docker compose -f "${var_addon_install_path}/proxy/docker-compose.yml" down --volumes --remove-orphans
+  fi
+  # The production stack declares this network external, so Compose retains it.
+  # A network still used by a deployed workload must fail, never be disconnected.
+  networks=$(docker network ls --format '{{.Name}}')
+  if grep -Fxq coolify <<< "$networks"; then
+    $STD docker network rm coolify
+  fi
+  msg_ok "Stopped and removed Coolify Docker resources"
 
   rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
