@@ -101,29 +101,6 @@ function update_script() {
     [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
-  msg_info "Refreshing service configuration"
-  cat << EOF > "/etc/systemd/system/${var_addon_service}.service"
-[Unit]
-Description=Prometheus Paperless NGX Exporter
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-User=root
-EnvironmentFile=${var_addon_conf_path}
-ExecStart=${var_addon_bin_path} \\
-    --paperless_url=\${PAPERLESS_URL} \\
-    --paperless_auth_token_file=${var_addon_auth_token_file} \\
-    --paperless_header 'Accept: application/json; version=9' \\
-    --collectors=tag,correspondent,document_type,storage_path,task,log,group,user,status,statistics
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  msg_ok "Refreshed service configuration"
-
   msg_info "Starting service"
   systemctl restart "$var_addon_service"
   msg_ok "Started service"
@@ -131,7 +108,7 @@ EOF
   if [[ $release_found -eq 0 ]]; then
     msg_ok "Updated successfully!"
   else
-    msg_ok "No new release found, service configuration refreshed"
+    msg_ok "No new release found"
   fi
   exit
 }
@@ -146,7 +123,9 @@ function uninstall_script() {
 
   rm -f "/etc/systemd/system/${var_addon_service}.service"
   rm -rf "$var_addon_conf_dir"
-  rm -f "$HOME/.prometheus-paperless-ngx-exporter"
+  local release_marker=${var_addon_gh_app,,}
+  release_marker=${release_marker// /}
+  rm -f "$HOME/.${release_marker}"
   msg_ok "${APP} has been uninstalled"
 }
 
