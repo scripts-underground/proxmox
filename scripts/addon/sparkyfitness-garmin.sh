@@ -47,7 +47,7 @@ Requires=sparkyfitness-server.service
 [Service]
 Type=simple
 WorkingDirectory=${var_addon_install_path}/SparkyFitnessGarmin
-EnvironmentFile=${var_addon_config_path}
+EnvironmentFile="${var_addon_config_path}"
 ExecStart=${var_addon_install_path}/SparkyFitnessGarmin/.venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port ${var_addon_default_port}
 Restart=always
 RestartSec=5
@@ -55,7 +55,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now sparkyfitness-garmin
+  systemctl enable -q --now "${var_addon_service_path##*/}"
   msg_ok "Set up ${APP}"
 }
 
@@ -71,19 +71,23 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" "SparkyFitnessGarmin/mock_data" "SparkyFitnessGarmin/.venv")
+    case "$var_addon_config_path" in
+      "$var_addon_install_path"/*) CLEAN_INSTALL_KEEP_PATHS+=("${var_addon_config_path#"$var_addon_install_path"/}") ;;
+    esac
     PYTHON_VERSION="3.13" setup_uv
 
     msg_info "Stopping service"
-    systemctl stop sparkyfitness-garmin.service &> /dev/null || true
+    systemctl stop "${var_addon_service_path##*/}"
     msg_ok "Stopped service"
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
     cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit
-    $STD uv venv --clear .venv
+    if [[ ! -x .venv/bin/python3 ]]; then $STD uv venv .venv; fi
     $STD uv pip install -r requirements.txt
 
     msg_info "Starting service"
-    systemctl start sparkyfitness-garmin
+    systemctl start "${var_addon_service_path##*/}"
     msg_ok "Started service"
     msg_ok "Updated successfully"
   else
@@ -95,7 +99,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  svc_prepare_uninstall sparkyfitness-garmin.service
+  svc_prepare_uninstall "${var_addon_service_path##*/}"
   rm -rf "$var_addon_service_path" "$var_addon_config_path" "$var_addon_install_path" "$HOME/.sparkyfitness-garmin"
   msg_ok "${APP} has been uninstalled"
 }
