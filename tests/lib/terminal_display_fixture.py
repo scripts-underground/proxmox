@@ -214,10 +214,13 @@ start_script
     check('VM actual ' + branch + ' menu status', (0, b''), (rc, err))
     check('VM actual ' + branch + ' callback', True, ('settings-' + branch).encode() in out)
 addon_header = next(body for path, body in headers if path.name == 'filebrowser.sh')
-rc, out, err = run('addon-init', 'set -euo pipefail; ' + addon_header + '\n' + prefix +
-                   f'APP=FileBrowser; source {quote(SOURCE / "misc/addon_lxc.func")}; addon_init; printf "slug:%s" "$APP_SLUG"')
-check('actual addon init preserves custom header dispatch', (0, b''), (rc, err))
-check('actual addon init slug consumer', True, b'slug:filebrowser' in out and len(out) > 40)
+for label, identity, expected_slug in [('legacy', '', 'filebrowser'), ('source', 'filebrowser', 'file-browser')]:
+    # Initialization binds identity; rendering belongs to the bootstrap's separate
+    # render_header call. Exercise both public init forms without conflating them.
+    rc, out, err = run('addon-init-' + label, 'set -euo pipefail; ' + addon_header + '\n' + prefix +
+                       f'APP=FileBrowser; source {quote(SOURCE / "misc/addon_lxc.func")}; addon_init {identity}; render_header; printf "slug:%s" "$APP_SLUG"')
+    check('actual addon ' + label + ' init preserves custom header dispatch', (0, b''), (rc, err))
+    check('actual addon ' + label + ' init slug consumer', True, ('slug:' + expected_slug).encode() in out and len(out) > 40)
 
 # Existing PVE bootstrap executes before the first header, not just before later
 # administrative loops. Stop at the declared UI/log boundary, before any effects.
@@ -389,8 +392,11 @@ printf 'requirements:%s:%s' "$required_cpu" "$required_ram"
 print(str(len(CHECKS)) + ' terminal checks; ' + str(sum(not v['passed'] for v in CHECKS)) + ' failure(s)', flush=True)
 child_failed = False
 if all(v['passed'] for v in CHECKS):
-    for name, seconds in [('batch_metadata_fixture.py', 120), ('resource_consent_fixture.py', 240),
-                          ('source_script_identity_fixture.py', 240), ('nvidia_integration_fixture.py', 240)]:
+    # These expanded matrices include whole-batch failure frontiers, LXC 5/6/7
+    # device policy and native APT sources under the public runner's CPU limit.
+    # Keep the NVIDIA caller budget above its own full-matrix deadline.
+    for name, seconds in [('batch_metadata_fixture.py', 120), ('resource_consent_fixture.py', 600),
+                          ('source_script_identity_fixture.py', 240), ('nvidia_integration_fixture.py', 900)]:
         result = subprocess.run([sys.executable, '-B', str(SOURCE / 'tests/lib' / name), str(SOURCE)], timeout=seconds)
         child_failed |= result.returncode != 0
 raise SystemExit(any(not v['passed'] for v in CHECKS) or child_failed)

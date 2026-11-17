@@ -51,8 +51,11 @@ bootstrap = function(build, '_lxc_bootstrap')
 normalization = next(line for line in function(build, 'variables').splitlines() if line.strip().startswith('NSAPP='))
 # Preserve the actual local capture and both production call sites. Hardware and
 # storage work between these sections is outside this non-native proof boundary.
+build_body = function(build, 'build_container')
+capture, marker, _ = build_body.partition('  execute_optional_hook pre_build_script\n')
+assert marker, 'build_container capture/pre-build boundary'
+prefix = capture + marker
 start = build.index('build_container() {')
-prefix = build[start:build.index('  NET_STRING=', start)]
 start = build.index('  local install_tmpdir=', start)
 initial = build[start:build.index('\n\n  msg_ok ', start)]
 start = build.index('            if _prepare_container_bundles ', start)
