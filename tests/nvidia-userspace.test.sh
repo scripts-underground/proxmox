@@ -10,6 +10,7 @@ mkdir -p "$work/etc/apt/sources.list.d" "$work/etc/apt/preferences.d" "$work/pro
 sed -n '/^_hwaccel_optional_command() /,/^setup_hwaccel() {/p' "$ROOT/misc/tools.func" | sed '$d' > "$work/optional.sh"
 source "$work/optional.sh"
 {
+  sed -n '/^_nvidia_write_pin() {/,/^}/p' "$ROOT/misc/tools.func"
   sed -n '/^_nvidia_pick_version() {/,/^}/p' "$ROOT/misc/tools.func"
   sed -n '/^_setup_nvidia_gpu() {/,/^}/p' "$ROOT/misc/tools.func"
 } | sed "s|/etc/|$work/etc/|g; s|/proc/driver/nvidia|$work/proc/driver/nvidia|g; s|/dev/nvidia|$work/dev/nvidia|g; s|/usr/lib/|$work/usr/lib/|g; s|/usr/share/|$work/usr/share/|g" > "$work/nvidia.sh"
@@ -233,3 +234,85 @@ rm "$work/dev/nvidia0"
 test_libraries='' _setup_nvidia_gpu debian bookworm 12
 grep -q 'NVIDIA GPU not usable' "$work/messages"
 printf 'PASS GLX failure stays optional and missing devices never report configured\n'
+
+reset_case
+printf '535.183.01-1\n' > "$work/debian12.versions"
+_setup_nvidia_gpu debian bookworm 12
+grep -q -- '--allow-downgrades' "$work/apt.calls"
+grep -q '^Pin: version 535.183.01-1$' "$work/etc/apt/preferences.d/nvidia-cuda-pin"
+[[ $(head -1 "$work/etc/apt/preferences.d/nvidia-cuda-pin") == *'nvidia-'* ]]
+cp "$work/etc/apt/preferences.d/nvidia-cuda-pin" "$work/prior.pin"
+reset_case
+fail_repo=yes _setup_nvidia_gpu debian bookworm 12
+cmp "$work/prior.pin" "$work/etc/apt/preferences.d/nvidia-cuda-pin"
+printf 'PASS explicit downgrade and persistent whole-family pin survive failed selection\n'
+mv() { return 42; }
+pin_status=0
+_nvidia_write_pin 535.200.01-1 || pin_status=$?
+unset -f mv
+[[ $pin_status == 42 ]]
+cmp "$work/prior.pin" "$work/etc/apt/preferences.d/nvidia-cuda-pin"
+[[ -z $(find "$work/etc/apt/preferences.d" -name '.nvidia-cuda-pin.*' -print) ]]
+printf 'PASS failed preference publication retains original pin and exact producer status\n'
+
+for fixture_suffix in -590 ''; do
+  reset_case
+  printf 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release\n' > "$work/proc/driver/nvidia/version"
+  apt-cache() {
+    if [[ "$*" == "madison libnvidia-compute${fixture_suffix}" ]]; then
+      printf ' libnvidia-compute%s | 590.48.01-0ubuntu1 | native\n' "$fixture_suffix"
+    fi
+  }
+  _setup_nvidia_gpu ubuntu noble 24.04
+  for package in libnvidia-compute libnvidia-decode libnvidia-encode nvidia-utils; do
+    grep -q -- "${package}${fixture_suffix}=590.48.01-0ubuntu1" "$work/apt.calls"
+  done
+  grep -q -- '--allow-downgrades' "$work/apt.calls"
+  grep -q '^Pin: version 590.48.01-0ubuntu1$' "$work/etc/apt/preferences.d/nvidia-cuda-pin"
+done
+# An exact suffixless host release wins over a newer suffixed same-series build.
+reset_case
+printf 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release\n' > "$work/proc/driver/nvidia/version"
+apt-cache() {
+  case "$*" in
+    'madison libnvidia-compute-590') printf ' p | 590.99.01-0ubuntu1 | native\n' ;;
+    'madison libnvidia-compute') printf ' p | 590.48.01-0ubuntu1 | native\n' ;;
+  esac
+}
+_setup_nvidia_gpu ubuntu noble 24.04
+grep -q -- 'libnvidia-compute=590.48.01-0ubuntu1' "$work/apt.calls"
+printf 'PASS Ubuntu suffixed/suffixless families and cross-family exact-host precedence\n'
+
+# Native APT consumes the emitted pin, including transitive packages. No GPU,
+# public repository or actual package installation is used by this fixture.
+python3 - "$work" << 'PY'
+import pathlib,subprocess,sys
+w=pathlib.Path(sys.argv[1]); p=w/'policy'; p.mkdir()
+repo=p/'repository'; repo.mkdir()
+packages=[]
+for name in ('libcuda1','libnvidia-fixture1','nvidia-persistenced','unrelated-fixture'):
+    for version in ('590.48.01-0ubuntu1','590.99.01-0ubuntu1'):
+        dep=('Depends: libnvidia-fixture1 (= '+version+'), nvidia-persistenced (= '+version+')\n') if name=='libcuda1' else ''
+        packages.append(f'Package: {name}\nVersion: {version}\nArchitecture: amd64\n{dep}Description: fixture\nFilename: unused.deb\nSize: 1\n\n')
+(repo/'Packages').write_text(''.join(packages))
+(p/'sources.list').write_text('deb [trusted=yes] file:'+str(repo)+' ./\n')
+(p/'status').write_text('Package: libcuda1\nStatus: install ok installed\nArchitecture: amd64\nVersion: 590.99.01-0ubuntu1\nDescription: fixture\n\n')
+for name in ('lists/partial','cache/archives/partial','parts'): (p/name).mkdir(parents=True,exist_ok=True)
+opts=[]
+for key,value in {'Dir::Etc::sourcelist':p/'sources.list','Dir::Etc::sourceparts':p/'parts','Dir::Etc::preferences':w/'etc/apt/preferences.d/nvidia-cuda-pin','Dir::Etc::preferencesparts':p/'parts','Dir::State::status':p/'status','Dir::State::lists':p/'lists','Dir::Cache':p/'cache','APT::Sandbox::User':'root','APT::Architecture':'amd64','APT::Get::List-Cleanup':'0'}.items():opts+=['-o',key+'='+str(value)]
+def run(args):
+    r=subprocess.run(args,text=True,capture_output=True,timeout=30)
+    assert r.returncode==0,(args,r.stdout,r.stderr)
+    return r.stdout+r.stderr
+run(['/usr/bin/apt-get',*opts,'update'])
+policy=run(['/usr/bin/apt-cache',*opts,'policy','libcuda1','libnvidia-fixture1','nvidia-persistenced','unrelated-fixture'])
+(p/'policy.log').write_text(policy)
+for name in ('libcuda1','libnvidia-fixture1','nvidia-persistenced'):
+    block=policy.split(name+':\n')[1].split('\n\n')[0]
+    assert 'Candidate: 590.48.01-0ubuntu1' in block,(name,block)
+assert 'Candidate: 590.99.01-0ubuntu1' in policy.split('unrelated-fixture:\n')[1]
+simulation=run(['/usr/bin/apt-get',*opts,'-s','-y','--allow-downgrades','install','libcuda1=590.48.01-0ubuntu1'])
+(p/'simulation.log').write_text(simulation)
+assert 'DOWNGRADED' in simulation and 'libnvidia-fixture1 (590.48.01-0ubuntu1' in simulation and 'nvidia-persistenced (590.48.01-0ubuntu1' in simulation,simulation
+print('PASS native APT selects exact transitive NVIDIA versions and simulates host rollback; unrelated package unpinned')
+PY

@@ -344,6 +344,19 @@ steps log directly to the active log and warn on failure rather than using
 `silent()`. Intel OpenCL uses the IGC tag in compute-runtime's release
 notes, never an unrelated latest IGC. AMD ROCm is only set up with mapped `/dev/kfd`.
 
+Intel discrete subtype detection reads the selected mapped DRM node's device ID:
+DG1 4905-4909, Alchemist 56xx and Battlemage e2xx select Arc even with old PCI
+descriptions or no lspci. Other IDs retain the existing modern/legacy description
+fallback. Host-visible but unmapped devices do not establish eligibility.
+NVIDIA userspace keeps an exact whole-family APT version stanza before its scoped
+origin preference, including transitive libnvidia-* and nvidia-* packages. Checked
+same-filesystem publication preserves the prior pin on failure; failed selection
+does not erase it. Installs explicitly permit host-version downgrades. Ubuntu
+compares suffixed and suffixless compute families, preferring an exact host release
+across both and installing matching decode/encode/utils names. Optional warning
+boundaries and mapped-node/libcuda usability checks remain unchanged. Fixture
+configuration and native APT policy/simulation do not prove GPU operation.
+
 The separate manual PVE hardware tool uses `tools/pve/gpu-nvidia.func` for its
 NVIDIA branch. Checked driver/CUDA-capability reads, proc records, dialog membership
 and character-device metadata precede config effects. Its existing 500/11 warning
