@@ -52,8 +52,12 @@ function install_script() {
   fi
 
   fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "latest"
+  if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
+    install -D -m 0755 /usr/bin/nextcloud-exporter "$var_addon_bin_path"
+  fi
 
   msg_info "Creating configuration"
+  install -m 0600 /dev/null "$var_addon_config_path"
   cat << EOF > "$var_addon_config_path"
 # https://github.com/xperimental/nextcloud-exporter
 NEXTCLOUD_SERVER="${NEXTCLOUD_SERVER}"
@@ -105,6 +109,9 @@ function update_script() {
     msg_ok "Stopped service"
 
     fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "$CHECK_UPDATE_RELEASE"
+    if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
+      install -D -m 0755 /usr/bin/nextcloud-exporter "$var_addon_bin_path"
+    fi
 
     msg_info "Starting service"
     systemctl start "$var_addon_service"
@@ -124,6 +131,9 @@ function uninstall_script() {
 
   if dpkg -l | grep -q nextcloud-exporter; then
     $STD apt remove -y nextcloud-exporter || $STD dpkg -r nextcloud-exporter
+  fi
+  if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
+    rm -f "$var_addon_bin_path"
   fi
 
   rm -f "$var_addon_config_path"
