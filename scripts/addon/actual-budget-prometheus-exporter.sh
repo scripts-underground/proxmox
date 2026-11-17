@@ -42,7 +42,7 @@ function install_script() {
   $STD apt install -y build-essential python3
   msg_ok "Installed Dependencies"
 
-  fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "latest"
+  fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "latest" "$var_addon_install_path"
   NODE_VERSION="22" setup_nodejs
 
   msg_info "Building Actual-Budget-Prometheus-Exporter"
@@ -52,6 +52,7 @@ function install_script() {
   msg_ok "Built Actual-Budget-Prometheus-Exporter"
 
   msg_info "Creating configuration"
+  install -m 0600 /dev/null "$var_addon_config_path"
   cat << EOF > "$var_addon_config_path"
 # https://github.com/sakowicz/actual-budget-prometheus-exporter
 ACTUAL_SERVER_URL="${ACTUAL_SERVER_URL}"
@@ -106,7 +107,7 @@ function update_script() {
     systemctl stop actual-budget-prometheus-exporter
     msg_ok "Stopped service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
     NODE_VERSION="22" setup_nodejs
 
     msg_info "Building Actual-Budget-Prometheus-Exporter"
