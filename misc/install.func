@@ -167,7 +167,7 @@ _bootstrap() {
   if ! command -v curl &> /dev/null; then
     printf "\r\e[2K%b" '\033[93m Setup Source \033[m' >&2
     if command -v apt-get &> /dev/null; then
-      apt-get update &> /dev/null && apt-get install -y curl &> /dev/null
+      apt-get update &> /dev/null && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y curl &> /dev/null
     elif command -v apk &> /dev/null; then
       apk update &> /dev/null && apk add curl &> /dev/null
     elif command -v dnf &> /dev/null; then
@@ -214,8 +214,39 @@ _bootstrap() {
   fi
   load_functions
   catch_errors
+  if _configure_apt_conffiles; then :; else
+    local policy_status=$?
+    # A return from this guarded initializer is not an ERR-trap event. Route
+    # required setup failure through the existing error/flag owner explicitly.
+    error_handler "$policy_status" _configure_apt_conffiles
+    return "$policy_status"
+  fi
 
   get_lxc_ip
+}
+
+# The installer owns the CT's APT policy, including later raw app commands.
+# Do not replace dpkg's force defaults through DPKG_FORCE. Explicit command-line
+# choices still override APT's default; conflicts remain in the real dpkg log.
+_configure_apt_conffiles() {
+  ((EUID == 0)) || return 0
+  command -v apt-get > /dev/null 2>&1 || return 0
+  local path=/etc/apt/apt.conf.d/99scripts-underground-conffiles stage status=0
+  local policy='Dpkg::Options { "--force-confold"; };'
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" && "$(cat "$path")" == "$policy" ]] || {
+      printf 'Cannot establish conffile preservation: inspect %s; existing bytes were retained\n' "$path" >&2
+      return 65
+    }
+    export DEBIAN_FRONTEND=noninteractive
+    return 0
+  fi
+  mkdir -p -- "${path%/*}" || return $?
+  stage=$(mktemp "${path%/*}/.conffiles.XXXXXXXX") || return $?
+  printf '%s\n' "$policy" > "$stage" && chmod 0644 "$stage" && mv -T -- "$stage" "$path" || status=$?
+  rm -f -- "$stage"
+  ((status == 0)) || return "$status"
+  export DEBIAN_FRONTEND=noninteractive
 }
 
 # Checked producers may load all definitions before productive initialization.
@@ -584,7 +615,7 @@ pkg_install() {
 
   case "$PKG_MANAGER" in
     apt)
-      $STD apt-get install -y "${packages[@]}"
+      DEBIAN_FRONTEND=noninteractive $STD apt-get -o Dpkg::Options::="--force-confold" install -y "${packages[@]}"
       ;;
     apk)
       $STD apk add --no-cache "${packages[@]}"

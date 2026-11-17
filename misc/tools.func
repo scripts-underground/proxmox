@@ -951,7 +951,7 @@ EOF
         return 7
       fi
       # Don't use /dev/null redirection for dpkg as it may use background processes
-      dpkg -i /tmp/debsuryorg-archive-keyring.deb >> "$(get_active_logfile)" 2>&1 || {
+      dpkg --force-confdef --force-confold -i /tmp/debsuryorg-archive-keyring.deb >> "$(get_active_logfile)" 2>&1 || {
         msg_error "Failed to install PHP keyring"
         rm -f /tmp/debsuryorg-archive-keyring.deb
         return 100
@@ -2457,56 +2457,41 @@ setup_deb822_repo() {
     return 65
   fi
 
-  # Cleanup
-  cleanup_old_repo_files "$name"
-  cleanup_orphaned_sources
-
-  mkdir -p /etc/apt/keyrings || {
-    msg_error "Failed to create /etc/apt/keyrings"
-    return 252
-  }
-
-  # Import GPG key (auto-detect binary vs ASCII-armored format)
-  local tmp_gpg
-  tmp_gpg=$(mktemp) || return 252
-  curl -fsSL "$gpg_url" -o "$tmp_gpg" || {
-    msg_error "Failed to download GPG key for ${name} from: ${gpg_url}"
-    msg_error "Hint: Check network connectivity. If behind a proxy or firewall, ensure HTTPS access to $(echo "$gpg_url" | grep -oE 'https?://[^/]+') is allowed."
-    rm -f "$tmp_gpg"
-    return 7
-  }
-
-  if grep -q "BEGIN PGP" "$tmp_gpg" 2> /dev/null; then
-    # ASCII-armored — dearmor to binary
-    gpg --dearmor --yes -o "/etc/apt/keyrings/${name}.gpg" < "$tmp_gpg" || {
-      msg_error "Failed to install GPG key for ${name}"
-      rm -f "$tmp_gpg"
-      return 251
-    }
-  else
-    # Already binary — copy directly
-    cp -f "$tmp_gpg" "/etc/apt/keyrings/${name}.gpg" || {
-      msg_error "Failed to install GPG key for ${name}"
-      rm -f "$tmp_gpg"
+  [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || return 65
+  local signed_by="/etc/apt/keyrings/${name}.gpg" source_stage repo_status=0
+  ensure_dependencies gpg || return $?
+  if [[ "$gpg_url" == /* ]]; then
+    # Existing distro/operator keyrings are inputs, never cleanup targets.
+    if [[ ! -f "$gpg_url" || ! -r "$gpg_url" || ! -s "$gpg_url" ]] ||
+      ! gpg --batch --show-keys "$gpg_url" > /dev/null 2>&1; then
+      msg_error "Invalid or unreadable local keyring for ${name}: $gpg_url"
       return 252
-    }
+    fi
+    signed_by="$gpg_url"
+  else
+    # The shared GPG owner validates and publishes atomically, preserving prior
+    # key bytes/metadata on every failed producer. Do not delete its input first.
+    download_gpg_key "$gpg_url" "$signed_by" auto || return $?
   fi
-  rm -f "$tmp_gpg"
-  chmod 644 "/etc/apt/keyrings/${name}.gpg"
 
-  # Write deb822
-  {
-    echo "Types: deb"
-    echo "URIs: $repo_url"
-    echo "Suites: $suite"
+  mkdir -p /etc/apt/sources.list.d || return $?
+  source_stage=$(mktemp "/etc/apt/sources.list.d/.${name}.sources.XXXXXX") || return $?
+  (
+    printf 'Types: deb\nURIs: %s\nSuites: %s\n' "$repo_url" "$suite" || return $?
     # Flat repositories (suite ending with "/" or "./") must not have Components
     if [[ "$suite" != *"/" && -n "$component" ]]; then
-      echo "Components: $component"
+      printf 'Components: %s\n' "$component" || return $?
     fi
-    [[ -n "$architectures" ]] && echo "Architectures: $architectures"
-    echo "Signed-By: /etc/apt/keyrings/${name}.gpg"
-    [[ -n "$enabled" ]] && echo "Enabled: $enabled"
-  } > /etc/apt/sources.list.d/${name}.sources
+    if [[ -n "$architectures" ]]; then printf 'Architectures: %s\n' "$architectures" || return $?; fi
+    printf 'Signed-By: %s\n' "$signed_by" || return $?
+    if [[ -n "$enabled" ]]; then printf 'Enabled: %s\n' "$enabled" || return $?; fi
+  ) > "$source_stage" || repo_status=$?
+  if ((repo_status == 0)); then chmod 644 "$source_stage" || repo_status=$?; fi
+  if ((repo_status == 0)); then mv -fT -- "$source_stage" "/etc/apt/sources.list.d/${name}.sources" || repo_status=$?; fi
+  rm -f -- "$source_stage"
+  ((repo_status == 0)) || return "$repo_status"
+  # Retire only this repository's obsolete source, after usable replacement.
+  rm -f -- "/etc/apt/sources.list.d/${name}.list" "/etc/apt/sources.list.d/${name}.list.save" || return $?
 
   $STD apt update || {
     msg_warn "apt update failed after adding repository: ${name}"
@@ -3334,15 +3319,19 @@ check_for_codeberg_release() {
 #   APP   - Application name (default: $APPLICATION variable)
 # ------------------------------------------------------------------------------
 create_self_signed_cert() {
-  local APP_NAME="${1:-${APPLICATION}}"
-  local HOSTNAME="$(hostname -f)"
-  local IP="$(hostname -I | awk '{print $1}')"
+  local APP_NAME="${1:-${APP:-${APPLICATION:-}}}"
+  local HOSTNAME IP cn san stage cert_status=0 expected_manifest
+  HOSTNAME=$(hostname -f 2> /dev/null) || HOSTNAME=$(uname -n) || return $?
+  IP=$(hostname -I 2> /dev/null | awk '{print $1}') || IP=''
   local APP_NAME_LC=$(echo "${APP_NAME,,}" | tr -d ' ')
+  [[ "$APP_NAME_LC" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || return 65
+  [[ "$HOSTNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ || "$HOSTNAME" =~ ^[a-zA-Z0-9]$ ]] || return 65
   local CERT_DIR="/etc/ssl/${APP_NAME_LC}"
   local CERT_KEY="${CERT_DIR}/${APP_NAME_LC}.key"
   local CERT_CRT="${CERT_DIR}/${APP_NAME_LC}.crt"
-
-  if [[ -f "$CERT_CRT" && -f "$CERT_KEY" ]]; then
+  local manifest=".scripts-underground-cert.sha256"
+  if [[ -L "$CERT_DIR" ]]; then
+    msg_warn "Preserving operator certificate directory link at $CERT_DIR"
     return 0
   fi
 
@@ -3352,18 +3341,52 @@ create_self_signed_cert() {
     return 100
   }
 
-  mkdir -p "$CERT_DIR"
-  $STD openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
-    -subj "/CN=${HOSTNAME}" \
-    -addext "subjectAltName=DNS:${HOSTNAME},DNS:localhost,IP:${IP},IP:127.0.0.1" \
-    -keyout "$CERT_KEY" \
-    -out "$CERT_CRT" || {
-    msg_error "Failed to create self-signed certificate"
-    return 150
-  }
+  if [[ -e "$CERT_CRT" || -L "$CERT_CRT" || -e "$CERT_KEY" || -L "$CERT_KEY" ]]; then
+    # Legacy/unmarked pairs and operator replacements are not ours to renew.
+    if [[ ! -f "$CERT_CRT" || ! -f "$CERT_KEY" ]]; then
+      msg_error "Incomplete certificate pair at $CERT_DIR; restore it explicitly"
+      return 65
+    fi
+    if [[ -L "$CERT_CRT" || -L "$CERT_KEY" || ! -f "$CERT_DIR/$manifest" || -L "$CERT_DIR/$manifest" ]]; then
+      msg_warn "Preserving operator or unmarked certificate pair at $CERT_DIR"
+      return 0
+    fi
+    expected_manifest=$(cd "$CERT_DIR" && sha256sum "${APP_NAME_LC}.key" "${APP_NAME_LC}.crt") || return $?
+    if [[ "$(< "$CERT_DIR/$manifest")" != "$expected_manifest" ]]; then
+      msg_warn "Preserving operator or unmarked certificate pair at $CERT_DIR"
+      return 0
+    fi
+    openssl x509 -checkend 2592000 -noout -in "$CERT_CRT" > /dev/null 2>&1 && return 0
+  fi
 
-  chmod 600 "$CERT_KEY"
-  chmod 644 "$CERT_CRT"
+  stage=$(_tools_stage_dir certificate) || return $?
+  cn="${HOSTNAME%%.*}"
+  san="DNS:${HOSTNAME},DNS:localhost,IP:127.0.0.1"
+  [[ -z "$IP" ]] || san+=",IP:${IP}"
+  # Preserve the established 365-day lifetime; renewal is only for marked pairs.
+  (
+    umask 077
+    $STD openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+      -subj "/CN=${cn:0:64}" -addext "subjectAltName=${san}" \
+      -keyout "$stage/${APP_NAME_LC}.key" -out "$stage/${APP_NAME_LC}.crt"
+  ) || cert_status=$?
+  if ((cert_status == 0)); then
+    chmod 600 "$stage/${APP_NAME_LC}.key" && chmod 644 "$stage/${APP_NAME_LC}.crt" || cert_status=$?
+  fi
+  if ((cert_status == 0)); then
+    (cd "$stage" && sha256sum "${APP_NAME_LC}.key" "${APP_NAME_LC}.crt" > "$manifest") || cert_status=$?
+  fi
+  if ((cert_status == 0)); then
+    # Use the existing checked merge publisher and its failed-publication recovery,
+    # not direct-to-live openssl writes. Other certificate-directory files stay put.
+    local CLEAN_INSTALL_KEEP='' CLEAN_INSTALL_KEEP_PATHS=()
+    _deploy_replace_contents "$stage" "$CERT_DIR" no || cert_status=$?
+  fi
+  if _deploy_remove_owned_trees "$stage"; then :; else
+    local cleanup_status=$?
+    if ((cert_status == 0)); then cert_status=$cleanup_status; fi
+  fi
+  return "$cert_status"
 }
 
 # ------------------------------------------------------------------------------
@@ -3952,9 +3975,17 @@ _deploy_restore_batch() {
 # Shared APT boundary for release/URL .deb assets. Adapters retain their conffile
 # options, environment, dpkg fallback and failure/marker responsibilities.
 _apt_install_release_package() {
-  local -a reinstall=()
+  local -a reinstall=() conffiles=(-o Dpkg::Options::=--force-confold)
+  local option
+  for option in "$@"; do
+    case "$option" in Dpkg::Options::=--force-confold | Dpkg::Options::=--force-confnew | Dpkg::Options::=--force-confdef)
+      conffiles=()
+      break
+      ;;
+    esac
+  done
   [[ "${FORCE_DEPLOY:-0}" != 1 ]] || reinstall=(--reinstall)
-  $STD apt install -y "${reinstall[@]}" "$@"
+  DEBIAN_FRONTEND=noninteractive $STD apt install -y "${reinstall[@]}" "${conffiles[@]}" "$@"
 }
 
 # A single file is never downloaded/decoded over the live consumer. The complete
@@ -4060,13 +4091,14 @@ _release_deb_pending_write() {
 
 _deploy_release_deb() {
   local package="$1" adapter="$2" pkg='' inventory='' listing='' entry unit state status installed=0 rc=0
-  local -a units=() was_active=() apt_options=() dpkg_options=()
+  local -a units=() was_active=() apt_options=() dpkg_options=(--force-confold)
   local pending='' action extra
   local -A pending_actions=()
   case "$adapter" in
     github | gitlab)
       [[ "${DPKG_FORCE_CONFOLD:-}" != 1 ]] || apt_options=(-o Dpkg::Options::=--force-confold)
       [[ "${DPKG_FORCE_CONFNEW:-}" != 1 ]] || apt_options=(-o Dpkg::Options::=--force-confnew)
+      [[ "${DPKG_FORCE_CONFNEW:-}" != 1 ]] || dpkg_options=(--force-confnew)
       ;;
     codeberg)
       apt_options=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
@@ -4130,14 +4162,14 @@ _deploy_release_deb() {
     fi
   fi
   if [[ "$adapter" == url ]]; then
-    _apt_install_release_package "$package" || { $STD dpkg -i "$package" || rc=$?; }
+    _apt_install_release_package "$package" || { $STD dpkg "${dpkg_options[@]}" -i "$package" || rc=$?; }
   elif [[ "$adapter" == codeberg ]]; then
     (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package "${apt_options[@]}" "$package") || {
       (DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 $STD dpkg "${dpkg_options[@]}" -i "$package") || rc=$?
     }
   else
     DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 _apt_install_release_package "${apt_options[@]}" "$package" || {
-      SYSTEMD_OFFLINE=1 $STD dpkg -i "$package" || rc=$?
+      SYSTEMD_OFFLINE=1 $STD dpkg "${dpkg_options[@]}" -i "$package" || rc=$?
     }
   fi
   if [[ $rc != 0 ]]; then

@@ -86,6 +86,7 @@ variables() {
 
 # Configurable base URL for development — override with REPO_BASE
 REPO_BASE="${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}"
+unset _DEFAULTS_CAPTURED _DEFAULTS_EXPLICIT
 
 if command -v curl > /dev/null 2>&1; then
   # shellcheck source=/dev/null
@@ -776,8 +777,8 @@ install_ssh_keys_into_ct() {
 validate_container_id() {
   local ctid="$1"
 
-  # Check if ID is numeric
-  if ! [[ "$ctid" =~ ^[0-9]+$ ]]; then
+  # PVE VMIDs are canonical decimal values, never shell arithmetic input.
+  if ! [[ "$ctid" =~ ^[1-9][0-9]{2,8}$ ]]; then
     return 1
   fi
 
@@ -786,8 +787,14 @@ validate_container_id() {
     return 1
   fi
 
-  # Check if ID is used in LVM logical volumes
-  if lvs --noheadings -o lv_name 2> /dev/null | grep -qE "(^|[-_])${ctid}($|[-_])"; then
+  # Complete the producer before searching; a failed query is not availability.
+  local volumes query_status=0
+  volumes=$(lvs --noheadings -o lv_name 2> /dev/null) || query_status=$?
+  if ((query_status != 0)); then
+    msg_error "Cannot establish container ID availability (lvs status $query_status)"
+    return "$query_status"
+  fi
+  if grep -qE "(^|[-_])${ctid}($|[-_])" <<< "$volumes"; then
     return 1
   fi
 
@@ -799,16 +806,13 @@ validate_container_id() {
 #
 # - Returns a valid, unused container ID
 # - If provided ID is valid, returns it
-# - Otherwise increments from suggested ID until a free one is found
+# - Invalid or unavailable explicit requests are refused without substitution
 # - Calls validate_container_id() to check availability
 # ------------------------------------------------------------------------------
 get_valid_container_id() {
-  local suggested_id="${1:-$(pvesh get /cluster/nextid)}"
-
-  while ! validate_container_id "$suggested_id"; do
-    suggested_id=$((suggested_id + 1))
-  done
-
+  local suggested_id
+  suggested_id="${1:-$(pvesh get /cluster/nextid)}" || return $?
+  validate_container_id "$suggested_id" || return 65
   echo "$suggested_id"
 }
 
@@ -824,12 +828,13 @@ validate_hostname() {
   local hostname="$1"
 
   # Check total length (max 253 for FQDN)
-  if [[ ${#hostname} -gt 253 ]] || [[ -z "$hostname" ]]; then
+  if [[ ${#hostname} -gt 253 || -z "$hostname" || "$hostname" == *. ]]; then
     return 1
   fi
 
   # Split by dots and validate each label
-  local IFS='.'
+  local IFS='.' label
+  local -a labels
   read -ra labels <<< "$hostname"
   for label in "${labels[@]}"; do
     # Each label: 1-63 chars, alphanumeric, hyphens allowed (not at start/end)
@@ -870,7 +875,7 @@ validate_mac_address() {
 validate_vlan_tag() {
   local vlan="$1"
   [[ -z "$vlan" ]] && return 0
-  if ! [[ "$vlan" =~ ^[0-9]+$ ]] || ((vlan < 1 || vlan > 4094)); then
+  if ! [[ "$vlan" =~ ^[1-9][0-9]{0,3}$ ]] || ((vlan > 4094)); then
     return 1
   fi
   return 0
@@ -886,7 +891,7 @@ validate_vlan_tag() {
 validate_mtu() {
   local mtu="$1"
   [[ -z "$mtu" ]] && return 0
-  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || ((mtu < 576 || mtu > 65535)); then
+  if ! [[ "$mtu" =~ ^[1-9][0-9]{2,4}$ ]] || ((mtu < 576 || mtu > 65535)); then
     return 1
   fi
   return 0
@@ -910,38 +915,36 @@ validate_ipv6_address() {
 
   # Validate CIDR if present (1-128)
   if [[ "$ipv6" == */* ]]; then
-    if ! [[ "$cidr" =~ ^[0-9]+$ ]] || ((cidr < 1 || cidr > 128)); then
+    if ! [[ "$cidr" =~ ^[1-9][0-9]{0,2}$ ]] || ((cidr > 128)); then
       return 1
     fi
   fi
 
-  # Basic IPv6 validation - check for valid characters and structure
-  # Must contain only hex digits and colons
-  if [[ ! "$addr" =~ ^[0-9a-fA-F:]+$ ]]; then
-    return 1
+  # Count literal hextets; a compressed address must omit at least one.
+  # A final dotted IPv4 value occupies two hextets.
+  if [[ "$addr" == *.* ]]; then
+    validate_gateway_ip "${addr##*:}" || return 1
+    addr="${addr%:*}:0:0"
   fi
-
-  # Must contain at least one colon
-  if [[ ! "$addr" == *:* ]]; then
-    return 1
+  [[ "$addr" == *:* && "$addr" =~ ^[0-9a-fA-F:]+$ && "$addr" != *:::* && "$addr" != *::*::* ]] || return 1
+  local compressed=no seg
+  if [[ "$addr" == *::* ]]; then
+    compressed=yes
+    addr="${addr/::/:}"
+    addr=${addr#:}
+    addr=${addr%:}
+  else
+    [[ "$addr" != :* && "$addr" != *: ]] || return 1
   fi
-
-  # Check for valid double-colon usage (only one :: allowed)
-  if [[ "$addr" == *::*::* ]]; then
-    return 1
-  fi
-
-  # Check that no segment exceeds 4 hex chars
   local IFS=':'
-  local -a segments
+  local -a segments=()
   read -ra segments <<< "$addr"
   for seg in "${segments[@]}"; do
-    if [[ ${#seg} -gt 4 ]]; then
-      return 1
-    fi
+    [[ "$seg" =~ ^[0-9a-fA-F]{1,4}$ ]] || return 1
   done
-
-  return 0
+  if [[ "$compressed" == yes ]]; then
+    ((${#segments[@]} < 8))
+  else ((${#segments[@]} == 8)); fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1023,13 +1026,13 @@ validate_ip_address() {
 
   # Validate octets (0-255)
   for octet in "$o1" "$o2" "$o3" "$o4"; do
-    if ((octet > 255)); then
+    if ((10#$octet > 255)); then
       return 1
     fi
   done
 
   # Validate CIDR (1-32)
-  if ((cidr < 1 || cidr > 32)); then
+  if ((10#$cidr < 1 || 10#$cidr > 32)); then
     return 1
   fi
 
@@ -1059,7 +1062,7 @@ validate_gateway_ip() {
 
   # Validate octets (0-255)
   for octet in "$o1" "$o2" "$o3" "$o4"; do
-    if ((octet > 255)); then
+    if ((10#$octet > 255)); then
       return 1
     fi
   done
@@ -1266,6 +1269,11 @@ is_ip_range() {
 _write_storage_to_vars() {
   # $1 = vars_file, $2 = key (var_container_storage / var_template_storage), $3 = value
   local vf="$1" key="$2" val="$3"
+  local header
+  IFS= read -r header < "$vf" || true
+  if [[ "$header" == '# scripts-underground defaults base64-v1' ]]; then
+    val=$(_defaults_encode_value "$val") || return $?
+  fi
   # remove uncommented and commented versions to avoid duplicates
   sed -i "/^[#[:space:]]*${key}=/d" "$vf"
   echo "${key}=${val}" >> "$vf"
@@ -1283,7 +1291,8 @@ choose_and_set_storage_for_file() {
       ;;
   esac
 
-  current=$(awk -F= -v k="^${key}=" '$0 ~ k {print $2; exit}' "$vf")
+  _load_vars_file_to_map "$vf" app || return $?
+  current=${_VARS_IN[$key]:-}
 
   # If only one storage exists for the content type, auto-pick. Else always ask (your wish #4).
   local content="rootdir"
@@ -1332,6 +1341,11 @@ choose_and_set_storage_for_file() {
 # - App-specific values take precedence when they are HIGHER (for CPU, RAM, DISK)
 # - Sets up container type, resources, network, SSH, features, and tags
 # ------------------------------------------------------------------------------
+_decimal_greater() {
+  local LC_ALL=C
+  [[ ${#1} -gt ${#2} || (${#1} -eq ${#2} && "$1" > "$2") ]]
+}
+
 base_settings() {
   # Default Settings
   CT_TYPE=${var_unprivileged:-"1"}
@@ -1341,22 +1355,29 @@ base_settings() {
   local final_disk="${var_disk:-4}"
   local final_cpu="${var_cpu:-1}"
   local final_ram="${var_ram:-1024}"
+  local resource
+  for resource in "$final_disk" "$final_cpu" "$final_ram" "${APP_DEFAULT_DISK:-1}" "${APP_DEFAULT_CPU:-1}" "${APP_DEFAULT_RAM:-1}"; do
+    [[ "$resource" =~ ^[1-9][0-9]*$ ]] || {
+      msg_error 'Invalid resource value; canonical positive decimal settings are required'
+      return 65
+    }
+  done
 
   # If app declared higher values, use those instead
   if [[ -n "${APP_DEFAULT_DISK:-}" && "${APP_DEFAULT_DISK}" =~ ^[0-9]+$ ]]; then
-    if [[ "${APP_DEFAULT_DISK}" -gt "${final_disk}" ]]; then
+    if _decimal_greater "$APP_DEFAULT_DISK" "$final_disk"; then
       final_disk="${APP_DEFAULT_DISK}"
     fi
   fi
 
   if [[ -n "${APP_DEFAULT_CPU:-}" && "${APP_DEFAULT_CPU}" =~ ^[0-9]+$ ]]; then
-    if [[ "${APP_DEFAULT_CPU}" -gt "${final_cpu}" ]]; then
+    if _decimal_greater "$APP_DEFAULT_CPU" "$final_cpu"; then
       final_cpu="${APP_DEFAULT_CPU}"
     fi
   fi
 
   if [[ -n "${APP_DEFAULT_RAM:-}" && "${APP_DEFAULT_RAM}" =~ ^[0-9]+$ ]]; then
-    if [[ "${APP_DEFAULT_RAM}" -gt "${final_ram}" ]]; then
+    if _decimal_greater "$APP_DEFAULT_RAM" "$final_ram"; then
       final_ram="${APP_DEFAULT_RAM}"
     fi
   fi
@@ -1365,42 +1386,22 @@ base_settings() {
   CORE_COUNT="${final_cpu}"
   RAM_SIZE="${final_ram}"
   VERBOSE=${var_verbose:-"${1:-no}"}
-  PW=""
-  if [[ -n "${var_pw:-}" ]]; then
-    local _pw_raw="${var_pw}"
-    case "$_pw_raw" in
-      --password\ *) _pw_raw="${_pw_raw#--password }" ;;
-      -password\ *) _pw_raw="${_pw_raw#-password }" ;;
-    esac
-    while [[ "$_pw_raw" == -* ]]; do
-      _pw_raw="${_pw_raw#-}"
-    done
-    if [[ -z "$_pw_raw" ]]; then
-      msg_warn "Password was only dashes after cleanup; leaving empty."
-    else
-      PW="--password $_pw_raw"
-    fi
-  fi
+  PW="${var_pw:-}"
 
   # Validate and set Container ID
   local requested_id="${var_ctid:-$NEXTID}"
   if ! validate_container_id "$requested_id"; then
-    # Only show warning if user manually specified an ID (not auto-assigned)
-    if [[ -n "${var_ctid:-}" ]]; then
-      msg_warn "Container ID $requested_id is already in use. Using next available ID: $(get_valid_container_id "$requested_id")"
-    fi
-    requested_id=$(get_valid_container_id "$requested_id")
+    msg_error "Requested container ID is invalid or unavailable; no different ID was selected"
+    return 65
   fi
   CT_ID="$requested_id"
 
   # Validate and set Hostname/FQDN
   local requested_hostname="${var_hostname:-$NSAPP}"
-  requested_hostname=$(echo "${requested_hostname,,}" | tr -d ' ')
+  requested_hostname="${requested_hostname,,}"
   if ! validate_hostname "$requested_hostname"; then
-    if [[ -n "${var_hostname:-}" ]]; then
-      msg_warn "Invalid hostname '$requested_hostname'. Using default: $NSAPP"
-    fi
-    requested_hostname="$NSAPP"
+    msg_error "Invalid requested hostname"
+    return 65
   fi
   HN="$requested_hostname"
 
@@ -1436,7 +1437,7 @@ base_settings() {
   fi
 
   MTU=${var_mtu:-""}
-  SD=${var_storage:-""}
+  SD=${var_searchdomain:-""}
   NS=${var_ns:-""}
   MAC=${var_mac:-""}
   VLAN=${var_vlan:-""}
@@ -1476,173 +1477,137 @@ base_settings() {
 load_vars_file() {
   local file="$1"
   local force="${2:-no}" # If "yes", override existing variables
+  local scope="${3:-general}"
   [ -f "$file" ] || return 0
   msg_info "Loading defaults from ${file}"
+  _capture_defaults_inputs
+  _load_vars_file_to_map "$file" "$scope" || return $?
+  local var_key var_val
+  for var_key in "${!_VARS_IN[@]}"; do
+    var_val=${_VARS_IN[$var_key]}
 
-  # Allowed var_* keys
-  local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu var_keyctl
-    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_protection var_pw var_ram var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-
-  # Whitelist check helper
-  _is_whitelisted() {
-    local k="$1" w
-    for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-    return 1
-  }
-
-  local line key val
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-      local var_key="${BASH_REMATCH[1]}"
-      local var_val="${BASH_REMATCH[2]}"
-
-      [[ "$var_key" != var_* ]] && continue
-      _is_whitelisted "$var_key" || continue
-
-      # Strip inline comments (anything after unquoted #)
-      # Only strip if not inside quotes
-      if [[ ! "$var_val" =~ ^[\"\'] ]]; then
-        var_val="${var_val%%#*}"
-      fi
-
-      # Strip quotes
-      if [[ "$var_val" =~ ^\"(.*)\"$ ]]; then
-        var_val="${BASH_REMATCH[1]}"
-      elif [[ "$var_val" =~ ^\'(.*)\'$ ]]; then
-        var_val="${BASH_REMATCH[1]}"
-      fi
-
-      # Trim trailing whitespace
-      var_val="${var_val%"${var_val##*[![:space:]]}"}"
-
-      # Validate values before setting (skip empty values - they use defaults)
-      if [[ -n "$var_val" ]]; then
-        case "$var_key" in
-          var_mac)
-            if ! validate_mac_address "$var_val"; then
-              msg_warn "Invalid MAC address '$var_val' in $file, ignoring"
+    # Validate values before setting (skip empty values - they use defaults)
+    if [[ -n "$var_val" ]]; then
+      case "$var_key" in
+        var_mac)
+          if ! validate_mac_address "$var_val"; then
+            msg_warn "Invalid MAC address '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_vlan)
+          if ! validate_vlan_tag "$var_val"; then
+            msg_warn "Invalid VLAN tag '$var_val' in $file (must be 1-4094), ignoring"
+            continue
+          fi
+          ;;
+        var_mtu)
+          if ! validate_mtu "$var_val"; then
+            msg_warn "Invalid MTU '$var_val' in $file (must be 576-65535), ignoring"
+            continue
+          fi
+          ;;
+        var_tags)
+          if ! validate_tags "$var_val"; then
+            msg_warn "Invalid tags '$var_val' in $file (alphanumeric, -, _, ; only), ignoring"
+            continue
+          fi
+          ;;
+        var_timezone)
+          if ! validate_timezone "$var_val"; then
+            msg_warn "Invalid timezone '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_brg)
+          if ! validate_bridge "$var_val"; then
+            msg_warn "Bridge '$var_val' not found in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_gateway)
+          if ! validate_gateway_ip "$var_val"; then
+            msg_warn "Invalid gateway IP '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_hostname)
+          if ! validate_hostname "$var_val"; then
+            msg_warn "Invalid hostname '$var_val' in $file, ignoring"
+            continue
+          fi
+          ;;
+        var_cpu)
+          if ! [[ "$var_val" =~ ^[1-9][0-9]{0,2}$ ]] || ((var_val > 128)); then
+            msg_warn "Invalid CPU count '$var_val' in $file (must be 1-128), ignoring"
+            continue
+          fi
+          ;;
+        var_ram)
+          if ! [[ "$var_val" =~ ^[1-9][0-9]*$ ]] || _decimal_greater 256 "$var_val"; then
+            msg_warn "Invalid RAM '$var_val' in $file (must be >= 256 MiB), ignoring"
+            continue
+          fi
+          ;;
+        var_disk)
+          if ! [[ "$var_val" =~ ^[1-9][0-9]*$ ]]; then
+            msg_warn "Invalid disk size '$var_val' in $file (must be >= 1 GB), ignoring"
+            continue
+          fi
+          ;;
+        var_unprivileged)
+          if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
+            msg_warn "Invalid unprivileged value '$var_val' in $file (must be 0 or 1), ignoring"
+            continue
+          fi
+          ;;
+        var_nesting)
+          if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
+            msg_warn "Invalid nesting value '$var_val' in $file (must be 0 or 1), ignoring"
+            continue
+          fi
+          ;;
+        var_keyctl)
+          if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
+            msg_warn "Invalid keyctl value '$var_val' in $file (must be 0 or 1), ignoring"
+            continue
+          fi
+          ;;
+        var_net)
+          # var_net can be: dhcp, static IP/CIDR, or IP range
+          if [[ "$var_val" != "dhcp" ]]; then
+            if is_ip_range "$var_val"; then
+              : # IP range is valid, will be resolved at runtime
+            elif ! validate_ip_address "$var_val"; then
+              msg_warn "Invalid network '$var_val' in $file (must be dhcp or IP/CIDR), ignoring"
               continue
             fi
-            ;;
-          var_vlan)
-            if ! validate_vlan_tag "$var_val"; then
-              msg_warn "Invalid VLAN tag '$var_val' in $file (must be 1-4094), ignoring"
-              continue
-            fi
-            ;;
-          var_mtu)
-            if ! validate_mtu "$var_val"; then
-              msg_warn "Invalid MTU '$var_val' in $file (must be 576-65535), ignoring"
-              continue
-            fi
-            ;;
-          var_tags)
-            if ! validate_tags "$var_val"; then
-              msg_warn "Invalid tags '$var_val' in $file (alphanumeric, -, _, ; only), ignoring"
-              continue
-            fi
-            ;;
-          var_timezone)
-            if ! validate_timezone "$var_val"; then
-              msg_warn "Invalid timezone '$var_val' in $file, ignoring"
-              continue
-            fi
-            ;;
-          var_brg)
-            if ! validate_bridge "$var_val"; then
-              msg_warn "Bridge '$var_val' not found in $file, ignoring"
-              continue
-            fi
-            ;;
-          var_gateway)
-            if ! validate_gateway_ip "$var_val"; then
-              msg_warn "Invalid gateway IP '$var_val' in $file, ignoring"
-              continue
-            fi
-            ;;
-          var_hostname)
-            if ! validate_hostname "$var_val"; then
-              msg_warn "Invalid hostname '$var_val' in $file, ignoring"
-              continue
-            fi
-            ;;
-          var_cpu)
-            if ! [[ "$var_val" =~ ^[0-9]+$ ]] || ((var_val < 1 || var_val > 128)); then
-              msg_warn "Invalid CPU count '$var_val' in $file (must be 1-128), ignoring"
-              continue
-            fi
-            ;;
-          var_ram)
-            if ! [[ "$var_val" =~ ^[0-9]+$ ]] || ((var_val < 256)); then
-              msg_warn "Invalid RAM '$var_val' in $file (must be >= 256 MiB), ignoring"
-              continue
-            fi
-            ;;
-          var_disk)
-            if ! [[ "$var_val" =~ ^[0-9]+$ ]] || ((var_val < 1)); then
-              msg_warn "Invalid disk size '$var_val' in $file (must be >= 1 GB), ignoring"
-              continue
-            fi
-            ;;
-          var_unprivileged)
-            if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
-              msg_warn "Invalid unprivileged value '$var_val' in $file (must be 0 or 1), ignoring"
-              continue
-            fi
-            ;;
-          var_nesting)
-            if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
-              msg_warn "Invalid nesting value '$var_val' in $file (must be 0 or 1), ignoring"
-              continue
-            fi
-            ;;
-          var_keyctl)
-            if [[ "$var_val" != "0" && "$var_val" != "1" ]]; then
-              msg_warn "Invalid keyctl value '$var_val' in $file (must be 0 or 1), ignoring"
-              continue
-            fi
-            ;;
-          var_net)
-            # var_net can be: dhcp, static IP/CIDR, or IP range
-            if [[ "$var_val" != "dhcp" ]]; then
-              if is_ip_range "$var_val"; then
-                : # IP range is valid, will be resolved at runtime
-              elif ! validate_ip_address "$var_val"; then
-                msg_warn "Invalid network '$var_val' in $file (must be dhcp or IP/CIDR), ignoring"
-                continue
-              fi
-            fi
-            ;;
-          var_fuse | var_tun | var_gpu | var_ssh | var_verbose | var_protection)
-            if [[ "$var_val" != "yes" && "$var_val" != "no" ]]; then
-              msg_warn "Invalid boolean '$var_val' for $var_key in $file (must be yes/no), ignoring"
-              continue
-            fi
-            ;;
-          var_ipv6_method)
-            if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
-              msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
-              continue
-            fi
-            ;;
-        esac
-      fi
-
-      # Set variable: force mode overrides existing, otherwise only set if empty
-      if [[ "$force" == "yes" ]]; then
-        export "${var_key}=${var_val}"
-      else
-        [[ -z "${!var_key+x}" ]] && export "${var_key}=${var_val}"
-      fi
+          fi
+          ;;
+        var_fuse | var_tun | var_gpu | var_ssh | var_verbose | var_protection)
+          if [[ "$var_val" != "yes" && "$var_val" != "no" ]]; then
+            msg_warn "Invalid boolean '$var_val' for $var_key in $file (must be yes/no), ignoring"
+            continue
+          fi
+          ;;
+        var_ipv6_method)
+          if [[ "$var_val" != "auto" && "$var_val" != "dhcp" && "$var_val" != "static" && "$var_val" != "none" ]]; then
+            msg_warn "Invalid IPv6 method '$var_val' in $file (must be auto/dhcp/static/none), ignoring"
+            continue
+          fi
+          ;;
+      esac
     fi
-  done < "$file"
+
+    # Set variable: force mode overrides existing, otherwise only set if empty
+    if [[ -v _DEFAULTS_EXPLICIT["$var_key"] ]]; then
+      continue
+    elif [[ "$force" == "yes" ]]; then
+      export "${var_key}=${var_val}"
+    else
+      [[ -z "${!var_key+x}" ]] && export "${var_key}=${var_val}"
+    fi
+  done
   msg_ok "Loaded ${file}"
 }
 
@@ -1656,21 +1621,7 @@ load_vars_file() {
 # - Calls base_settings "$VERBOSE" and echo_default
 # ------------------------------------------------------------------------------
 default_var_settings() {
-  # Allowed var_* keys (alphabetically sorted)
-  # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
-  local VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu var_keyctl
-    var_gateway var_hostname var_ipv6_method var_mac var_mknod var_mount_fs var_mtu
-    var_net var_nesting var_ns var_protection var_pw var_ram var_tags var_timezone var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-
-  # Snapshot: environment variables (highest precedence)
-  declare -A _HARD_ENV=()
-  local _k
-  for _k in "${VAR_WHITELIST[@]}"; do
-    if printenv "$_k" > /dev/null 2>&1; then _HARD_ENV["$_k"]=1; fi
-  done
+  _capture_defaults_inputs
 
   # Find default.vars location
   local _find_default_vars
@@ -1762,15 +1713,6 @@ EOF
     # Silent creation - no output message
   }
 
-  # Whitelist check
-  local _is_whitelisted_key
-  _is_whitelisted_key() {
-    local k="$1"
-    local w
-    for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-    return 1
-  }
-
   # 1) Ensure file exists
   _ensure_default_vars
 
@@ -1817,44 +1759,44 @@ get_app_defaults_path() {
 # - Only writes whitelisted var_* keys.
 # - Extracts raw values from flags like ",gw=..." ",mtu=..." etc.
 # ------------------------------------------------------------------------------
-if ! declare -p VAR_WHITELIST > /dev/null 2>&1; then
-  # Note: Removed var_ctid (can only exist once), var_ipv6_static (static IPs are unique)
-  declare -ag VAR_WHITELIST=(
-    var_apt_cacher var_apt_cacher_ip var_brg var_cpu var_disk var_fuse var_gpu
-    var_gateway var_hostname var_ipv6_method var_mac var_mtu
-    var_net var_ns var_pw var_ram var_tags var_tun var_unprivileged
-    var_verbose var_vlan var_ssh var_ssh_authorized_key var_container_storage var_template_storage
-  )
-fi
-
-# Global whitelist check function (used by _load_vars_file_to_map and others)
+# One key policy serves reading, writing and diffing. Per-run consent, CTID and
+# script identity are not defaults. Only declared app-owned fields enter app files.
 _is_whitelisted_key() {
-  local k="$1"
-  local w
-  for w in "${VAR_WHITELIST[@]}"; do [ "$k" = "$w" ] && return 0; done
-  return 1
+  case "$1" in
+    var_apt_cacher | var_apt_cacher_ip | var_brg | var_cpu | var_disk | var_fuse | var_gpu | var_keyctl | \
+      var_gateway | var_hostname | var_ipv6_method | var_mac | var_mknod | var_mount_fs | var_mtu | \
+      var_net | var_nesting | var_ns | var_searchdomain | var_protection | var_pw | var_ram | var_tags | var_timezone | var_tun | var_unprivileged | \
+      var_verbose | var_vlan | var_ssh | var_ssh_authorized_key | var_container_storage | var_template_storage) return 0 ;;
+    var_lxc_*) [[ "${2:-general}" == app && "$1" =~ ^var_lxc_[a-zA-Z0-9_]+$ && -v "$1" ]] ;;
+    *) return 1 ;;
+  esac
 }
 
-_sanitize_value() {
-  # Disallow Command-Substitution / Shell-Meta
-  case "$1" in
-    *'$('* | *'`'* | *';'* | *'&'* | *'<('*)
-      echo ""
-      return 0
-      ;;
-  esac
-  echo "$1"
+_capture_defaults_inputs() {
+  [[ "${_DEFAULTS_CAPTURED:-0}" != 1 ]] || return 0
+  unset _DEFAULTS_EXPLICIT
+  declare -gA _DEFAULTS_EXPLICIT=()
+  local key
+  while IFS= read -r key; do _DEFAULTS_EXPLICIT["$key"]=1; done < <(compgen -e var_)
+  _DEFAULTS_CAPTURED=1
+}
+
+_defaults_encode_value() {
+  # Encoded data, not shell syntax: arbitrary Bash string bytes roundtrip safely.
+  printf '%s' "$1" | base64 -w 0
 }
 
 # Map-Parser: read var_* from file into _VARS_IN associative array
 # Note: Main _load_vars_file() with full validation is defined in default_var_settings section
 # This simplified version is used specifically for diff operations via _VARS_IN array
-declare -A _VARS_IN
 _load_vars_file_to_map() {
   local file="$1"
+  unset _VARS_IN
+  declare -gA _VARS_IN=()
   [ -f "$file" ] || return 0
-  _VARS_IN=() # Clear array
-  local line key val
+  local line key val encoded=no scope=${2:-general}
+  IFS= read -r line < "$file" || true
+  [[ "$line" != '# scripts-underground defaults base64-v1' ]] || encoded=yes
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
@@ -1862,16 +1804,37 @@ _load_vars_file_to_map() {
     case "$line" in
       \#*) continue ;;
     esac
-    key=$(printf "%s" "$line" | cut -d= -f1)
-    val=$(printf "%s" "$line" | cut -d= -f2-)
-    case "$key" in
-      var_*)
-        if _is_whitelisted_key "$key"; then
-          _VARS_IN["$key"]="$val"
-        fi
-        ;;
-    esac
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key=${BASH_REMATCH[1]} val=${BASH_REMATCH[2]}
+    _is_whitelisted_key "$key" "$scope" || continue
+    if [[ "$encoded" == yes ]]; then
+      local decoded canonical
+      decoded=$(printf '%s' "$val" | base64 -d && printf '.') || {
+        msg_error "Invalid encoded defaults for $key"
+        return 65
+      }
+      decoded=${decoded%.}
+      canonical=$(_defaults_encode_value "$decoded") || return $?
+      [[ "$canonical" == "$val" ]] || return 65
+      val=$decoded
+    else
+      if [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]]; then
+        val=${BASH_REMATCH[1]}
+      else
+        val=${val%%#*}
+        val=${val%"${val##*[![:space:]]}"}
+      fi
+    fi
+    [[ ! -v _VARS_IN["$key"] ]] || {
+      msg_error "Duplicate defaults key $key"
+      return 65
+    }
+    _VARS_IN["$key"]=$val
   done < "$file"
+}
+
+_defaults_display_value() {
+  case "$1" in var_pw | var_lxc_*) printf '[private]' ;; *) printf '%s' "$2" ;; esac
 }
 
 # Diff function for two var_* files -> produces human-readable diff list for $1 (old) vs $2 (new)
@@ -1879,14 +1842,12 @@ _build_vars_diff() {
   local oldf="$1" newf="$2"
   local k
   local -A OLD=() NEW=()
-  _load_vars_file_to_map "$oldf"
+  _load_vars_file_to_map "$oldf" app || return $?
   for k in "${!_VARS_IN[@]}"; do OLD["$k"]="${_VARS_IN[$k]}"; done
-  _load_vars_file_to_map "$newf"
+  _load_vars_file_to_map "$newf" app || return $?
   for k in "${!_VARS_IN[@]}"; do NEW["$k"]="${_VARS_IN[$k]}"; done
 
-  local out
-  out+="# Diff for ${APP} (${NSAPP})\n"
-  out+="# Old: ${oldf}\n# New: ${newf}\n\n"
+  printf '# Diff for %s (%s)\n# Old: %s\n# New: %s\n\n' "$APP" "$NSAPP" "$oldf" "$newf"
 
   local found_change=0
 
@@ -1894,11 +1855,11 @@ _build_vars_diff() {
   for k in "${!OLD[@]}"; do
     if [[ -v NEW["$k"] ]]; then
       if [[ "${OLD[$k]}" != "${NEW[$k]}" ]]; then
-        out+="~ ${k}\n    - old: ${OLD[$k]}\n    + new: ${NEW[$k]}\n"
+        printf '~ %s\n    - old: %s\n    + new: %s\n' "$k" "$(_defaults_display_value "$k" "${OLD[$k]}")" "$(_defaults_display_value "$k" "${NEW[$k]}")"
         found_change=1
       fi
     else
-      out+="- ${k}\n    - old: ${OLD[$k]}\n"
+      printf -- '- %s\n    - old: %s\n' "$k" "$(_defaults_display_value "$k" "${OLD[$k]}")"
       found_change=1
     fi
   done
@@ -1906,25 +1867,27 @@ _build_vars_diff() {
   # Added
   for k in "${!NEW[@]}"; do
     if [[ ! -v OLD["$k"] ]]; then
-      out+="+ ${k}\n    + new: ${NEW[$k]}\n"
+      printf '+ %s\n    + new: %s\n' "$k" "$(_defaults_display_value "$k" "${NEW[$k]}")"
       found_change=1
     fi
   done
 
   if [[ $found_change -eq 0 ]]; then
-    out+="(No differences)\n"
+    printf '(No differences)\n'
   fi
 
-  printf "%b" "$out"
 }
 
 # Build a temporary <app>.vars file from current advanced settings
 _build_current_app_vars_tmp() {
-  tmpf="$(mktemp /tmp/${NSAPP:-app}.vars.new.XXXXXX)"
+  local tmpf _net _gate _ipv6_method _ipv6_static _ipv6_gateway _mtu _vlan _mac _ns _searchdomain
+  local _ssh _ssh_auth _apt_cacher _apt_cacher_ip _fuse _tun _gpu _nesting _keyctl _mknod _mount_fs _protect _timezone _tags _verbose
+  local _unpriv _cpu _ram _disk _hostname _tpl_storage _ct_storage key
+  tmpf="$(mktemp "${TMPDIR:-/tmp}/${NSAPP:-app}.vars.new.XXXXXX")" || return $?
 
   # NET/GW
   _net="${NET:-}"
-  _gate=""
+  _gate="${GATE:-}"
   case "${GATE:-}" in
     ,gw=*) _gate=$(echo "$GATE" | sed 's/^,gw=//') ;;
   esac
@@ -1939,9 +1902,9 @@ _build_current_app_vars_tmp() {
   fi
 
   # MTU/VLAN/MAC
-  _mtu=""
-  _vlan=""
-  _mac=""
+  _mtu="${MTU:-}"
+  _vlan="${VLAN:-}"
+  _mac="${MAC:-}"
   case "${MTU:-}" in
     ,mtu=*) _mtu=$(echo "$MTU" | sed 's/^,mtu=//') ;;
   esac
@@ -1953,8 +1916,8 @@ _build_current_app_vars_tmp() {
   esac
 
   # DNS / Searchdomain
-  _ns=""
-  _searchdomain=""
+  _ns="${NS:-}"
+  _searchdomain="${SD:-}"
   case "${NS:-}" in
     -nameserver=*) _ns=$(echo "$NS" | sed 's/^-nameserver=//') ;;
   esac
@@ -1990,51 +1953,37 @@ _build_current_app_vars_tmp() {
   _tpl_storage="${TEMPLATE_STORAGE:-${var_template_storage:-}}"
   _ct_storage="${CONTAINER_STORAGE:-${var_container_storage:-}}"
 
-  {
-    echo "# App-specific defaults for ${APP} (${NSAPP})"
-    echo "# Generated on $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    echo
-
-    echo "var_unprivileged=$(_sanitize_value "$_unpriv")"
-    echo "var_cpu=$(_sanitize_value "$_cpu")"
-    echo "var_ram=$(_sanitize_value "$_ram")"
-    echo "var_disk=$(_sanitize_value "$_disk")"
-
-    [ -n "${BRG:-}" ] && echo "var_brg=$(_sanitize_value "$BRG")"
-    [ -n "$_net" ] && echo "var_net=$(_sanitize_value "$_net")"
-    [ -n "$_gate" ] && echo "var_gateway=$(_sanitize_value "$_gate")"
-    [ -n "$_mtu" ] && echo "var_mtu=$(_sanitize_value "$_mtu")"
-    [ -n "$_vlan" ] && echo "var_vlan=$(_sanitize_value "$_vlan")"
-    [ -n "$_mac" ] && echo "var_mac=$(_sanitize_value "$_mac")"
-    [ -n "$_ns" ] && echo "var_ns=$(_sanitize_value "$_ns")"
-
-    [ -n "$_ipv6_method" ] && echo "var_ipv6_method=$(_sanitize_value "$_ipv6_method")"
-    # var_ipv6_static removed - static IPs are unique, can't be default
-
-    [ -n "$_ssh" ] && echo "var_ssh=$(_sanitize_value "$_ssh")"
-    [ -n "$_ssh_auth" ] && echo "var_ssh_authorized_key=$(_sanitize_value "$_ssh_auth")"
-
-    [ -n "$_apt_cacher" ] && echo "var_apt_cacher=$(_sanitize_value "$_apt_cacher")"
-    [ -n "$_apt_cacher_ip" ] && echo "var_apt_cacher_ip=$(_sanitize_value "$_apt_cacher_ip")"
-
-    [ -n "$_fuse" ] && echo "var_fuse=$(_sanitize_value "$_fuse")"
-    [ -n "$_tun" ] && echo "var_tun=$(_sanitize_value "$_tun")"
-    [ -n "$_gpu" ] && echo "var_gpu=$(_sanitize_value "$_gpu")"
-    [ -n "$_nesting" ] && echo "var_nesting=$(_sanitize_value "$_nesting")"
-    [ -n "$_keyctl" ] && echo "var_keyctl=$(_sanitize_value "$_keyctl")"
-    [ -n "$_mknod" ] && echo "var_mknod=$(_sanitize_value "$_mknod")"
-    [ -n "$_mount_fs" ] && echo "var_mount_fs=$(_sanitize_value "$_mount_fs")"
-    [ -n "$_protect" ] && echo "var_protection=$(_sanitize_value "$_protect")"
-    [ -n "$_timezone" ] && echo "var_timezone=$(_sanitize_value "$_timezone")"
-    [ -n "$_tags" ] && echo "var_tags=$(_sanitize_value "$_tags")"
-    [ -n "$_verbose" ] && echo "var_verbose=$(_sanitize_value "$_verbose")"
-
-    [ -n "$_hostname" ] && echo "var_hostname=$(_sanitize_value "$_hostname")"
-    [ -n "$_searchdomain" ] && echo "var_searchdomain=$(_sanitize_value "$_searchdomain")"
-
-    [ -n "$_tpl_storage" ] && echo "var_template_storage=$(_sanitize_value "$_tpl_storage")"
-    [ -n "$_ct_storage" ] && echo "var_container_storage=$(_sanitize_value "$_ct_storage")"
-  } > "$tmpf"
+  local -A _defaults_current=(
+    [var_unprivileged]="$_unpriv" [var_cpu]="$_cpu" [var_ram]="$_ram" [var_disk]="$_disk" [var_pw]="${PW:-}"
+    [var_brg]="${BRG:-}" [var_net]="$_net" [var_gateway]="$_gate" [var_mtu]="$_mtu" [var_vlan]="$_vlan" [var_mac]="$_mac" [var_ns]="$_ns"
+    [var_ipv6_method]="$_ipv6_method" [var_ssh]="$_ssh" [var_ssh_authorized_key]="$_ssh_auth"
+    [var_apt_cacher]="$_apt_cacher" [var_apt_cacher_ip]="$_apt_cacher_ip" [var_fuse]="$_fuse" [var_tun]="$_tun" [var_gpu]="$_gpu"
+    [var_nesting]="$_nesting" [var_keyctl]="$_keyctl" [var_mknod]="$_mknod" [var_mount_fs]="$_mount_fs" [var_protection]="$_protect"
+    [var_timezone]="$_timezone" [var_tags]="$_tags" [var_verbose]="$_verbose" [var_hostname]="$_hostname" [var_searchdomain]="$_searchdomain"
+    [var_template_storage]="$_tpl_storage" [var_container_storage]="$_ct_storage"
+  )
+  while IFS= read -r key; do
+    _is_whitelisted_key "$key" app || continue
+    _defaults_current["$key"]=${!key}
+  done < <(compgen -v var_lxc_)
+  local encoded status=0
+  printf '%s\n' '# scripts-underground defaults base64-v1' > "$tmpf" || status=$?
+  if ((status == 0)); then
+    for key in "${!_defaults_current[@]}"; do
+      encoded=$(_defaults_encode_value "${_defaults_current[$key]}") || {
+        status=$?
+        break
+      }
+      printf '%s=%s\n' "$key" "$encoded" >> "$tmpf" || {
+        status=$?
+        break
+      }
+    done
+  fi
+  if ((status != 0)); then
+    rm -f -- "$tmpf"
+    return "$status"
+  fi
 
   echo "$tmpf"
 }
@@ -2052,15 +2001,19 @@ maybe_offer_save_app_defaults() {
 
   # always build from current settings
   local new_tmp diff_tmp
-  new_tmp="$(_build_current_app_vars_tmp)"
-  diff_tmp="$(mktemp -p /tmp "${NSAPP:-app}.vars.diff.XXXXXX")"
+  new_tmp="$(_build_current_app_vars_tmp)" || return $?
+  diff_tmp="$(mktemp "${TMPDIR:-/tmp}/${NSAPP:-app}.vars.diff.XXXXXX")" || {
+    local status=$?
+    rm -f "$new_tmp"
+    return "$status"
+  }
 
   # 1) if no file → offer to create
   if [[ ! -f "$app_vars_path" ]]; then
     if whiptail --backtitle "Proxmox VE Helper Scripts" \
       --defaultno --yesno "Save these advanced settings as defaults for ${APP}?\n\nThis will create:\n${app_vars_path}" 12 72; then
       mkdir -p "$(dirname "$app_vars_path")"
-      install -m 0644 "$new_tmp" "$app_vars_path"
+      install -m 0600 "$new_tmp" "$app_vars_path" || return $?
       msg_ok "Saved app defaults: ${app_vars_path}"
     fi
     rm -f "$new_tmp" "$diff_tmp"
@@ -2068,7 +2021,11 @@ maybe_offer_save_app_defaults() {
   fi
 
   # 2) if file exists → build diff
-  _build_vars_diff "$app_vars_path" "$new_tmp" > "$diff_tmp"
+  _build_vars_diff "$app_vars_path" "$new_tmp" > "$diff_tmp" || {
+    local status=$?
+    rm -f -- "$new_tmp" "$diff_tmp"
+    return "$status"
+  }
 
   # if no differences → do nothing
   if grep -q "^(No differences)$" "$diff_tmp"; then
@@ -2094,7 +2051,7 @@ maybe_offer_save_app_defaults() {
 
     case "$sel" in
       "Update Defaults")
-        install -m 0644 "$new_tmp" "$app_vars_path"
+        install -m 0600 "$new_tmp" "$app_vars_path" || return $?
         msg_ok "Updated app defaults: ${app_vars_path}"
         break
         ;;
@@ -2122,8 +2079,9 @@ ensure_storage_selection_for_vars_file() {
 
   # Read stored values (if any)
   local tpl ct
-  tpl=$(grep -E '^var_template_storage=' "$vf" | cut -d= -f2-)
-  ct=$(grep -E '^var_container_storage=' "$vf" | cut -d= -f2-)
+  _load_vars_file_to_map "$vf" app || return $?
+  tpl=${_VARS_IN[var_template_storage]:-}
+  ct=${_VARS_IN[var_container_storage]:-}
 
   if [[ -n "$tpl" && -n "$ct" ]]; then
     TEMPLATE_STORAGE="$tpl"
@@ -2309,18 +2267,10 @@ advanced_settings() {
             _pw=""
             _pw_display="Automatic Login"
             ((STEP++))
-          elif [[ "$PW1" == *" "* ]]; then
-            whiptail --msgbox "Password cannot contain spaces." 8 58
           else
             local _pw1_clean="$PW1"
-            while [[ "$_pw1_clean" == -* ]]; do
-              _pw1_clean="${_pw1_clean#-}"
-            done
-            if [[ -z "$_pw1_clean" ]]; then
-              whiptail --msgbox "Password cannot be only '-' characters." 8 58
-              continue
-            elif ((${#_pw1_clean} < 5)); then
-              whiptail --msgbox "Password must be at least 5 characters (after removing leading '-')." 8 70
+            if ((${#_pw1_clean} < 5)); then
+              whiptail --msgbox "Password must be at least 5 characters." 8 70
               continue
             fi
             # Verify password
@@ -2330,11 +2280,8 @@ advanced_settings() {
               --passwordbox "\nVerify Root Password" 10 58 \
               3>&1 1>&2 2>&3); then
               local _pw2_clean="$PW2"
-              while [[ "$_pw2_clean" == -* ]]; do
-                _pw2_clean="${_pw2_clean#-}"
-              done
               if [[ "$_pw1_clean" == "$_pw2_clean" ]]; then
-                _pw="--password $_pw1_clean"
+                _pw="$_pw1_clean"
                 _pw_display="********"
                 ((STEP++))
               else
@@ -3437,7 +3384,7 @@ setup_script() {
         if [ -f "$(get_app_defaults_path)" ]; then
           header_info_fallback
           echo -e "${DEFAULT}${BOLD}${BL}Using App Defaults for ${APP} on node $PVEHOST_NAME${CL}"
-          load_vars_file "$(get_app_defaults_path)" "yes" # Force override script defaults
+          load_vars_file "$(get_app_defaults_path)" yes app || return $?
           base_settings
           echo_default
           defaults_target="$(get_app_defaults_path)"
@@ -3910,6 +3857,146 @@ _prepare_container_bundles() {
 # - Executes <app>-install.sh inside container
 # - Posts installation status to API
 # ------------------------------------------------------------------------------
+# The creator owns typed values. No exported command string is parsed or eval'd.
+# Accept the old wizard's fixed field prefixes only at this compatibility edge.
+_pct_create_options() {
+  local mac=${MAC:-} gate=${GATE:-} vlan=${VLAN:-} mtu=${MTU:-}
+  local ns=${NS:-} sd=${SD:-} _pct_tags=${TAGS:-} item net features='' zone=${CT_TIMEZONE:-}
+  local -a values=()
+  mac=${mac#,hwaddr=} gate=${gate#,gw=} vlan=${vlan#,tag=} mtu=${mtu#,mtu=}
+  ns=${ns#-nameserver=} sd=${sd#-searchdomain=}
+  [[ "${CTID:-}" =~ ^[1-9][0-9]{2,8}$ ]] || {
+    msg_error 'Invalid container ID'
+    return 65
+  }
+  validate_hostname "${HN:-}" || {
+    msg_error 'Invalid container hostname'
+    return 65
+  }
+  [[ "${BRG:-}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.:-]{0,14}$ ]] || {
+    msg_error 'Invalid bridge name'
+    return 65
+  }
+  [[ "${CORE_COUNT:-}" =~ ^[1-9][0-9]*$ && "${RAM_SIZE:-}" =~ ^[1-9][0-9]*$ && "${PCT_DISK_SIZE:-}" =~ ^[1-9][0-9]*$ ]] || {
+    msg_error 'Invalid container resources'
+    return 65
+  }
+  [[ "${CT_TYPE:-}" == 0 || "${CT_TYPE:-}" == 1 ]] || return 65
+  [[ -z "${CONTAINER_STORAGE:-}" || "$CONTAINER_STORAGE" =~ ^[a-zA-Z][a-zA-Z0-9_.-]*$ ]] || return 65
+  [[ "${NET:-dhcp}" == dhcp ]] || validate_ip_address "$NET" || return 65
+  validate_mac_address "$mac" && validate_gateway_ip "$gate" && validate_vlan_tag "$vlan" && validate_mtu "$mtu" || return 65
+  net="name=eth0,bridge=$BRG,ip=${NET:-dhcp}"
+  [[ -z "$mac" ]] || net+=",hwaddr=$mac"
+  [[ -z "$gate" ]] || net+=",gw=$gate"
+  [[ -z "$vlan" ]] || net+=",tag=$vlan"
+  [[ -z "$mtu" ]] || net+=",mtu=$mtu"
+  case "${IPV6_METHOD:-none}" in
+    none) ;;
+    auto | dhcp) net+=",ip6=$IPV6_METHOD" ;;
+    static)
+      [[ -n "${IPV6_ADDR:-}" ]] && validate_ipv6_address "$IPV6_ADDR" && validate_ipv6_address "${IPV6_GATE:-}" || return 65
+      net+=",ip6=$IPV6_ADDR"
+      [[ -z "${IPV6_GATE:-}" ]] || net+=",gw6=$IPV6_GATE"
+      ;;
+    *) return 65 ;;
+  esac
+  # PVE list operands remain single argv entries, not shell words or options.
+  [[ "$ns$sd$_pct_tags" != *$'\n'* && "$ns$sd$_pct_tags" != *$'\r'* ]] || return 65
+  read -ra values <<< "${ns//[;,]/ }"
+  for item in "${values[@]}"; do
+    [[ "$item" != */* ]] || return 65
+    if [[ "$item" == *:* ]]; then
+      if [[ "$item" == *%* ]]; then
+        [[ "${item#*%}" =~ ^[a-zA-Z0-9_.:-]+$ ]] || return 65
+        item=${item%%%*}
+      fi
+      validate_ipv6_address "$item" || return 65
+    else validate_gateway_ip "$item" || return 65; fi
+  done
+  read -ra values <<< "${sd//[;,]/ }"
+  for item in "${values[@]}"; do validate_hostname "$item" || return 65; done
+  _pct_tags=${_pct_tags//,/;}
+  validate_tags "$_pct_tags" || return 65
+  [[ "${ENABLE_NESTING:-1}" =~ ^[01]$ ]] || return 65
+  [[ "${ENABLE_NESTING:-1}" != 1 ]] || features=nesting=1
+  [[ "$CT_TYPE" != 1 ]] || features+="${features:+,}keyctl=1"
+  case "${ENABLE_FUSE:-no}" in yes) features+="${features:+,}fuse=1" ;; no) ;; *) return 65 ;; esac
+  PCT_OPTIONS=(-hostname "$HN" -net0 "$net" -onboot 1 -cores "$CORE_COUNT" -memory "$RAM_SIZE" -unprivileged "$CT_TYPE" -rootfs "$CONTAINER_STORAGE:$PCT_DISK_SIZE")
+  [[ -z "$features" ]] || PCT_OPTIONS+=(-features "$features")
+  [[ -z "$_pct_tags" ]] || PCT_OPTIONS+=(-tags "$_pct_tags")
+  [[ -z "$ns" ]] || PCT_OPTIONS+=(-nameserver "$ns")
+  [[ -z "$sd" ]] || PCT_OPTIONS+=(-searchdomain "$sd")
+  case "${PROTECT_CT:-no}" in yes | 1) PCT_OPTIONS+=(-protection 1) ;; no | 0 | '') ;; *) return 65 ;; esac
+  [[ "$zone" != Etc/* ]] || zone=host
+  validate_timezone "$zone" || return 65
+  [[ -z "$zone" ]] || PCT_OPTIONS+=(-timezone "$zone")
+  [[ -z "${PW:-}" ]] || PCT_OPTIONS+=(-password "$PW")
+  return 0
+}
+
+# Preserve the actual producer's status, and diagnose only its completed output.
+_pct_create() {
+  local output status log_status=0
+  output=$(pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" "${PCT_OPTIONS[@]}" 2>&1) && status=0 || status=$?
+  printf -v _pct_create_output '%s' "$output"
+  printf '%s\n' "$output" >> "$LOGFILE" || log_status=$?
+  if ((log_status != 0)); then
+    msg_warn "CT $CTID create output could not be appended to $LOGFILE (status $log_status); pct status remains $status"
+  fi
+  if ((status != 0)); then
+    msg_error "pct create for CT $CTID failed (status $status); see $LOGFILE"
+    if grep -qiE '(timedatectl.*(fail|error|exit)|fail.*timedatectl)' <<< "$output"; then
+      msg_warn 'The failed pct create output names a timedatectl failure; inspect that command and the node journal. No host service was restarted.'
+    fi
+  fi
+  return "$status"
+}
+
+# These observations never mount a CT or alter its lifecycle/network settings.
+_creation_diagnostics() {
+  local stage=$1 status=$2
+  msg_error "CT $CTID $stage failed (status $status)"
+  pct config "$CTID" 2>&1 | grep -E '^(hostname|net[0-9]+|rootfs|ostype|unprivileged):' || true
+  ip -details link show "${BRG:-vmbr0}" 2>&1 || true
+  journalctl --no-pager -n 25 -u "pve-container@${CTID}.service" 2>&1 || true
+}
+
+_wait_container_running() {
+  local state status
+  state=$(pct status "$CTID" 2>&1) && status=0 || status=$?
+  if ((status != 0)); then
+    msg_error "CT $CTID status query failed (pct status $status); running state is unknown"
+    return "$status"
+  fi
+  case "$state" in
+    'status: running') return 0 ;;
+    'status: stopped') msg_error "CT $CTID is positively stopped after startup" ;;
+    *) msg_error "CT $CTID status query returned an unrecognized state" ;;
+  esac
+  return 65
+}
+
+_wait_container_network() {
+  local addresses status ip_in_lxc='' i
+  for i in {1..20}; do
+    addresses=$(pct exec "$CTID" -- ip addr show dev eth0 2>&1) && status=0 || status=$?
+    if ((status != 0)); then
+      _creation_diagnostics 'address query' "$status"
+      return "$status"
+    fi
+    ip_in_lxc=$(awk '/inet / {sub(/\/.*/, "", $2); print $2; exit} /inet6 / && /scope global/ {sub(/\/.*/, "", $2); print $2; exit}' <<< "$addresses")
+    [[ -z "$ip_in_lxc" ]] || {
+      msg_ok "CT $CTID has address $ip_in_lxc"
+      return 0
+    }
+    _wait_container_running || return $?
+    sleep 1
+  done
+  msg_error "No IPv4 or global IPv6 address was observed on CT $CTID eth0 after 20 queries; this does not establish a DHCP or uplink failure"
+  _creation_diagnostics 'address assignment observation' 65
+  return 65
+}
+
 build_container() {
   local _bc_script_id=${1-}
   local _bc_required_cpu=${2-} _bc_required_ram=${3-}
@@ -3918,74 +4005,7 @@ build_container() {
   execute_optional_hook pre_build_script
   #  if [ "$VERBOSE" == "yes" ]; then set -x; fi
 
-  NET_STRING="-net0 name=eth0,bridge=${BRG:-vmbr0}"
-
-  # MAC
-  if [[ -n "$MAC" ]]; then
-    case "$MAC" in
-      ,hwaddr=*) NET_STRING+="$MAC" ;;
-      *) NET_STRING+=",hwaddr=$MAC" ;;
-    esac
-  fi
-
-  # IP (always required, default dhcp)
-  NET_STRING+=",ip=${NET:-dhcp}"
-
-  # Gateway
-  if [[ -n "$GATE" ]]; then
-    case "$GATE" in
-      ,gw=*) NET_STRING+="$GATE" ;;
-      *) NET_STRING+=",gw=$GATE" ;;
-    esac
-  fi
-
-  # VLAN
-  if [[ -n "$VLAN" ]]; then
-    case "$VLAN" in
-      ,tag=*) NET_STRING+="$VLAN" ;;
-      *) NET_STRING+=",tag=$VLAN" ;;
-    esac
-  fi
-
-  # MTU
-  if [[ -n "$MTU" ]]; then
-    case "$MTU" in
-      ,mtu=*) NET_STRING+="$MTU" ;;
-      *) NET_STRING+=",mtu=$MTU" ;;
-    esac
-  fi
-
-  # IPv6 Handling
-  case "$IPV6_METHOD" in
-    auto) NET_STRING="$NET_STRING,ip6=auto" ;;
-    dhcp) NET_STRING="$NET_STRING,ip6=dhcp" ;;
-    static)
-      NET_STRING="$NET_STRING,ip6=$IPV6_ADDR"
-      [ -n "$IPV6_GATE" ] && NET_STRING="$NET_STRING,gw6=$IPV6_GATE"
-      ;;
-    none) ;;
-  esac
-
-  # Build FEATURES string based on container type and user choices
-  FEATURES=""
-
-  # Nesting support (user configurable, default enabled)
-  if [ "${ENABLE_NESTING:-1}" == "1" ]; then
-    FEATURES="nesting=1"
-  fi
-
-  # Keyctl for unprivileged containers (needed for Docker)
-  if [ "$CT_TYPE" == "1" ]; then
-    [ -n "$FEATURES" ] && FEATURES="$FEATURES,"
-    FEATURES="${FEATURES}keyctl=1"
-  fi
-
-  if [ "$ENABLE_FUSE" == "yes" ]; then
-    [ -n "$FEATURES" ] && FEATURES="$FEATURES,"
-    FEATURES="${FEATURES}fuse=1"
-  fi
-
-  # Build PCT_OPTIONS as string for export
+  # Typed create options are built at the create owner, never exported as shell text.
   TEMP_DIR=$(mktemp -d)
   pushd "$TEMP_DIR" > /dev/null
   # Core exports for install.func
@@ -4032,63 +4052,6 @@ build_container() {
   # This tells install scripts whether to prompt for input or use defaults
   export MODE="${METHOD:-default}"
 
-  # Build PCT_OPTIONS as multi-line string
-  PCT_OPTIONS_STRING="  -hostname $HN"
-
-  # Only add -tags if TAGS is not empty
-  if [ -n "$TAGS" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  -tags $TAGS"
-  fi
-
-  # Only add -features if FEATURES is not empty
-  if [ -n "$FEATURES" ]; then
-    PCT_OPTIONS_STRING="  -features $FEATURES
-$PCT_OPTIONS_STRING"
-  fi
-
-  # Add storage if specified
-  if [ -n "$SD" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  $SD"
-  fi
-
-  # Add nameserver if specified
-  if [ -n "$NS" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  $NS"
-  fi
-
-  # Network configuration
-  PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  $NET_STRING
-  -onboot 1
-  -cores $CORE_COUNT
-  -memory $RAM_SIZE
-  -unprivileged $CT_TYPE"
-
-  # Protection flag (if var_protection was set)
-  if [ "${PROTECT_CT:-}" == "1" ] || [ "${PROTECT_CT:-}" == "yes" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  -protection 1"
-  fi
-
-  # Timezone (map Etc/* to "host" as pct doesn't accept them)
-  if [ -n "${CT_TIMEZONE:-}" ]; then
-    local _pct_timezone="$CT_TIMEZONE"
-    [[ "$_pct_timezone" == Etc/* ]] && _pct_timezone="host"
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  -timezone $_pct_timezone"
-  fi
-
-  # Password (already formatted)
-  if [ -n "$PW" ]; then
-    PCT_OPTIONS_STRING="$PCT_OPTIONS_STRING
-  $PW"
-  fi
-
-  # Export as string (this works, unlike arrays!)
-  export PCT_OPTIONS="$PCT_OPTIONS_STRING"
   export TEMPLATE_STORAGE="${var_template_storage:-}"
   export CONTAINER_STORAGE="${var_container_storage:-}"
 
@@ -4289,48 +4252,20 @@ EOF
   # ============================================================================
 
   msg_info "Starting LXC Container"
-  pct start "$CTID"
-
-  # Wait for container to be running
-  for i in {1..10}; do
-    if pct status "$CTID" | grep -q "status: running"; then
-      msg_ok "Started LXC Container"
-      break
-    fi
-    sleep 1
-    if [ "$i" -eq 10 ]; then
-      msg_error "LXC Container did not reach running state"
-      exit 1
-    fi
-  done
+  local start_status=0
+  pct start "$CTID" || start_status=$?
+  if ((start_status != 0)); then
+    _creation_diagnostics startup "$start_status"
+    exit "$start_status"
+  fi
+  _wait_container_running || exit $?
+  msg_ok "Started LXC Container"
 
   # Wait for network (skip for Alpine initially)
   if [ "$var_os" != "alpine" ]; then
     msg_info "Waiting for network in LXC container"
 
-    # Wait for IP assignment (IPv4 or IPv6)
-    local ip_in_lxc=""
-    for i in {1..20}; do
-      # Try IPv4 first
-      ip_in_lxc=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2> /dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
-      # Fallback to IPv6 if IPv4 not available
-      if [ -z "$ip_in_lxc" ]; then
-        ip_in_lxc=$(pct exec "$CTID" -- ip -6 addr show dev eth0 scope global 2> /dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
-      fi
-      [ -n "$ip_in_lxc" ] && break
-      sleep 1
-    done
-
-    if [ -z "$ip_in_lxc" ]; then
-      msg_error "No IP assigned to CT $CTID after 20s"
-      echo -e "${YW}Troubleshooting:${CL}"
-      echo "  • Verify bridge ${BRG} exists and has connectivity"
-      echo "  • Check if DHCP server is reachable (if using DHCP)"
-      echo "  • Verify static IP configuration (if using static IP)"
-      echo "  • Check Proxmox firewall rules"
-      echo "  • If using Tailscale: Disable MagicDNS temporarily"
-      exit 1
-    fi
+    _wait_container_network || exit $?
 
     # Verify basic connectivity (ping test)
     local ping_success=false
@@ -4347,7 +4282,7 @@ EOF
     done
 
     if [ "$ping_success" = false ]; then
-      msg_warn "Network configured (IP: $ip_in_lxc) but connectivity test failed"
+      msg_warn "An address was observed, but the selected public ICMP probes failed; this does not establish DNS or HTTP reachability"
       echo -e "${YW}Container may have limited internet access. Installation will continue...${CL}"
     else
       msg_ok "Network in LXC is reachable (ping)"
@@ -4419,7 +4354,8 @@ EOF
       ' && alpine_exit=0 || alpine_exit=$?
       if [[ $alpine_exit -ne 0 ]]; then
         msg_error "apk base packages installation failed"
-        exit 1
+        _creation_diagnostics 'apk base packages' "$alpine_exit"
+        exit "$alpine_exit"
       fi
     }
   elif [[ "$var_os" =~ ^(debian|ubuntu|devuan)$ ]]; then
@@ -4433,7 +4369,7 @@ EOF
 
     # Devuan templates don't include locales package by default - install it first
     if [ "$var_os" == "devuan" ]; then
-      _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null && apt-get install -y locales >/dev/null" || true
+      _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null && apt-get -o Dpkg::Options::=--force-confold install -y locales >/dev/null" || true
     fi
 
     # Only configure locale if locale.gen exists (some minimal templates don't have it)
@@ -4465,7 +4401,7 @@ EOF
     fi
 
     local apt_base_rc=0
-    _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null 2>&1 && apt-get install -y sudo curl mc gnupg2 jq >/dev/null 2>&1" || apt_base_rc=$?
+    _receiving_exec bash -c "${_ct_env} apt-get update >/dev/null 2>&1 && apt-get -o Dpkg::Options::=--force-confold install -y sudo curl mc gnupg2 jq >/dev/null 2>&1" || apt_base_rc=$?
     if ((apt_base_rc != 0)); then
       # Mirror failover only has Debian and Ubuntu catalogues: any other or
       # unreadable ID keeps the original failure and leaves sources untouched.
@@ -4527,7 +4463,7 @@ EOF
           elif [ $APT_RC -ne 0 ]; then
             echo "  Mirror $1 failed (apt-get update error)"
             return 1
-          elif apt-get install -y $APT_BASE >/dev/null 2>&1; then
+          elif apt-get -o Dpkg::Options::=--force-confold install -y $APT_BASE >/dev/null 2>&1; then
             echo "  CDN set to $1: tests passed"
             return 0
           else
@@ -4598,7 +4534,7 @@ EOF
               [ -f \"\$src\" ] && sed -i \"s|URIs: http[s]*://[^/]*/|URIs: http://${custom_mirror}/|g; s|deb http[s]*://[^/]*/|deb http://${custom_mirror}/|g\" \"\$src\"
             done
             rm -rf /var/lib/apt/lists/*
-            apt-get update >/dev/null 2>&1 && apt-get install -y sudo curl mc gnupg2 jq >/dev/null 2>&1
+            apt-get update >/dev/null 2>&1 && apt-get -o Dpkg::Options::=--force-confold install -y sudo curl mc gnupg2 jq >/dev/null 2>&1
           " && break
           msg_warn "Mirror '${custom_mirror}' also failed. Try another or type 'skip'."
         done
@@ -4608,7 +4544,8 @@ EOF
         fi
       elif [[ $mirror_exit -ne 0 ]]; then
         msg_error "apt-get base packages installation failed"
-        exit 1
+        _creation_diagnostics 'apt base packages after mirror exhaustion' "$mirror_exit"
+        exit "$mirror_exit"
       fi
     fi
   else
@@ -5643,13 +5580,20 @@ _template_cache_work() {
   elif [[ ! -s "$TEMPLATE_PATH" || $(stat -c %s -- "$TEMPLATE_PATH") -lt 1000000 ]]; then
     _template_download=1
   elif ! tar -tf "$TEMPLATE_PATH" &> /dev/null; then
-    if [[ -n "$ONLINE_TEMPLATE" || "$_template_route" != initial ]]; then
-      _template_download=1
-    else
-      msg_warn "Template appears corrupted, but no online version exists. Keeping local file."
-    fi
+    _template_download=1
   fi
   if ((_template_download)); then
+    # An existing invalid archive can be operator-only. Establish an exact
+    # recoverable source while still holding its stable cache lock, before rm.
+    # A different/latest ONLINE_TEMPLATE is not provenance for this filename.
+    if [[ -e "$TEMPLATE_PATH" && "${ONLINE_TEMPLATE:-}" != "$TEMPLATE" ]]; then
+      local _template_sources
+      _template_sources=$(_template_catalog_names "${TEMPLATE%%_*}" '') || return $?
+      if ! grep -Fxq -- "$TEMPLATE" <<< "$_template_sources"; then
+        msg_error "Invalid template archive retained at '$TEMPLATE_PATH': no exact catalogue source for '$TEMPLATE'. Supply a recoverable template before creating the container."
+        return 222
+      fi
+    fi
     if rm -f -- "$TEMPLATE_PATH"; then :; else
       local _template_remove_status=$?
       msg_error "Cannot remove invalid template archive '$TEMPLATE_PATH' (status $_template_remove_status)"
@@ -5734,10 +5678,10 @@ _template_prepare_archive() {
 # - Extensive error checking with detailed exit codes
 # ------------------------------------------------------------------------------
 create_lxc_container() {
+  local -a PCT_OPTIONS=()
   # ------------------------------------------------------------------------------
-  # Optional verbose mode (debug tracing)
+  # Do not trace private create operands (notably root passwords).
   # ------------------------------------------------------------------------------
-  if [[ "${CREATE_LXC_VERBOSE:-no}" == "yes" ]]; then set -x; fi
 
   # ------------------------------------------------------------------------------
   # Helpers (dynamic versioning / template parsing)
@@ -5775,6 +5719,7 @@ create_lxc_container() {
     fi
     if [[ $need -eq 0 ]]; then
       msg_debug "No newer candidate for pve-container/lxc-pve (installed=$_pvec_i/$_lxcp_i, cand=$_pvec_c/$_lxcp_c)"
+      [[ "$do_retry" != yes ]] || return 3
       return 0
     fi
 
@@ -5789,16 +5734,18 @@ create_lxc_container() {
         msg_ok "LXC stack upgraded."
         if [[ "$do_retry" == "yes" ]]; then
           msg_info "Retrying container creation after upgrade"
-          if pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
+          if _pct_create; then
             msg_ok "Container created successfully after upgrade."
             return 0
           else
+            _lxc_stack_failure_status=$?
             msg_error "pct create still failed after upgrade. See $LOGFILE"
             return 3
           fi
         fi
         return 1
       else
+        _lxc_stack_failure_status=$?
         msg_error "Upgrade failed. Please check APT output."
         return 3
       fi
@@ -5824,10 +5771,13 @@ create_lxc_container() {
   msg_debug "PCT_OSVERSION=${PCT_OSVERSION:-default}"
 
   # ID checks
-  [[ "$CTID" -ge 100 ]] || {
-    msg_error "ID cannot be less than 100."
+  [[ "$CTID" =~ ^[1-9][0-9]{2,8}$ ]] || {
+    msg_error "ID must be a canonical decimal value from 100 to 999999999."
     exit 205
   }
+  # Admission precedes storage/catalogue/optional stack-upgrade effects. Storage
+  # can still be unselected here; rebuild after the checked selection below.
+  _pct_create_options || return $?
   if qm status "$CTID" &> /dev/null || pct status "$CTID" &> /dev/null; then
     echo -e "ID '$CTID' is already in use."
     unset CTID
@@ -6127,26 +6077,27 @@ create_lxc_container() {
   grep -q "root:100000:65536" /etc/subuid || echo "root:100000:65536" >> /etc/subuid
   grep -q "root:100000:65536" /etc/subgid || echo "root:100000:65536" >> /etc/subgid
 
-  # PCT_OPTIONS is now a string (exported from build_container)
-  # Add rootfs if not already specified
-  if [[ ! "$PCT_OPTIONS" =~ "-rootfs" ]]; then
-    PCT_OPTIONS="$PCT_OPTIONS
-  -rootfs $CONTAINER_STORAGE:${PCT_DISK_SIZE:-8}"
-  fi
+  [[ -n "$CONTAINER_STORAGE" ]] || return 65
+  _pct_create_options || return $?
 
   LOGFILE="${TMPDIR:-/tmp}/pct_create_${CTID}_$(date +%Y%m%d_%H%M%S)_${SESSION_ID}.log"
   _template_prepare_archive initial || exit $?
 
-  msg_debug "pct create command: pct create $CTID ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} $PCT_OPTIONS"
+  msg_debug "pct create CT $CTID from ${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE} (private operands omitted)"
   msg_debug "Logfile: $LOGFILE"
 
-  # First attempt (PCT_OPTIONS is a multi-line string, use it directly)
-  if ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS > "$LOGFILE" 2>&1; then
+  local create_status=0 _lxc_stack_failure_status=0 _pct_create_output=''
+  : > "$LOGFILE"
+  _pct_create || create_status=$?
+  if ((create_status != 0)); then
     msg_debug "Container creation failed on ${TEMPLATE_STORAGE}. Checking error..."
+    if grep -qiE '(timedatectl.*(fail|error|exit)|fail.*timedatectl)' <<< "$_pct_create_output"; then
+      return "$create_status"
+    fi
 
     # Check if template issue - retry with fresh download
     local _template_repair_failed=0 template_failure='' _template_repair_status
-    if grep -qiE 'unable to open|corrupt|invalid' "$LOGFILE"; then
+    if grep -qiE 'unable to open|corrupt|invalid.*(template|archive)' <<< "$_pct_create_output"; then
       if _template_prepare_archive repair template_failure; then :; else
         _template_repair_status=$?
         if [[ "$template_failure" != archive || "$TEMPLATE_STORAGE" == local ]]; then
@@ -6158,72 +6109,76 @@ create_lxc_container() {
     fi
 
     # Retry after repair
-    if [[ "$_template_repair_failed" == 1 ]] || ! pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
+    create_status=0
+    if [[ "$_template_repair_failed" == 1 ]]; then
+      create_status=$_template_repair_status
+    else _pct_create || create_status=$?; fi
+    if ((create_status != 0)); then
       # Fallback to local storage if not already on local
       if [[ "$TEMPLATE_STORAGE" != "local" ]]; then
         msg_info "Retrying container creation with fallback to local storage"
         TEMPLATE_STORAGE=local
         _template_prepare_archive fallback || exit $?
-        if ! pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS >> "$LOGFILE" 2>&1; then
+        create_status=0
+        _pct_create || create_status=$?
+        if ((create_status != 0)); then
           # Local fallback also failed - check for LXC stack version issue
-          if grep -qiE 'unsupported .* version' "$LOGFILE"; then
+          if grep -qiE 'unsupported .* version' <<< "$_pct_create_output"; then
             echo
             echo "pct reported 'unsupported ... version' – your LXC stack might be too old for this template."
             echo "We can try to upgrade 'pve-container' and 'lxc-pve' now and retry automatically."
-            offer_lxc_stack_upgrade_and_maybe_retry "yes"
-            rc=$?
+            rc=0
+            offer_lxc_stack_upgrade_and_maybe_retry "yes" || rc=$?
             case $rc in
               0) : ;; # success - container created, continue
               2)
                 echo "Upgrade was declined. Please update and re-run:
   apt update && apt install --only-upgrade pve-container lxc-pve"
-                exit 231
+                exit "$create_status"
                 ;;
               3)
                 echo "Upgrade and/or retry failed. Please inspect: $LOGFILE"
-                exit 231
+                ((_lxc_stack_failure_status == 0)) || create_status=$_lxc_stack_failure_status
+                exit "$create_status"
                 ;;
             esac
           else
             msg_error "Container creation failed. See $LOGFILE"
             if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
-              set -x
-              pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
-              set +x
+              whiptail --scrolltext --textbox "$LOGFILE" 25 100 || true
             fi
-            exit 209
+            exit "$create_status"
           fi
         else
           msg_ok "Container successfully created using local fallback."
         fi
       else
         # Already on local storage and still failed - check LXC stack version
-        if grep -qiE 'unsupported .* version' "$LOGFILE"; then
+        if grep -qiE 'unsupported .* version' <<< "$_pct_create_output"; then
           echo
           echo "pct reported 'unsupported ... version' – your LXC stack might be too old for this template."
           echo "We can try to upgrade 'pve-container' and 'lxc-pve' now and retry automatically."
-          offer_lxc_stack_upgrade_and_maybe_retry "yes"
-          rc=$?
+          rc=0
+          offer_lxc_stack_upgrade_and_maybe_retry "yes" || rc=$?
           case $rc in
             0) : ;; # success - container created, continue
             2)
               echo "Upgrade was declined. Please update and re-run:
   apt update && apt install --only-upgrade pve-container lxc-pve"
-              exit 231
+              exit "$create_status"
               ;;
             3)
               echo "Upgrade and/or retry failed. Please inspect: $LOGFILE"
-              exit 231
+              ((_lxc_stack_failure_status == 0)) || create_status=$_lxc_stack_failure_status
+              exit "$create_status"
               ;;
           esac
         else
           msg_error "Container creation failed. See $LOGFILE"
           if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
-            set -x
-            pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
-            set +x
+            whiptail --scrolltext --textbox "$LOGFILE" 25 100 || true
           fi
-          exit 209
+          exit "$create_status"
         fi
       fi
     else
@@ -6231,17 +6186,28 @@ create_lxc_container() {
     fi
   fi
 
-  # Verify container exists
-  pct list | awk '{print $1}' | grep -qx "$CTID" || {
+  # A failed producer is not a completed inventory proving absence.
+  local created_inventory inventory_status=0
+  created_inventory=$(pct list 2>&1) || inventory_status=$?
+  if ((inventory_status != 0)); then
+    msg_error "Container inventory query failed (pct list status $inventory_status); creation state is unknown. See $LOGFILE"
+    return "$inventory_status"
+  fi
+  awk '{print $1}' <<< "$created_inventory" | grep -qx "$CTID" || {
     msg_error "Container ID $CTID not listed in 'pct list'. See $LOGFILE"
     exit 215
   }
 
   # Verify config rootfs
-  grep -q '^rootfs:' "/etc/pve/lxc/$CTID.conf" || {
+  local rootfs_status=0
+  grep -q '^rootfs:' "/etc/pve/lxc/$CTID.conf" || rootfs_status=$?
+  if ((rootfs_status == 1)); then
     msg_error "RootFS entry missing in container config. See $LOGFILE"
     exit 216
-  }
+  elif ((rootfs_status != 0)); then
+    msg_error "Container config query failed (grep status $rootfs_status); rootfs presence is unknown"
+    return "$rootfs_status"
+  fi
 
   msg_ok "LXC Container ${BL}$CTID${CL} ${GN}was successfully created."
   execute_optional_hook post_build_script
@@ -6293,10 +6259,16 @@ complete_install() {
 </div>
 EOF
   )
-  pct set "$CTID" -description "$DESCRIPTION"
+  if pct set "$CTID" -description "$DESCRIPTION"; then :; else
+    local notes_status=$?
+    msg_warn "Application installation finished; optional CT $CTID description update failed (pct set status $notes_status)"
+  fi
 
   if [[ -f /etc/systemd/system/ping-instances.service ]]; then
-    systemctl start ping-instances.service
+    if systemctl start ping-instances.service; then :; else
+      local monitor_status=$?
+      msg_warn "Application installation finished; optional ping-instances.service restoration failed (systemctl status $monitor_status)"
+    fi
   fi
 
   execute_optional_hook post_install_script

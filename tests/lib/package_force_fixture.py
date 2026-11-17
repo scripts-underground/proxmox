@@ -235,8 +235,6 @@ try:
         options = ['-o', 'Dpkg::Options::=--force-confold']
         if provider == 'codeberg':
             options = ['-o', 'Dpkg::Options::=--force-confdef', *options]
-        elif provider == 'url':
-            options = []
         check(provider + ' unforced exact primary options', ['install', '-y', *options], calls(case, 'apt')[-1]['argv'][:-1])
         result = deploy(case, provider, force='1', std='quiet')
         check(provider + ' forced same-version adapter status', 0, result.returncode)
@@ -257,13 +255,13 @@ try:
         check(provider + ' actual STD quiet log consumer', True, 'Setting up su-package-probe' in read(case / 'helper.log'))
         primary = calls(case, 'apt')[-1]
         check(provider + ' exact primary option vector', ['install', '-y', '--reinstall', *options], primary['argv'][:-1])
-        check(provider + ' primary environment', (None, None) if provider == 'url' else ('noninteractive', '1'),
+        check(provider + ' primary environment', ('noninteractive', None) if provider == 'url' else ('noninteractive', '1'),
               (primary['frontend'], primary['offline']))
         write(case / 'fault', 'apt')
         result = deploy(case, provider, force='1')
         check(provider + ' primary fault actual dpkg fallback', (0, '3\n'), (result.returncode, read(counter)))
         fallback = [c for c in calls(case, 'dpkg') if '-i' in c['argv']][-1]
-        check(provider + ' existing fallback vector', (['--force-confdef', '--force-confold'] if provider == 'codeberg' else []) + ['-i'], fallback['argv'][:-1])
+        check(provider + ' preserving fallback vector', (['--force-confdef', '--force-confold'] if provider == 'codeberg' else ['--force-confold']) + ['-i'], fallback['argv'][:-1])
         check(provider + ' fallback environment', ('noninteractive' if provider == 'codeberg' else None, None if provider == 'url' else '1'), (fallback['frontend'], fallback['offline']))
         for fault in (('both', 'download', 'postinst') if provider == 'url' else ('both', 'download', 'producer', 'postinst')):
             if provider != 'url':
@@ -283,7 +281,7 @@ try:
         check(provider + ' pending native package retry', (0, '4\n'), (result.returncode, read(counter)))
         for old, new in (('0', '0'), ('1', '0'), ('0', '1'), ('1', '1')):
             result = deploy(case, provider, force='1', old=old, new=new)
-            wanted_options = []
+            wanted_options = ['-o', 'Dpkg::Options::=--force-confold']
             if provider == 'codeberg':
                 wanted_options = ['-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
             elif provider != 'url' and (old == '1' or new == '1'):
@@ -299,6 +297,19 @@ try:
         check(provider + ' selected version2 marker' if provider != 'url' else 'URL version2 has no marker',
               '2.0\n' if provider != 'url' else '<absent>', read(marker))
         check(provider + ' version2 executable consumer', 'native-2.0\n', invoke(case, ['/opt/su-package-probe/bin/probe']).stdout)
+        # No caller force flags: default policy must retain actual operator bytes
+        # through both native APT and the adapter's direct dpkg fallback.
+        case, _ = fixture(provider + '-default-conffile', provider)
+        conffile = case / 'root/etc/su-package-probe.conf'
+        result = deploy(case, provider, old='0', new='0')
+        check(provider + ' default conffile initial native install', 0, result.returncode)
+        write(conffile, 'operator default policy\n')
+        for version, fault in (('2.0', ''), ('3.0', 'apt')):
+            package(case, version)
+            write(case / 'fault', fault)
+            result = deploy(case, provider, force='1', old='0', new='0', version='v' + version)
+            check(provider + '/' + version + ' native conffile conflict preserves operator bytes',
+                  (0, 'operator default policy\n'), (result.returncode, read(conffile)))
 finally:
     after = outer_state()
     write(WORK / 'outer-after.json', json.dumps(after, sort_keys=True))

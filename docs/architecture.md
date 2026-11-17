@@ -292,6 +292,10 @@ host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
 appears after `set -euo pipefail` and before the inlined framework files.
 
+Common root runtime initialization clears sudo-origin SUDO_USER, SUDO_UID,
+SUDO_GID and SUDO_COMMAND before its initialization-cache check. It does not
+rewrite a supplied HOME, USER or LOGNAME, or change a non-root caller's context.
+
 New update bundles also bake `LXC_SCRIPT_ID`, supplied explicitly from the literal
 source footer through `build_container` and both initial/repair
 `_prepare_container_bundles` calls. The bundle-owned validator accepts 1-64 ASCII
@@ -648,7 +652,7 @@ LXC with the app installed inside.
 Stages, in order:
 
 1. Optionally invoke the user's `pre_build_script` on the host.
-2. Compose the full `pct create` argument string from settings
+2. Compose the typed `pct create` argument array from settings
    (network, cores, memory, storage, features, and so on).
 3. Run `pct create` to instantiate the container. If the template
    isn't cached locally, download it first.
@@ -673,6 +677,20 @@ Creator-side staging, pulled/capture logs and framework-cache allocation use
 fetch and later inlining reads; changing TMPDIR does not reuse another root's
 bytes. Each sender bundle and addon staging directory is privately allocated,
 and cleanup removes only that owned staging artifact.
+
+`_pct_create_options` validates canonical decimal IDs, hostname, resource and
+network field types at the common creation boundary. An invalid or unavailable
+explicit ID is refused, never incremented into a different CT. The default/env
+and advanced routes converge here. DNS/search lists, tags and passwords remain
+literal single argv operands; no exported command string is evaluated or split.
+Every repair, fallback and stack-upgrade retry uses the same array. Debug messages
+omit private operands. Create/start/status/address producers keep their actual
+failure status; positively stopped and failed/unknown queries are distinct.
+Failure diagnostics observe config, bridge metadata and a bounded unit journal,
+without mounting a rootfs or changing lifecycle/network state. Failed public ICMP
+probes do not establish DNS/HTTP failure, and absent addresses do not establish
+that no DHCP server answered. A timedatectl hint requires that command's failure
+in the completed failed create output, not status alone.
 
 Template-cache coordination is persistent metadata, independent of those temporary
 roots. `_template_prepare_archive` resolves the selected storage/name afresh and
@@ -924,6 +942,10 @@ In order:
 `post_install_script` is the only user hook from inside this function.
 The shim never calls it directly.
 
+Optional description and ping-instances restoration failures warn with their
+actual status without turning a finished app installation into a failure or
+skipping the required post-install hook. They are not reported as successful.
+
 ### 4.2 Addon install path
 
 Single-context path — everything runs inside the existing container:
@@ -1032,6 +1054,18 @@ beginning of `variables()` and shared globally across the framework for
 the rest of the install path.
 
 #### Host-to-bundle transfer
+
+App-default files use one key policy and one data parser for loading, diffing and
+storage selection. General defaults accept the existing reusable host fields;
+app defaults additionally accept currently declared `var_lxc_*` settings. CTIDs,
+per-run confirmation/force flags and derived script identity are not defaults.
+Explicit environment inputs captured before defaults loading win over saved app
+settings; saved app settings can override source defaults. Legacy literal
+KEY=VALUE files remain readable without source/eval. Newly saved app files start
+with `# scripts-underground defaults base64-v1`, with canonical base64 values so
+quotes, shell punctuation, empty values and trailing newlines roundtrip as data.
+Stages and published app files are private from creation (0600); diffs redact
+password and app-setting values. Encoding is not encryption.
 
 All values that the container needs are baked into the bundle at
 composition time on the host:
@@ -1209,6 +1243,29 @@ Node/module versions and existing npm/pnpm pins are not globally changed.
 owned same-filesystem stage, then atomically publishes. All modes preserve the
 last-known-good key on transfer, processing, validation or publication failure.
 Existing key mode/owner are retained; fresh keyrings use0644 for apt readability.
+
+`setup_deb822_repo` also accepts a readable, valid absolute local GPG keyring.
+It references that file in place, without downloading, copying or chmodding it.
+Remote keys retain the existing checked key publisher. Source replacement and
+retirement of the exact old list occur only after key admission, preserving
+working trust/source bytes on failed producers.
+
+`create_self_signed_cert` records hashes of its generated pair. Only an unchanged
+marked pair can renew inside its 30-day expiry window; unmarked or edited operator
+pairs stay untouched. The existing 365-day lifetime and consumer paths remain.
+A bounded short CN retains the full DNS name in SAN, with no empty IP SAN. Both
+completed files use checked replacement/recovery, not direct-to-live OpenSSL writes;
+this is not a new multi-file crash-atomic transaction.
+
+Install initialization establishes the CT's conffile-preserving APT default in
+`/etc/apt/apt.conf.d/99scripts-underground-conffiles` after error initialization;
+the earlier transport bootstrap carries explicit preservation. Later raw APT
+commands and package abstractions retain modified conffiles without
+interactive input. The release package boundary defaults to confold only when
+the caller did not choose a policy; direct dpkg fallbacks preserve as well.
+Explicit confnew remains effective. DPKG_FORCE is not replaced, so unrelated
+dpkg force defaults remain intact. Actual conflict diagnostics stay in the native
+package output/log, rather than a second reporting lifecycle.
 
 Large release/source/archive and runtime download/build stages share
 `_tools_stage_dir` in `tools.func`, including `github.func`'s private checkout.
