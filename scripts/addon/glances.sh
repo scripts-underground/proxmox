@@ -28,6 +28,10 @@ EOF
 }
 
 function install_script() {
+  if [[ "$OS_FAMILY" != debian && "$OS_FAMILY" != alpine ]]; then
+    msg_error "Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)"
+    return 1
+  fi
   msg_info "Installing dependencies"
   if [[ "$OS_FAMILY" == "alpine" ]]; then
     $STD apk update
@@ -45,13 +49,13 @@ function install_script() {
   msg_ok "Installed dependencies"
 
   msg_info "Setting up Python + uv"
-  setup_uv PYTHON_VERSION="3.12"
+  PYTHON_VERSION="3.12" setup_uv
   msg_ok "Setup Python + uv"
 
   msg_info "Installing ${APP} (with web UI)"
   mkdir -p "$var_addon_app_dir"
   cd "$var_addon_app_dir" || exit
-  $STD uv venv --clear
+  $STD uv venv --python 3.12 --clear
   source .venv/bin/activate > /dev/null 2>&1
   $STD uv pip install --upgrade pip wheel setuptools
   $STD uv pip install "glances[web]"
@@ -106,6 +110,7 @@ function update_script() {
   fi
   msg_info "Updating ${APP}"
   cd "$var_addon_app_dir" || exit
+  setup_uv
   source .venv/bin/activate
   $STD uv pip install --upgrade "glances[web]"
   deactivate
