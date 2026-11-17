@@ -172,8 +172,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
         esac
         sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
         cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
-        sed -n '/^svc_enable() {/,/^# SECTION 4:/p' "$ROOT/misc/install.func" > "$c/stage/install.func"
-        printf '\npkg_install() { :; }; setup_lxc() { :; }\n' >> "$c/stage/install.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$c/stage/install.func"
         printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
         printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
         cat "$work/model.sh" >> "$c/stage/github.func"

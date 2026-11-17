@@ -57,6 +57,16 @@ root=Path(sys.argv[2])/'audit-control'
 assert minimal_install_models(root)==['new-app.sh']
 PY
 check "$status" 0 'framework audit rejects another incomplete app stub'
+python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$work/install-probe.sh"
+platform=$(env -i PATH="$PATH" TMPDIR="$TMPDIR" INIT_SYSTEM=openrc OS_FAMILY=alpine bash -c '
+  _INSTALL_DEFER_BOOTSTRAP=1
+  source "$1"
+  _bootstrap
+  detect_os
+  declare -F svc_prepare_uninstall pkg_clean >/dev/null
+  printf "%s/%s" "$OS_FAMILY" "$INIT_SYSTEM"
+' fixture "$work/install-probe.sh")
+check "$platform" alpine/openrc 'complete framework fixture retains explicit platform matrix inputs'
 source "$ROOT/tests/lib/service-fixture.sh"
 fixture_service_state stop "$work/service-state"
 check "$(cat "$work/service-state")" stopped 'service fixture records stop'

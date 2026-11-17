@@ -74,8 +74,7 @@ for mode in no yes; do
     printf 'installed\n' > "$c/markers/mqttx"
     sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
     cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
-    printf 'pkg_install() { :; }\n' > "$c/stage/install.func"
-    sed -n '/^svc_prepare_uninstall() {/,/^}/p' "$ROOT/misc/install.func" >> "$c/stage/install.func"
+    python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$c/stage/install.func"
     printf 'fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
     cat > "$c/stage/addon_lxc.func" << 'STUBS'
