@@ -1304,6 +1304,15 @@ GitHub version check or marker claim for the custom source. It invalidates any
 old managed-version marker before custom publication, so a later return to the
 stock source cannot use stale release metadata to skip deployment.
 
+Copyparty and AdGuardHome-Sync failure recovery observes prior service activity
+and positively verifies the previous runtime before restarting it. Copyparty
+restores and verifies its executable/managed-marker pair after failed publication;
+an unverified rollback retains its owned stage and stays stopped. AdGuard restores
+configuration and compares its full installation's names, bytes, links, modes and
+owners before recovery; a partial/unverified deployment stays stopped. Initially
+stopped services are not started. The original update failure and pending state
+survive recovery attempts, and both systemd/OpenRC paths have cold-hook coverage.
+
 Generic GitHub API, tag and release requests share a completed HTTP owner.
 `GITHUB_TOKEN` takes precedence over `var_github_token`, and either is used on
 the first request. A rejected configured token or a response explicitly naming

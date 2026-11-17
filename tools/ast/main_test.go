@@ -28,6 +28,8 @@ fi`
 		{"subshell", "(" + good + "; ) || true", true},
 		{"background", good + " &\nwait; exit 0", true},
 		{"pipeline", "{ " + good + "; } | cat", true},
+		{"coproc", "coproc { " + good + "; }; wait; return 0", true},
+		{"named-coproc", "coproc checker { " + good + "; }; wait; return 0", true},
 		{"nested-helper", "helper() { " + good + "; }; helper || true", true},
 		{"comment", `# check_for_gh_release app owner/repo`, false},
 		{"quoted-text", `echo 'check_for_gh_release app owner/repo'`, false},

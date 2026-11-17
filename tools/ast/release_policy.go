@@ -33,7 +33,7 @@ func validateAddonReleaseChecks(file *syntax.File, slug string, violations *[]st
 			// establish the update hook's terminal status. Do not certify it.
 			boundary := false
 			switch part := node.(type) {
-			case *syntax.FuncDecl, *syntax.Subshell, *syntax.CmdSubst, *syntax.ProcSubst:
+			case *syntax.FuncDecl, *syntax.Subshell, *syntax.CmdSubst, *syntax.ProcSubst, *syntax.CoprocClause:
 				boundary = true
 			case *syntax.Stmt:
 				boundary = part.Background || part.Coprocess || part.Disown

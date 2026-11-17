@@ -194,6 +194,16 @@ function post_install_script() {
 function update_script() {
   local source_url="${var_addon_src_url:-https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py}"
   local managed_release=0 update_status=0 stage bin_dir marker_stage=""
+  local was_running=0 service_touched=0 retain_stage=0 old_executable='' old_marker='' current=''
+  # Only verified previous bytes/links, modes and owners admit failure recovery.
+  function copyparty_file_state() {
+    if [[ ! -e "$1" && ! -L "$1" ]]; then
+      printf 'absent\n'
+      return
+    fi
+    stat -c '%f:%u:%g' -- "$1" || return $?
+    if [[ -L "$1" ]]; then readlink -- "$1"; else sha256sum < "$1"; fi
+  }
 
   # The stock source is release-managed. A saved custom URL remains the
   # operator's source; GitHub cannot describe or certify its version.
@@ -237,30 +247,76 @@ function update_script() {
   fi
 
   if [[ "$update_status" == 0 ]]; then
-    msg_info "Stopping Service"
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service copyparty stop &> /dev/null || true
-    else
-      systemctl stop copyparty &> /dev/null || true
+    old_executable=$(copyparty_file_state "$var_addon_bin_path") || update_status=$?
+    if [[ "$update_status" == 0 ]]; then cp -a -- "$var_addon_bin_path" "$stage/previous-executable" || update_status=$?; fi
+    if [[ "$update_status" == 0 && "$managed_release" == 1 ]]; then
+      old_marker=$(copyparty_file_state "$HOME/.copyparty-sfx.py") || update_status=$?
+      if [[ "$update_status" == 0 && "$old_marker" != absent ]]; then cp -a -- "$HOME/.copyparty-sfx.py" "$stage/previous-marker" || update_status=$?; fi
     fi
+  fi
+
+  if [[ "$update_status" == 0 ]]; then
+    if [[ "$INIT_SYSTEM" == openrc ]]; then
+      if rc-service copyparty status > /dev/null 2>&1; then was_running=1; fi
+    elif systemctl is-active --quiet copyparty; then was_running=1; fi
+    msg_info "Stopping Service"
+    service_touched=1
+    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+      rc-service copyparty stop &> /dev/null || update_status=$?
+    else
+      systemctl stop copyparty &> /dev/null || update_status=$?
+    fi
+  fi
+  if [[ "$update_status" == 0 ]]; then
     msg_ok "Stopped Service"
     mv -fT -- "$stage/copyparty-sfx.py" "$var_addon_bin_path" || update_status=$?
   fi
   if [[ "$update_status" == 0 && "$managed_release" == 1 ]]; then
     mv -fT -- "$marker_stage" "$HOME/.copyparty-sfx.py" || update_status=$?
   fi
+  if [[ "$update_status" != 0 && "$service_touched" == 1 ]]; then
+    current=$(copyparty_file_state "$var_addon_bin_path") || current=unverified
+    if [[ "$current" != "$old_executable" ]]; then
+      mv -fT -- "$stage/previous-executable" "$var_addon_bin_path" || msg_warn "Previous executable retained at $stage/previous-executable"
+    fi
+    if [[ "$managed_release" == 1 ]]; then
+      current=$(copyparty_file_state "$HOME/.copyparty-sfx.py") || current=unverified
+      if [[ "$current" != "$old_marker" ]]; then
+        if [[ "$old_marker" == absent ]]; then
+          rm -f -- "$HOME/.copyparty-sfx.py" || msg_warn "Unable to remove unpublished release marker"
+        else
+          mv -fT -- "$stage/previous-marker" "$HOME/.copyparty-sfx.py" || msg_warn "Previous marker retained at $stage/previous-marker"
+        fi
+      fi
+    fi
+    current=$(copyparty_file_state "$var_addon_bin_path") || current=unverified
+    if [[ "$current" != "$old_executable" ]]; then retain_stage=1; fi
+    if [[ "$managed_release" == 1 ]]; then
+      current=$(copyparty_file_state "$HOME/.copyparty-sfx.py") || current=unverified
+      if [[ "$current" != "$old_marker" ]]; then retain_stage=1; fi
+    fi
+    if [[ "$retain_stage" == 0 && "$was_running" == 1 ]]; then
+      if [[ "$INIT_SYSTEM" == openrc ]]; then
+        rc-service copyparty start || msg_warn "Unable to restart previous Copyparty service"
+      else
+        systemctl start copyparty || msg_warn "Unable to restart previous Copyparty service"
+      fi
+    fi
+  fi
   [[ -z "$marker_stage" ]] || rm -f -- "$marker_stage" || true
-  rm -rf -- "$stage" || true
+  if [[ "$retain_stage" == 0 ]]; then rm -rf -- "$stage" || true; else msg_warn "Unverified Copyparty recovery retained at $stage; service stays stopped"; fi
   [[ "$update_status" == 0 ]] || return "$update_status"
   msg_ok "Updated ${APP}"
 
   msg_info "Starting Service"
-  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-    rc-service copyparty start
-  else
-    systemctl start copyparty
+  if [[ "$was_running" == 1 ]]; then
+    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+      rc-service copyparty start
+    else
+      systemctl start copyparty
+    fi
+    msg_ok "Started Service"
   fi
-  msg_ok "Started Service"
   msg_ok "Updated successfully!"
   exit
 }
