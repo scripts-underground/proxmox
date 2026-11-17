@@ -1235,6 +1235,39 @@ retains the exact terminal status and failed stage. Optional uv completions bypa
 the quiet wrapper, generate into a private sibling, and publish nonempty stdout
 only after success; failure preserves a prior working completion.
 
+Database credentials and compatibility remain in the existing core/tools owners.
+Core's returning `generate_password(length)` completes and checks each entropy
+producer before filtering, publishes only the complete alphanumeric result, and
+retains exact producer failure status. MariaDB, MySQL, PostgreSQL and generated
+password prompts share it without replacing explicit passwords. DB credential
+files retain private creation; explicit paths do not require an app global, and
+default paths derive from APP with the legacy APPLICATION fallback.
+
+Debian 13 MySQL uses actual trixie component/architecture metadata through the
+existing repository writer. Its fresh 8.4 default is unchanged; installed MySQL
+versions are not purged, upgraded to another major or replaced by MariaDB after
+failure. Unsupported installed lines fail before repository/package effects.
+PostgreSQL uses the repository's canonical apt.postgresql.org key URL.
+
+ClickHouse admission stages the exact official common-static package through its
+signed Release/index/package hash chain and runs that build's early instruction
+checks before database/package/service effects. The same payload is installed
+with matching pinned server/client packages. No blanket AVX2 requirement is
+applied to historical x86 builds or ARM. A version command is package/CPU admission,
+not a functional database proof.
+
+Meilisearch treats selected full versions, including patch releases, as distinct
+database formats. Its installed update owner reads native TOML, checks the known
+config-only service command and refuses unresolved storage/environment overrides
+instead of guessing a data path. A checked stop precedes copying the original;
+the old binary exports from that private copy on a child-owned loopback endpoint.
+The exact selected binary imports into a sibling candidate. Index/document counts
+and final service consumption precede release-marker publication. Failed export,
+import or publication returns nonzero and restores the original data/binary when
+possible, retaining recovery paths if restoration itself fails. Successful migration
+also retains the prior data/binary. No failed-dump fallback clears live data, and
+the owner does not infer migration completion from health alone.
+
 `_uv_required_spec(dir)` owns the configuration read for both exact and range
 consumers: root `uv.toml` first (even when it masks a pyproject requirement), else
 `[tool.uv]` in `pyproject.toml`. Quotes, sections, comments and the legacy bare
