@@ -23,6 +23,13 @@ function install_script() {
     exit 1
   fi
 
+  local listener_port previous_port
+  if [[ ! "$var_addon_default_port" =~ ^0*([1-9][0-9]{0,4})$ ]] || ((10#${BASH_REMATCH[1]} > 65535)); then
+    msg_error "Invalid Webmin listener port: ${var_addon_default_port}"
+    return 65
+  fi
+  listener_port=${BASH_REMATCH[1]}
+
   msg_info "Installing Prerequisites"
   $STD apt update
   $STD apt install -y \
@@ -36,6 +43,16 @@ function install_script() {
   msg_info "Installing ${APP}"
   fetch_and_deploy_gh_release "$var_addon_pkg" "$var_addon_gh_repo" "binary" "latest" "/opt/webmin" "webmin_*_all.deb"
   /usr/share/webmin/changepass.pl /etc/webmin root root &> /dev/null
+  # miniserv uses port for TCP and listen for optional UDP discovery. Follow a
+  # discovery port paired with the old TCP port, but retain disabled/independent
+  # discovery. Updates retain all installed operator listener settings.
+  previous_port=$(sed -n 's/^port=//p' /etc/webmin/miniserv.conf)
+  sed -i "s/^port=.*/port=${listener_port}/" /etc/webmin/miniserv.conf
+  if [[ -n "$previous_port" ]] && grep -Fxq "listen=${previous_port}" /etc/webmin/miniserv.conf; then
+    sed -i "s/^listen=.*/listen=${listener_port}/" /etc/webmin/miniserv.conf
+  fi
+  if ! grep -q '^port=' /etc/webmin/miniserv.conf; then printf 'port=%s\n' "$listener_port" >> /etc/webmin/miniserv.conf; fi
+  systemctl restart "$var_addon_service"
   msg_ok "Installed ${APP}"
 }
 
