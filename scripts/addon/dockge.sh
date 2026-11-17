@@ -50,7 +50,22 @@ function install_script() {
   msg_ok "Created ${var_addon_install_path} and ${var_addon_stacks_path}"
 
   msg_info "Downloading Docker Compose file"
-  curl -fsSL "$var_addon_compose_url" -o "${var_addon_install_path}/compose.yaml"
+  local compose_stage
+  compose_stage=$(mktemp -d "${var_addon_install_path}/.dockge-compose.XXXXXXXX")
+  curl -fsSL "$var_addon_compose_url" -o "$compose_stage/source.yaml"
+  # Compose owns YAML parsing and relative-path resolution. Configure only the
+  # app's published listener and its equal-path stacks bind before publication.
+  docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" config --format json > "$compose_stage/source.json"
+  jq --arg port "$var_addon_default_port" --arg stacks "$var_addon_stacks_path" '
+    .services.dockge as $app |
+    ($app.environment.DOCKGE_STACKS_DIR // "/opt/stacks") as $old_stacks |
+    .services.dockge.ports |= map(if .target == 5001 then .published = $port else . end) |
+    .services.dockge.volumes |= map(if .type == "bind" and .target == $old_stacks then .source = $stacks | .target = $stacks else . end) |
+    .services.dockge.environment.DOCKGE_STACKS_DIR = $stacks
+  ' "$compose_stage/source.json" > "$compose_stage/compose.json"
+  docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/compose.json" config -q
+  mv -f "$compose_stage/compose.json" "${var_addon_install_path}/compose.yaml"
+  rm -rf "$compose_stage"
   msg_ok "Downloaded Docker Compose file"
 
   if [[ "$INIT_SYSTEM" == "systemd" ]]; then
@@ -98,7 +113,7 @@ function post_install_script() {
 function update_script() {
   if [[ ! -f "${var_addon_install_path}/compose.yaml" ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   msg_info "Pulling latest ${APP} image"
