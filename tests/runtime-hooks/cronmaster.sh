@@ -5,16 +5,32 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=cronmaster
 script_type=addon
-variants=(fresh update checker download stop uninstall)
+variants=(fresh update checker download stop uninstall stopped-download stopped-update copy copy-unrestored backup)
 hook_paths=()
 runtime_hooks_variant() {
-  case "$variant" in checker | stop) fault=$variant ;; uninstall) role=uninstall ;; esac
+  case "$variant" in
+    checker | stop | copy | copy-unrestored | backup) fault=$variant ;;
+    stopped-download) fault=download ;;
+    uninstall) role=uninstall ;;
+  esac
 }
 runtime_hooks_model() {
   systemctl() {
-    printf '%s\n' "$*" >> "$c/services"
     [[ "$1/$APP_FAULT" != stop/stop ]] || return 47
-    if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
+    if [[ "$1" == show ]]; then
+      printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'
+    elif [[ -f "$c/recovery-service" ]]; then
+      runtime_hooks_recovery_service "$@"
+    else printf '%s\n' "$*" >> "$c/services"; fi
+  }
+  cp() {
+    [[ "$APP_FAULT" != backup || "$*" != *'/backup/'* ]] || return 43
+    if [[ "$APP_FAULT" == copy || "$APP_FAULT" == copy-unrestored ]] && [[ "$*" == *'/deploy-source.'* && "${!#}" == /opt/* ]]; then
+      command cp "$@"
+      [[ "$APP_FAULT" != copy-unrestored ]] || printf 'unverified runtime\n' > /opt/cronmaster/partial-runtime
+      return 41
+    fi
+    command cp "$@"
   }
   node() { printf 'v22.0.0\n'; }
   curl() {
@@ -60,9 +76,15 @@ runtime_hooks_setup() {
     printf 'operator saved credential\n' > "$c/config/creds"
     : > "$c/etc/systemd/system/custom-cron.service"
     printf '1.0.0\n' > "$c/home/.cronmaster"
+    if [[ "$role" == update ]]; then
+      printf 'old cron consumer\n' > "$c/opt/cronmaster/server.js"
+      local initial=active
+      [[ "$variant" != stopped-* ]] || initial=inactive
+      runtime_hooks_recovery_setup custom-cron "$initial" "$c/opt/cronmaster" "$c/etc/systemd/system/custom-cron.service"
+    fi
   fi
 }
-runtime_hooks_expected() { case "$fault" in checker) expected=17 ;; stop) expected=47 ;; esac }
+runtime_hooks_expected() { case "$fault" in checker) expected=17 ;; stop) expected=47 ;; copy | copy-unrestored) expected=252 ;; backup) expected=43 ;; esac }
 runtime_hooks_assert() {
   if [[ "$role" == uninstall ]]; then
     check "$(test -d "$c/opt/cronmaster" && printf present || printf absent)" absent "$app scoped uninstall removes app"
@@ -74,6 +96,10 @@ runtime_hooks_assert() {
     if [[ "$rc" == 0 ]]; then
       check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app selected source reaches consumer"
       check "$(grep -c 'fixture/cronmaster/releases/tags/v2.0.0$' "$c/requests" || true)" 1 "$app selected release and baked repository reach deployment"
+      if [[ "$variant" == stopped-update ]]; then
+        check "$(cat "$c/recovery-state")" inactive "$app successful update leaves initially stopped service stopped"
+        check "$(wc -l < "$c/recovery-starts")" 0 "$app successful update does not start initially stopped service"
+      fi
     fi
   else
     check "$(grep -c '^PORT=8182$' "$c/config/operator.env")" 1 "$app install applies nondefault port"
@@ -83,5 +109,9 @@ runtime_hooks_assert() {
 runtime_hooks_retry_assert() {
   check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app pending retry reaches consumer"
   check "$(cat "$c/config/operator.env")" 'operator cron configuration' "$app pending retry retains configuration"
+  if [[ "$variant" == stopped-download ]]; then
+    check "$(cat "$c/recovery-state")" inactive "$app retry leaves initially stopped service stopped"
+    check "$(wc -l < "$c/recovery-starts")" 0 "$app retry never starts initially stopped service"
+  fi
 }
 runtime_hooks_main "$@"

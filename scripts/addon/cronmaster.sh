@@ -109,17 +109,51 @@ function update_script() {
     case "$var_addon_config_path" in
       "$var_addon_install_path"/*) CLEAN_INSTALL_KEEP_PATHS+=("${var_addon_config_path#"$var_addon_install_path"/}") ;;
     esac
+    local was_running=0 update_status=0 before after
+    # A failed publisher is not proof of a complete rollback. Include the whole
+    # Node runtime and configuration before admitting recovery. The unit is not
+    # modified by this hook.
+    function cronmaster_state() (
+      set -o pipefail
+      local path
+      {
+        printf '%s\0' "$var_addon_config_path" || exit $?
+        find "$var_addon_install_path/" -print0 || exit $?
+      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
+        printf '%s\0' "$path" || exit $?
+        stat -c '%f:%u:%g' -- "$path" || exit $?
+        if [[ -L "$path" ]]; then
+          readlink -- "$path" || exit $?
+        elif [[ -f "$path" ]]; then
+          sha256sum < "$path" || exit $?
+        elif [[ ! -d "$path" ]]; then exit 65; fi
+      done | sha256sum
+    )
+    before=$(cronmaster_state) || return $?
+    if systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
     msg_info "Stopping service"
-    systemctl stop "$var_addon_service"
-    msg_ok "Stopped service"
-
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
-
-    msg_info "Starting service"
-    systemctl start "$var_addon_service"
-    msg_ok "Started service"
+    systemctl stop "$var_addon_service" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path") || update_status=$?
+      if [[ "$update_status" == 0 ]]; then
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz" || update_status=$?
+      fi
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(cronmaster_state) || after=unverified
+      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "$var_addon_service" || msg_warn "Unable to restart previous CronMaster service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous CronMaster installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      systemctl start "$var_addon_service"
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully"
   else
     local release_status=$?
