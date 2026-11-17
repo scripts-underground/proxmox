@@ -24,6 +24,18 @@ function install_script() {
     exit 1
   fi
 
+  # The packaged code-server@ unit runs as this account, not the installing
+  # shell's HOME. Resolve its native account before any package effects.
+  local passwd_entry svc_uid svc_gid svc_home config_path
+  passwd_entry=$(getent passwd "$var_addon_svc_user") || return $?
+  IFS=: read -r _ _ svc_uid svc_gid _ svc_home _ <<< "$passwd_entry"
+  if [[ "$svc_home" != /* || -z "$svc_uid" || -z "$svc_gid" ]]; then
+    msg_error "Could not resolve home and ownership for ${var_addon_svc_user}"
+    return 65
+  fi
+  config_path="${svc_home}/.config/code-server/config.yaml"
+  CODE_SERVER_CONFIG_PATH="$config_path"
+
   msg_info "Installing Dependencies"
   $STD apt update
   $STD apt install -y \
@@ -32,14 +44,20 @@ function install_script() {
   msg_ok "Installed Dependencies"
 
   msg_info "Installing ${APP}"
-  local config_path="${HOME}/.config/code-server/config.yaml"
   local preexisting_config=false
   if [[ -f "$config_path" ]]; then
     preexisting_config=true
   fi
 
   fetch_and_deploy_gh_release "$var_addon_app" "$var_addon_gh_repo" "binary" "latest" "/opt/coder-code-server" "code-server_*_$(get_system_arch).deb"
-  mkdir -p "${HOME}/.config/code-server/"
+  if [[ ! -d "${svc_home}/.config" ]]; then
+    mkdir -p "${svc_home}/.config"
+    chown "$svc_uid:$svc_gid" "${svc_home}/.config"
+  fi
+  if [[ ! -d "${svc_home}/.config/code-server" ]]; then
+    mkdir -p "${svc_home}/.config/code-server"
+    chown "$svc_uid:$svc_gid" "${svc_home}/.config/code-server"
+  fi
 
   if [[ "$preexisting_config" == false ]]; then
     cat << EOF > "$config_path"
@@ -48,6 +66,7 @@ auth: none
 password:
 cert: false
 EOF
+    chown "$svc_uid:$svc_gid" "$config_path"
   fi
   systemctl enable -q --now "code-server@${var_addon_svc_user}"
   systemctl restart "code-server@${var_addon_svc_user}"
@@ -62,7 +81,7 @@ function post_install_script() {
   echo ""
   msg_ok "${APP} installed successfully"
   echo -e "${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}${CL}"
-  echo -e "${INFO}${YW}Config:${CL} ${HOME}/.config/code-server/config.yaml (auth: none by default)"
+  echo -e "${INFO}${YW}Config:${CL} ${CODE_SERVER_CONFIG_PATH} (auth: none by default)"
   echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
 }
 
