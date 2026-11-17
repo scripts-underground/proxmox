@@ -2899,7 +2899,17 @@ fetch_and_deploy_gh_tag() {
 #   - For repos that only publish tags, not GitHub Releases
 #   - Same interface as check_for_gh_release
 # ------------------------------------------------------------------------------
+# Checker status1 is reserved for a completed, verified no-update result. Native
+# producer status1 must cross this common error boundary as2, never as absence.
+_release_check_error() {
+  local status=$1 app=$2
+  msg_error "Unable to check updates for $app (producer status=$status)" >&2 || true
+  [[ "$status" != 1 ]] || status=2
+  return "$status"
+}
+
 check_for_gh_tag() {
+  CHECK_UPDATE_RELEASE=''
   local app="$1"
   local repo="$2"
   local prefix="${3:-}"
@@ -2910,11 +2920,24 @@ check_for_gh_tag() {
   msg_info "Checking for update: ${app}"
 
   local latest=""
-  latest=$(_app_release_version "$app" latest) || return $?
-  if [[ "$latest" == latest ]]; then latest=$(get_latest_gh_tag "$repo" "$prefix") || return $?; fi
+  latest=$(_app_release_version "$app" latest) || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
+  if [[ "$latest" == latest ]]; then
+    latest=$(get_latest_gh_tag "$repo" "$prefix") || {
+      _release_check_error "$?" "$app"
+      return $?
+    }
+  fi
 
   local current=""
-  [[ -f "$current_file" ]] && current="$(< "$current_file")"
+  if [[ -f "$current_file" ]]; then
+    current=$(< "$current_file") || {
+      _release_check_error "$?" "$app"
+      return $?
+    }
+  fi
 
   if [[ -z "$current" || "$current" != "$latest" || "${UPDATE_FORCE:-}" == "1" ]]; then
     CHECK_UPDATE_RELEASE="$latest"
@@ -3011,8 +3034,7 @@ _github_release_list() {
 }
 
 _gh_release_tag_fallback() {
-  local repo="$1" version="$2" prefix="$3" refs tags tag wanted actual_tag
-  wanted=$(_gh_version_from_tag "$version") || return 250
+  local repo="$1" version="$2" prefix="$3" refs tags tag
   refs=$(git ls-remote --tags "https://github.com/$repo.git" 2> /dev/null) || return 22
   tags=$(printf '%s\n' "$refs" | sed -n 's|.*refs/tags/||p' | sort -Vr) || return 22
   while IFS= read -r tag; do
@@ -3020,8 +3042,9 @@ _gh_release_tag_fallback() {
     if [[ "$version" == latest ]]; then
       [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ && "$tag" == "$prefix"* ]] || continue
     else
-      actual_tag=$(_gh_version_from_tag "$tag") || return 250
-      [[ "$actual_tag" == "$wanted" ]] || continue
+      # Normalized version equality does not prove Git object identity. After
+      # an API failure only the literal requested ref verifies this selection.
+      [[ "$tag" == "$version" ]] || continue
     fi
     jq -cn --arg tag "$tag" '{tag_name:$tag,draft:false,prerelease:false,assets:[]}'
     return $?
@@ -3109,7 +3132,10 @@ check_for_gh_release() {
   local app="$1"
   local source="$2"
   local pinned_version_in
-  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
   local pin_reason="${4:-}" # optional reason shown to user
   local tag_prefix="${5:-}" # optional stable latest line
   local app_lc=""
@@ -3132,8 +3158,8 @@ check_for_gh_release() {
   if [[ $rc -ne 0 ]]; then
     # This public owner started the spinner. Finish it even when a dependency,
     # allocation or selection failure did not emit a lower-level diagnostic.
-    msg_error "Unable to check GitHub releases for $app (status=$rc)" >&2
-    return "$rc"
+    _release_check_error "$rc" "$app"
+    return $?
   fi
   local -a raw_tags=("$selected")
 
@@ -3152,11 +3178,17 @@ check_for_gh_release() {
   # current installed (stored without v)
   local current=""
   if [[ -f "$current_file" ]]; then
-    current="$(< "$current_file")"
+    current=$(< "$current_file") || {
+      _release_check_error "$?" "$app"
+      return $?
+    }
   else
     # Migration: adopt only this app's legacy version marker (never another app's)
     if [[ -f "/opt/${app_lc}_version.txt" ]]; then
-      current="$(< "/opt/${app_lc}_version.txt")"
+      current=$(< "/opt/${app_lc}_version.txt") || {
+        _release_check_error "$?" "$app"
+        return $?
+      }
       current=$(_gh_version_from_tag "$current") || {
         msg_error "Unable to read legacy version for $app"
         return 250
@@ -3237,15 +3269,18 @@ check_for_gh_release() {
 #   - Does not support pre-releases
 # ------------------------------------------------------------------------------
 check_for_codeberg_release() {
+  CHECK_UPDATE_RELEASE=''
   local app="$1"
   local source="$2"
   local pinned_version_in
-  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
   local pin_reason="${4:-}" # optional reason shown to user
   local app_lc="${app,,}"
   app_lc="${app_lc// /}"
   local current_file="$HOME/.${app_lc}"
-  CHECK_UPDATE_RELEASE=""
   if [[ "$pinned_version_in" == latest ]]; then
     pinned_version_in=""
   fi
@@ -3258,11 +3293,15 @@ check_for_codeberg_release() {
     return 6
   fi
 
-  ensure_dependencies jq || return $?
+  ensure_dependencies jq >&2 || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
   local json latest_raw latest_clean
   if json=$(_codeberg_release_json "$source" "${pinned_version_in:-latest}"); then
-    latest_raw=$(jq -r '.tag_name' <<< "$json")
+    latest_raw=$(jq -er '.tag_name | select(type=="string" and length>0)' <<< "$json") || return 250
   else
+    _release_check_error "$?" "$app"
     return $?
   fi
   latest_clean="$latest_raw"
@@ -3271,13 +3310,19 @@ check_for_codeberg_release() {
   # current installed (stored without v)
   local current=""
   if [[ -f "$current_file" ]]; then
-    current="$(< "$current_file")"
+    current=$(< "$current_file") || {
+      _release_check_error "$?" "$app"
+      return $?
+    }
   else
     # Migration: adopt only this app's legacy version marker (never another app's)
     if [[ -f "/opt/${app_lc}_version.txt" ]]; then
-      current="$(< "/opt/${app_lc}_version.txt")"
+      current=$(< "/opt/${app_lc}_version.txt") || {
+        _release_check_error "$?" "$app"
+        return $?
+      }
       [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
-      echo "$current" > "$current_file"
+      printf '%s\n' "$current" > "$current_file" || return 252
     fi
   fi
   [[ "$current" =~ ^v[0-9] ]] && current="${current:1}"
@@ -10496,7 +10541,10 @@ check_for_gl_release() {
   local app="$1"
   local source="$2"
   local pinned_version_in
-  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || return $?
+  pinned_version_in=$(_app_release_version "$app" "${3:-latest}") || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
   local pin_reason="${4:-}" # optional reason shown to user
   local app_lc="${app,,}"
   local current_file="$HOME/.${app_lc}"
@@ -10512,13 +10560,19 @@ check_for_gl_release() {
     return 6
   fi
 
-  ensure_dependencies jq
+  ensure_dependencies jq >&2 || {
+    _release_check_error "$?" "$app"
+    return $?
+  }
 
   local meta_file
-  meta_file="$(mktemp)"
+  meta_file=$(mktemp "${TMPDIR:-/tmp}/gl-check.XXXXXX") || return 252
 
   local repo_encoded
-  repo_encoded=$(printf '%s' "$source" | sed 's|/|%2F|g')
+  repo_encoded=$(jq -rn --arg repo "$source" '$repo | @uri') || {
+    rm -f -- "$meta_file"
+    return 250
+  }
 
   local header=()
   [[ -n "${GITLAB_TOKEN:-}" ]] && header=(-H "PRIVATE-TOKEN: $GITLAB_TOKEN")
@@ -10527,21 +10581,39 @@ check_for_gl_release() {
 
   # For pinned versions, try to fetch the specific release tag first
   if [[ -n "$pinned_version_in" ]]; then
-    local pinned_encoded="${pinned_version_in//\//%2F}"
+    local pinned_encoded transfer_status=0
+    pinned_encoded=$(jq -rn --arg tag "$pinned_version_in" '$tag | @uri') || {
+      rm -f -- "$meta_file"
+      return 250
+    }
     http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       "${header[@]}" \
-      "https://gitlab.com/api/v4/projects/$repo_encoded/releases/$pinned_encoded" 2> /dev/null) || true
+      "https://gitlab.com/api/v4/projects/$repo_encoded/releases/$pinned_encoded" 2> /dev/null) || transfer_status=$?
+    if [[ "$transfer_status" != 0 ]]; then
+      rm -f -- "$meta_file"
+      _release_check_error "$transfer_status" "$app"
+      return $?
+    fi
     if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
       releases_json="[$(< "$meta_file")]"
+    elif [[ "$http_code" != 404 ]]; then
+      rm -f -- "$meta_file"
+      _release_check_error 22 "$app"
+      return $?
     fi
-    rm -f "$meta_file"
   fi
 
   # Fetch full releases list if needed
   if [[ -z "$releases_json" ]]; then
+    local transfer_status=0
     http_code=$(curl -sSL --max-time 20 -w "%{http_code}" -o "$meta_file" \
       "${header[@]}" \
-      "https://gitlab.com/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2> /dev/null) || true
+      "https://gitlab.com/api/v4/projects/$repo_encoded/releases?per_page=100&order_by=released_at&sort=desc" 2> /dev/null) || transfer_status=$?
+    if [[ "$transfer_status" != 0 ]]; then
+      rm -f -- "$meta_file"
+      _release_check_error "$transfer_status" "$app"
+      return $?
+    fi
 
     if [[ "$http_code" == "200" ]] && [[ -s "$meta_file" ]]; then
       releases_json=$(< "$meta_file")
@@ -10573,14 +10645,18 @@ check_for_gl_release() {
       rm -f "$meta_file"
       return 22
     fi
-    rm -f "$meta_file"
   fi
+  rm -f -- "$meta_file" || true
 
-  mapfile -t raw_tags < <(jq -r '.[] | .tag_name' <<< "$releases_json")
-  if ((${#raw_tags[@]} == 0)); then
-    msg_error "No releases found for ${app} on GitLab"
+  local tags
+  tags=$(jq -er 'if type=="array" and length>0 and all(.[];
+    type=="object" and (.tag_name | type=="string" and length>0))
+    then .[].tag_name else error("invalid or empty GitLab release list") end' <<< "$releases_json") || {
+    msg_error "No valid releases found for ${app} on GitLab" >&2
     return 250
-  fi
+  }
+  local -a raw_tags=()
+  mapfile -t raw_tags <<< "$tags"
 
   local clean_tags=()
   for t in "${raw_tags[@]}"; do
@@ -10598,12 +10674,18 @@ check_for_gl_release() {
   # current installed (stored without v)
   local current=""
   if [[ -f "$current_file" ]]; then
-    current="$(< "$current_file")"
+    current=$(< "$current_file") || {
+      _release_check_error "$?" "$app"
+      return $?
+    }
   else
     # Migration: adopt only this app's legacy version marker (never another app's)
     if [[ -f "/opt/${app_lc}_version.txt" ]]; then
-      current="$(< "/opt/${app_lc}_version.txt")"
-      echo "${current#v}" > "$current_file"
+      current=$(< "/opt/${app_lc}_version.txt") || {
+        _release_check_error "$?" "$app"
+        return $?
+      }
+      printf '%s\n' "${current#v}" > "$current_file" || return 252
     fi
   fi
   if [[ "$current" =~ ^v[0-9] ]]; then
