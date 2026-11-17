@@ -152,6 +152,17 @@ for owner in pkg base; do
       cat > "$c/bin/apt-get" << 'SHIM'
 #!/bin/sh
 host=$(sed -n 's|^deb http[s]*://\([^/]*\)/.*|\1|p' "$CASE_ROOT/etc/apt/sources.list" | head -n 1)
+# Global APT options precede its verb. Classify the verb, not argv[0].
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o | --option)
+      [ "$#" -ge 2 ] || exit 64
+      printf 'apt-option %s\n' "$2" >> "$CASE_ROOT/events"
+      shift 2
+      ;;
+    *) break ;;
+  esac
+done
 printf 'apt-get %s host=%s\n' "$1" "$host" >> "$CASE_ROOT/events"
 exists=no
 { [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; } && exists=yes
