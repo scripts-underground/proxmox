@@ -22,6 +22,19 @@ var_addon_env_url="${var_addon_env_url:-https://raw.githubusercontent.com/getarc
 var_addon_default_port="${var_addon_default_port:-3552}"
 
 function install_script() {
+  if [[ "$OS_FAMILY" != "debian" && "$OS_FAMILY" != "alpine" ]]; then
+    msg_error "Unsupported OS: ${OS_TYPE} (Debian/Ubuntu and Alpine only)"
+    return 1
+  fi
+  if [[ ! "$var_addon_default_port" =~ ^[0-9]{1,5}$ ]] || ((10#$var_addon_default_port < 1 || 10#$var_addon_default_port > 65535)); then
+    msg_error "Invalid Arcane HTTP port: ${var_addon_default_port}"
+    return 65
+  fi
+  if [[ "$var_addon_compose_file" == "$var_addon_env_file" || -e "$var_addon_compose_file" || -L "$var_addon_compose_file" || -e "$var_addon_env_file" || -L "$var_addon_env_file" ]]; then
+    msg_error "Arcane compose or environment path is already occupied; preserve it and use explicit adoption."
+    return 65
+  fi
+
   if ! command -v docker &> /dev/null; then
     msg_info "Installing Docker"
     if [[ "$OS_FAMILY" == "alpine" ]]; then
@@ -43,45 +56,69 @@ function install_script() {
   mkdir -p "$var_addon_install_path"
   msg_ok "Created ${var_addon_install_path}"
 
-  # Generate secrets and config values
-  local ENCRYPTION_KEY JWT_SECRET
-  ENCRYPTION_KEY=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c32)
-  JWT_SECRET=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c32)
+  ensure_dependencies openssl
+  local encryption_key
+  encryption_key=$(openssl rand -hex 16)
 
   # Arcane drops root and runs as UID/GID 65532 by default (Dockerfile default,
   # see backend/pkg/libarcane/startup/runtime_identity.go), so bind-mounted
   # host directories must be owned by that UID or the container can't write to them.
   msg_info "Creating stacks directory"
-  mkdir -p "$var_addon_proj_dir"
-  chown -R 65532:65532 "$var_addon_proj_dir"
+  if [[ ! -e "$var_addon_proj_dir" ]]; then
+    mkdir -p "$var_addon_proj_dir"
+    chown 65532:65532 "$var_addon_proj_dir"
+  fi
   msg_ok "Created ${var_addon_proj_dir}"
 
   msg_info "Creating builds directory"
-  mkdir -p "$var_addon_builds_dir"
-  chown -R 65532:65532 "$var_addon_builds_dir"
+  if [[ ! -e "$var_addon_builds_dir" ]]; then
+    mkdir -p "$var_addon_builds_dir"
+    chown 65532:65532 "$var_addon_builds_dir"
+  fi
   msg_ok "Created ${var_addon_builds_dir}"
 
-  msg_info "Downloading Docker Compose file"
-  curl -fsSL "$var_addon_compose_url" -o "$var_addon_compose_file"
-  msg_ok "Downloaded Docker Compose file"
-
-  msg_info "Downloading .env file"
-  curl -fsSL "$var_addon_env_url" -o "$var_addon_env_file"
-  chmod 600 "$var_addon_env_file"
-  msg_ok "Downloaded .env file"
-
-  msg_info "Configuring compose and env files"
-  sed -i '/^[[:space:]]*#/!s|/host/path/to/projects|'"$var_addon_proj_dir"'|g' "$var_addon_compose_file"
-  sed -i '/^[[:space:]]*#/!s|/host/path/to/builds|'"$var_addon_builds_dir"'|g' "$var_addon_compose_file"
-  sed -i '/^[[:space:]]*#/!s|ENCRYPTION_KEY=.*|ENCRYPTION_KEY='"$ENCRYPTION_KEY"'|g' "$var_addon_compose_file"
-  sed -i '/^[[:space:]]*#/!s|JWT_SECRET=.*|JWT_SECRET='"$JWT_SECRET"'|g' "$var_addon_compose_file"
-  sed -i '/^[[:space:]]*#/!s|APP_URL=.*|APP_URL=http://localhost:'"$var_addon_default_port"'|g' "$var_addon_env_file"
-  sed -i '/^[[:space:]]*#/!s|ENCRYPTION_KEY=.*|#&|g' "$var_addon_env_file"
-  sed -i '/^[[:space:]]*#/!s|JWT_SECRET=.*|#&|g' "$var_addon_env_file"
-  msg_ok "Configured compose and env files"
+  msg_info "Preparing Docker Compose and environment files"
+  mkdir -p "$(dirname "$var_addon_compose_file")" "$(dirname "$var_addon_env_file")"
+  local compose_stage env_stage prepare_status
+  compose_stage=$(mktemp -d "$(dirname "$var_addon_compose_file")/.arcane-compose.XXXXXXXX")
+  if env_stage=$(mktemp -d "$(dirname "$var_addon_env_file")/.arcane-env.XXXXXXXX"); then :; else
+    prepare_status=$?
+    rm -rf -- "$compose_stage"
+    return "$prepare_status"
+  fi
+  # Native Compose owns YAML and environment interpretation. No incomplete
+  # transport or invalid source is published into either selected live path.
+  if curl -fsSL "$var_addon_compose_url" -o "$compose_stage/source.yaml" &&
+    curl -fsSL "$var_addon_env_url" -o "$env_stage/runtime.env" &&
+    [[ -s "$compose_stage/source.yaml" && -s "$env_stage/runtime.env" ]] &&
+    sed -i -e "s|^ARCANE_APP_URL=.*|ARCANE_APP_URL=http://localhost:${var_addon_default_port}|" \
+      -e "s|^ARCANE_ENCRYPTION_KEY=.*|ARCANE_ENCRYPTION_KEY=${encryption_key}|" "$env_stage/runtime.env" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/runtime.env" -f "$compose_stage/source.yaml" config --format json > "$compose_stage/source.json" &&
+    jq -e --arg port "$var_addon_default_port" \
+      --arg projects "$var_addon_proj_dir" --arg builds "$var_addon_builds_dir" --arg env "$var_addon_env_file" '
+      .services.arcane.ports |= map(if .target == 3552 then .published = $port else . end) |
+      .services.arcane.environment.ARCANE_ENCRYPTION_KEY = "${ARCANE_ENCRYPTION_KEY}" |
+      .services.arcane.environment.ARCANE_PROJECTS_DIRECTORY = $projects |
+      .services.arcane.environment.ARCANE_APP_URL = "${ARCANE_APP_URL}" |
+      .services.arcane.volumes |= map(
+        if .source == "/host/path/to/projects" then .source = $projects | .target = $projects
+        elif .source == "/host/path/to/builds" then .source = $builds else . end) |
+      .services.arcane.env_file = [{path: $env, required: true}]
+    ' "$compose_stage/source.json" > "$compose_stage/compose.json" &&
+    chmod 600 "$env_stage/runtime.env" "$compose_stage/compose.json" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/runtime.env" -f "$compose_stage/compose.json" config --no-env-resolution -q &&
+    mv -f "$env_stage/runtime.env" "$var_addon_env_file" &&
+    mv -f "$compose_stage/compose.json" "$var_addon_compose_file"; then
+    rm -rf -- "$compose_stage" "$env_stage"
+  else
+    prepare_status=$?
+    rm -rf -- "$compose_stage" "$env_stage"
+    return "$prepare_status"
+  fi
+  msg_ok "Prepared Docker Compose and environment files"
 
   msg_info "Starting ${APP}"
-  (cd "$var_addon_install_path" && $STD docker compose up -d)
+  $STD docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_env_file" -f "$var_addon_compose_file" up -d
   msg_ok "Started ${APP}"
 }
 
@@ -99,14 +136,12 @@ function update_script() {
     exit 1
   fi
 
-  chown -R 65532:65532 "$var_addon_proj_dir" "$var_addon_builds_dir" 2> /dev/null || true
-
   msg_info "Pulling latest ${APP} image"
-  (cd "$var_addon_install_path" && $STD docker compose pull)
+  $STD docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_env_file" -f "$var_addon_compose_file" pull
   msg_ok "Pulled latest image"
 
   msg_info "Restarting ${APP}"
-  (cd "$var_addon_install_path" && $STD docker compose up -d --remove-orphans)
+  $STD docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_env_file" -f "$var_addon_compose_file" up -d --remove-orphans
   msg_ok "Restarted ${APP}"
   msg_ok "Updated successfully"
   exit
@@ -115,12 +150,15 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
-  if [[ -f "$var_addon_compose_file" ]]; then
-    msg_info "Stopping and removing Docker containers"
-    (cd "$var_addon_install_path" && $STD docker compose down --volumes --remove-orphans)
-    msg_ok "Stopped and removed Docker containers"
+  if [[ ! -f "$var_addon_compose_file" ]]; then
+    msg_error "No ${APP} installation found (${var_addon_compose_file} missing)"
+    return 1
   fi
+  msg_info "Stopping and removing Docker containers"
+  $STD docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_env_file" -f "$var_addon_compose_file" down --volumes --remove-orphans
+  msg_ok "Stopped and removed Docker containers"
 
+  rm -f -- "$var_addon_compose_file" "$var_addon_env_file"
   rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
 }
