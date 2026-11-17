@@ -87,29 +87,55 @@ function update_script() {
     exit 233
   fi
 
-  local release_found=1
-
   if check_for_gh_release "$var_addon_gh_app" "$var_addon_gh_repo"; then
-    release_found=0
+    local was_running=0 update_status=0 before after
+    function paperless_exporter_state() (
+      set -o pipefail
+      local path
+      for path in "$var_addon_bin_path" "$var_addon_conf_path" "$var_addon_auth_token_file" "/etc/systemd/system/${var_addon_service}.service"; do
+        printf '%s\0' "$path" || exit $?
+        if [[ ! -e "$path" && ! -L "$path" ]]; then
+          printf 'absent\0'
+          continue
+        fi
+        stat -c '%f:%u:%g' -- "$path" || exit $?
+        if [[ -L "$path" ]]; then
+          readlink -- "$path" || exit $?
+          stat -Lc '%f:%u:%g' -- "$path" || exit $?
+        fi
+        [[ -f "$path" ]] || exit 65
+        sha256sum < "$path" || exit $?
+      done | sha256sum
+    )
+    before=$(paperless_exporter_state) || return $?
+    if systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
     msg_info "Stopping service"
-    systemctl stop "$var_addon_service"
-    msg_ok "Stopped service"
+    systemctl stop "$var_addon_service" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (fetch_and_deploy_gh_release "$var_addon_gh_app" "$var_addon_gh_repo" "binary" "$CHECK_UPDATE_RELEASE") || update_status=$?
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(paperless_exporter_state) || after=unverified
+      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "$var_addon_service" || msg_warn "Unable to restart previous Paperless exporter service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Paperless exporter installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
 
-    fetch_and_deploy_gh_release "$var_addon_gh_app" "$var_addon_gh_repo" "binary" "$CHECK_UPDATE_RELEASE"
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      systemctl start "$var_addon_service"
+      msg_ok "Started service"
+    fi
+    msg_ok "Updated successfully!"
   else
     local release_status=$?
     [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
-  msg_info "Starting service"
-  systemctl restart "$var_addon_service"
-  msg_ok "Started service"
-
-  if [[ $release_found -eq 0 ]]; then
-    msg_ok "Updated successfully!"
-  else
-    msg_ok "No new release found"
-  fi
   exit
 }
 
