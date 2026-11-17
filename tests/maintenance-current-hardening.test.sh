@@ -11,6 +11,8 @@ ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 exec python3 -B - "$ROOT" << 'PY'
 import hashlib,json,os,pathlib,shlex,subprocess,sys,tarfile,tempfile
 R=pathlib.Path(sys.argv[1]);W=pathlib.Path(tempfile.mkdtemp(prefix='current-hardening.',dir=os.environ['TMPDIR']))
+sys.path.insert(0,str(R/'tests/lib'))
+from framework_fixture import install_fixture
 print('Hardening evidence: '+str(W),flush=True)
 checks=[]
 def check(name,wanted,actual):
@@ -20,7 +22,7 @@ def write(p,s,mode=0o644):
 def read(p):return p.read_text() if p.is_file() else '<absent>'
 def pack(source,dest):
  with tarfile.open(dest,'w:gz') as t:t.add(source,arcname='release')
-models=r'''
+models='source '+shlex.quote(str(R/'tests/lib/service-fixture.sh'))+'\n'+r'''
 header_info() { :; }
 check_container_storage() { :; }
 cleanup_lxc() { :; }
@@ -44,13 +46,10 @@ systemctl() {
   local action="$1" s
   shift
   for s in "$@"; do
-    case "$action" in
-      stop) printf stopped > "$CASE_ROOT/service-$s" ;;
-      start|restart)
-        if [[ "$s" == invidious-companion ]]; then "$CASE_ROOT/opt/invidious-companion/invidious_companion" > "$CASE_ROOT/companion-consumer" || return 45; fi
-        printf running > "$CASE_ROOT/service-$s"
-        ;;
-    esac
+    if [[ "$action" == start || "$action" == restart ]]; then
+      if [[ "$s" == invidious-companion ]]; then "$CASE_ROOT/opt/invidious-companion/invidious_companion" > "$CASE_ROOT/companion-consumer" || return 45; fi
+    fi
+    fixture_service_state "$action" "$CASE_ROOT/service-$s"
   done
 }
 curl() { python3 -B "$CASE_ROOT/http.py" "${app:-}" "$@"; }
@@ -145,7 +144,7 @@ for app in ('endurain','invidious','keycloak','cronmaster','autocaliweb'):
    core=(R/'misc/core.func').read_text().replace('/var/lib/scripts-underground/update-pending',str(c/'pending')).replace('/var/lib/scripts-underground/maintenance-locks',str(c/'locks'))
    write(c/'stage/core.func',core)
    for name in ('tools.func','error_handler.func'):write(c/'stage'/name,(R/'misc'/name).read_text())
-   write(c/'stage/install.func','pkg_install() { :; }\nsetup_lxc() { :; }\n')
+   write(c/'stage/install.func',install_fixture(R))
    write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
    write(c/'stage/addon_lxc.func','source '+shlex.quote(str(c/'models.sh'))+'\n')
    kind='addon' if app=='cronmaster' else 'lxc';text=(R/'scripts'/kind/(app+'.sh')).read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3

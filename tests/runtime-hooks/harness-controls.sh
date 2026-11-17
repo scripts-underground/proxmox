@@ -42,6 +42,33 @@ defaults=$(bash -c 'source "$1/hooks.sh"; printf "%s\n" "$var_addon_bin_path" "$
 check "$defaults" "$c/libexec/bin/filebrowser
 $c/applications/filebrowser-dist" 'harness maps source-declared parameter default paths'
 check "$(grep -cF "$c/etc/systemd/system/filebrowser.service" "$c/source.sh")" 2 'harness retains literal path mapping'
+status=0
+python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --audit > "$work/framework-audit" 2>&1 || status=$?
+check "$status" 0 'app fixtures do not hand-roll install framework APIs'
+status=0
+python3 -B - "$ROOT" "$work" << 'PY' || status=$?
+from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(sys.argv[1])/'tests/lib'))
+from framework_fixture import minimal_install_models
+root=Path(sys.argv[2])/'audit-control'
+(root/'tests').mkdir(parents=True)
+(root/'tests/new-app.sh').write_text('printf "setup_lxc() { :; }" > install.func\n')
+assert minimal_install_models(root)==['new-app.sh']
+PY
+check "$status" 0 'framework audit rejects another incomplete app stub'
+source "$ROOT/tests/lib/service-fixture.sh"
+fixture_service_state stop "$work/service-state"
+check "$(cat "$work/service-state")" stopped 'service fixture records stop'
+printf '#!/usr/bin/env bash\nprintf new-consumer\n' > "$work/executable"
+fixture_service_state restart "$work/service-state" bash "$work/executable" > "$work/service-consumer"
+check "$(cat "$work/service-state")" running 'service fixture records restart activation'
+check "$(cat "$work/service-consumer")" new-consumer 'service fixture restart consumes published executable'
+fixture_service_state stop "$work/service-state"
+status=0
+fixture_service_state restart "$work/service-state" bash -c 'exit 47' || status=$?
+check "$status" 47 'service fixture preserves activation failure'
+check "$(cat "$work/service-state")" stopped 'service fixture does not declare failed activation running'
 mkdir -p "$c/app"
 for contract in missing-recovery stopped-start partial-start restored-running retained-stopped unverified-stopped; do
   printf 'old code\n' > "$c/app/code"
