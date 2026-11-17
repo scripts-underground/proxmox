@@ -1210,6 +1210,31 @@ owned same-filesystem stage, then atomically publishes. All modes preserve the
 last-known-good key on transfer, processing, validation or publication failure.
 Existing key mode/owner are retained; fresh keyrings use0644 for apt readability.
 
+Large release/source/archive and runtime download/build stages share
+`_tools_stage_dir` in `tools.func`, including `github.func`'s private checkout.
+A nonempty receiving TMPDIR is authoritative, even when explicitly RAM-backed.
+Without it, an existing writable /var/tmp or /opt must positively resolve to a
+non-tmpfs/non-ramfs filesystem; unavailable disk staging fails, without a /tmp
+fallback. Metadata-sized response files and same-filesystem atomic publication
+stages keep their separate existing owners. Ruby passes its owned stage to
+ruby-build's build/cache and temporary roots and reports retained failed-build
+evidence rather than deleting it. No shared-stage sweeping is introduced.
+
+`setup_nodejs` retains its npm pin and unversioned pnpm major default, but explicit
+module versions are never rewritten to that default. Corepack hash suffixes stay
+separate from the npm version operand. Global package metadata supplies every
+declared executable name, including scoped/string-bin packages; missing commands
+trigger reinstall of the same selected package, never an unrequested latest
+fallback. Failed installation or a still-missing consumer returns failure. A
+cached Node major cannot bypass missing-npm recovery through its package owner.
+PHP-FPM queries the intended unit's LoadState directly: only positive loaded or
+not-found states admit service control or absence, and failed queries propagate.
+Fresh rustup setup checks a complete download before execution, retries that same
+download/install boundary three times with the selected toolchain/profile, and
+retains the exact terminal status and failed stage. Optional uv completions bypass
+the quiet wrapper, generate into a private sibling, and publish nonempty stdout
+only after success; failure preserves a prior working completion.
+
 `_uv_required_spec(dir)` owns the configuration read for both exact and range
 consumers: root `uv.toml` first (even when it masks a pyproject requirement), else
 `[tool.uv]` in `pyproject.toml`. Quotes, sections, comments and the legacy bare
