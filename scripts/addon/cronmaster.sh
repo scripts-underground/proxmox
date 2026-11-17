@@ -13,7 +13,7 @@ APP="CronMaster"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/cronmaster}"
-var_addon_config_path="${var_addon_config_path:-/opt/cronmaster/.env}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/.env}"
 var_addon_service_path="${var_addon_service_path:-/etc/systemd/system/cronmaster.service}"
 var_addon_service="${var_addon_service:-cronmaster}"
 var_addon_repo="${var_addon_repo:-fccview/cronmaster}"
@@ -51,6 +51,7 @@ function install_script() {
   AUTH_PASS="$(openssl rand -base64 18 | cut -c1-13)"
 
   msg_info "Creating configuration"
+  mkdir -p "$(dirname "$var_addon_config_path")"
   cat << EOF > "$var_addon_config_path"
 NODE_ENV=production
 AUTH_PASSWORD=${AUTH_PASS}
@@ -104,15 +105,17 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "cronmaster" "$var_addon_repo" "${var_appversion:-}"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    case "$var_addon_config_path" in
+      "$var_addon_install_path"/*) CLEAN_INSTALL_KEEP_PATHS+=("${var_addon_config_path#"$var_addon_install_path"/}") ;;
+    esac
     msg_info "Stopping service"
-    systemctl stop "$var_addon_service" &> /dev/null || true
+    systemctl stop "$var_addon_service"
     msg_ok "Stopped service"
 
     BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
 
     CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
-
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
     msg_info "Starting service"
     systemctl start "$var_addon_service"
