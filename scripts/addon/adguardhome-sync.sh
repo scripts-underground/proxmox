@@ -213,7 +213,8 @@ function update_script() {
     fi
     if [[ "$update_status" == 0 ]]; then
       msg_ok "Stopped service"
-      BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path" || update_status=$?
+      # The backup owner uses explicit exit paths; contain them so recovery runs.
+      (BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path") || update_status=$?
       if [[ "$update_status" == 0 ]]; then
         CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz" || update_status=$?
         BACKUP_DIR="$var_addon_backup_dir" restore_backup || restore_status=$?
