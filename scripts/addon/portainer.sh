@@ -23,6 +23,15 @@ function install_script() {
     exit 1
   fi
 
+  if [[ ! "$var_addon_default_port" =~ ^[0-9]{1,5}$ ]] || ((10#$var_addon_default_port < 1 || 10#$var_addon_default_port > 65535)); then
+    msg_error "Invalid Portainer HTTPS port: ${var_addon_default_port}"
+    return 65
+  fi
+  if [[ -e "$var_addon_compose_file" || -L "$var_addon_compose_file" || -e /etc/systemd/system/portainer.service || -L /etc/systemd/system/portainer.service ]]; then
+    msg_error "Portainer compose or service path is already occupied; preserve it and use explicit adoption."
+    return 65
+  fi
+
   if ! command -v docker &> /dev/null; then
     msg_info "Installing Docker"
     DOCKER_SKIP_UPDATES=true setup_docker
@@ -44,7 +53,23 @@ function install_script() {
   msg_ok "Created ${var_addon_install_path}"
 
   msg_info "Downloading Docker Compose file"
-  curl -fsSL "$var_addon_compose_url" -o "$var_addon_compose_file"
+  mkdir -p "$(dirname "$var_addon_compose_file")"
+  local compose_stage compose_status
+  compose_stage=$(mktemp -d "$(dirname "$var_addon_compose_file")/.portainer-compose.XXXXXXXX")
+  # Compose resolves source YAML and relative paths; change only HTTPS publishing.
+  if curl -fsSL "$var_addon_compose_url" -o "$compose_stage/source.yaml" &&
+    docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" config --format json > "$compose_stage/source.json" &&
+    jq -e --arg port "$var_addon_default_port" '
+      .services.portainer.ports |= map(if .target == 9443 then .published = $port else . end)
+    ' "$compose_stage/source.json" > "$compose_stage/compose.json" &&
+    docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/compose.json" config -q &&
+    mv -f "$compose_stage/compose.json" "$var_addon_compose_file"; then
+    rm -rf -- "$compose_stage"
+  else
+    compose_status=$?
+    rm -rf -- "$compose_stage"
+    return "$compose_status"
+  fi
   msg_ok "Downloaded Docker Compose file"
 
   msg_info "Creating Service"
@@ -57,9 +82,9 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=${var_addon_install_path}
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
+WorkingDirectory="${var_addon_install_path}"
+ExecStart=/usr/bin/docker compose --project-directory "${var_addon_install_path}" -f "${var_addon_compose_file}" up -d
+ExecStop=/usr/bin/docker compose --project-directory "${var_addon_install_path}" -f "${var_addon_compose_file}" down
 TimeoutStartSec=0
 
 [Install]
@@ -84,11 +109,11 @@ function update_script() {
   fi
 
   msg_info "Pulling latest ${APP} image"
-  (cd "$var_addon_install_path" && $STD docker compose pull)
+  $STD docker compose --project-directory "$var_addon_install_path" -f "$var_addon_compose_file" pull
   msg_ok "Pulled latest image"
 
   msg_info "Restarting ${APP}"
-  (cd "$var_addon_install_path" && $STD docker compose up -d --remove-orphans)
+  $STD docker compose --project-directory "$var_addon_install_path" -f "$var_addon_compose_file" up -d --remove-orphans
   msg_ok "Restarted ${APP}"
   msg_ok "Updated successfully"
   exit
@@ -97,16 +122,19 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
+  if [[ ! -f "$var_addon_compose_file" ]]; then
+    msg_error "No ${APP} installation found (${var_addon_compose_file} missing)"
+    return 1
+  fi
+  msg_info "Stopping and removing Docker containers"
+  $STD docker compose --project-directory "$var_addon_install_path" -f "$var_addon_compose_file" down --volumes --remove-orphans
+  msg_ok "Stopped and removed Docker containers"
+
   svc_prepare_uninstall portainer
   rm -f /etc/systemd/system/portainer.service
   systemctl daemon-reload
 
-  if [[ -f "$var_addon_compose_file" ]]; then
-    msg_info "Stopping and removing Docker containers"
-    (cd "$var_addon_install_path" && $STD docker compose down --volumes --remove-orphans)
-    msg_ok "Stopped and removed Docker containers"
-  fi
-
+  rm -f -- "$var_addon_compose_file"
   rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
 }
