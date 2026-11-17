@@ -70,6 +70,7 @@ for mode in no yes; do
   for fault in nginx reload none; do
     c="$work/mqtt-$mode-$fault"
     mkdir -p "$c/stage" "$c/sbin" "$c/bin" "$c/markers" "$c/nginx/sites-enabled" "$c/nginx/sites-available" "$c/systemd" "$c/app"
+    : > "$c/services"
     printf 'retained app\n' > "$c/app/data"
     printf 'installed\n' > "$c/markers/mqttx"
     sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
