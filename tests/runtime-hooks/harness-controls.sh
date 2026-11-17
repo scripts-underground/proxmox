@@ -32,6 +32,16 @@ check "$observed" 2 'harness detects both dangling aliases after successful unin
 rm "$c/aliases/update" "$c/aliases/uninstall"
 runtime_hooks_uninstall_assert > "$work/removed-output" 2>&1
 check "$failures" "$prior_failures" 'harness accepts actual alias retirement'
+# Inspect the same source-declared defaults used by cold app commands. Mapping
+# coordinates must not depend on whether a path is literal or a shell fallback.
+script_type=addon app=filebrowser role=update pending_key=file-browser
+c="$work/defaults"
+hook_paths=(/usr/local libexec /opt applications)
+runtime_hooks_prepare
+defaults=$(bash -c 'source "$1/hooks.sh"; printf "%s\n" "$var_addon_bin_path" "$var_addon_dist_path"' defaults "$c")
+check "$defaults" "$c/libexec/bin/filebrowser
+$c/applications/filebrowser-dist" 'harness maps source-declared parameter default paths'
+check "$(grep -cF "$c/etc/systemd/system/filebrowser.service" "$c/source.sh")" 2 'harness retains literal path mapping'
 mkdir -p "$c/app"
 for contract in missing-recovery stopped-start partial-start restored-running retained-stopped unverified-stopped; do
   printf 'old code\n' > "$c/app/code"

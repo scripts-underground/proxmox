@@ -161,7 +161,7 @@ import pathlib,re,subprocess,sys,shlex
 root=pathlib.Path(sys.argv[1]);kind,app=sys.argv[2:4];c=pathlib.Path(sys.argv[4])
 mapping={'/etc':str(c/'etc'),'/root':str(c/'root')}
 mapping.update((key,str(c/value)) for key,value in zip(sys.argv[5::2],sys.argv[6::2],strict=True))
-pattern=r'(?<![A-Za-z0-9_./-])('+ '|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?=/|[\s"\x27]|$)'
+pattern=r'(?:(?<![A-Za-z0-9_./-])|(?<=:-))('+ '|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?=/|[\s"\x27]|$)'
 text=(root/'scripts'/kind/(app+'.sh')).read_text()
 (c/'source.sh').write_text(re.sub(pattern,lambda m:mapping[m[0]],text))
 # Native declare-f boundary preserves heredocs and source-declared defaults.
