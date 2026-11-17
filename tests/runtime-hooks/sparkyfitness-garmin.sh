@@ -4,8 +4,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=sparkyfitness-garmin
 release_app=$app release_mode=tarball release_asset=unused.tar.gz
-variants+=(stop download build fresh uninstall)
-runtime_hooks_variant() { case "$variant" in checker) fault=checker ;; stop) fault=stop ;; uninstall) role=uninstall ;; esac }
+variants+=(stop download build fresh uninstall stopped-download stopped-selected copy copy-unrestored pip-intact pip-partial)
+runtime_hooks_variant() { case "$variant" in checker | stop | copy | copy-unrestored | pip-*) fault=$variant ;; stopped-download) fault=download ;; uninstall) role=uninstall ;; esac }
 addon_release_setup() {
   local app_root="$c/opt/$app"
   if [[ "$role" == install ]]; then
@@ -26,8 +26,23 @@ addon_release_setup() {
   stat -c %i "$app_root/SparkyFitnessGarmin/.venv" > "$c/venv-inode"
   printf 'operator unit\n' > "$c/etc/systemd/system/operator-garmin.service"
   printf 'var_addon_config_path=%q\nvar_addon_service_path=%q\n' "/opt/$app/operator config/.env" "$c/etc/systemd/system/operator-garmin.service" > "$c/context.sh"
+  if [[ "$role" == update ]]; then
+    printf 'old dependency\n' > "$app_root/SparkyFitnessGarmin/.venv/dependency.py"
+    if [[ "$variant" == pip-* ]]; then
+      rm -rf "$c/payload"
+      mkdir "$c/payload"
+      command cp -a "$app_root/." "$c/payload/"
+    fi
+    local initial=active
+    [[ "$variant" != stopped-* ]] || initial=inactive
+    runtime_hooks_recovery_setup operator-garmin.service "$initial" "$app_root" "$c/etc/systemd/system/operator-garmin.service"
+  fi
 }
-addon_release_consumer_assert() { check "$(cat "$c/opt/$app/code")" 'new code' "$app selected source consumer"; }
+addon_release_consumer_assert() {
+  local expected_code='new code'
+  [[ "$variant" != pip-* ]] || expected_code='old code'
+  check "$(cat "$c/opt/$app/code")" "$expected_code" "$app selected source consumer"
+}
 eval "$(declare -f runtime_hooks_assert | sed '1s/runtime_hooks_assert/garmin_release_assert/')"
 runtime_hooks_model() {
   addon_release_model
@@ -44,12 +59,31 @@ runtime_hooks_model() {
       printf '#!/usr/bin/env bash\nprintf "new runtime\\n"\n' > .venv/bin/python3
       chmod +x .venv/bin/python3
     fi
+    if [[ "$1" == pip ]]; then
+      [[ "$APP_FAULT" != pip-intact ]] || return 52
+      if [[ "$APP_FAULT" == pip-partial ]]; then
+        printf 'partial dependency\n' > .venv/dependency.py
+        return 52
+      fi
+    fi
     [[ "$APP_FAULT" != build || "$1" != pip ]] || return 52
   }
+  cp() {
+    if [[ "$APP_FAULT" == copy || "$APP_FAULT" == copy-unrestored ]] && [[ "$*" == *'/deploy-source.'* && "${!#}" == /opt/* ]]; then
+      command cp "$@"
+      [[ "$APP_FAULT" != copy-unrestored ]] || printf 'partial source\n' > /opt/sparkyfitness-garmin/partial-runtime
+      return 41
+    fi
+    command cp "$@"
+  }
   systemctl() {
-    printf '%s\n' "$*" >> "$c/services"
-    if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
     [[ "$APP_FAULT" != stop || "$1" != stop ]] || return 31
+    if [[ -f "$c/recovery-service" ]]; then
+      runtime_hooks_recovery_service "$@" || return $?
+    else
+      printf '%s\n' "$*" >> "$c/services"
+      if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
+    fi
     if [[ "$1" == start ]]; then
       python3 - "$var_addon_install_path/SparkyFitnessGarmin/mock_data/range capture.json" "$c/running-capture" << 'PY'
 import json,sys
@@ -59,7 +93,7 @@ PY
     fi
   }
 }
-runtime_hooks_expected() { case "$fault" in checker) expected=17 ;; stop) expected=31 ;; esac }
+runtime_hooks_expected() { case "$fault" in checker) expected=17 ;; stop) expected=31 ;; copy | copy-unrestored) expected=252 ;; pip-*) expected=52 ;; esac }
 runtime_hooks_assert() {
   if [[ "$role" == install ]]; then
     check "$(grep -c '^enable -q --now operator-garmin.service$' "$c/services" || true)" 1 "$app fresh install enables the configured unit"
@@ -82,6 +116,9 @@ runtime_hooks_assert() {
   check "$(cat "$c/etc/systemd/system/operator-garmin.service")" 'operator unit' "$app/$variant existing unit retained"
   if [[ "$fault" == stop ]]; then
     check "$(stat -c %s "$c/downloads")" 0 "$app failed stop prevents source replacement"
+  elif [[ "$variant" == stopped-selected ]]; then
+    check "$(cat "$c/recovery-state")" inactive "$app successful update leaves initially stopped service stopped"
+    check "$(wc -l < "$c/recovery-starts")" 0 "$app successful update never starts initially stopped service"
   elif [[ "$expected" == 0 && "$variant" != no-update ]]; then
     check "$(cat "$c/running-capture" 2> /dev/null || true)" 'operator saved range' "$app service consumer reads saved capture after update"
     check "$(grep -c '^start operator-garmin.service$' "$c/services" || true)" 1 "$app service control follows configured unit path"
@@ -89,7 +126,12 @@ runtime_hooks_assert() {
 }
 runtime_hooks_retry_assert() {
   addon_release_consumer_assert
-  check "$(cat "$c/running-capture" 2> /dev/null || true)" 'operator saved range' "$app pending retry retains capture at running consumer"
+  if [[ "$variant" == stopped-download ]]; then
+    check "$(cat "$c/recovery-state")" inactive "$app retry leaves initially stopped service stopped"
+    check "$(wc -l < "$c/recovery-starts")" 0 "$app retry never starts initially stopped service"
+  elif [[ "$(cat "$c/recovery-state")" == active ]]; then
+    check "$(cat "$c/running-capture" 2> /dev/null || true)" 'operator saved range' "$app pending retry retains capture at running consumer"
+  fi
   check "$({ "$c/opt/$app/SparkyFitnessGarmin/.venv/bin/python3" || true; } 2> /dev/null)" 'existing runtime' "$app pending retry retains existing interpreter"
 }
 runtime_hooks_main "$@"

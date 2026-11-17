@@ -77,18 +77,57 @@ function update_script() {
     esac
     PYTHON_VERSION="3.13" setup_uv
 
+    local was_running=0 update_status=0 before after
+    # The venv and its dependencies are part of the previous runtime, not
+    # merely the Python entry point. A failed pip operation is not rollback.
+    function sparkyfitness_garmin_state() (
+      set -o pipefail
+      local path
+      {
+        printf '%s\0' "$var_addon_config_path" || exit $?
+        find "$var_addon_install_path/" -print0 || exit $?
+      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
+        printf '%s\0' "$path" || exit $?
+        stat -c '%f:%u:%g' -- "$path" || exit $?
+        if [[ -L "$path" ]]; then
+          readlink -- "$path" || exit $?
+          if [[ -f "$path" ]]; then
+            stat -Lc '%f:%u:%g' -- "$path" || exit $?
+            sha256sum < "$path" || exit $?
+          fi
+        elif [[ -f "$path" ]]; then
+          sha256sum < "$path" || exit $?
+        elif [[ ! -d "$path" ]]; then exit 65; fi
+      done | sha256sum
+    )
+    before=$(sparkyfitness_garmin_state) || return $?
+    if systemctl is-active --quiet "${var_addon_service_path##*/}"; then was_running=1; fi
     msg_info "Stopping service"
-    systemctl stop "${var_addon_service_path##*/}"
-    msg_ok "Stopped service"
+    systemctl stop "${var_addon_service_path##*/}" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit $?
+        if [[ ! -x .venv/bin/python3 ]]; then $STD uv venv .venv || exit $?; fi
+        $STD uv pip install -r requirements.txt || exit $?
+      ) || update_status=$?
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(sparkyfitness_garmin_state) || after=unverified
+      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "${var_addon_service_path##*/}" || msg_warn "Unable to restart previous Garmin service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Garmin installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-    cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit
-    if [[ ! -x .venv/bin/python3 ]]; then $STD uv venv .venv; fi
-    $STD uv pip install -r requirements.txt
-
-    msg_info "Starting service"
-    systemctl start "${var_addon_service_path##*/}"
-    msg_ok "Started service"
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      systemctl start "${var_addon_service_path##*/}"
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully"
   else
     local release_status=$?
