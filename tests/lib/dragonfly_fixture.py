@@ -69,7 +69,7 @@ systemctl() {
   fi
 }
 curl() { python3 -B "$CASE_ROOT/http.py" "$@"; }
-curl_download() { printf '%s\n' "$2" >> "$CASE_ROOT/downloads"; printf package-model > "$1"; }
+curl_download() { printf '%s\n' "$2" >> "$CASE_ROOT/downloads"; command cp "$CASE_ROOT/package.deb" "$1"; }
 apt() {
   printf '%s\n' "$*" >> "$CASE_ROOT/packages"
   local arg
@@ -168,6 +168,10 @@ for arch in ('amd64', 'arm64'):
     write(c / 'dragonfly-cli.py', CLI, 0o755)
     write(c / 'capabilities.json', json.dumps(capabilities, sort_keys=True))
     write(c / 'http.py', HTTP)
+    # Package metadata and archive parsing are real framework inputs. Package
+    # installation/service effects remain the apt/systemctl models above.
+    write(c / 'package/DEBIAN/control', 'Package: su-dragonfly-probe\nVersion: 2.1\nArchitecture: ' + arch + '\nMaintainer: Fixture <fixture@example.invalid>\nDescription: Dragonfly package fixture\n')
+    subprocess.run(['dpkg-deb', '--build', str(c / 'package'), str(c / 'package.deb')], check=True, stdout=subprocess.DEVNULL)
     for name in ('core.func', 'error_handler.func', 'tools.func'):
         raw = (ROOT / 'misc' / name).read_text()
         if name == 'core.func':
