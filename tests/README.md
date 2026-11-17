@@ -42,6 +42,30 @@ File Browser and CronMaster. Dokploy's existing quiet pipeline redirects its
 downloaded script; its quiet retry proves transport/status only, not installer
 execution. That application fix belongs to phase E.
 
+Release-check addon members share the HTTP/archive effect model in
+`tests/lib/runtime-hooks/addon-release.sh`, with app-owned declarations, setup
+and consumer assertions in each discovered member. Their checker-error,
+no-update and selected-tag cases run both STD modes through cold generated
+commands. The HTTP model moves latest after the check to detect a second
+unbound lookup. Package-manager effects and builds are modeled; real release
+selection, archive/binary publication, markers, pending retention and frozen
+retry remain inlined. The contribution-owned AST fixtures separately exercise
+the bounded direct-call policy and explicitly show its dynamic/indirect limits.
+Copyparty additionally covers stock/unset sources, a saved custom URL and binary
+path, partial downloads, mode/owner/publication failures, old executable
+retention and cold pending retry. Its custom-source assertions require no GitHub
+request or managed-version claim and an explicit operator-managed version message.
+
+Recovery cases declare the prior service state and complete runtime paths with
+`runtime_hooks_recovery_setup`, then use `runtime_hooks_recovery_service` for
+systemd/OpenRC effects. The shared failure observer requires a previously running,
+intact/restored installation to be running again; initially stopped services stay
+stopped. Every recovery start is independently checked against the old runtime's
+bytes, links, modes and owners. Partial/unverified states and dependent-service
+starts remain forbidden. Non-recovery cases retain the existing no-start check.
+Harness negative controls cover missed recovery, unwanted starts and partial
+publication; both addons cover failed recovery, stopped services and cold retry.
+
 Standalone LXC fixtures retain their existing lifecycle and terminal result.
 Aggregator controls exercise refusal and success paths.
 

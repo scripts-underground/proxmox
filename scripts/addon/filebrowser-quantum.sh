@@ -181,7 +181,7 @@ function update_script() {
     msg_ok "Stopped Service"
 
     msg_info "Updating ${APP}"
-    fetch_and_deploy_gh_release "filebrowser-quantum" "gtsteffaniak/filebrowser" "singlefile" "latest" "/usr/local/bin" "linux-$(get_system_arch uname)-filebrowser"
+    fetch_and_deploy_gh_release "filebrowser-quantum" "gtsteffaniak/filebrowser" "singlefile" "$CHECK_UPDATE_RELEASE" "/usr/local/bin" "linux-$(get_system_arch uname)-filebrowser"
     mv -f /usr/local/bin/filebrowser-quantum "$var_addon_bin_path"
     msg_ok "Updated ${APP}"
 
@@ -193,6 +193,9 @@ function update_script() {
     fi
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

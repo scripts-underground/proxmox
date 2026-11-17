@@ -1286,6 +1286,33 @@ older-asset fallback. Internal response files/stages are private and removed by
 their owners. No global temporary metadata file or exported last-response state
 is used.
 
+Addon release-check callers preserve the checker's three outcomes:0 selects a raw
+`CHECK_UPDATE_RELEASE` for deployment,1 alone is a successful no-update result,
+and all other statuses return unchanged before app effects. The update runner
+cannot retain pending for a checker error swallowed by a successful hook.
+`tools/ast` checks literal checker calls in addon update hooks against the
+established positive `if` with an immediate local status capture in `else`,
+followed by `[[ "$status" == 1 ]] || return "$status"`. Unrecognized shapes are
+reported as statically unproven, not runtime failures. This bounded contribution
+check rejects child-shell, background, pipeline and nested-function contexts;
+it does not resolve dynamic command names, eval or indirect helper calls,
+and does not prove deployed bytes or service activation. The discovered per-addon
+cold-hook cases retain those release-selection and pending-outcome proofs.
+Copyparty's stock source uses that managed contract. A saved custom URL instead
+remains operator-managed, with checked staged executable publication and no
+GitHub version check or marker claim for the custom source. It invalidates any
+old managed-version marker before custom publication, so a later return to the
+stock source cannot use stale release metadata to skip deployment.
+
+Copyparty and AdGuardHome-Sync failure recovery observes prior service activity
+and positively verifies the previous runtime before restarting it. Copyparty
+restores and verifies its executable/managed-marker pair after failed publication;
+an unverified rollback retains its owned stage and stays stopped. AdGuard restores
+configuration and compares its full installation's names, bytes, links, modes and
+owners before recovery; a partial/unverified deployment stays stopped. Initially
+stopped services are not started. The original update failure and pending state
+survive recovery attempts, and both systemd/OpenRC paths have cold-hook coverage.
+
 Generic GitHub API, tag and release requests share a completed HTTP owner.
 `GITHUB_TOKEN` takes precedence over `var_github_token`, and either is used on
 the first request. A rejected configured token or a response explicitly naming

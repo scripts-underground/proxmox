@@ -46,6 +46,61 @@ runtime_hooks_runtime_models() {
   runtime_hooks_model
 }
 
+# Cases opt in with the service's prior state and complete runtime footprint.
+# The observer records bytes/links/modes/owners at every start, independently of
+# the hook's claim that a deployment or rollback succeeded.
+runtime_hooks_recovery_digest() (
+  set -o pipefail
+  local -a paths=()
+  mapfile -d '' -t paths < "$c/recovery-paths"
+  tar --sort=name --format=gnu --mtime=@0 -cf - -C / -- "${paths[@]}" | sha256sum
+)
+runtime_hooks_recovery_setup() {
+  printf '%s\n' "$1" > "$c/recovery-service"
+  printf '%s\n' "$2" > "$c/recovery-initial"
+  printf '%s\n' "$2" > "$c/recovery-state"
+  shift 2
+  : > "$c/recovery-paths"
+  local path
+  for path in "$@"; do printf '%s\0' "${path#/}" >> "$c/recovery-paths"; done
+  runtime_hooks_recovery_digest > "$c/recovery-before"
+  : > "$c/recovery-starts"
+}
+runtime_hooks_recovery_service() {
+  local action=$1 service=${!#} digest
+  if [[ "$action" == is-active || "$action" == status ]]; then
+    [[ "$(cat "$c/recovery-state")" == active ]]
+    return
+  fi
+  printf '%s %s\n' "$action" "$service" >> "$c/services"
+  [[ "$service" == "$(cat "$c/recovery-service")" ]] || return 0
+  case "$action" in
+    stop) printf 'inactive\n' > "$c/recovery-state" ;;
+    start | restart)
+      digest=$(runtime_hooks_recovery_digest) || digest=unverified
+      printf '%s\n' "$digest" >> "$c/recovery-starts"
+      printf 'active\n' > "$c/recovery-state"
+      ;;
+  esac
+}
+runtime_hooks_failure_services_assert() {
+  local starts digest final initial desired=inactive
+  starts=$(grep -Ec '^(start|reload|restart)|--now' "$c/services" || true)
+  if [[ ! -f "$c/recovery-service" ]]; then
+    check "$starts" 0 "$app/$variant failure never starts dependent services"
+    return
+  fi
+  initial=$(cat "$c/recovery-initial")
+  final=$(runtime_hooks_recovery_digest) || final=unverified
+  if [[ "$initial" == active && "$final" == "$(cat "$c/recovery-before")" ]]; then desired=active; fi
+  check "$(cat "$c/recovery-state")" "$desired" "$app/$variant failed update preserves safe prior service state"
+  check "$starts" "$(wc -l < "$c/recovery-starts")" "$app/$variant no dependent service starts during recovery"
+  while IFS= read -r digest; do
+    check "$initial" active "$app/$variant recovery never starts an initially stopped service"
+    check "$digest" "$(cat "$c/recovery-before")" "$app/$variant recovery starts only positively verified old runtime"
+  done < "$c/recovery-starts"
+}
+
 # Framework membership and role footers come from the shared producer. This
 # adapter never invokes a hook; exec discards the extraction shell's definitions.
 runtime_hooks_child() {
@@ -204,7 +259,7 @@ PY
         check "$(stat -c %s "$c/db-major-calls")" 0 "$app/$variant no installed DB major provisioning"
         check "$(test -f "$c/state/$pending_key" && printf present || printf absent)" "$([[ "$expected" == 0 ]] && printf absent || printf present)" "$app/$variant pending flag reflects actual outcome"
       fi
-      if [[ "$rc" != 0 ]]; then check "$(grep -Ec '^(start|reload|restart)|--now' "$c/services" || true)" 0 "$app/$variant failure never starts dependent services"; fi
+      if [[ "$rc" != 0 ]]; then runtime_hooks_failure_services_assert; fi
       runtime_hooks_assert
       if [[ "$script_type" == addon && "$role" == uninstall ]]; then runtime_hooks_uninstall_assert; fi
       if runtime_hooks_retry_needed; then
