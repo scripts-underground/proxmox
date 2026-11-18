@@ -825,6 +825,10 @@ prevents publication. No compound-block errexit assumption or new trap owner is
 used. Successful publication and push/chmod failures also remove the sender file.
 The LXC receiver also allocates an owned same-filesystem stage: push writes there,
 mode is checked there, and atomic rename publishes the complete command. Failed
+parent creation prevents receiving allocation and preserves its native status.
+Both LXC and addon publishers create the command's missing destination parents
+before staging; existing directory metadata is not changed. Minimal templates
+therefore need not provide `/usr/local/sbin` before command publication. Failed
 partial transport, mode-setting or rename preserves the previous receiving bundle
 and removes the owned receiver stage. Persistent aliases are checked before their
 corresponding bundle publication. This is per-command publication, not a transaction
