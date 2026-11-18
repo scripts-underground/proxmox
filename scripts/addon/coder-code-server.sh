@@ -40,34 +40,32 @@ function install_script() {
   $STD apt update
   $STD apt install -y \
     curl \
-    git
+    git \
+    util-linux
   msg_ok "Installed Dependencies"
 
   msg_info "Installing ${APP}"
-  local preexisting_config=false
-  if [[ -f "$config_path" ]]; then
-    preexisting_config=true
-  fi
-
   fetch_and_deploy_gh_release "$var_addon_app" "$var_addon_gh_repo" "binary" "latest" "/opt/coder-code-server" "code-server_*_$(get_system_arch).deb"
-  if [[ ! -d "${svc_home}/.config" ]]; then
-    mkdir -p "${svc_home}/.config"
-    chown "$svc_uid:$svc_gid" "${svc_home}/.config"
-  fi
-  if [[ ! -d "${svc_home}/.config/code-server" ]]; then
-    mkdir -p "${svc_home}/.config/code-server"
-    chown "$svc_uid:$svc_gid" "${svc_home}/.config/code-server"
-  fi
-
-  if [[ "$preexisting_config" == false ]]; then
-    cat << EOF > "$config_path"
-bind-addr: 0.0.0.0:${var_addon_default_port}
+  # Every traversal/write under an account-controlled home belongs to that
+  # account. Root must never follow its links and then chown a protected target.
+  runuser -u "$var_addon_svc_user" -- bash -s -- "$svc_home" "$var_addon_default_port" << 'ACCOUNT_CONFIG'
+set -euo pipefail
+home=$1 port=$2
+mkdir -p -- "$home/.config/code-server"
+config="$home/.config/code-server/config.yaml"
+if [[ -e "$config" || -L "$config" ]]; then
+  [[ -f "$config" ]] || { printf 'Invalid code-server configuration path: %s\n' "$config" >&2; exit 65; }
+else
+  umask 077
+  set -C
+  cat << EOF > "$config"
+bind-addr: 0.0.0.0:${port}
 auth: none
 password:
 cert: false
 EOF
-    chown "$svc_uid:$svc_gid" "$config_path"
-  fi
+fi
+ACCOUNT_CONFIG
   systemctl enable -q --now "code-server@${var_addon_svc_user}"
   systemctl restart "code-server@${var_addon_svc_user}"
   if ! systemctl is-active --quiet "code-server@${var_addon_svc_user}"; then

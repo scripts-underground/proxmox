@@ -35,6 +35,7 @@ if [[ "${1:-}" == --child ]]; then
     [[ "${DPKG_STATUS:-0}" == 0 ]] || return "$DPKG_STATUS"
     printf '%s\n' "${DPKG_ARCH-amd64}"
   }
+  curl() { printf 'Codename: trixie\nComponents: mysql-8.4-lts\nArchitectures: amd64\n'; }
   rc=0
   case "$CALL" in
     setup-mysql)
@@ -129,7 +130,7 @@ for CALL in plain cond; do
   go debian12-8.0
   check "$rc" 0 "$L status"
   check "$(sources)" "$(expected_sources bookworm mysql-8.0)" "$L exact deb822 repository"
-  check "$(cat "$c/events")" "$(printf 'key:https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 /etc/apt/keyrings/mysql.gpg dearmor\ndpkg:--print-architecture')" "$L key transport then architecture, no fallback probe"
+  check "$(cat "$c/events")" "$(printf 'dpkg:--print-architecture\nkey:https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 /etc/apt/keyrings/mysql.gpg dearmor')" "$L checked selection before key transport, no fallback probe"
   check "$(cat "$c/apt/keyrings/mysql.gpg")" KEYRING "$L keyring published at the Signed-By path"
   check "$(ls "$c/apt/sources.list.d" | tr '\n' ' ')" 'debian.sources mysql.sources ' "$L stale MySQL files cleaned, unrelated source kept"
   check "$(ls "$c/apt/trusted.gpg.d" | wc -l)" 0 "$L stale trusted keys cleaned"
@@ -140,9 +141,15 @@ for CALL in plain cond; do
     check "$(sources)" "$(expected_sources bookworm "${pair##*:}")" "$L component ${pair##*:}"
   done
   # Debian suite mapping
-  for pair in 'bullseye:bullseye' 'trixie:bookworm' 'forky:bookworm' 'sid:bookworm'; do
-    go "debian-${pair%%:*}" _OS_CODENAME="${pair%%:*}"
-    check "$(sources)" "$(expected_sources "${pair##*:}" mysql-8.0)" "$L suite ${pair##*:}"
+  for pair in 'bullseye:bullseye' 'trixie:trixie' 'forky:trixie' 'sid:trixie'; do
+    version=8.0
+    component=mysql-8.0
+    if [[ "${pair##*:}" == trixie ]]; then
+      version=8.4
+      component=mysql-8.4-lts
+    fi
+    go "debian-${pair%%:*}" _OS_CODENAME="${pair%%:*}" VERSION="$version"
+    check "$(sources)" "$(expected_sources "${pair##*:}" "$component")" "$L suite ${pair##*:}"
   done
   # Non-Debian suite comes from the probe; its failure is returned
   go ubuntu _OS_ID=ubuntu _OS_CODENAME=noble FALLBACK_SUITE=jammy
@@ -150,10 +157,10 @@ for CALL in plain cond; do
   check "$(grep -c '^fallback:ubuntu noble https://repo.mysql.com/apt/debian$' "$c/events" || true)" 1 "$L probe receives distro, codename and repository"
   go ubuntu-probe-fails _OS_ID=ubuntu _OS_CODENAME=noble FALLBACK_STATUS=9
   check "$rc" 9 "$L probe failure status"
-  absent_sources
+  check "$(sources)" stale "$L probe failure preserves prior source"
   go ubuntu-probe-empty _OS_ID=ubuntu _OS_CODENAME=noble FALLBACK_SUITE=
   check "$rc" 65 "$L empty probe result refused"
-  absent_sources
+  check "$(sources)" stale "$L empty probe preserves prior source"
   # Required inputs and producers
   go missing-key KEY_URL=
   check "$rc" 65 "$L missing key URL status"
@@ -168,17 +175,17 @@ for CALL in plain cond; do
   check "$(grep -c '^error:Failed to import MySQL GPG key' "$c/messages" || true)" 1 "$L key failure reported"
   go missing-codename _OS_CODENAME=
   check "$rc" 65 "$L missing codename status"
-  absent_sources
+  check "$(sources)" stale "$L missing codename preserves prior source"
   go dpkg-fails DPKG_STATUS=5
   check "$rc" 5 "$L architecture failure status"
-  absent_sources
+  check "$(sources)" stale "$L failed architecture preserves prior source"
   go dpkg-empty DPKG_ARCH=
   check "$rc" 65 "$L empty architecture refused"
-  absent_sources
+  check "$(sources)" stale "$L empty architecture preserves prior source"
   BLOCK=1 go cleanup-fails
   BLOCK=0
   check "$rc" 1 "$L cleanup failure status"
-  check "$(cat "$c/events")" '' "$L no key work after failed cleanup"
+  check "$(cat "$c/events")" 'dpkg:--print-architecture' "$L no key work after failed cleanup"
   go write-fails WRITE_FAULT=1
   check "$([[ "$rc" != 0 && "$rc" != missing ]] && printf nonzero || printf '%s' "$rc")" nonzero "$L failed sources write is returned"
   absent_sources

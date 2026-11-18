@@ -50,6 +50,12 @@ function install_script() {
     msg_error "Docker Compose plugin is not available. Please install it before running this script. Exiting."
     exit 1
   fi
+  local compose_help
+  compose_help=$(docker compose config --help) || return $?
+  if ! grep -Eq -- '(^|[[:space:]])--no-env-resolution([[:space:]]|$)' <<< "$compose_help"; then
+    msg_error "Arcane requires Docker Compose config --no-env-resolution support (v2.35.0 or newer). Update the plugin before installation."
+    return 69
+  fi
   msg_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available"
 
   msg_info "Creating install directory"
@@ -106,12 +112,17 @@ function install_script() {
       .services.arcane.env_file = [{path: $env, required: true}]
     ' "$compose_stage/source.json" > "$compose_stage/compose.json" &&
     chmod 600 "$env_stage/runtime.env" "$compose_stage/compose.json" &&
-    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/runtime.env" -f "$compose_stage/compose.json" config --no-env-resolution -q &&
-    mv -f "$env_stage/runtime.env" "$var_addon_env_file" &&
-    mv -f "$compose_stage/compose.json" "$var_addon_compose_file"; then
+    jq --arg env "$env_stage/runtime.env" '.services.arcane.env_file[0].path = $env' "$compose_stage/compose.json" > "$compose_stage/validation.json" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/runtime.env" -f "$compose_stage/validation.json" config --no-env-resolution -q &&
+    ln -T -- "$env_stage/runtime.env" "$var_addon_env_file" &&
+    ln -T -- "$compose_stage/compose.json" "$var_addon_compose_file"; then
     rm -rf -- "$compose_stage" "$env_stage"
   else
     prepare_status=$?
+    # Publication never replaces occupied names. Retire only this preparation's
+    # own inodes if a later publication step fails; preserve foreign files.
+    if [[ "$var_addon_env_file" -ef "$env_stage/runtime.env" ]]; then rm -f -- "$var_addon_env_file"; fi
+    if [[ "$var_addon_compose_file" -ef "$compose_stage/compose.json" ]]; then rm -f -- "$var_addon_compose_file"; fi
     rm -rf -- "$compose_stage" "$env_stage"
     return "$prepare_status"
   fi

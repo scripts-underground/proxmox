@@ -47,6 +47,12 @@ apt() { printf 'modeled package search-v4\n' > "$CASE_ROOT/opt/wanderer/source/s
      model+=r'''
 systemctl() {
  printf '%s\n' "$*" >> "$CASE_ROOT/service-calls"
+ # Match native conditional activation before the shared restart consumer.
+ # The real-systemd parity probe separately covers active and stopped units.
+ if [[ "$1" == try-restart ]]; then
+  [[ "$(cat "$CASE_ROOT/service-$TEST_APP")" == running ]] || return 0
+  set -- restart "${@:2}"
+ fi
  fixture_service_state "$1" "$CASE_ROOT/service-$TEST_APP" "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/executable-consumer"
 }
 '''

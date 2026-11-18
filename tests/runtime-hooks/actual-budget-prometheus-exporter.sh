@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=actual-budget-prometheus-exporter
 release_app=$app release_mode=tarball release_asset=unused.tar.gz
-variants+=(fresh download stopped-download stopped-selected runtime ci build copy copy-unrestored stop)
+variants+=(fresh download stopped-download stopped-selected runtime ci build copy copy-unrestored stop in-tree-config)
 runtime_hooks_variant() {
   case "$variant" in checker | runtime | ci | copy | copy-unrestored | stop) fault=$variant ;; stopped-download) fault=download ;; esac
 }
@@ -23,6 +23,12 @@ addon_release_setup() {
     local initial=active
     [[ "$variant" != stopped-* ]] || initial=inactive
     runtime_hooks_recovery_setup "$app" "$initial" "$c/opt/actual-budget-custom" "$c/external/actual.env"
+    if [[ "$variant" == in-tree-config ]]; then
+      printf 'var_addon_config_path=/opt/actual-budget-custom/operator\ env\n' >> "$c/context.sh"
+      printf 'operator credential\n' > "$c/opt/actual-budget-custom/operator env"
+      chmod 0600 "$c/opt/actual-budget-custom/operator env"
+      printf 'source default credential\n' > "$c/payload/operator env"
+    fi
   fi
 }
 addon_release_consumer_assert() { check "$(cat "$c/opt/actual-budget-custom/code")" 'new code' "$app selected source uses saved install path"; }
@@ -67,6 +73,10 @@ runtime_hooks_assert() {
     release_assert
   fi
   if [[ "$role" == update ]]; then
+    if [[ "$variant" == in-tree-config ]]; then
+      check "$(cat "$c/opt/actual-budget-custom/operator env" 2> /dev/null || true)" 'operator credential' "$app clean replacement preserves in-tree credential against source defaults"
+      check "$(stat -c %a "$c/opt/actual-budget-custom/operator env" 2> /dev/null || true)" 600 "$app in-tree credential retains private mode"
+    fi
     check "$(cat "$c/external/actual.env")" 'operator credential' "$app/$variant credential retained"
     check "$(stat -c %a "$c/external/actual.env")" 600 "$app/$variant credential stays private"
     if [[ "$variant" == stopped-selected ]]; then

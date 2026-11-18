@@ -5,21 +5,37 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=filebrowser
 script_type=addon
-variants=(fresh update openrc checker download uninstall)
+variants=(fresh update openrc stopped openrc-stopped restart-failure checker download uninstall)
 hook_paths=()
 runtime_hooks_variant() {
-  case "$variant" in checker) fault=checker ;; openrc) fault=openrc ;; uninstall) role=uninstall ;; esac
+  case "$variant" in checker | restart-failure) fault=$variant ;; openrc | openrc-stopped) fault=openrc ;; uninstall) role=uninstall ;; esac
 }
 runtime_hooks_model() {
   [[ "$APP_FAULT" != openrc ]] || INIT_SYSTEM=openrc
   systemctl() {
     printf '%s\n' "$*" >> "$c/services"
-    if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
-    if [[ "$1" == restart ]]; then "$c/local/bin/filebrowser" > "$c/running-consumer"; fi
+    if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=%s\nUnitFileState=enabled\n' "$(cat "$c/service-state")"; fi
+    if [[ "$1" == is-active ]]; then
+      [[ "$(cat "$c/service-state")" == active ]]
+      return
+    fi
+    if [[ "$1" == restart || ("$1" == try-restart && "$(cat "$c/service-state")" == active) ]]; then
+      [[ "$APP_FAULT" != restart-failure ]] || return 47
+      "$c/local/bin/filebrowser" > "$c/running-consumer"
+      printf active > "$c/service-state"
+    fi
   }
   rc-service() {
     printf '%s\n' "$*" >> "$c/services"
-    if [[ "$2" == restart ]]; then "$c/local/bin/filebrowser" > "$c/running-consumer"; fi
+    if [[ "$1" == --ifstarted ]]; then
+      [[ "$(cat "$c/service-state")" == active ]] || return 0
+      shift
+    fi
+    if [[ "$2" == status ]]; then [[ "$(cat "$c/service-state")" == active ]] || return 3; fi
+    if [[ "$2" == restart ]]; then
+      "$c/local/bin/filebrowser" > "$c/running-consumer"
+      printf active > "$c/service-state"
+    fi
   }
   apt() { :; }
   filebrowser() { printf '%s\n' "$*" >> "$c/binary-calls"; }
@@ -55,6 +71,8 @@ runtime_hooks_setup() {
   printf '#!/usr/bin/env bash\nprintf "new binary consumer\\n"\n' > "$c/payload/filebrowser"
   chmod 0755 "$c/payload/filebrowser"
   : > "$c/requests"
+  printf active > "$c/service-state"
+  case "$variant" in stopped | openrc-stopped) printf inactive > "$c/service-state" ;; esac
   if [[ "$role" != install ]]; then
     printf 'operator database\n' > "$c/db/custom.db"
     printf '#!/usr/bin/env bash\nprintf "old binary consumer\\n"\n' > "$c/local/bin/filebrowser"
@@ -64,7 +82,7 @@ runtime_hooks_setup() {
     printf 'old binary consumer\n' > "$c/running-consumer"
   fi
 }
-runtime_hooks_expected() { [[ "$fault" != checker ]] || expected=17; }
+runtime_hooks_expected() { case "$fault" in checker) expected=17 ;; restart-failure) expected=47 ;; esac }
 runtime_hooks_assert() {
   if [[ "$role" == uninstall ]]; then
     check "$(test -e "$c/db/custom.db" && printf present || printf absent)" absent "$app scoped uninstall removes configured DB"
@@ -74,7 +92,12 @@ runtime_hooks_assert() {
     if [[ "$rc" == 0 ]]; then
       check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app selected binary reaches executable consumer"
       check "$(grep -c '/tags/v2.0.0$' "$c/requests" || true)" 1 "$app update deploys the selected release"
-      check "$(cat "$c/running-consumer")" 'new binary consumer' "$app/$variant service activates replaced executable"
+      if [[ "$variant" == stopped || "$variant" == openrc-stopped ]]; then
+        check "$(cat "$c/service-state")" inactive "$app/$variant operator-stopped service stays stopped"
+        check "$(cat "$c/running-consumer")" 'old binary consumer' "$app/$variant never activates new executable"
+      else
+        check "$(cat "$c/running-consumer")" 'new binary consumer' "$app/$variant service activates replaced executable"
+      fi
     elif [[ "$fault" == checker ]]; then
       check "$("$c/local/bin/filebrowser")" 'old binary consumer' "$app release error retains executable"
     fi
@@ -87,5 +110,11 @@ runtime_hooks_retry_assert() {
   check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app ordinary retry publishes executable"
   check "$(cat "$c/db/custom.db")" 'operator database' "$app retry retains configured DB"
   check "$(cat "$c/running-consumer")" 'new binary consumer' "$app retry activates replaced executable"
+}
+eval "$(declare -f runtime_hooks_failure_services_assert | sed '1s/runtime_hooks_failure_services_assert/filebrowser_failure_services_assert/')"
+runtime_hooks_failure_services_assert() {
+  if [[ "$variant" == restart-failure ]]; then
+    check "$(cat "$c/running-consumer")" 'old binary consumer' "$app failed activation does not claim a new consumer"
+  else filebrowser_failure_services_assert; fi
 }
 runtime_hooks_main "$@"

@@ -129,9 +129,9 @@ function update_script() {
     msg_info "Updating ${APP}"
     _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" filebrowser || return $?
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service filebrowser restart
+      rc-service --ifstarted filebrowser restart
     else
-      systemctl restart filebrowser
+      systemctl try-restart filebrowser
     fi
     msg_ok "Updated ${APP}"
   else

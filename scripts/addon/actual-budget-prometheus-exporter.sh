@@ -129,6 +129,17 @@ function update_script() {
       # Contain helper exits and check every required step even under this
       # returning recovery boundary. Include node_modules in the state proof.
       (
+        # Preserve both the selected pathname and any in-tree symlink target.
+        # The replacement owner protects symlink ancestors and source defaults.
+        local root_path config_path
+        local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+        for root_path in "$(realpath -ms -- "$var_addon_install_path")" "$(realpath -m -- "$var_addon_install_path")"; do
+          for config_path in "$(realpath -ms -- "$var_addon_config_path")" "$(realpath -m -- "$var_addon_config_path")"; do
+            if [[ "$config_path" == "$root_path/"* ]]; then
+              CLEAN_INSTALL_KEEP_PATHS+=("${config_path#"$root_path/"}")
+            fi
+          done
+        done
         CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
         NODE_VERSION="22" setup_nodejs || exit $?
         msg_info "Building Actual-Budget-Prometheus-Exporter"

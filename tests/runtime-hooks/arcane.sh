@@ -3,11 +3,11 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=arcane script_type=addon
-variants=(fresh unsupported occupied invalid-port download env-download invalid-compose update pull-failure uninstall down-failure missing)
+variants=(fresh unsupported occupied invalid-port old-compose download env-download invalid-compose publish-failure update pull-failure uninstall down-failure missing)
 hook_paths=()
 runtime_hooks_variant() {
   case "$variant" in
-    unsupported | occupied | invalid-port | download | env-download | invalid-compose) role=install fault=$variant ;;
+    unsupported | occupied | invalid-port | old-compose | download | env-download | invalid-compose | publish-failure) role=install fault=$variant ;;
     pull-failure) fault=pull ;;
     uninstall) role=uninstall ;;
     down-failure) role=uninstall fault=down ;;
@@ -32,6 +32,14 @@ runtime_hooks_model() {
   [[ "$APP_FAULT" != unsupported ]] || OS_FAMILY=arch
   ensure_dependencies() { printf '%s\n' "$*" >> "$c/dependencies"; }
   chown() { printf '%s\n' "$*" >> "$c/ownership"; }
+  mv() {
+    [[ "$APP_FAULT" != publish-failure || "${!#}" != "$var_addon_compose_file" ]] || return 41
+    command mv "$@"
+  }
+  ln() {
+    [[ "$APP_FAULT" != publish-failure || "${!#}" != "$var_addon_compose_file" ]] || return 41
+    command ln "$@"
+  }
   curl() {
     local out='' url=''
     while (($#)); do
@@ -54,6 +62,11 @@ runtime_hooks_model() {
   }
   docker() {
     printf '%s\n' "$*" >> "$c/docker"
+    if [[ "$*" == 'compose config --help' ]]; then
+      [[ "$APP_FAULT" == old-compose ]] || printf '      --no-env-resolution  Do not resolve env_file\n'
+      return 0
+    fi
+    [[ "$APP_FAULT" != old-compose || " $* " != *' --no-env-resolution '* ]] || return 16
     [[ "$1 ${2:-}" != 'container inspect' ]] || return 1
     [[ "$APP_FAULT" != pull || " $* " != *' pull '* ]] || return 47
     [[ "$APP_FAULT" != down || " $* " != *' down '* ]] || return 48
@@ -81,6 +94,8 @@ runtime_hooks_expected() {
     pull-failure) expected=47 ;;
     down-failure) expected=48 ;;
     invalid-compose) expected=49 ;;
+    old-compose) expected=69 ;;
+    publish-failure) expected=41 ;;
   esac
 }
 runtime_hooks_assert() {
@@ -97,9 +112,12 @@ runtime_hooks_assert() {
   fi
   case "$variant" in
     unsupported | occupied | invalid-port) check "$(stat -c %s "$c/docker")" 0 "$app/$variant refuses before Docker effects" ;;
-    download | env-download | invalid-compose)
+    old-compose | download | env-download | invalid-compose | publish-failure)
       check "$(test -e "$file" && printf present || printf absent)" absent "$app/$variant incomplete preparation never publishes compose"
       check "$(test -e "$env" && printf present || printf absent)" absent "$app/$variant incomplete preparation never publishes environment"
+      if [[ "$variant" == old-compose ]]; then
+        check "$(stat -c %s "$c/dependencies")" 0 "$app capability refusal precedes dependency/configuration effects"
+      fi
       ;;
     update | pull-failure | uninstall | down-failure)
       check "$(grep -Fc -- "-f $file" "$c/docker" || true)" "$([[ "$variant" == update ]] && printf 2 || printf 1)" "$app/$variant all compose operations select configured file"
@@ -120,4 +138,5 @@ runtime_hooks_assert() {
   check "$(find "$c/external/selected files" -maxdepth 1 -name '.arcane-*' | wc -l)" 0 "$app/$variant retires exact preparation stages"
 }
 runtime_hooks_retry_needed() { return 1; }
+runtime_hooks_more_cases() { :; }
 runtime_hooks_main "$@"

@@ -44,6 +44,12 @@ function install_script() {
     msg_error "Docker Compose plugin is not available. Please install it before running this script. Exiting."
     exit 1
   fi
+  local compose_help
+  compose_help=$(docker compose config --help) || return $?
+  if ! grep -Eq -- '(^|[[:space:]])--no-env-resolution([[:space:]]|$)' <<< "$compose_help"; then
+    msg_error "Komodo requires Docker Compose config --no-env-resolution support (v2.35.0 or newer). Update the plugin before installation."
+    return 69
+  fi
   msg_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available"
 
   if ! command -v openssl > /dev/null 2>&1; then
@@ -73,17 +79,23 @@ function install_script() {
   msg_ok "Created ${var_addon_install_path}"
 
   msg_info "Preparing compose and private environment"
-  local compose_stage compose_status
+  local compose_stage env_stage compose_status
   compose_stage=$(mktemp -d "${var_addon_install_path}/.komodo-compose.XXXXXXXX")
+  mkdir -p "$(dirname "$var_addon_compose_env")"
+  if env_stage=$(mktemp -d "$(dirname "$var_addon_compose_env")/.komodo-env.XXXXXXXX"); then :; else
+    compose_status=$?
+    rm -rf -- "$compose_stage"
+    return "$compose_status"
+  fi
   # Prepare every producer before publishing configuration. Keep interpolation
   # expressions live so future image/env changes remain operator-owned.
   if curl -fsSL "${var_addon_compose_base_url}/${DB_COMPOSE_FILE}" -o "$compose_stage/source.yaml" &&
-    curl -fsSL "${var_addon_compose_base_url}/compose.env" -o "$compose_stage/compose.env" &&
-    [[ -s "$compose_stage/source.yaml" && -s "$compose_stage/compose.env" ]]; then
+    curl -fsSL "${var_addon_compose_base_url}/compose.env" -o "$env_stage/compose.env" &&
+    [[ -s "$compose_stage/source.yaml" && -s "$env_stage/compose.env" ]]; then
     :
   else
     compose_status=$?
-    rm -rf -- "$compose_stage"
+    rm -rf -- "$compose_stage" "$env_stage"
     return "$compose_status"
   fi
 
@@ -97,8 +109,8 @@ function install_script() {
     -e "s/^KOMODO_DATABASE_PASSWORD=.*/KOMODO_DATABASE_PASSWORD=${db_password}/" \
     -e "s/^KOMODO_INIT_ADMIN_PASSWORD=.*/KOMODO_INIT_ADMIN_PASSWORD=${KOMODO_ADMIN_PASSWORD}/" \
     -e "s/^KOMODO_WEBHOOK_SECRET=.*/KOMODO_WEBHOOK_SECRET=${webhook_secret}/" \
-    -e "s/^KOMODO_JWT_SECRET=.*/KOMODO_JWT_SECRET=${jwt_secret}/" "$compose_stage/compose.env" &&
-    docker compose --project-directory "$var_addon_install_path" --env-file "$compose_stage/compose.env" -f "$compose_stage/source.yaml" config --no-interpolate --no-env-resolution --format json > "$compose_stage/source.json" &&
+    -e "s/^KOMODO_JWT_SECRET=.*/KOMODO_JWT_SECRET=${jwt_secret}/" "$env_stage/compose.env" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/compose.env" -f "$compose_stage/source.yaml" config --no-interpolate --no-env-resolution --format json > "$compose_stage/source.json" &&
     jq -e --arg port "$var_addon_default_port" --arg env "$var_addon_compose_env" --arg original "$var_addon_install_path/compose.env" '
       .services.core.ports |= map(if .target == 9120 then .published = $port else . end) |
       (.services[] | select(has("env_file")) | .env_file) |= map(if .path == $original then .path = $env else . end) |
@@ -107,21 +119,27 @@ function install_script() {
       (.services[].volumes[]? | select(.source == "${COMPOSE_KOMODO_BACKUPS_PATH}" or .source == "${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}")) |=
         (.type = "bind" | del(.volume) | .bind = {"create_host_path": true})
     ' "$compose_stage/source.json" > "$compose_stage/compose.json" &&
-    chmod 600 "$compose_stage/compose.env" "$compose_stage/compose.json" &&
-    mkdir -p "$(dirname "$var_addon_compose_env")" &&
-    mv "$compose_stage/compose.env" "$var_addon_compose_env" &&
-    docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_compose_env" -f "$compose_stage/compose.json" config -q &&
-    mv "$compose_stage/compose.json" "${var_addon_install_path}/${DB_COMPOSE_FILE}"; then
-    rm -rf -- "$compose_stage"
+    chmod 600 "$env_stage/compose.env" "$compose_stage/compose.json" &&
+    jq --arg live "$var_addon_compose_env" --arg stage "$env_stage/compose.env" '
+      (.services[] | select(has("env_file")) | .env_file) |= map(if .path == $live then .path = $stage else . end)
+    ' "$compose_stage/compose.json" > "$compose_stage/validation.json" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/compose.env" -f "$compose_stage/validation.json" config -q &&
+    (
+      umask 077
+      printf '%s\n' "$DB_COMPOSE_FILE" > "$compose_stage/selection"
+    ) &&
+    ln -T -- "$env_stage/compose.env" "$var_addon_compose_env" &&
+    ln -T -- "$compose_stage/compose.json" "${var_addon_install_path}/${DB_COMPOSE_FILE}" &&
+    ln -T -- "$compose_stage/selection" "$var_addon_install_path/.komodo-compose"; then
+    rm -rf -- "$compose_stage" "$env_stage"
   else
     compose_status=$?
-    rm -rf -- "$compose_stage"
+    if [[ "$var_addon_compose_env" -ef "$env_stage/compose.env" ]]; then rm -f -- "$var_addon_compose_env"; fi
+    if [[ "$var_addon_install_path/$DB_COMPOSE_FILE" -ef "$compose_stage/compose.json" ]]; then rm -f -- "$var_addon_install_path/$DB_COMPOSE_FILE"; fi
+    if [[ "$var_addon_install_path/.komodo-compose" -ef "$compose_stage/selection" ]]; then rm -f -- "$var_addon_install_path/.komodo-compose"; fi
+    rm -rf -- "$compose_stage" "$env_stage"
     return "$compose_status"
   fi
-  (
-    umask 077
-    printf '%s\n' "$DB_COMPOSE_FILE" > "$var_addon_install_path/.komodo-compose"
-  )
   msg_ok "Configured compose and environment"
 
   msg_info "Starting ${APP}"
@@ -218,13 +236,17 @@ function update_script() {
     msg_ok "Migrated image tag to :2"
   fi
 
-  # === v2 migration: DB credential variable names ===
-  if grep -q '^KOMODO_DB_USERNAME=' "$var_addon_compose_env"; then
-    msg_info "Migrating database credential variables"
-    sed -i 's/^KOMODO_DB_USERNAME=/KOMODO_DATABASE_USERNAME=/' "$var_addon_compose_env"
-    sed -i 's/^KOMODO_DB_PASSWORD=/KOMODO_DATABASE_PASSWORD=/' "$var_addon_compose_env"
-    msg_ok "Migrated DB credential variables"
-  fi
+  # Retained operator Compose files may still interpolate the old names. Add
+  # missing v2 aliases as literal dotenv data without deleting legacy entries
+  # or replacing explicitly configured current credentials.
+  local credential legacy current aliases
+  for credential in USERNAME PASSWORD; do
+    legacy="KOMODO_DB_${credential}" current="KOMODO_DATABASE_${credential}"
+    if ! grep -q "^${current}=" "$var_addon_compose_env" && grep -q "^${legacy}=" "$var_addon_compose_env"; then
+      aliases=$(sed -n "s/^${legacy}=/${current}=/p" "$var_addon_compose_env")
+      printf '\n%s\n' "$aliases" >> "$var_addon_compose_env"
+    fi
+  done
 
   # === v2 migration: remove deprecated passkey (replaced by PKI) ===
   if grep -q '^KOMODO_PASSKEY=' "$var_addon_compose_env"; then

@@ -22,6 +22,12 @@ runtime_hooks_model() {
     printf 'fixture-editor:x:1234:2345:Editor:%s:/bin/bash\n' "$c/editor home"
   }
   chown() { printf '%s\n' "$*" >> "$c/ownership"; }
+  runuser() {
+    printf '%s\n' "$1 $2 $3" >> "$c/account-writes"
+    [[ "$1 $2 $3" == '-u fixture-editor --' ]] || return 65
+    shift 3
+    "$@"
+  }
   systemctl() {
     printf '%s\n' "$*" >> "$c/services"
     if [[ "$1" == restart && "$APP_ROLE" == install ]]; then
@@ -32,6 +38,7 @@ runtime_hooks_model() {
 runtime_hooks_setup() {
   : > "$c/requests"
   : > "$c/downloads"
+  : > "$c/ownership"
   printf 'old package\n' > "$c/package-consumer"
   printf '%s\n' "$([[ "$variant" == no-update ]] && printf 2.0.0 || printf 1.0.0)" > "$c/home/.coder-code-server"
   printf 'var_addon_svc_user=fixture-editor\nvar_addon_default_port=18680\n' > "$c/context.sh"
@@ -58,7 +65,8 @@ runtime_hooks_assert() {
     check "$(stat -c %a "$c/editor home/.config/code-server/config.yaml")" 640 "$app existing target config mode retained"
   else
     check "$(grep -c '^bind-addr: 0.0.0.0:18680$' "$c/running-config" || true)" 1 "$app configured port reaches target-user service"
-    check "$(grep -c '1234:2345' "$c/ownership" || true)" 3 "$app fresh config ownership follows target account"
+    check "$(test -s "$c/account-writes" && printf account || printf root)" account "$app fresh config writes run as target account"
+    check "$(stat -c %s "$c/ownership")" 0 "$app never chowns account-controlled paths as root"
   fi
 }
 runtime_hooks_main "$@"

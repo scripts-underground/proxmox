@@ -3,12 +3,14 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=komodo script_type=addon
-variants=(fresh ferret-install download update legacy-single ambiguous stale-selection pull-failure uninstall down-failure)
+variants=(fresh ferret-install old-compose download validation publish-failure update legacy-single legacy-credentials ambiguous stale-selection pull-failure uninstall down-failure)
 hook_paths=()
 runtime_hooks_variant() {
   case "$variant" in
     ferret-install) role=install ;;
     download) role=install fault=download ;;
+    old-compose | validation | publish-failure) role=install fault=$variant ;;
+    legacy-credentials) fault=legacy-credentials ;;
     uninstall) role=uninstall ;;
     down-failure) role=uninstall fault=down ;;
     pull-failure) fault=pull ;;
@@ -29,12 +31,24 @@ runtime_hooks_setup() {
       *) printf 'ferretdb.compose.yaml\n' > "$c/opt/komodo/.komodo-compose" ;;
     esac
     chmod 600 "$c/external/private env"
+    if [[ "$variant" == legacy-credentials ]]; then
+      sed -i 's/KOMODO_DATABASE_/KOMODO_DB_/g' "$c/external/private env"
+      printf '{"services":{"core":{"image":"test:2","environment":{"USER":"${KOMODO_DB_USERNAME:?required}","PASSWORD":"${KOMODO_DB_PASSWORD:?required}"}}}}\n' > "$c/opt/komodo/ferretdb.compose.yaml"
+    fi
   fi
   [[ "$variant" != ferret-install ]] || printf '2\n' > "$c/stdin"
   : > "$c/docker"
   : > "$c/downloads"
 }
 runtime_hooks_model() {
+  mv() {
+    [[ "$APP_FAULT" != publish-failure || "${!#}" != "$var_addon_install_path/$DB_COMPOSE_FILE" ]] || return 41
+    command mv "$@"
+  }
+  ln() {
+    [[ "$APP_FAULT" != publish-failure || "${!#}" != "$var_addon_install_path/$DB_COMPOSE_FILE" ]] || return 41
+    command ln "$@"
+  }
   curl() {
     local out='' url=''
     while (($#)); do
@@ -55,6 +69,16 @@ runtime_hooks_model() {
   }
   docker() {
     printf '%s\n' "$*" >> "$c/docker"
+    if [[ "$*" == 'compose config --help' ]]; then
+      [[ "$APP_FAULT" == old-compose ]] || printf '      --no-env-resolution  Do not resolve env_file\n'
+      return 0
+    fi
+    [[ "$APP_FAULT" != old-compose || " $* " != *' --no-env-resolution '* ]] || return 16
+    [[ "$APP_FAULT" != validation || "$*" != *'config -q'* ]] || return 49
+    if [[ "$APP_FAULT" == legacy-credentials && " $* " == *' pull '* ]]; then
+      grep '^KOMODO_DB_' "$var_addon_compose_env" > "$c/consumed-credentials"
+      [[ "$(wc -l < "$c/consumed-credentials")" == 2 ]] || return 49
+    fi
     [[ "$APP_FAULT" != pull || " $* " != *' pull '* ]] || return 47
     [[ "$APP_FAULT" != down || " $* " != *' down '* ]] || return 48
     if [[ "$*" == *'config --no-interpolate --no-env-resolution --format json'* ]]; then
@@ -81,6 +105,9 @@ runtime_hooks_expected() {
     download) expected=22 ;;
     pull-failure) expected=47 ;;
     down-failure) expected=48 ;;
+    old-compose) expected=69 ;;
+    validation) expected=49 ;;
+    publish-failure) expected=41 ;;
   esac
 }
 runtime_hooks_assert() {
@@ -97,17 +124,22 @@ runtime_hooks_assert() {
   elif [[ "$variant" == ambiguous || "$variant" == stale-selection ]]; then
     check "$(stat -c %s "$c/docker")" 0 "$app/$variant no Docker effects without a proven selection"
     check "$(stat -c %s "$c/downloads")" 0 "$app/$variant never overwrites a candidate"
-  elif [[ "$variant" == download ]]; then
+  elif [[ "$role" == install ]]; then
     check "$(test -e "$c/external/private env" && printf present || printf absent)" absent "$app incomplete environment is not live"
+    check "$(test -e "$c/opt/komodo/mongo.compose.yaml" && printf present || printf absent)" absent "$app incomplete compose is not live"
+    check "$(test -e "$c/opt/komodo/.komodo-compose" && printf present || printf absent)" absent "$app incomplete selection is not live"
+  elif [[ "$variant" == legacy-credentials ]]; then
+    check "$(cat "$c/consumed-credentials" 2> /dev/null || true)" $'KOMODO_DB_USERNAME=operator\nKOMODO_DB_PASSWORD=literal-secret' "$app retained compose consumes exact legacy credentials"
+    check "$(grep '^KOMODO_DATABASE_' "$c/external/private env" || true)" $'KOMODO_DATABASE_USERNAME=operator\nKOMODO_DATABASE_PASSWORD=literal-secret' "$app new runtime names retain exact credentials"
   elif [[ "$variant" != uninstall ]]; then
     check "$(cat "$c/opt/komodo/mongo.compose.yaml" 2> /dev/null || true)" 'operator mongo' "$app/$variant retains unselected compose"
     [[ "$variant" == legacy-single ]] || check "$(cat "$c/opt/komodo/ferretdb.compose.yaml" 2> /dev/null || true)" 'operator ferret' "$app/$variant retains selected operator compose"
     check "$(stat -c %s "$c/downloads")" 0 "$app/$variant does not redownload operator compose"
   fi
   if [[ "$role" != install && "$variant" != ambiguous && "$variant" != stale-selection ]]; then
-    check "$(grep -Fc -- "-f /opt/komodo/$selected" "$c/docker" || true)" "$([[ "$variant" == update || "$variant" == legacy-single ]] && printf 2 || printf 1)" "$app/$variant every operation uses selected compose"
+    check "$(grep -Fc -- "-f /opt/komodo/$selected" "$c/docker" || true)" "$([[ "$variant" == update || "$variant" == legacy-single || "$variant" == legacy-credentials ]] && printf 2 || printf 1)" "$app/$variant every operation uses selected compose"
   fi
-  if [[ "$role" != install ]]; then
+  if [[ "$role" != install && "$variant" != legacy-credentials ]]; then
     check "$(cat "$c/external/private env")" $'COMPOSE_KOMODO_IMAGE_TAG=2\nCOMPOSE_KOMODO_BACKUPS_PATH=/operator/backups\nKOMODO_DATABASE_USERNAME=operator\nKOMODO_DATABASE_PASSWORD=literal-secret\nPERIPHERY_CORE_PUBLIC_KEYS=file:/operator/key.pub' "$app/$variant retains complete existing credential environment"
   fi
 }
