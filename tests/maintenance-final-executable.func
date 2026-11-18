@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Sourced by the registered Filebrowser consumer. Real generated commands,
 # release provider, archives, files, modes and pending owner; network/services model.
+# Variables below are consumed by the sourced bundle producers.
+# shellcheck disable=SC2034
 systemd-detect-virt --vm --quiet || exit 65
 : "${TMPDIR:?disk-backed TMPDIR required}"
 case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 65 ;; esac
@@ -32,8 +34,9 @@ for app in filebrowser qui; do
         -e "s|/var/lib/scripts-underground/maintenance-locks|$c/maintenance-locks|g" \
         "$ROOT/misc/core.func" > "$c/stage/core.func"
       cp "$ROOT/misc/error_handler.func" "$ROOT/misc/tools.func" "$c/stage/"
-      printf 'pkg_install() { :; }\nsetup_lxc() { :; }\n' > "$c/stage/install.func"
-      cat > "$c/models.sh" << 'MODELS'
+      python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" > "$c/stage/install.func"
+      printf 'source %q\n' "$ROOT/tests/lib/service-fixture.sh" > "$c/models.sh"
+      cat >> "$c/models.sh" << 'MODELS'
 header_info() { :; }
 check_container_storage() { :; }
 check_container_resources() { :; }
@@ -58,10 +61,7 @@ curl() {
 curl_download() { command cp "$CASE_ROOT/release.tar.gz" "$1"; }
 systemctl() {
   printf '%s\n' "$*" >> "$CASE_ROOT/services"
-  case "$1" in
-    stop) printf stopped > "$CASE_ROOT/service-state" ;;
-    start) "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/service-consumer"; printf running > "$CASE_ROOT/service-state" ;;
-  esac
+  fixture_service_state "$1" "$CASE_ROOT/service-state" "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/service-consumer"
 }
 install() {
   if [[ "$FAULT" == install ]]; then
@@ -118,7 +118,7 @@ MODELS
       publication_check "$(cat "$c/home/.$app" 2> /dev/null || true)" 2.0 "$app/$mode/$fault final marker"
       publication_check "$(test -f "$c/state/$app" && printf pending || printf absent)" absent "$app/$mode/$fault pending retired"
       publication_check "$(cat "$c/service-state")" running "$app/$mode/$fault final service"
-      if [[ "$app" == qui ]]; then publication_check "$(cat "$c/service-consumer")" new "$app/$mode/$fault started service consumes new bytes"; fi
+      publication_check "$(cat "$c/service-consumer")" new "$app/$mode/$fault started service consumes new bytes"
       publication_check "$(cat "$c/config")" 'operator config' "$app/$mode/$fault protected config"
       publication_check "$(sha256sum "$c/sbin/update")" "$digest" "$app/$mode/$fault frozen command unchanged"
     done

@@ -42,7 +42,7 @@ function install_script() {
   $STD apt install -y build-essential python3
   msg_ok "Installed Dependencies"
 
-  fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "latest"
+  fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "latest" "$var_addon_install_path"
   NODE_VERSION="22" setup_nodejs
 
   msg_info "Building Actual-Budget-Prometheus-Exporter"
@@ -52,6 +52,7 @@ function install_script() {
   msg_ok "Built Actual-Budget-Prometheus-Exporter"
 
   msg_info "Creating configuration"
+  install -m 0600 /dev/null "$var_addon_config_path"
   cat << EOF > "$var_addon_config_path"
 # https://github.com/sakowicz/actual-budget-prometheus-exporter
 ACTUAL_SERVER_URL="${ACTUAL_SERVER_URL}"
@@ -102,22 +103,55 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter"; then
+    local was_running=0 update_status=0 before after
+    function actual_budget_exporter_state() (
+      set -o pipefail
+      local path
+      {
+        printf '%s\0' "$var_addon_config_path" || exit $?
+        find "$var_addon_install_path/" -print0 || exit $?
+      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
+        printf '%s\0' "$path" || exit $?
+        stat -c '%f:%u:%g' -- "$path" || exit $?
+        if [[ -L "$path" ]]; then
+          readlink -- "$path" || exit $?
+        elif [[ -f "$path" ]]; then
+          sha256sum < "$path" || exit $?
+        elif [[ ! -d "$path" ]]; then exit 65; fi
+      done | sha256sum
+    )
+    before=$(actual_budget_exporter_state) || return $?
+    if systemctl is-active --quiet actual-budget-prometheus-exporter; then was_running=1; fi
     msg_info "Stopping service"
-    systemctl stop actual-budget-prometheus-exporter
-    msg_ok "Stopped service"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE"
-    NODE_VERSION="22" setup_nodejs
-
-    msg_info "Building Actual-Budget-Prometheus-Exporter"
-    cd "$var_addon_install_path" || exit
-    $STD npm ci
-    $STD npm run build
-    msg_ok "Built Actual-Budget-Prometheus-Exporter"
-
-    msg_info "Starting service"
-    systemctl start actual-budget-prometheus-exporter
-    msg_ok "Started service"
+    systemctl stop actual-budget-prometheus-exporter || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      # Contain helper exits and check every required step even under this
+      # returning recovery boundary. Include node_modules in the state proof.
+      (
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        NODE_VERSION="22" setup_nodejs || exit $?
+        msg_info "Building Actual-Budget-Prometheus-Exporter"
+        cd "$var_addon_install_path" || exit $?
+        $STD npm ci || exit $?
+        $STD npm run build || exit $?
+        msg_ok "Built Actual-Budget-Prometheus-Exporter"
+      ) || update_status=$?
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(actual_budget_exporter_state) || after=unverified
+      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start actual-budget-prometheus-exporter || msg_warn "Unable to restart previous Actual Budget exporter service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Actual Budget exporter installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      systemctl start actual-budget-prometheus-exporter
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully!"
   else
     local release_status=$?

@@ -25,7 +25,16 @@ function install_script() {
   msg_info "Setting up ${APP} Repository"
   $STD apt update
   $STD apt install -y curl gnupg
-  $STD bash -c "curl -fsSL https://install.crowdsec.net | bash"
+  # Complete the producer before executing any downloaded code. A pipe can
+  # execute a partial response and accept an empty failed download as success.
+  local installer installer_status=0 cleanup_status=0
+  installer=$(mktemp "${TMPDIR:-/tmp}/crowdsec-installer.XXXXXXXX") || return $?
+  curl -fsSL https://install.crowdsec.net -o "$installer" || installer_status=$?
+  if [[ "$installer_status" == 0 && ! -s "$installer" ]]; then installer_status=251; fi
+  if [[ "$installer_status" == 0 ]]; then $STD bash "$installer" || installer_status=$?; fi
+  rm -f -- "$installer" || cleanup_status=$?
+  [[ "$installer_status" != 0 ]] || installer_status=$cleanup_status
+  [[ "$installer_status" == 0 ]] || return "$installer_status"
   msg_ok "Setup ${APP} Repository"
 
   msg_info "Installing ${APP}"

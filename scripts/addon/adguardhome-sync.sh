@@ -13,7 +13,7 @@ APP="AdGuardHome-Sync"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/adguardhome-sync}"
-var_addon_config_path="${var_addon_config_path:-/opt/adguardhome-sync/adguardhome-sync.yaml}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/adguardhome-sync.yaml}"
 var_addon_backup_dir="${var_addon_backup_dir:-/opt/adguardhome-sync_backup}"
 var_addon_service="${var_addon_service:-adguardhome-sync}"
 var_addon_repo="${var_addon_repo:-bakito/adguardhome-sync}"
@@ -62,6 +62,7 @@ function install_script() {
   echo ""
 
   msg_info "Creating configuration"
+  mkdir -p "$(dirname "$var_addon_config_path")"
   cat << EOF > "$var_addon_config_path"
 # AdGuardHome-Sync Configuration
 # Documentation: https://github.com/bakito/adguardhome-sync
@@ -180,7 +181,11 @@ function update_script() {
     exit 233
   fi
   if check_for_gh_release "adguardhome-sync" "$var_addon_repo"; then
-    local was_running=0 update_status=0 restore_status=0 before after
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    case "$var_addon_config_path" in
+      "$var_addon_install_path"/*) CLEAN_INSTALL_KEEP_PATHS+=("${var_addon_config_path#"$var_addon_install_path"/}") ;;
+    esac
+    local was_running=0 update_status=0 before after
     # Include names, bytes, symlinks, modes and owners, not mutable timestamps.
     # A deployer's error does not itself prove that its rollback completed.
     function adguardhome_sync_state() (
@@ -217,8 +222,6 @@ function update_script() {
       (BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path") || update_status=$?
       if [[ "$update_status" == 0 ]]; then
         CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz" || update_status=$?
-        BACKUP_DIR="$var_addon_backup_dir" restore_backup || restore_status=$?
-        if [[ "$update_status" == 0 ]]; then update_status=$restore_status; fi
       fi
     fi
     if [[ "$update_status" != 0 ]]; then

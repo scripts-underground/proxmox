@@ -32,6 +32,53 @@ check "$observed" 2 'harness detects both dangling aliases after successful unin
 rm "$c/aliases/update" "$c/aliases/uninstall"
 runtime_hooks_uninstall_assert > "$work/removed-output" 2>&1
 check "$failures" "$prior_failures" 'harness accepts actual alias retirement'
+# Inspect the same source-declared defaults used by cold app commands. Mapping
+# coordinates must not depend on whether a path is literal or a shell fallback.
+script_type=addon app=filebrowser role=update pending_key=file-browser
+c="$work/defaults"
+hook_paths=(/usr/local libexec /opt applications)
+runtime_hooks_prepare
+defaults=$(bash -c 'source "$1/hooks.sh"; printf "%s\n" "$var_addon_bin_path" "$var_addon_dist_path"' defaults "$c")
+check "$defaults" "$c/libexec/bin/filebrowser
+$c/applications/filebrowser-dist" 'harness maps source-declared parameter default paths'
+check "$(grep -cF "$c/etc/systemd/system/filebrowser.service" "$c/source.sh")" 2 'harness retains literal path mapping'
+status=0
+python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --audit > "$work/framework-audit" 2>&1 || status=$?
+check "$status" 0 'app fixtures do not hand-roll install framework APIs'
+status=0
+python3 -B - "$ROOT" "$work" << 'PY' || status=$?
+from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(sys.argv[1])/'tests/lib'))
+from framework_fixture import minimal_install_models
+root=Path(sys.argv[2])/'audit-control'
+(root/'tests').mkdir(parents=True)
+(root/'tests/new-app.sh').write_text('printf "setup_lxc() { :; }" > install.func\n')
+assert minimal_install_models(root)==['new-app.sh']
+PY
+check "$status" 0 'framework audit rejects another incomplete app stub'
+python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$work/install-probe.sh"
+platform=$(env -i PATH="$PATH" TMPDIR="$TMPDIR" INIT_SYSTEM=openrc OS_FAMILY=alpine bash -c '
+  _INSTALL_DEFER_BOOTSTRAP=1
+  source "$1"
+  _bootstrap
+  detect_os
+  declare -F svc_prepare_uninstall pkg_clean >/dev/null
+  printf "%s/%s" "$OS_FAMILY" "$INIT_SYSTEM"
+' fixture "$work/install-probe.sh")
+check "$platform" alpine/openrc 'complete framework fixture retains explicit platform matrix inputs'
+source "$ROOT/tests/lib/service-fixture.sh"
+fixture_service_state stop "$work/service-state"
+check "$(cat "$work/service-state")" stopped 'service fixture records stop'
+printf '#!/usr/bin/env bash\nprintf new-consumer\n' > "$work/executable"
+fixture_service_state restart "$work/service-state" bash "$work/executable" > "$work/service-consumer"
+check "$(cat "$work/service-state")" running 'service fixture records restart activation'
+check "$(cat "$work/service-consumer")" new-consumer 'service fixture restart consumes published executable'
+fixture_service_state stop "$work/service-state"
+status=0
+fixture_service_state restart "$work/service-state" bash -c 'exit 47' || status=$?
+check "$status" 47 'service fixture preserves activation failure'
+check "$(cat "$work/service-state")" stopped 'service fixture does not declare failed activation running'
 mkdir -p "$c/app"
 for contract in missing-recovery stopped-start partial-start restored-running retained-stopped unverified-stopped; do
   printf 'old code\n' > "$c/app/code"

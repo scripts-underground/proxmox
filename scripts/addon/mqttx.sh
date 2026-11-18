@@ -23,6 +23,15 @@ function install_script() {
     exit 1
   }
 
+  # An existing CT can already own these names without an addon marker.
+  local site_path
+  for site_path in /etc/nginx/sites-available/mqttx-web /etc/nginx/sites-enabled/mqttx-web; do
+    if [[ -e "$site_path" || -L "$site_path" ]]; then
+      msg_error "Existing Nginx site ${site_path}; retaining it without installation"
+      return 65
+    fi
+  done
+
   echo ""
   read -erp "${TAB}Enter port for ${APP} [${var_addon_default_port}]: " MQTTX_PORT || true
   MQTTX_PORT=${MQTTX_PORT:-$var_addon_default_port}
@@ -57,8 +66,14 @@ server {
 }
 EOF
   ln -sf /etc/nginx/sites-available/mqttx-web /etc/nginx/sites-enabled/mqttx-web
-  $STD nginx -t
-  systemctl reload nginx
+  local nginx_status=0
+  $STD nginx -t || nginx_status=$?
+  if [[ "$nginx_status" == 0 ]]; then systemctl reload nginx || nginx_status=$?; fi
+  if [[ "$nginx_status" != 0 ]]; then
+    rm -f /etc/nginx/sites-enabled/mqttx-web /etc/nginx/sites-available/mqttx-web
+    msg_error "Nginx did not accept the new MQTTX site; installation failed"
+    return "$nginx_status"
+  fi
   msg_ok "Configured Nginx"
 
   msg_info "Creating Service"
@@ -107,15 +122,48 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  svc_prepare_uninstall "$var_addon_service"
-  rm -f "/etc/systemd/system/${var_addon_service}.service"
-  rm -f /etc/nginx/sites-enabled/mqttx-web
-  rm -f /etc/nginx/sites-available/mqttx-web
-  if command -v nginx &> /dev/null; then
-    $STD nginx -t || return $?
-    systemctl reload nginx || return $?
+  command -v nginx &> /dev/null || {
+    msg_error "Nginx is unavailable; retaining MQTTX"
+    return 69
+  }
+  local enabled=/etc/nginx/sites-enabled/mqttx-web available=/etc/nginx/sites-available/mqttx-web
+  local site_stage="" uninstall_status=0 reload_attempted=0
+  if [[ -e "$enabled" || -L "$enabled" ]]; then
+    if [[ ! -L "$enabled" || "$(readlink -- "$enabled")" != "$available" ]]; then
+      msg_error "Nginx site ${enabled} is not the addon-created link; retaining it"
+      return 65
+    fi
+    site_stage=$(mktemp -d /etc/nginx/sites-available/.mqttx-uninstall.XXXXXXXX) || return $?
+    mv -T -- "$enabled" "$site_stage/enabled" || uninstall_status=$?
+  fi
+  if [[ "$uninstall_status" == 0 ]]; then $STD nginx -t || uninstall_status=$?; fi
+  if [[ "$uninstall_status" == 0 ]]; then
+    reload_attempted=1
+    systemctl reload nginx || uninstall_status=$?
+  fi
+  if [[ "$uninstall_status" == 0 ]]; then svc_prepare_uninstall "$var_addon_service" || uninstall_status=$?; fi
+  if [[ "$uninstall_status" != 0 ]]; then
+    # Keep the available configuration and app/unit until shared Nginx accepts
+    # removal. Restore the exact enabled link, never clobber a competing writer.
+    if [[ -n "$site_stage" && -L "$site_stage/enabled" ]]; then
+      if [[ -e "$enabled" || -L "$enabled" ]] || ! mv -nT -- "$site_stage/enabled" "$enabled" || [[ -L "$site_stage/enabled" ]]; then
+        msg_error "Could not restore ${enabled}; recovery link retained at ${site_stage}/enabled"
+        return "$uninstall_status"
+      fi
+      if [[ "$reload_attempted" == 1 ]]; then
+        if $STD nginx -t; then systemctl reload nginx || msg_error "Nginx reload of the restored site failed"; fi
+      fi
+    fi
+    if [[ -n "$site_stage" ]]; then rmdir -- "$site_stage" || msg_error "Could not remove empty recovery stage ${site_stage}"; fi
+    return "$uninstall_status"
+  fi
+  rm -f "/etc/systemd/system/${var_addon_service}.service" "$available"
+  if [[ -n "$site_stage" ]]; then
+    rm -f -- "$site_stage/enabled"
+    rmdir -- "$site_stage"
   fi
   rm -rf "$var_addon_app_dir"
+  rm -f "$HOME/.mqttx"
   msg_ok "${APP} uninstalled"
 }
 

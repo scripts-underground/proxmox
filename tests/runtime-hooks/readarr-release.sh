@@ -121,7 +121,7 @@ get_system_arch > "$CASE_ROOT/default-arch"
 MODELS
     printf 'load_functions() { source "$CASE_ROOT/models.sh"; }\ncolor() { :; }\n' > "$c/cache/core.func"
     printf 'catch_errors() { :; }\n' > "$c/cache/error_handler.func"
-    printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
+    python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" > "$c/cache/install.func"
     cp "$ROOT/misc/tools.func" "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
     role=install
@@ -133,7 +133,8 @@ MODELS
       role=install-bundle
       # Observe source-time receiving state after the real writer's unmodified
       # validation/preparation prelude, before models or application effects.
-      printf 'printf "%%s\\n" "${TMPDIR-unset}" > "$CASE_ROOT/prelude-receiver"\nsetup_lxc() { :; }\n' > "$c/cache/install.func"
+      printf 'printf "%%s\\n" "${TMPDIR-unset}" > "$CASE_ROOT/prelude-receiver"\n' > "$c/cache/install.func"
+      python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" >> "$c/cache/install.func"
       printf 'printf "%%s\\n" "$TMPDIR" > "$CASE_ROOT/hook-receiver"\ntrap -p EXIT ERR RETURN > "$CASE_ROOT/traps-before"\n' > "$c/install-before.sh"
       printf 'trap -p EXIT ERR RETURN > "$CASE_ROOT/traps-after"\ncmp "$CASE_ROOT/traps-before" "$CASE_ROOT/traps-after"\nprintf retained > "$CASE_ROOT/traps"\n' > "$c/install-after.sh"
     fi

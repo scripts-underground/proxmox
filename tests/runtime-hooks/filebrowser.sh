@@ -5,12 +5,22 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=filebrowser
 script_type=addon
-variants=(fresh update checker download uninstall)
+variants=(fresh update openrc checker download uninstall)
 hook_paths=()
 runtime_hooks_variant() {
-  case "$variant" in checker) fault=checker ;; uninstall) role=uninstall ;; esac
+  case "$variant" in checker) fault=checker ;; openrc) fault=openrc ;; uninstall) role=uninstall ;; esac
 }
 runtime_hooks_model() {
+  [[ "$APP_FAULT" != openrc ]] || INIT_SYSTEM=openrc
+  systemctl() {
+    printf '%s\n' "$*" >> "$c/services"
+    if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
+    if [[ "$1" == restart ]]; then "$c/local/bin/filebrowser" > "$c/running-consumer"; fi
+  }
+  rc-service() {
+    printf '%s\n' "$*" >> "$c/services"
+    if [[ "$2" == restart ]]; then "$c/local/bin/filebrowser" > "$c/running-consumer"; fi
+  }
   apt() { :; }
   filebrowser() { printf '%s\n' "$*" >> "$c/binary-calls"; }
   curl() {
@@ -51,6 +61,7 @@ runtime_hooks_setup() {
     chmod 0755 "$c/local/bin/filebrowser"
     printf '1.0.0\n' > "$c/home/.filebrowser"
     : > "$c/etc/systemd/system/filebrowser.service"
+    printf 'old binary consumer\n' > "$c/running-consumer"
   fi
 }
 runtime_hooks_expected() { [[ "$fault" != checker ]] || expected=17; }
@@ -63,6 +74,7 @@ runtime_hooks_assert() {
     if [[ "$rc" == 0 ]]; then
       check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app selected binary reaches executable consumer"
       check "$(grep -c '/tags/v2.0.0$' "$c/requests" || true)" 1 "$app update deploys the selected release"
+      check "$(cat "$c/running-consumer")" 'new binary consumer' "$app/$variant service activates replaced executable"
     elif [[ "$fault" == checker ]]; then
       check "$("$c/local/bin/filebrowser")" 'old binary consumer' "$app release error retains executable"
     fi
@@ -74,5 +86,6 @@ runtime_hooks_assert() {
 runtime_hooks_retry_assert() {
   check "$("$c/local/bin/filebrowser")" 'new binary consumer' "$app ordinary retry publishes executable"
   check "$(cat "$c/db/custom.db")" 'operator database' "$app retry retains configured DB"
+  check "$(cat "$c/running-consumer")" 'new binary consumer' "$app retry activates replaced executable"
 }
 runtime_hooks_main "$@"
