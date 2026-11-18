@@ -50,9 +50,9 @@ function install_script() {
   $STD php artisan passport:install -q -n
   $STD php artisan storage:link
   $STD php artisan config:cache
-  $STD php artisan 2fauth:fix-passport-key-permissions
   chown -R www-data: /opt/2fauth
   chmod -R 755 /opt/2fauth
+  $STD php artisan 2fauth:fix-passport-key-permissions
   msg_ok "Setup 2FAuth"
 
   msg_info "Configure Service"
@@ -133,7 +133,7 @@ function update_script() {
     cd /opt/2fauth || exit
     export COMPOSER_ALLOW_SUPERUSER=1
     $STD composer install --no-dev --prefer-dist
-    php artisan 2fauth:install
+    $STD php artisan 2fauth:install --no-interaction --force
     chown -R www-data: /opt/2fauth
     chmod -R 755 /opt/2fauth
     $STD php artisan 2fauth:fix-passport-key-permissions
