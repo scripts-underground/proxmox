@@ -20,6 +20,8 @@ Web-based audio/video streaming application and file manager. Organizes and stre
 - Access the web interface at `http://<ip>/install.php` to complete the initial setup.
 - The database schema is pre-loaded — the web installer handles final configuration.
 - Supports streaming to multiple clients simultaneously.
+- Installer and updater explicitly select the newest stable Ampache 7.x release on PHP 8.4, following upstream's recommended release line. A missing compatible asset fails without falling back to an older release.
+- Updates do not migrate existing installations to Ampache 8 or PHP 8.5. A future 7 -> 8 migration requires a separate, explicit decision.
 
 ## Links
 

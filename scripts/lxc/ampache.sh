@@ -20,6 +20,15 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
+  # Follow upstream's recommended Ampache 7 line on PHP 8.4. A 7 -> 8
+  # migration (and PHP 8.5) requires a separate explicit decision.
+  UPDATE_FORCE=1 check_for_gh_release "Ampache" "ampache/ampache" "latest" "" "7." || return $?
+  local release="$CHECK_UPDATE_RELEASE"
+  if [[ "$release" != 7.* ]]; then
+    msg_error "Ampache requires a 7.x release on PHP 8.4; refusing ${release}"
+    return 65
+  fi
+
   msg_info "Installing Dependencies"
   $STD apt install -y \
     flac \
@@ -38,7 +47,8 @@ function install_script() {
   setup_mariadb
   MARIADB_DB_USER="ampache" MARIADB_DB_NAME="ampache" setup_mariadb_db
 
-  fetch_and_deploy_gh_release "ampache" "ampache/ampache" "prebuild" "latest" "/opt/ampache" "ampache-*_all_php8.4.zip"
+  # Deploy the selected tag exactly: a missing asset must not select an older release.
+  fetch_and_deploy_gh_release "ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
 
   msg_info "Setting Up Ampache"
   rm -rf /var/www/html
@@ -92,7 +102,14 @@ function update_script() {
     exit
   fi
 
-  if check_for_gh_release "Ampache" "ampache/ampache"; then
+  # Keep existing installations on Ampache 7 / PHP 8.4, just like fresh installs.
+  # Ampache 8 / PHP 8.5 migration is a separate explicit decision.
+  if check_for_gh_release "Ampache" "ampache/ampache" "latest" "" "7."; then
+    local release="$CHECK_UPDATE_RELEASE"
+    if [[ "$release" != 7.* ]]; then
+      msg_error "Ampache requires a 7.x release on PHP 8.4; refusing ${release}"
+      return 65
+    fi
     msg_info "Stopping Service"
     systemctl stop apache2
     msg_ok "Stopped Service"
@@ -105,7 +122,7 @@ function update_script() {
       /opt/ampache/advanced-config
     msg_ok "Backup Created"
 
-    fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "latest" "/opt/ampache" "ampache-*_all_php8.4.zip"
+    fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
 
     restore_backup
     chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
@@ -115,7 +132,11 @@ function update_script() {
     systemctl start apache2
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
-    msg_info "Complete database update by visiting: http://${IP}/update.php"
+    get_lxc_ip
+    msg_info "Complete database update by visiting: http://${LOCAL_IP}/update.php"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
