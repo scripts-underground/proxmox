@@ -96,4 +96,29 @@ curl --noproxy '*' --cacert "$cert" --resolve localhost:443:127.0.0.1 -fsSL \
 grep -qi odysseus "$work/renewed.html"
 [[ "$(stat -c '%a' "$key")" == 600 ]]
 printf 'PASS native marked expiry renewal, actual Odysseus TLS loading and CA-verified application HTML\n'
+
+# Controlled failure in the installed application's actual Python runtime. The
+# existing error/flag owner must retain255, redact its diagnostic and leave the
+# running app untouched; no terminal parser or command models are involved.
+diagnostic_status=0
+env SUBJECT="$subject" INSTALL_LOG="$work/diagnostics.log" DEBUG_LOGFILE="$work/diagnostics-debug.log" \
+  U6_SECRET=fixture-native-private SESSION_ID=core-u6-diagnostics DEV_MODE_KEEP=true \
+  bash -c '
+    source "$SUBJECT/misc/core.func"
+    source "$SUBJECT/misc/error_handler.func"
+    load_functions
+    unset CTID
+    catch_errors
+    silent /opt/odysseus/venv/bin/python -c '\''import os; print("password=literal-native-password"); print(os.environ["U6_SECRET"]); print("x"*120000); print("final-native-diagnostic-cause"); raise SystemExit(255)'\''
+  ' > "$work/diagnostics-output.log" 2>&1 || diagnostic_status=$?
+[[ "$diagnostic_status" == 255 ]]
+cp /root/.install-core-u6-diagnostics.failed "$work/diagnostics-flag.log"
+[[ "$(cat "$work/diagnostics-flag.log")" == 255 ]]
+grep -Fq final-native-diagnostic-cause "$work/diagnostics-output.log"
+! grep -Eq 'DPKG: Fatal|literal-native-password|fixture-native-private' "$work/diagnostics-output.log" "$work/diagnostics-debug.log"
+[[ "$(wc -c < "$work/diagnostics-output.log")" -lt 16000 ]]
+grep -Fq 'Failed command' "$work/diagnostics.log"
+curl --noproxy '*' --cacert "$cert" --resolve localhost:443:127.0.0.1 -fsSL https://localhost/ -o "$work/after-diagnostic.html"
+grep -qi odysseus "$work/after-diagnostic.html"
+printf 'PASS native app-runtime failure retains255, redacted useful diagnostics and failure flag; actual TLS app remains available\n'
 printf 'CORE_CREATION_PACKAGES_NATIVE_PASS\n'

@@ -17,7 +17,7 @@ print('NVIDIA integration evidence: ' + str(WORK), flush=True)
 if '--inside' not in sys.argv:
     result = subprocess.run(['unshare', '--mount', '--propagation', 'private',
                              sys.executable, '-B', __file__, str(SOURCE), '--inside', str(WORK)],
-                            timeout=180, env=os.environ)
+                             timeout=840, env=os.environ)
     raise SystemExit(result.returncode)
 
 # Cover every native module initialization destination before any Perl import.

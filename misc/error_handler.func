@@ -111,7 +111,7 @@ explain_exit_code() {
     124) echo "Command timed out (timeout command)" ;;
     125) echo "Command failed to start (Docker daemon or execution error)" ;;
     126) echo "Command invoked cannot execute (permission problem?)" ;;
-    127) echo "Command not found" ;;
+    127) echo "Command unavailable or producer exited with status 127" ;;
     128) echo "Invalid argument to exit" ;;
     129) echo "Killed by SIGHUP (terminal closed / hangup)" ;;
     130) echo "Aborted by user (SIGINT)" ;;
@@ -183,11 +183,96 @@ explain_exit_code() {
     247) echo "Node.js: Fatal internal error" ;;
     248) echo "Node.js: Invalid C++ addon / N-API failure" ;;
     249) echo "npm/pnpm/yarn: Unknown fatal error" ;;
-    # --- DPKG ---
-    255) echo "DPKG: Fatal internal error" ;;
+    # 255 is shared by SSH, dpkg, shells and arbitrary application commands.
+    255) echo "Producer exited with status 255; inspect its output" ;;
     # --- Default ---
     *) echo "Unknown error" ;;
   esac
+}
+
+# Rendered BASH_COMMAND is not argv. Accept only a literal simple command: no
+# quote/expansion/operator/wrapper parsing, and never evaluate diagnostic input.
+_error_command_word() {
+  local rendered=$1
+  rendered=${rendered#"${rendered%%[![:space:]]*}"}
+  [[ "$rendered" != '$STD '* ]] || rendered=${rendered#'$STD '}
+  [[ "$rendered" =~ ^[a-zA-Z0-9_./:+,@%=-]+([[:space:]]+[a-zA-Z0-9_./:+,@%=-]+)*[[:space:]]*$ ]] || return 0
+  local word=${rendered%%[[:space:]]*}
+  case "$word" in *=* | return | exit | env | command | exec | sudo | silent | time | nohup) return 0 ;; esac
+  printf '%s' "$word"
+}
+
+_error_producer_explanation() {
+  local status=$1 producer=${2:-}
+  if [[ "$status" == 255 && -n "$producer" ]]; then
+    printf '%s exited with status 255' "${producer##*/}"
+  elif [[ "$status" == 127 && -n "$producer" ]] && ! command -v -- "$producer" > /dev/null 2>&1; then
+    printf '%s is not installed or not on PATH' "$producer"
+  else
+    explain_exit_code "$status"
+  fi
+}
+
+# Diagnostics, not the private full log, pass this one rendering boundary before
+# terminal/debug output. Known credential values are literal data, never patterns.
+_error_redact() {
+  local _ed_text=$1 _ed_name _ed_value _ed_part _ed_decl
+  local _ed_pattern='(password|passwd|token|secret|api[_-]?key|authorization|credential)[^[:alnum:]_]*[:=]|--(password|passwd|token|secret|api[_-]?key)(=|[[:space:]])|bearer[[:space:]]|://[^/[:space:]]+@|PRIVATE KEY'
+  if [[ "${_ed_text,,}" =~ ${_ed_pattern,,} ]]; then
+    printf '[sensitive diagnostic redacted]\n'
+    return 0
+  fi
+  while IFS= read -r _ed_name; do
+    [[ "$_ed_name" != _ed_* ]] || continue
+    case "${_ed_name^^}" in *PASSWORD* | *PASSWD* | *TOKEN* | *SECRET* | *API_KEY* | *CREDENTIAL* | *AUTHORIZATION* | PW | VAR_PW) ;; *) continue ;; esac
+    _ed_decl=$(declare -p "$_ed_name" 2> /dev/null) || continue
+    [[ "$_ed_decl" != 'declare -a'* && "$_ed_decl" != 'declare -A'* ]] || continue
+    _ed_value=${!_ed_name}
+    while IFS= read -r _ed_part || [[ -n "$_ed_part" ]]; do
+      [[ -z "$_ed_part" ]] || _ed_text=${_ed_text//"$_ed_part"/'[redacted]'}
+    done <<< "$_ed_value"
+  done < <(compgen -v)
+  printf '%s\n' "$_ed_text" | sed -E 's/\x1B\[[0-9;?]*[A-Za-z]//g; s/[[:cntrl:]]//g'
+}
+
+# The returning wrapper calls this while its actual argv is still local. Retried
+# failures stay in the existing log; no exported/stale last-command state exists.
+_error_log_command_failure() {
+  local status=$1 logfile=$2 arg description='' safe private_next=0
+  shift 2
+  for arg in "$@"; do
+    if ((private_next)); then
+      safe='[redacted]'
+      private_next=0
+    else
+      safe=$(_error_redact "$arg") || return 0
+      case "${arg,,}" in --password | --passwd | --token | --secret | --api-key | --api_key) private_next=1 ;; esac
+    fi
+    printf -v description '%s%q ' "$description" "$safe"
+  done
+  safe=$(_error_redact "$(_error_producer_explanation "$status" "${1:-}")") || return 0
+  printf 'Failed command (status %s; %s): %.2000s\n' "$status" "$safe" "$description" >> "$logfile"
+}
+
+# Bound both read volume and rendered line width. Discard a potentially partial
+# first line before redaction, and shorten long source lines from the left so a
+# terminal error at their end remains visible. Original log bytes remain intact.
+_error_log_tail() {
+  local logfile=$1 size text line safe
+  size=$(stat -c %s -- "$logfile" 2> /dev/null) || return 0
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  text=$(tail -c 65536 -- "$logfile" 2> /dev/null) || return 0
+  if ((size > 65536)); then text=${text#*$'\n'}; fi
+  # A selected tail intersecting a private-key block is not safe to excerpt.
+  if [[ "$text" == *'PRIVATE KEY'* ]]; then
+    printf '[private-key diagnostic block redacted]\n'
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    safe=$(_error_redact "$line") || continue
+    if ((${#safe} > 600)); then safe="[line shortened] ${safe: -500}"; fi
+    printf '%s\n' "$safe"
+  done < <(printf '%s\n' "$text" | tail -n 20)
 }
 
 # ==============================================================================
@@ -219,22 +304,23 @@ error_handler() {
   local command=${2:-${BASH_COMMAND:-unknown}}
   local line_number=${BASH_LINENO[0]:-unknown}
 
-  command="${command//\$STD/}"
-
   if [[ "$exit_code" -eq 0 ]]; then
     return 0
   fi
 
-  local explanation
-  explanation="$(explain_exit_code "$exit_code")"
+  local explanation producer
+  producer=$(_error_command_word "$command") || producer=''
+  explanation=$(_error_redact "$(_error_producer_explanation "$exit_code" "$producer")") || explanation="Producer exited with status $exit_code"
+  command=$(_error_redact "$command") || command='[command diagnostic unavailable]'
+  if ((${#command} > 2000)); then command="${command:0:2000} [shortened]"; fi
 
-  printf "\e[?25h"
+  printf "\e[?25h" || true
 
   # Use msg_error if available, fallback to echo
   if declare -f msg_error > /dev/null 2>&1; then
-    msg_error "in line ${line_number}: exit code ${exit_code} (${explanation}): while executing command ${command}"
+    msg_error "in line ${line_number}: exit code ${exit_code} (${explanation}): while executing command ${command}" || true
   else
-    echo -e "\n${RD}[ERROR]${CL} in line ${RD}${line_number}${CL}: exit code ${RD}${exit_code}${CL} (${explanation}): while executing command ${YWB}${command}${CL}\n"
+    echo -e "\n${RD}[ERROR]${CL} in line ${RD}${line_number}${CL}: exit code ${RD}${exit_code}${CL} (${explanation}): while executing command ${YWB}${command}${CL}\n" || true
   fi
 
   if [[ -n "${DEBUG_LOGFILE:-}" ]]; then
@@ -245,13 +331,13 @@ error_handler() {
       echo "Line      : $line_number"
       echo "Command   : $command"
       echo "-------------------"
-    } >> "$DEBUG_LOGFILE"
+    } >> "$DEBUG_LOGFILE" || true
   fi
 
   # Get active log file (BUILD_LOG or INSTALL_LOG)
   local active_log=""
   if declare -f get_active_logfile > /dev/null 2>&1; then
-    active_log="$(get_active_logfile)"
+    active_log="$(get_active_logfile)" || active_log=''
   elif [[ -n "${SILENT_LOGFILE:-}" ]]; then
     active_log="$SILENT_LOGFILE"
   fi
@@ -264,9 +350,9 @@ error_handler() {
 
   # Show last log lines if available
   if [[ -n "$active_log" && -s "$active_log" ]]; then
-    echo -e "\n${TAB}--- Last 20 lines of log ---"
-    tail -n 20 "$active_log"
-    echo -e "${TAB}-----------------------------------\n"
+    echo -e "\n${TAB}--- Last 20 lines of log ---" || true
+    _error_log_tail "$active_log" || true
+    echo -e "${TAB}-----------------------------------\n" || true
   fi
 
   # Detect context: Container (INSTALL_LOG set + inside container /root) vs Host

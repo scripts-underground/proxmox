@@ -287,6 +287,21 @@ Use ordinary sequential commands for required work, or explicit checked returns
 when a consumer is intentionally conditional. Uninstall owners call hooks normally.
 Intentional conditions, retries and best-effort `||` handling retain Bash semantics.
 
+On a failed `silent` call, the same log receives a redacted command/status summary
+while the actual argv is still local. Handled failures emit no terminal diagnostic
+and leave no exported last-command state that a later error could misattribute.
+The error owner never infers DPKG from255. It names a missing127 producer only
+from literal simple-command text and a failed command lookup; rendered quotes,
+expansions, compound commands and wrappers do not constitute argv provenance.
+Diagnostic helpers never execute rendered commands, install tools or change status.
+Terminal excerpts and debug command summaries redact known scalar credential
+values and common credential fields, bearer headers and credential-bearing URLs.
+The displayed tail reads at most64KiB, discards a partial initial line and renders
+at most20 lines with bounded width. Private-key blocks are not excerpted. A long
+source line cannot displace the final useful error. Redaction is diagnostic hygiene,
+not a claim that arbitrary unlabelled application output is secret-free; the full
+private log and existing install-log/failure-flag ownership remain unchanged.
+
 Each bundle carries its own **runtime context**, baked at build time from the
 host shell: `APP`, `NSAPP`, `REPO_BASE`, and any `var_lxc_*` variables the
 script has declared. Hooks may reference these directly. The context block
