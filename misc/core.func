@@ -1080,6 +1080,8 @@ _run_update_script() {
   unset _UPDATE_PENDING_FLAG _UPDATE_CLEANUP
   _UPDATE_CLEANUP=0
   export -n _UPDATE_CLEANUP
+  # App hooks may call apk directly rather than pkg_update/pkg_upgrade.
+  _alpine_repository_policy check || exit $?
   if [[ -n "$prepare" ]]; then
     "$prepare"
     local prepare_status=$?
@@ -1144,6 +1146,65 @@ ensure_tput() {
 # - Returns 0 if Alpine, 1 otherwise
 # - Used to adjust behavior for Alpine-specific commands
 # ------------------------------------------------------------------------------
+# One POSIX-shell repository policy, also emitted into fresh CTs before Bash
+# exists. Release identity comes from that CT, never the creator's environment.
+_alpine_repository_policy() (
+  _ar_action=${1:-check}
+  _ar_id=$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-release) || return $?
+  if [ "$_ar_id" != alpine ]; then
+    [ "$_ar_action" = check ] && return 0
+    printf 'Cannot configure Alpine repositories: native OS is not Alpine\n' >&2
+    return 65
+  fi
+  _ar_branch=$(awk -F= '$1 == "VERSION_ID" {
+    gsub(/"/, "", $2)
+    if ($2 ~ /^[0-9]+([.][0-9]+)+$/) {
+      split($2, v, "."); print "v" v[1] "." v[2]
+    }
+    exit
+  }' /etc/os-release) || return $?
+  if [ -z "$_ar_branch" ]; then
+    printf 'Cannot determine the installed Alpine release branch; repositories unchanged\n' >&2
+    return 65
+  fi
+  case "$_ar_action" in
+    fresh)
+      printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories
+      return $?
+      ;;
+    check | mirror) ;;
+    *) return 65 ;;
+  esac
+  # An old latest-stable installation must not silently upgrade OR downgrade.
+  # Check every active Alpine source, including tagged ones, before any apk work.
+  _ar_other=$(awk -v branch="$_ar_branch" '
+    /^[[:space:]]*#/ { next }
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^#/) break
+        if ($i ~ /^https?:\/\/[^\/]+\/alpine\//) {
+          split($i, url, "/")
+          if (url[5] != branch) { print url[5]; exit }
+        }
+      }
+    }
+  ' /etc/apk/repositories) || return $?
+  if [ -n "$_ar_other" ]; then
+    printf 'Alpine installed branch %s; repository branch %s differs. Explicit release selection is required; repositories unchanged.\n' "$_ar_branch" "$_ar_other" >&2
+    return 65
+  fi
+  [ "$_ar_action" = mirror ] || return 0
+  _ar_mirror=${2:-}
+  case "$_ar_mirror" in '' | *[!a-zA-Z0-9.-]*) return 65 ;; esac
+  # Change only the authority of active native Alpine URLs. Keep branch,
+  # components, tags, scheme, comments and unrelated operator repositories.
+  sed -i -E "s|^([[:space:]]*(@[^[:space:]]+[[:space:]]+)?https?://)[^/[:space:]]+(/alpine/$_ar_branch/)|\1$_ar_mirror\3|" /etc/apk/repositories
+)
+
+_alpine_repository_contents() {
+  declare -f _alpine_repository_policy || return $?
+}
+
 is_alpine() {
   local os_id="${var_os:-${PCT_OSTYPE:-}}"
 

@@ -777,6 +777,19 @@ classification to the remote payload, so its exhausted-mirrors status 2 stays
 distinct. The existing `debian.sources`/`sources.list` rewrite scope is
 unchanged; other source layouts are not claimed.
 
+Alpine's repository branch comes from the receiving template's native
+`VERSION_ID`, never from a moving distribution alias. Core owns one POSIX-shell
+policy and checked emitter, shared by the creator's pre-Bash setup, package
+helpers and frozen update runner. Fresh setup writes `v<major>.<minor>` main and
+community sources. Mirror fallback changes only active native source authorities,
+retaining their scheme, branch, components, tags, comments and unrelated sources.
+Before package updates/upgrades or app update admission, a configured native
+branch different from the installed branch (including `latest-stable` or `edge`)
+refuses with the installed/configured state, without changing repositories or
+pending bytes. Direct-apk app hooks cannot bypass the terminal runner's check.
+No release migration is selected implicitly, including on already-drifted CTs.
+Existing frozen commands are not refreshed by a framework source update.
+
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
 

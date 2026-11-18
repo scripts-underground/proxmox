@@ -151,6 +151,7 @@ for fault in "${faults[@]}"; do
   mkdir -p "$c/"{opt/colanode/data,opt/colanode/packages/core/dist,opt/colanode/custom,home,www/colanode,nginx/sites-available,nginx/sites-enabled,old/payload,new/payload,state}
   mkdir -p "$c/"{opt/workspace-anchor,var/lib/scripts-underground,var/www,etc/nginx,tmp}
   mkdir -p "$c/etc/alternatives"
+  printf 'ID=debian\nVERSION_ID=13\n' > "$c/etc/os-release"
   ln -s "$awk_bin" "$c/etc/alternatives/awk"
   : > "$c/services"
   printf 'running\n' > "$c/service-state"

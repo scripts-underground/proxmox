@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Actual creator fragment, package helpers and cold update runner. Package/network
+# commands and system paths are models; native CT proof is a separate gate.
+set -euo pipefail
+ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
+if [[ "${1:-}" == --child ]]; then
+  source "$CASE_ROOT/core.func"
+  load_functions
+  msg_info() { :; }
+  msg_ok() { :; }
+  msg_custom() { :; }
+  msg_warn() { printf '%s\n' "$*" >&2; }
+  msg_error() { printf '%s\n' "$*" >&2; }
+  sleep() { :; }
+  export PATH="$CASE_ROOT/bin:$PATH"
+  source "$CASE_ROOT/owner.sh"
+  case "$OWNER" in
+    base)
+      # shellcheck disable=SC2034 # Consumed by the extracted creator owner.
+      CTID=3201 var_os=alpine
+      _receiving_exec() { "$@"; }
+      run_base
+      ;;
+    pkg)
+      # shellcheck disable=SC2034 # Consumed by the sourced package owner.
+      PKG_MANAGER=apk
+      pkg_update
+      ;;
+    upgrade)
+      # shellcheck disable=SC2034 # Consumed by the sourced package owner.
+      PKG_MANAGER=apk
+      pkg_upgrade
+      ;;
+    runner)
+      # shellcheck disable=SC2034 # Consumed by the sourced update runner.
+      NSAPP=alpine APP=Alpine
+      # Lock admission is modeled here; its native serialization has its own suite.
+      app_maintenance_begin() { :; }
+      check_container_resources() { :; }
+      update_script() { apk -U upgrade; }
+      run_update_script
+      ;;
+  esac
+  exit 0
+fi
+
+: "${TMPDIR:?disk-backed TMPDIR required}"
+systemd-detect-virt --vm --quiet || exit 1
+case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
+OWNER_ROOT=$(realpath -e "${ALPINE_REPOSITORY_OWNER_ROOT:-$ROOT}")
+work=$(mktemp -d "$TMPDIR/alpine-repositories.XXXXXX")
+trap 'rm -rf -- "$work"' EXIT
+failures=0
+check() {
+  if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
+    printf 'FAIL %s: expected <%s>, got <%s>\n' "$3" "$2" "$1" >&2
+    failures=$((failures + 1))
+  fi
+}
+for owner in base pkg upgrade runner; do
+  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine; do
+    [[ "$owner" != base || "$scenario" != non-alpine ]] || continue
+    c="$work/$owner-$scenario"
+    mkdir -p "$c"/{bin,etc/apk,home,tmp,var/lib/scripts-underground/update-pending}
+    printf 'ID=alpine\nVERSION_ID=3.23.8\n' > "$c/etc/os-release"
+    branch=v3.23
+    case "$scenario" in
+      legacy*) branch=latest-stable ;;
+      advanced) branch=v3.24 ;;
+      edge) branch=edge ;;
+      non-alpine) printf 'ID=debian\nVERSION_ID=13\n' > "$c/etc/os-release" ;;
+    esac
+    printf '# operator comment\nhttps://original.invalid/alpine/%s/main\n@testing https://original.invalid/alpine/%s/community # retained\nhttps://vendor.invalid/custom/packages\n' "$branch" "$branch" > "$c/etc/apk/repositories"
+    case "$scenario" in
+      tagged-mixed) printf '@experimental https://other.invalid/alpine/v3.24/community\n' >> "$c/etc/apk/repositories" ;;
+      disabled) printf '# https://other.invalid/alpine/latest-stable/community\n' >> "$c/etc/apk/repositories" ;;
+    esac
+    cp "$c/etc/apk/repositories" "$c/before"
+    if [[ "$owner" == runner ]]; then
+      printf 'prior pending bytes\n' > "$c/var/lib/scripts-underground/update-pending/alpine"
+    fi
+    : > "$c/events"
+    cat > "$c/bin/apk" << 'SHIM'
+#!/bin/sh
+printf 'apk %s\n' "$*" >> "$CASE_ROOT/events"
+cat "$CASE_ROOT/etc/apk/repositories" >> "$CASE_ROOT/seen"
+case "$OWNER:$SCENARIO" in
+  base:*fallback | pkg:*fallback)
+    n=$(grep -c '^apk ' "$CASE_ROOT/events")
+    [ "$n" != 1 ] || exit 4
+    ;;
+esac
+exit 0
+SHIM
+    printf '#!/bin/sh\nexit 0\n' > "$c/bin/wget"
+    cp "$c/bin/wget" "$c/bin/timeout"
+    ln -s /bin/sh "$c/bin/ash"
+    chmod +x "$c/bin/"{apk,wget,timeout}
+    redirect() { sed -e "s|/var/lib/scripts-underground|$c/var/lib/scripts-underground|g" -e "s|/etc/|$c/etc/|g"; }
+    redirect < "$OWNER_ROOT/misc/core.func" > "$c/core.func"
+    case "$owner" in
+      base)
+        {
+          sed -n '/^_alpine_base_packages() {/,/^}/p' "$OWNER_ROOT/misc/build.func"
+          printf 'run_base() {\n'
+          awk '/^  if \[ "\$var_os" == "alpine" \]; then$/ { found=1; next }
+            found && /^  elif / { exit } found { print }' "$OWNER_ROOT/misc/build.func"
+          printf '}\n'
+        } | redirect > "$c/owner.sh"
+        ;;
+      pkg | upgrade)
+        sed -n "/^pkg_${owner/pkg/update}() {/,/^}/p" "$OWNER_ROOT/misc/install.func" | redirect > "$c/owner.sh"
+        ;;
+      runner) : > "$c/owner.sh" ;;
+    esac
+    rc=0
+    env -i PATH="$PATH" HOME="$c/home" TMPDIR="$c/tmp" CASE_ROOT="$c" OWNER="$owner" SCENARIO="$scenario" \
+      BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/error.log" VERBOSE=yes \
+      timeout 30 bash "$0" --child > "$c/output" 2>&1 || rc=$?
+    label="$owner/$scenario"
+    if [[ "$owner" == base ]]; then
+      check "$rc" 0 "$label creator completes"
+      check "$(grep -c '/alpine/v3.23/' "$c/etc/apk/repositories" || true)" 2 "$label actual template branch pinned"
+      check "$(grep -c latest-stable "$c/seen" 2> /dev/null || true)" 0 "$label package consumer never sees moving alias"
+    elif [[ "$scenario" == legacy* || "$scenario" == advanced || "$scenario" == tagged-mixed || "$scenario" == edge ]]; then
+      check "$rc" 65 "$label refuses implicit release selection"
+      check "$(wc -l < "$c/events")" 0 "$label no package or hook effect"
+      check "$(cmp -s "$c/before" "$c/etc/apk/repositories" && echo unchanged || echo changed)" unchanged "$label source bytes preserved"
+      check "$(grep -c 'installed branch v3.23' "$c/output" || true)" 1 "$label current state reported"
+      if [[ "$owner" == runner ]]; then
+        check "$(cat "$c/var/lib/scripts-underground/update-pending/alpine")" 'prior pending bytes' "$label refusal preserves pending state"
+      fi
+    else
+      check "$rc" 0 "$label ordinary update succeeds"
+      check "$(grep -c '/alpine/v3.23/' "$c/etc/apk/repositories" || true)" 2 "$label branch retained"
+      check "$(grep -c '^# operator comment\|# retained\|https://vendor.invalid/custom/packages' "$c/etc/apk/repositories" || true)" 3 "$label unrelated/comment/tag bytes retained"
+    fi
+    [[ "$rc" == 0 || "$rc" == 65 ]] || tail -n 8 "$c/output" >&2
+    if [[ "$owner" == pkg && "$scenario" == fallback ]]; then
+      check "$(grep -c original.invalid "$c/etc/apk/repositories" || true)" 0 "$label mirror transport changed"
+      check "$(grep -c '^@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
+    fi
+  done
+done
+printf '%s failure(s); actual Alpine repository owners with explicit package/transport models\n' "$failures"
+[[ "$failures" == 0 ]]
+printf 'RUNTIME_HOOKS_RESULT failures=0\n'
