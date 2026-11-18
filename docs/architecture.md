@@ -1422,6 +1422,20 @@ requires a resolved explicit/main-app pin and publishes the source archive
 through the existing checked replacement owner without requiring a release.
 Numeric-v release compatibility is bidirectional; word tags remain literal.
 
+Public release/tag checkers reserve status1 exclusively for a completed no-update
+comparison. Required producer status1 is mapped to2 at the shared checker error
+boundary; other error statuses remain non-no-update errors. Each checker clears
+its selected-release output before admission. GitLab checks completed transfer
+status and JSON before comparison, including pinned requests; partial HTTP200
+bytes cannot establish no-update. These remain returning helpers, not terminal
+update owners: status-aware callers propagate errors and retain pending state.
+Existing boolean-only callers still coalesce nonzero results; this contract does
+not silently change their app-owned control flow or frozen generations.
+After a GitHub API error, explicit Git-tag fallback requires the literal requested
+ref. Numeric-v normalization alone cannot establish identical Git objects, so an
+absent literal tag cannot be replaced by its alternate spelling. Successful release
+API numeric-v compatibility remains separate and unchanged.
+
 Intel metadata consumers allocate their own file, pass it through the existing
 optional-command subshell, call `_resolve_igc_tag(outvar, selected_json_file)` and
 remove that file. Jellyfin uses the same explicit transport. This changes metadata

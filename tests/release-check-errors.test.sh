@@ -22,16 +22,16 @@ for app in forgejo readeck; do
   mkdir -p "$work/opt/$app"
   sed -n '/^function update_script() {/,/^}/p' "$ROOT/scripts/lxc/$app.sh" |
     sed "s#/opt/#$work/opt/#g" > "$work/$app.sh"
-  for CHECK_RC in 22 1; do
+  for CHECK_RC in 2 22 1; do
     : > "$work/msgs"
     rc=0
     # shellcheck disable=SC1090 # generated per app above
     (source "$work/$app.sh" && update_script) || rc=$?
     [[ ! -e "$work/calls" ]]
-    if [[ "$CHECK_RC" == 22 ]]; then
-      [[ "$rc" == 22 ]]
+    if [[ "$CHECK_RC" != 1 ]]; then
+      [[ "$rc" == "$CHECK_RC" ]]
       [[ "$(< "$work/msgs")" != *"No update required"* ]]
-      printf 'PASS %s: checker error 22 exits 22 without "No update required"\n' "$app"
+      printf 'PASS %s: checker error %s exits unchanged without "No update required"\n' "$app" "$CHECK_RC"
     else
       [[ "$rc" == 0 ]]
       [[ "$(< "$work/msgs")" == *"No update required"* ]]
