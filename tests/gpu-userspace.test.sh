@@ -212,3 +212,35 @@ command() {
 GPU_TYPE=INTEL INSTALL_NVIDIA_DRIVERS=no setup_hwaccel
 grep -q 'install pciutils' "$work/apt.calls"
 printf 'PASS pciutils is requested through optional installation before Intel subtype detection\n'
+
+# Mapped device IDs work even with stale pci.ids or unavailable lspci. A visible
+# but unmapped Arc must never establish eligibility or choose the mapped subtype.
+unset -f command
+ENABLE_GPU=yes GPU_TYPE=INTEL INSTALL_NVIDIA_DRIVERS=no
+for id in 0x4905 0x4909 0x56a0 0x56FF 0xe212; do
+  printf '%s\n' "$id" > "$work/sys/devices/0000:00:02.0/device"
+  : > "$work/setup.calls"
+  test_description='Intel Corporation Device unknown' setup_hwaccel
+  [[ $(cat "$work/setup.calls") == arc ]]
+done
+printf 'PASS mapped DG1, Alchemist and Battlemage IDs select Arc without marketing text\n'
+printf '0xe212\n' > "$work/sys/devices/0000:00:02.0/device"
+unset -f lspci
+: > "$work/setup.calls"
+setup_hwaccel
+[[ $(cat "$work/setup.calls") == arc ]]
+printf '0x1912\n' > "$work/sys/devices/0000:00:02.0/device"
+lspci() { printf 'Intel HD Graphics 530\n'; }
+: > "$work/setup.calls"
+setup_hwaccel
+[[ $(cat "$work/setup.calls") == modern ]]
+printf 'not-an-id\n' > "$work/sys/devices/0000:00:02.0/device"
+lspci() { printf 'Intel HD Graphics 4600\n'; }
+: > "$work/setup.calls"
+setup_hwaccel
+[[ $(cat "$work/setup.calls") == legacy ]]
+rm "$work/dev/dri/card0"
+: > "$work/setup.calls"
+setup_hwaccel
+[[ ! -s $work/setup.calls && $HWACCEL_VENDOR == none ]]
+printf 'PASS device-ID detection needs a mapped node and retains modern/legacy fallback\n'

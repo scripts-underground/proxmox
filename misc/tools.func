@@ -6265,7 +6265,7 @@ setup_gs() {
 #   - NVIDIA requires matching host driver version
 # ------------------------------------------------------------------------------
 _hwaccel_optional_command() (
-  # Optional steps log directly: silent() exits on failure, even in an OR-list.
+  # Optional steps log directly without entering fatal command diagnostics.
   # Nested framework helpers must use this same non-fatal command boundary.
   local STD=""
   "$@" >> "$(get_active_logfile)" 2>&1
@@ -6287,7 +6287,7 @@ _hwaccel_apt_optional() {
 }
 
 setup_hwaccel() {
-  local service_user="${1:-}" device node vendor type address description libraries
+  local service_user="${1:-}" device node vendor type address description device_id libraries
   local os_id os_codename os_version nvidia_node=0
   local -A eligible=() intel_types=()
   local -a configured=()
@@ -6321,6 +6321,10 @@ setup_hwaccel() {
     eligible[$type]=1
     if [[ "$type" == INTEL ]]; then
       type=modern description=''
+      device_id=''
+      if [[ -r "/sys/class/drm/$node/device/device" ]]; then
+        read -r device_id < "/sys/class/drm/$node/device/device" || device_id=''
+      fi
       if address=$(readlink -f "/sys/class/drm/$node/device") && [[ "${address##*/}" =~ ^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$ ]] && command -v lspci > /dev/null; then
         description=$(lspci -s "${address##*/}") || description=''
       fi
@@ -6328,9 +6332,16 @@ setup_hwaccel() {
       # Order matters: Check Arc first, then Gen9+ (UHD/Iris/HD 5xx-6xx), then Legacy (HD 2xxx-5xxx)
       # HD Graphics 530/630 = Gen 9 (Skylake/Kaby Lake) - 3 digits
       # HD Graphics 4600/5500 = Gen 7-8 (Haswell/Broadwell) - 4 digits starting with 2-5
-      case "$description" in
-        *Arc* | *DG1* | *DG2*) type=arc ;;
-        *'HD Graphics '[2-5][0-9][0-9][0-9]*) type=legacy ;;
+      # IDs belong to this mapped node, not another host-visible PCI adapter.
+      # DG1 4905-4909, Alchemist 56xx, Battlemage e2xx work with old pci.ids.
+      case "${device_id,,}" in
+        0x490[5-9] | 0x56[0-9a-f][0-9a-f] | 0xe2[0-9a-f][0-9a-f]) type=arc ;;
+        *)
+          case "$description" in
+            *Arc* | *DG1* | *DG2*) type=arc ;;
+            *'HD Graphics '[2-5][0-9][0-9][0-9]*) type=legacy ;;
+          esac
+          ;;
       esac
       intel_types[$type]=1
     fi
@@ -6751,8 +6762,28 @@ ENVEOF
 # ══════════════════════════════════════════════════════════════════════════════
 # NVIDIA GPU Setup
 # ══════════════════════════════════════════════════════════════════════════════
+# Publish whole-family preferences without truncating an earlier working pin.
+_nvidia_write_pin() {
+  local version=${1:-} exact='' stage status=0
+  [[ -z "$version" || "$version" =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] || return 65
+  if [[ -n "$version" ]]; then
+    # Specific version first: APT uses the first matching specific stanza.
+    printf -v exact 'Package: libcuda* libnvcuvid* libnvidia-* nvidia-*\nPin: version %s\nPin-Priority: 1002\n\n' "$version"
+  fi
+  stage=$(mktemp /etc/apt/preferences.d/.nvidia-cuda-pin.XXXXXXXX) || return $?
+  cat << NVIDIA_PIN > "$stage" || status=$?
+${exact}Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
+Pin: origin developer.download.nvidia.com
+Pin-Priority: 1001
+NVIDIA_PIN
+  if ((status == 0)); then chmod 0644 "$stage" || status=$?; fi
+  if ((status == 0)); then mv -fT -- "$stage" /etc/apt/preferences.d/nvidia-cuda-pin || status=$?; fi
+  rm -f -- "$stage" || true
+  return "$status"
+}
+
 # Prefer the host's exact release, then another release in the same series.
-# Shared by CUDA repositories and Ubuntu's native, series-named packages.
+# Shared by CUDA repositories and Ubuntu's native package families.
 _nvidia_pick_version() {
   local package="$1" host_version="$2" madison exact
   madison=$(apt-cache madison "$package" 2> /dev/null | awk '{print $3}') || return 0
@@ -6827,13 +6858,14 @@ _setup_nvidia_gpu() {
     cuda_repos=("$ubuntu_cuda_repo")
   fi
 
-  # Pin NVIDIA repo for version matching, without giving it priority over
-  # unrelated distribution packages (1001 also permits downgrades).
-  cat << 'NVIDIA_PIN' > /etc/apt/preferences.d/nvidia-cuda-pin
-Package: libcuda* libnvcuvid* libnvidia-* nvidia-smi nvidia-utils-* cuda-*
-Pin: origin developer.download.nvidia.com
-Pin-Priority: 1001
-NVIDIA_PIN
+  # Failed selection must retain an earlier exact pin across later apt upgrades.
+  if [[ ! -e /etc/apt/preferences.d/nvidia-cuda-pin ]]; then
+    _nvidia_write_pin || {
+      msg_warn "Could not publish NVIDIA package preferences"
+      return 1
+    }
+  fi
+  local -a apt_install=(apt -y --allow-downgrades -o Dpkg::Options::="--force-confold" install --no-install-recommends)
 
   local cuda_source="/etc/apt/sources.list.d/cuda-community-scripts.sources"
   local chosen_repo="" available_version="" cuda_repo="" installed=0
@@ -6868,15 +6900,19 @@ NVIDIA_PIN
   fi
 
   if [[ -n "$chosen_repo" ]]; then
+    _nvidia_write_pin "$available_version" || {
+      msg_warn "Could not pin NVIDIA userspace ${available_version}"
+      return 1
+    }
     msg_info "Installing NVIDIA userspace ${available_version} from ${chosen_repo}"
-    if _hwaccel_optional_command apt -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
+    if _hwaccel_optional_command "${apt_install[@]}" \
       "libcuda1=${available_version}" "libnvcuvid1=${available_version}" \
       "libnvidia-encode1=${available_version}" "libnvidia-ml1=${available_version}"; then
       installed=1
       if [[ "$os_id" == debian ]]; then
         # nvidia-smi may be an empty transitional package in CUDA repos.
         # It must not pull a different driver series when no match exists.
-        _hwaccel_apt_optional "nvidia-smi=${available_version}"
+        _hwaccel_optional_command "${apt_install[@]}" "nvidia-smi=${available_version}" || msg_warn "Matching nvidia-smi package unavailable"
       fi
     else
       msg_warn "Version-pinned NVIDIA userspace install failed"
@@ -6885,18 +6921,31 @@ NVIDIA_PIN
   fi
 
   if [[ "$installed" == 0 && "$os_id" == ubuntu ]]; then
-    # Fallback to Ubuntu repo packages with versioned nvidia-utils.
+    # Ubuntu uses series-suffixed or (590+) suffixless package families.
     # Drop the CUDA source first so only the native repository decides.
     rm -f "$cuda_source"
     _hwaccel_optional_command apt -y update || msg_warn "apt update failed - continuing anyway"
-    available_version=$(_nvidia_pick_version "libnvidia-compute-${nvidia_major_version}" "$nvidia_host_version")
+    local suffix='' candidate candidate_version
+    available_version=''
+    for candidate in "-${nvidia_major_version}" ''; do
+      candidate_version=$(_nvidia_pick_version "libnvidia-compute${candidate}" "$nvidia_host_version")
+      [[ -n "$candidate_version" ]] || continue
+      if [[ -z "$available_version" || "$candidate_version" == "$nvidia_host_version" || "$candidate_version" == "$nvidia_host_version-"* ]]; then
+        suffix=$candidate available_version=$candidate_version
+      fi
+      [[ "$available_version" != "$nvidia_host_version" && "$available_version" != "$nvidia_host_version-"* ]] || break
+    done
     if [[ -n "$available_version" ]]; then
-      msg_info "Trying Ubuntu native packages (nvidia-utils-${nvidia_major_version})"
-      if _hwaccel_optional_command apt -y -o Dpkg::Options::="--force-confold" install --no-install-recommends \
-        "libnvidia-compute-${nvidia_major_version}=${available_version}" \
-        "libnvidia-decode-${nvidia_major_version}=${available_version}" \
-        "libnvidia-encode-${nvidia_major_version}=${available_version}" \
-        "nvidia-utils-${nvidia_major_version}=${available_version}"; then
+      _nvidia_write_pin "$available_version" || {
+        msg_warn "Could not pin NVIDIA userspace ${available_version}"
+        return 1
+      }
+      msg_info "Trying Ubuntu native packages (nvidia-utils${suffix})"
+      if _hwaccel_optional_command "${apt_install[@]}" \
+        "libnvidia-compute${suffix}=${available_version}" \
+        "libnvidia-decode${suffix}=${available_version}" \
+        "libnvidia-encode${suffix}=${available_version}" \
+        "nvidia-utils${suffix}=${available_version}"; then
         installed=1
       else
         msg_warn "NVIDIA driver installation failed - please install matching Ubuntu packages manually"
