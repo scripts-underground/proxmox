@@ -1317,6 +1317,9 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 	if scriptType == TypeLXC {
 		validateLXCSourceIdentity(astFile, slug, violations)
 	}
+	if scriptType == TypeAddon {
+		validateAddonReleaseChecks(astFile, slug, violations)
+	}
 	// Bootstrap detection via source text scan
 	for li, l := range lines {
 		if strings.Contains(l, "source") && strings.Contains(l, "bootstrap/") && strings.Contains(l, "curl") {

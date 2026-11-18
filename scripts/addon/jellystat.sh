@@ -205,7 +205,7 @@ function update_script() {
 
     BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "latest" "$var_addon_install_path"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
 
     BACKUP_DIR="$var_addon_backup_dir" restore_backup
 
@@ -222,6 +222,9 @@ function update_script() {
     systemctl start jellystat
     msg_ok "Started service"
     msg_ok "Updated successfully"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

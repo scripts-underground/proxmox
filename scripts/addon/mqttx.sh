@@ -90,7 +90,7 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "mqttx" "$var_addon_repo"; then
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "mqttx" "$var_addon_repo" "tarball" "latest" "$var_addon_app_dir"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "mqttx" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_app_dir"
 
     msg_info "Updating ${APP}"
     cd "$var_addon_app_dir/web" || exit
@@ -98,6 +98,9 @@ function update_script() {
     $STD yarn build
     systemctl reload nginx
     msg_ok "Updated ${APP}"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

@@ -32,5 +32,42 @@ check "$observed" 2 'harness detects both dangling aliases after successful unin
 rm "$c/aliases/update" "$c/aliases/uninstall"
 runtime_hooks_uninstall_assert > "$work/removed-output" 2>&1
 check "$failures" "$prior_failures" 'harness accepts actual alias retirement'
+mkdir -p "$c/app"
+for contract in missing-recovery stopped-start partial-start restored-running retained-stopped unverified-stopped; do
+  printf 'old code\n' > "$c/app/code"
+  : > "$c/services"
+  initial=active expected_bad=0
+  case "$contract" in stopped-start | retained-stopped) initial=inactive ;; esac
+  runtime_hooks_recovery_setup fixture "$initial" "$c/app"
+  case "$contract" in
+    missing-recovery)
+      runtime_hooks_recovery_service stop fixture
+      expected_bad=1
+      ;;
+    stopped-start)
+      runtime_hooks_recovery_service start fixture
+      expected_bad=1
+      ;;
+    partial-start)
+      runtime_hooks_recovery_service stop fixture
+      printf 'partial code\n' > "$c/app/code"
+      runtime_hooks_recovery_service start fixture
+      expected_bad=1
+      ;;
+    restored-running)
+      runtime_hooks_recovery_service stop fixture
+      runtime_hooks_recovery_service start fixture
+      ;;
+    unverified-stopped)
+      runtime_hooks_recovery_service stop fixture
+      printf 'partial code\n' > "$c/app/code"
+      ;;
+  esac
+  prior_failures=$failures
+  runtime_hooks_failure_services_assert > "$work/$contract-output" 2>&1
+  observed=$((failures - prior_failures))
+  failures=$prior_failures
+  check "$((observed > 0))" "$expected_bad" "harness recovery contract/$contract"
+done
 printf 'RUNTIME_HOOKS_RESULT failures=%s\n' "$failures"
 [[ "$failures" == 0 ]]

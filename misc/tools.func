@@ -504,7 +504,7 @@ prepare_repository_setup() {
 install_packages_with_retry() {
   local packages=("$@")
   local max_retries=3
-  local retry=0
+  local retry=0 install_status=100
 
   # Pre-check: ensure dpkg is not in a broken state
   if dpkg --audit 2>&1 | grep -q .; then
@@ -517,6 +517,8 @@ install_packages_with_retry() {
       -o Dpkg::Options::="--force-confold" \
       "${packages[@]}" 2> /dev/null; then
       return 0
+    else
+      install_status=$?
     fi
 
     retry=$((retry + 1))
@@ -546,13 +548,12 @@ install_packages_with_retry() {
               fi
             fi
           done
-          # If some packages installed, consider partial success
-          if [[ ${#failed[@]} -lt ${#packages[@]} ]]; then
-            if [[ ${#failed[@]} -gt 0 ]]; then
-              msg_warn "Partially installed. Failed packages: ${failed[*]}"
-            fi
+          # Every operand is required. One working client cannot certify a
+          # failed server; the final complete-set retry retains its APT status.
+          if [[ ${#failed[@]} -eq 0 ]]; then
             return 0
           fi
+          msg_warn "Required packages still failed: ${failed[*]}"
           ;;
       esac
 
@@ -576,7 +577,7 @@ install_packages_with_retry() {
   else
     msg_error "Hint: Package(s) exist in the repo but could not be installed — run 'apt-get install -f' inside the container or check for dependency conflicts."
   fi
-  return 100
+  return "$install_status"
 }
 
 # ------------------------------------------------------------------------------
@@ -7748,25 +7749,52 @@ PY
 }
 
 # Migration is confined to a sibling candidate. The stopped original database,
-# binary, configuration and release marker remain recoverable on every failure.
+# binary and configuration remain recoverable on every failure. After public
+# activation is attempted, the candidate may have acknowledged writes and must
+# never be automatically replaced by the prior database.
 # Dump/import is deliberately retained: no assumption that a selected historical
 # binary understands a newer dumpless-upgrade flag or on-disk format.
 _meilisearch_update() (
   local selected="$1" current version_text fields db parent stage='' pid='' url key service_url dump_uid task response stats imported
-  local original_active=0 stopped=0 data_moved=0 candidate_live=0 binary_live=0 complete=0 status
+  local original_active=0 stopped=0 data_moved=0 candidate_live=0 binary_live=0 exposed=0 complete=0 status
   version_text=$(/usr/bin/meilisearch --version) || return $?
   if [[ "$version_text" =~ ^meilisearch[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then current="${BASH_REMATCH[1]}"; else return 65; fi
   selected="${selected#v}"
   [[ "$selected" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 65
   ensure_dependencies python3 jq || return $?
+  # Establish a native parser before reading operator storage or stopping the
+  # service. Older distribution Pythons can consume python3-toml without pip.
+  local parser_probe='import importlib.util,sys;sys.exit(not any(importlib.util.find_spec(m) for m in ("tomllib","tomli","toml")))'
+  if ! python3 -c "$parser_probe"; then
+    ensure_dependencies python3-toml || {
+      status=$?
+      msg_error 'Meilisearch TOML parser capability could not be established'
+      return "$status"
+    }
+    python3 -c "$parser_probe" || {
+      msg_error 'Meilisearch TOML parser capability is unavailable after dependency setup'
+      return 69
+    }
+  fi
   # Native TOML parsing preserves quoted paths/spaces and refuses malformed data;
   # guessing a default path after a parse error would put the wrong data at risk.
   fields=$(
     python3 - /etc/meilisearch.toml << 'PY'
-import os,sys
+import importlib,os,sys
+parser=None
 try:
-    import tomllib
-    with open(sys.argv[1],'rb') as f: d=tomllib.load(f)
+    for name in ('tomllib','tomli','toml'):
+        try:
+            parser=importlib.import_module(name)
+            break
+        except ModuleNotFoundError as error:
+            if error.name!=name: raise
+    if parser is None: raise ImportError('No native TOML parser')
+except ImportError:
+    print('Meilisearch TOML parser capability is unavailable',file=sys.stderr)
+    sys.exit(69)
+try:
+    with open(sys.argv[1],encoding='utf-8') as f: d=parser.loads(f.read())
     values=[d.get('db_path','data.ms'), d.get('master_key',''), d.get('http_addr','127.0.0.1:7700')]
     if any(not isinstance(v,str) or any(ord(c)<32 for c in v) for v in values): raise ValueError()
     print(os.path.abspath(os.path.join('/',values[0])));print(values[1]);print(values[2])
@@ -7809,7 +7837,7 @@ PY
       wait "$pid" 2> /dev/null || true
       pid=''
     fi
-    if [[ "$complete" == 0 && "$stopped" == 1 ]]; then
+    if [[ "$complete" == 0 && "$stopped" == 1 && "$exposed" == 0 ]]; then
       if [[ "$candidate_live" == 1 || "$binary_live" == 1 ]]; then
         systemctl stop meilisearch || recovery=$?
       fi
@@ -7826,6 +7854,9 @@ PY
     fi
     if [[ "$complete" == 0 ]]; then
       msg_error "Meilisearch update failed (status ${failure}); recovery evidence retained at ${stage}"
+      if [[ "$exposed" == 1 ]]; then
+        msg_error "Public activation was attempted; candidate data and binary retained at ${db} and /usr/bin/meilisearch. Update remains pending; no automatic rollback was performed"
+      fi
       [[ "$recovery" == 0 ]] || msg_error "Meilisearch automatic restoration failed (status ${recovery}); original data is retained at ${stage}/original-data or ${db}"
     else
       msg_info "Meilisearch prior database and binary retained at ${stage}"
@@ -7916,15 +7947,17 @@ PY
   candidate_live=1
   _deploy_single_file "$stage/bin/meilisearch" meilisearch /usr/bin meilisearch || return $?
   binary_live=1
+  # Start can acknowledge writes even if its command subsequently fails. This
+  # boundary precedes the attempt, not the later health/version observations.
+  exposed=1
   systemctl start meilisearch || return $?
   systemctl is-active --quiet meilisearch || return $?
   response=$(_meilisearch_request "$service_url/health" "$key" --retry 10 --retry-connrefused --retry-delay 1) || return $?
   jq -e '.status=="available"' <<< "$response" > /dev/null || return 150
   response=$(_meilisearch_request "$service_url/version" "$key") || return $?
   jq -e --arg version "$selected" '.pkgVersion==$version' <<< "$response" > /dev/null || return 150
-  imported=$(_meilisearch_request "$service_url/stats" "$key") || return $?
-  imported=$(jq -ceS '.indexes | with_entries(.value |= {numberOfDocuments})' <<< "$imported") || return 65
-  [[ "$stats" == "$imported" ]] || return 150
+  # Counts were checked privately before exposure. Public writes may now change
+  # them legitimately; a frozen equality check cannot authorize data rollback.
   local marker
   marker=$(mktemp "$HOME/.meilisearch-version.XXXXXXXX") || return $?
   printf '%s\n' "$selected" > "$marker" && mv -fT -- "$marker" "$HOME/.meilisearch" || {

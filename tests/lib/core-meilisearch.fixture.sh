@@ -12,7 +12,14 @@ if [[ "${1:-}" == --child ]]; then
   msg_ok() { printf 'OK %s\n' "$*" >> "$c/messages"; }
   msg_error() { printf 'ERROR %s\n' "$*" >> "$c/messages"; }
   msg_warn() { :; }
-  ensure_dependencies() { :; }
+  ensure_dependencies() {
+    printf '%s\n' "$*" >> "$c/dependencies"
+    [[ "$FAULT" != parser-dependency || "$*" != *toml* ]] || return 67
+  }
+  python3() {
+    [[ "$1" != -c || ("$FAULT" != parser-dependency && "$FAULT" != parser-unavailable) ]] || return 1
+    "${MEILI_TEST_PYTHON:-/usr/bin/python3}" "$@"
+  }
   get_system_arch() { printf amd64; }
   # The sourced setup_meilisearch owner consumes this returning checker's output.
   # shellcheck disable=SC2034
@@ -31,6 +38,10 @@ if [[ "${1:-}" == --child ]]; then
   cp() {
     if [[ "$FAULT" == publication && "$*" == *'/bin/meilisearch '*'.asset-file.'* ]]; then return 41; fi
     command cp "$@"
+  }
+  mv() {
+    if [[ ("$FAULT" == marker || "$FAULT" == write-marker) && "$*" == *'.meilisearch-version.'* ]]; then return 48; fi
+    command mv "$@"
   }
   stop_live() {
     if [[ -s "$c/live-pid" ]]; then
@@ -57,7 +68,7 @@ if [[ "${1:-}" == --child ]]; then
         printf inactive > "$c/state"
         ;;
       start)
-        if [[ "$FAULT" == restart && ! -e "$c/restart-failed" ]]; then
+        if [[ "$FAULT" == restart && -e "$c/updating" && ! -e "$c/restart-failed" ]]; then
           : > "$c/restart-failed"
           return 53
         fi
@@ -66,6 +77,10 @@ if [[ "${1:-}" == --child ]]; then
         for ((i = 0; i < 100; i++)); do
           if command curl -fsS "$LIVE_URL/health" > /dev/null 2>&1; then
             printf active > "$c/state"
+            if [[ -e "$c/updating" && "$FAULT" == write-* && ! -e "$c/write-ack" ]]; then
+              command curl -fsS -X POST --data 'acknowledged client document' "$LIVE_URL/documents" > "$c/write-ack"
+              [[ "$FAULT" != write-start ]] || return 55
+            fi
             return 0
           fi
           sleep 0.02
@@ -76,13 +91,24 @@ if [[ "${1:-}" == --child ]]; then
     esac
   }
   trap stop_live EXIT
+  # Observe a genuinely running original, not only an ActiveState model.
+  systemctl start meilisearch
+  command curl -fsS "$LIVE_URL/version" > "$c/initial-version"
+  [[ "$FAULT" != config ]] || printf 'db_path = [\n' > "$c/etc/meilisearch.toml"
+  : > "$c/updating"
   rc=0
   setup_meilisearch || rc=$?
   printf '%s' "$rc" > "$c/rc"
+  cat "$c/state" > "$c/final-state"
+  command curl -fsS "$LIVE_URL/health" > "$c/final-health" 2> /dev/null || true
+  command curl -fsS "$LIVE_URL/version" > "$c/final-version" 2> /dev/null || true
+  command curl -fsS "$LIVE_URL/documents" > "$c/final-document" 2> /dev/null || true
   exit 0
 fi
 : "${TMPDIR:?disk TMPDIR required}"
 systemd-detect-virt --vm --quiet || exit 65
+printf 'MEILISEARCH_PARSER_INTERPRETER '
+"${MEILI_TEST_PYTHON:-/usr/bin/python3}" --version
 work=$(mktemp -d "$TMPDIR/core-meilisearch.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 cat > "$work/engine.py" << 'PY'
@@ -106,12 +132,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body=json.dumps(data).encode();self.send_response(status);self.end_headers();self.wfile.write(body)
     def do_GET(self):
         if self.path=='/health':self.send({'status':'available'})
-        elif self.path=='/version':self.send({'pkgVersion':VERSION})
-        elif self.path=='/stats':self.send({'indexes':{'probe':{'numberOfDocuments':int((db/'document').is_file() and bool((db/'document').read_text()))}}})
+        elif self.path=='/version':
+            if fault=='write-version' and VERSION!='1.2.2' and not a.http_addr:self.send({},503)
+            else:self.send({'pkgVersion':VERSION})
+        elif self.path=='/documents':self.send({'document':(db/'document').read_text()})
+        elif self.path=='/stats':self.send({'indexes':{'probe':{'numberOfDocuments':2 if (db/'document').read_text()=='acknowledged client document' else int((db/'document').is_file() and bool((db/'document').read_text()))}}})
         elif self.path.startswith('/tasks/'):
             self.send({'status':'failed' if fault=='dump-task' else 'succeeded','details':{'dumpUid':'fixture-dump'}})
         else:self.send({},404)
     def do_POST(self):
+        if self.path=='/documents':
+            (db/'document').write_text(self.rfile.read(int(self.headers['Content-Length'])).decode());self.send({'acknowledged':True});return
         if fault=='dump':self.send({},500);return
         if fault!='dump-missing':(dump/'fixture-dump.dump').write_text(json.dumps({'document':(db/'document').read_text()}))
         self.send({'taskUid':1})
@@ -136,19 +167,19 @@ go() {
   local port
   port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
   printf 'db_path = "%s/live data"\ndump_dir = "%s/dumps"\nmaster_key = "private fixture secret"\nhttp_addr = "127.0.0.1:%s"\n' "$c" "$c" "$port" > "$c/etc/meilisearch.toml"
-  [[ "$FAULT" != config ]] || printf 'db_path = [\n' > "$c/etc/meilisearch.toml"
   printf prior-marker > "$c/home/.meilisearch"
   printf active > "$c/state"
   : > "$c/messages"
   : > "$c/releases"
   : > "$c/services"
   env -i PATH="$PATH" TMPDIR="$TMPDIR" HOME="$c/home" CASE_ROOT="$c" FAULT="$FAULT" SELECTED="$SELECTED" LIVE_URL="http://127.0.0.1:$port" \
+    MEILI_TEST_PYTHON="${MEILI_TEST_PYTHON:-/usr/bin/python3}" PYTHONPATH="${PYTHONPATH:-}" \
     BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/errors.log" timeout 60 bash "$0" --child > "$c/output" 2>&1 || true
   rc=missing
   [[ ! -f "$c/rc" ]] || rc=$(cat "$c/rc")
 }
 for SELECTED in v1.2.3 v1.3.0; do
-  for pair in 'download:18' 'dump:22' 'dump-task:150' 'dump-missing:65' 'import:150' 'counts:150' 'restart:53' 'publication:252' 'config:65' 'checker:77'; do
+  for pair in 'download:18' 'dump:22' 'dump-task:150' 'dump-missing:65' 'import:150' 'counts:150' 'publication:252' 'config:65' 'checker:77' 'parser-dependency:67' 'parser-unavailable:69'; do
     FAULT="${pair%%:*}"
     go
     check "$rc" "${pair##*:}" "$SELECTED/$FAULT returning failure"
@@ -156,6 +187,35 @@ for SELECTED in v1.2.3 v1.3.0; do
     check "$("$c/bin/meilisearch" --version)" 'meilisearch 1.2.2' "$SELECTED/$FAULT original binary restored"
     check "$(cat "$c/home/.meilisearch")" prior-marker "$SELECTED/$FAULT marker unchanged"
     check "$(grep -c 'OK Updated MeiliSearch' "$c/messages" || true)" 0 "$SELECTED/$FAULT no false update success"
+    check "$(jq -r .pkgVersion "$c/initial-version")" 1.2.2 "$SELECTED/$FAULT original HTTP version observed"
+    check "$(cat "$c/final-state")" active "$SELECTED/$FAULT original service active before cleanup"
+    check "$(jq -r .status "$c/final-health")" available "$SELECTED/$FAULT recovered HTTP health observed"
+    check "$(jq -r .pkgVersion "$c/final-version")" 1.2.2 "$SELECTED/$FAULT recovered HTTP version observed"
+    if [[ "$FAULT" == parser-* ]]; then
+      check "$(grep -c 'TOML parser capability' "$c/messages" || true)" 1 "$SELECTED missing parser capability has a distinct diagnostic"
+      check "$(wc -l < "$c/releases")" 0 "$SELECTED missing parser capability precedes release effects"
+      check "$(grep -c '^stop ' "$c/services" || true)" 0 "$SELECTED missing parser capability precedes service stop"
+    elif [[ "$FAULT" == config ]]; then
+      check "$(grep -c 'Cannot establish Meilisearch storage' "$c/output" || true)" 1 "$SELECTED malformed configuration has its own diagnostic"
+      check "$(grep -c 'TOML parser capability' "$c/messages" || true)" 0 "$SELECTED malformed configuration is not missing capability"
+    fi
+  done
+  for pair in 'restart:53' 'marker:48' 'write-start:55' 'write-version:22' 'write-marker:48' 'write-counts:0'; do
+    FAULT="${pair%%:*}"
+    go
+    check "$rc" "${pair##*:}" "$SELECTED/$FAULT exact post-exposure outcome"
+    check "$("$c/bin/meilisearch" --version)" "meilisearch ${SELECTED#v}" "$SELECTED/$FAULT candidate binary retained after attempted public start"
+    wanted=prior-marker
+    [[ "$FAULT" != write-counts ]] || wanted="${SELECTED#v}"
+    check "$(cat "$c/home/.meilisearch")" "$wanted" "$SELECTED/$FAULT marker matches completed outcome"
+    old=$(find "$c" -path '*/original-data/document' -print -quit)
+    check "$(cat "$old" 2> /dev/null || true)" 'retained document bytes' "$SELECTED/$FAULT prior database retained as recovery evidence"
+    if [[ "$FAULT" == write-* ]]; then
+      check "$(jq -r .acknowledged "$c/write-ack")" true "$SELECTED/$FAULT actual HTTP client write acknowledged"
+      check "$(cat "$c/live data/document")" 'acknowledged client document' "$SELECTED/$FAULT acknowledged write remains at live path"
+      check "$(jq -r .document "$c/final-document")" 'acknowledged client document' "$SELECTED/$FAULT acknowledged write reaches final HTTP consumer"
+      check "$(cat "$c/final-state")" active "$SELECTED/$FAULT candidate remains running before cleanup"
+    fi
   done
   FAULT=normal
   go

@@ -69,9 +69,12 @@ function post_install_script() {
 function update_script() {
   if check_for_gh_release "$var_addon_app" "$var_addon_gh_repo"; then
     msg_info "Updating ${APP}"
-    fetch_and_deploy_gh_release "$var_addon_app" "$var_addon_gh_repo" "binary" "latest" "/opt/coder-code-server" "code-server_*_$(get_system_arch).deb"
+    fetch_and_deploy_gh_release "$var_addon_app" "$var_addon_gh_repo" "binary" "$CHECK_UPDATE_RELEASE" "/opt/coder-code-server" "code-server_*_$(get_system_arch).deb"
     systemctl restart "code-server@${var_addon_svc_user}"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

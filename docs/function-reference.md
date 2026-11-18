@@ -284,6 +284,8 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 - **`manage_tool_repository()`** — Tool-specific repo configuration (mariadb, mongodb, nodejs, php, postgresql, mysql). Reads tool name + version.
 - **`ensure_dependencies()`** — Batch-install packages needed for a task. Checks PATH for binaries. 5-min `apt update` cache. Read: `$@` = dependency names. Called from almost every setup_* and many user scripts.
 - **`install_packages_with_retry()`**, **`upgrade_packages_with_retry()`**, **`upgrade_package()`** — APT install/upgrade with progressive retry.
+  The install helper succeeds only for the complete required set; exhausted batch
+  retries retain the final APT status, never partial-success publication.
 - **`hold_package_version()`**, **`unhold_package_version()`** — `apt-mark` wrappers.
 - **`verify_package_source()`** — Checks `apt-cache policy` output.
 
@@ -358,7 +360,7 @@ required package work permits a release adapter to publish its marker.
 - **`setup_java()`** — Install Temurin JDK via Adoptium repo. Reads `JAVA_VERSION`.
 - **`setup_mariadb()`** — Install/upgrade MariaDB (distro packages or official repo). Reads `MARIADB_VERSION`.
 - **`setup_mariadb_db()`** — Provision database + user. Reads `MARIADB_DB_NAME`/`USER`/`PASS`. Exports DB vars.
-- **`setup_meilisearch()`** - Install/upgrade MeiliSearch. Selected full versions, including patches, use checked private dump/import candidates with original data/binary recovery and consumer verification before the release marker.
+- **`setup_meilisearch()`** - Install/upgrade MeiliSearch. Selected full versions, including patches, use native TOML capability and checked private dump/import/count validation. Pre-exposure failures restore original data/binary. After public activation is attempted, failures retain the possibly-written candidate and recovery evidence, return nonzero and leave the prior marker. Health/version consumption gates the final release marker; public writes are never rolled back to frozen export counts.
 - **`setup_mongodb()`** — Install/upgrade MongoDB. AVX check. Reads `MONGO_VERSION`.
 - **`setup_mysql()`** — Install/upgrade MySQL (distro packages or official repo). Reads `MYSQL_VERSION`.
 - **`setup_mysql_db()`** — Provision a MySQL database + `%`-host user with database-only grants on an installed MySQL server. Reads `MYSQL_DB_NAME`/`USER` (required), `PASS` (generated 13-character alphanumeric when empty, a supplied value is used as given) and `MYSQL_DB_CREDS_FILE` (default `~/<app>.creds` from baked `APP`). Appends credentials and exports the DB vars; an existing database/user is an error, nothing is reset.

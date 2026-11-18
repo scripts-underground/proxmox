@@ -77,7 +77,7 @@ function update_script() {
     systemctl stop sparkyfitness-garmin.service &> /dev/null || true
     msg_ok "Stopped service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "latest" "$var_addon_install_path"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
     cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit
     $STD uv venv --clear .venv
     $STD uv pip install -r requirements.txt
@@ -86,6 +86,9 @@ function update_script() {
     systemctl start sparkyfitness-garmin
     msg_ok "Started service"
     msg_ok "Updated successfully"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

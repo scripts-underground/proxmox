@@ -95,7 +95,10 @@ function update_script() {
     systemctl stop "$var_addon_service"
     msg_ok "Stopped service"
 
-    fetch_and_deploy_gh_release "$var_addon_gh_app" "$var_addon_gh_repo" "binary" "latest"
+    fetch_and_deploy_gh_release "$var_addon_gh_app" "$var_addon_gh_repo" "binary" "$CHECK_UPDATE_RELEASE"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
   msg_info "Refreshing service configuration"

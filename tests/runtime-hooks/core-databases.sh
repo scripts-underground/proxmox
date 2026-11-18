@@ -76,17 +76,26 @@ if [[ "${1:-}" == --child ]]; then
       cleanup_old_repo_files() { printf cleanup >> "$c/effects"; }
       prepare_repository_setup() { :; }
       ensure_apt_working() { :; }
-      apt() { printf apt >> "$c/effects"; }
-      install_packages_with_retry() {
-        printf 'install:%s\n' "$*" >> "$c/packages"
-        return 49
+      apt() {
+        printf apt >> "$c/effects"
+        [[ "$FAULT" == package-partial && "$1" == install ]] || return 0
+        [[ "$*" != *Dpkg::Options* ]] || return 46
+        [[ "$*" != *server* ]] || return 47
       }
+      if [[ "$FAULT" != package-partial ]]; then
+        install_packages_with_retry() {
+          printf 'install:%s\n' "$*" >> "$c/packages"
+          return 49
+        }
+      else
+        sleep() { :; }
+      fi
       upgrade_packages_with_retry() {
         printf 'upgrade:%s\n' "$*" >> "$c/packages"
         return 49
       }
       remove_old_tool_version() { printf purge >> "$c/effects"; }
-      cache_installed_version() { :; }
+      cache_installed_version() { printf '%s\n' "$*" > "$c/cached"; }
       setup_mysql || rc=$?
       ;;
     clickhouse)
@@ -185,6 +194,9 @@ KIND=mysql FAULT=normal go
 check "$(sed -n 's/^Suites: //p' "$c/apt/sources.list.d/mysql.sources")" trixie 'MySQL Debian 13 uses its native repository suite'
 check "$(cat "$c/packages")" 'install:mysql-community-server mysql-community-client' 'fresh MySQL never silently changes engine after a failed install'
 check "$rc" 49 'MySQL package failure is returned'
+KIND=mysql FAULT=package-partial go
+check "$rc" 46 'MySQL consumes actual required-set failure, not successful client fallback'
+check "$(test -e "$c/cached" && cat "$c/cached" || true)" '' 'partial MySQL install cannot publish its version cache'
 KIND=mysql FAULT=metadata go
 check "$rc" 18 'incomplete MySQL metadata status retained'
 check "$(cat "$c/effects")" '' 'failed metadata has no repository or package effects'

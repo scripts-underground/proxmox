@@ -104,12 +104,15 @@ function update_script() {
     systemctl stop "$var_addon_service"
     msg_ok "Stopped service"
 
-    fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "latest"
+    fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "$CHECK_UPDATE_RELEASE"
 
     msg_info "Starting service"
     systemctl start "$var_addon_service"
     msg_ok "Started service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

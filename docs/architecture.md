@@ -1236,6 +1236,9 @@ the quiet wrapper, generate into a private sibling, and publish nonempty stdout
 only after success; failure preserves a prior working completion.
 
 Database credentials and compatibility remain in the existing core/tools owners.
+`install_packages_with_retry` certifies the entire required operand set, never a
+partial individual fallback. A successful batch retains its fast path; exhausted
+required-set retries return the final APT status before consumers publish success.
 Core's returning `generate_password(length)` completes and checks each entropy
 producer before filtering, publishes only the complete alphanumeric result, and
 retains exact producer failure status. MariaDB, MySQL, PostgreSQL and generated
@@ -1257,16 +1260,24 @@ applied to historical x86 builds or ARM. A version command is package/CPU admiss
 not a functional database proof.
 
 Meilisearch treats selected full versions, including patch releases, as distinct
-database formats. Its installed update owner reads native TOML, checks the known
+database formats. Its installed update owner establishes native TOML capability
+(tomllib, installed tomli/toml, or the distribution's python3-toml) before service
+or data effects. Missing parser capability is distinct from malformed operator
+configuration. It reads that TOML, checks the known
 config-only service command and refuses unresolved storage/environment overrides
 instead of guessing a data path. A checked stop precedes copying the original;
 the old binary exports from that private copy on a child-owned loopback endpoint.
 The exact selected binary imports into a sibling candidate. Index/document counts
-and final service consumption precede release-marker publication. Failed export,
-import or publication returns nonzero and restores the original data/binary when
-possible, retaining recovery paths if restoration itself fails. Successful migration
-also retains the prior data/binary. No failed-dump fallback clears live data, and
-the owner does not infer migration completion from health alone.
+precede public activation; final health/version consumption precedes release-marker
+publication. Before attempting public activation, failed export, import or
+publication returns nonzero and restores the original data/binary when possible,
+retaining recovery paths if restoration itself fails. Once activation is attempted,
+even a failed start may have acknowledged writes: subsequent failures retain the
+candidate at its live data/binary paths, the prior release marker and original
+recovery evidence, with a nonzero pending outcome and no automatic rollback.
+Public counts may legitimately change after the private migration proof. Successful
+migration also retains the prior data/binary. No failed-dump fallback clears live
+data, and the owner does not infer migration completion from health alone.
 
 `_uv_required_spec(dir)` owns the configuration read for both exact and range
 consumers: root `uv.toml` first (even when it masks a pyproject requirement), else
@@ -1318,6 +1329,33 @@ the actually selected release object on success, including no-op success and
 older-asset fallback. Internal response files/stages are private and removed by
 their owners. No global temporary metadata file or exported last-response state
 is used.
+
+Addon release-check callers preserve the checker's three outcomes:0 selects a raw
+`CHECK_UPDATE_RELEASE` for deployment,1 alone is a successful no-update result,
+and all other statuses return unchanged before app effects. The update runner
+cannot retain pending for a checker error swallowed by a successful hook.
+`tools/ast` checks literal checker calls in addon update hooks against the
+established positive `if` with an immediate local status capture in `else`,
+followed by `[[ "$status" == 1 ]] || return "$status"`. Unrecognized shapes are
+reported as statically unproven, not runtime failures. This bounded contribution
+check rejects child-shell, background, pipeline and nested-function contexts;
+it does not resolve dynamic command names, eval or indirect helper calls,
+and does not prove deployed bytes or service activation. The discovered per-addon
+cold-hook cases retain those release-selection and pending-outcome proofs.
+Copyparty's stock source uses that managed contract. A saved custom URL instead
+remains operator-managed, with checked staged executable publication and no
+GitHub version check or marker claim for the custom source. It invalidates any
+old managed-version marker before custom publication, so a later return to the
+stock source cannot use stale release metadata to skip deployment.
+
+Copyparty and AdGuardHome-Sync failure recovery observes prior service activity
+and positively verifies the previous runtime before restarting it. Copyparty
+restores and verifies its executable/managed-marker pair after failed publication;
+an unverified rollback retains its owned stage and stays stopped. AdGuard restores
+configuration and compares its full installation's names, bytes, links, modes and
+owners before recovery; a partial/unverified deployment stays stopped. Initially
+stopped services are not started. The original update failure and pending state
+survive recovery attempts, and both systemd/OpenRC paths have cold-hook coverage.
 
 Generic GitHub API, tag and release requests share a completed HTTP owner.
 `GITHUB_TOKEN` takes precedence over `var_github_token`, and either is used on

@@ -82,10 +82,37 @@ _meilisearch_update 1.12.1 || status=$?
 [[ "$status" == 22 && "$(/usr/bin/meilisearch --version)" == 'meilisearch 1.12.0' ]]
 curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7700/indexes/probe/documents/u4 > "$work/meilisearch-after-failure.log"
 jq -e '.title=="U4 retained consumer"' "$work/meilisearch-after-failure.log" > /dev/null
+# A real client can finish a write between public activation and a later health/
+# marker failure. An old snapshot must never replace that acknowledged write.
+_meilisearch_request() {
+  if [[ "$1" == http://127.0.0.1:7700/version ]]; then
+    local result task attempt state
+    result=$(_native_meilisearch_request http://127.0.0.1:7700/indexes/probe/documents '' \
+      -H 'Content-Type: application/json' -X POST --data '[{"id":"acknowledged","title":"Acknowledged after exposure"}]') || return $?
+    task=$(jq -er .taskUid <<< "$result") || return $?
+    for ((attempt = 0; attempt < 60; attempt++)); do
+      state=$(_native_meilisearch_request "http://127.0.0.1:7700/tasks/$task" '') || return $?
+      [[ "$(jq -r .status <<< "$state")" != succeeded ]] || break
+      sleep 1
+    done
+    jq -e '.status=="succeeded"' <<< "$state" > "$work/meilisearch-acknowledged.log" || return $?
+    return 22
+  fi
+  _native_meilisearch_request "$@"
+}
+status=0
+_meilisearch_update 1.12.1 || status=$?
+[[ "$status" == 22 && "$(/usr/bin/meilisearch --version)" == 'meilisearch 1.12.1' ]]
+curl -fsS http://127.0.0.1:7700/indexes/probe/documents/acknowledged > "$work/meilisearch-after-exposure-failure.log"
+jq -e '.title=="Acknowledged after exposure"' "$work/meilisearch-after-exposure-failure.log" > /dev/null
+[[ "$(cat "$HOME/.meilisearch")" == 1.12.0 ]]
+printf 'PASS native Meilisearch acknowledged public write survives a later update failure; prior marker retained\n'
 _meilisearch_request() { _native_meilisearch_request "$@"; }
 _meilisearch_update 1.12.1
 [[ "$(/usr/bin/meilisearch --version)" == 'meilisearch 1.12.1' ]]
 curl -fsS http://127.0.0.1:7700/indexes/probe/documents/u4 > "$work/meilisearch-after-upgrade.log"
 jq -e '.title=="U4 retained consumer"' "$work/meilisearch-after-upgrade.log" > /dev/null
+curl -fsS http://127.0.0.1:7700/indexes/probe/documents/acknowledged > "$work/meilisearch-after-retry.log"
+jq -e '.title=="Acknowledged after exposure"' "$work/meilisearch-after-retry.log" > /dev/null
 [[ "$(cat "$HOME/.meilisearch")" == 1.12.1 ]]
 printf 'PASS native Meilisearch failed export recovery and patch migration with actual document consumer\n'
