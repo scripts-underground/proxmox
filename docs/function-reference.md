@@ -63,6 +63,8 @@ Each is called by `build.func` during `setup_script`:
 - **`is_unattended()`** — Returns 0 if no interactive prompts needed. Reads `MODE`, `PHS_SILENT`, `var_unattended`, TTY state.
 - **`prompt_confirm()`, `prompt_input()`, `prompt_input_required()`, `prompt_select()`, `prompt_password()`** — Interactive whiptail-like prompts with unattended and timeout fallbacks. All use `is_unattended()`. Called by `build.func`, optionally available to user `install_script()`.
 
+- **`generate_password(length)`** - Return a complete alphanumeric password (default 13 characters), or the checked entropy failure without partial output. Shared by database helpers and generated password prompts.
+
 ### Update runner
 
 - **`confirm_container_resources <requiredCPU> <requiredMiB> <actualCPU> <actualMiB> [label]`** - Returning resource admission owner; never changes container configuration. Validates bounded decimal literals before comparing dimensions. Returns 0 when requirements are met or explicit case-insensitive y/yes approves; unknown requirements also require consent. No, empty input or EOF returns 1. Invalid/zero actual allocation returns 65 without software admission. Uses actual stdin; unattended and initial skip-confirm flags do not grant consent. Diagnostics include required/current values and tolerate absent color globals.
@@ -282,6 +284,8 @@ verb_ip6 → setting_up_container → network_check → update_os → install_sc
 - **`manage_tool_repository()`** — Tool-specific repo configuration (mariadb, mongodb, nodejs, php, postgresql, mysql). Reads tool name + version.
 - **`ensure_dependencies()`** — Batch-install packages needed for a task. Checks PATH for binaries. 5-min `apt update` cache. Read: `$@` = dependency names. Called from almost every setup_* and many user scripts.
 - **`install_packages_with_retry()`**, **`upgrade_packages_with_retry()`**, **`upgrade_package()`** — APT install/upgrade with progressive retry.
+  The install helper succeeds only for the complete required set; exhausted batch
+  retries retain the final APT status, never partial-success publication.
 - **`hold_package_version()`**, **`unhold_package_version()`** — `apt-mark` wrappers.
 - **`verify_package_source()`** — Checks `apt-cache policy` output.
 
@@ -346,7 +350,7 @@ required package work permits a release adapter to publish its marker.
 ### Runtime setups — Each reads version from env, installs, caches version
 
 - **`setup_adminer()`** — Install Adminer PHP web UI.
-- **`setup_clickhouse()`** — Install/upgrade ClickHouse via official repo or GitHub. Reads `CLICKHOUSE_VERSION`.
+- **`setup_clickhouse()`** - Admit the exact authenticated official package's CPU requirements, then install/upgrade that payload with matching pinned packages. Reads `CLICKHOUSE_VERSION`; historical builds and ARM do not receive a blanket AVX2 requirement.
 - **`setup_composer()`** — Install/self-update PHP Composer.
 - **`setup_docker()`** — Install/upgrade Docker (distro packages or official repo). Optional Portainer. Reads `USE_DOCKER_REPO`, `DOCKER_PORTAINER`.
 - **`setup_ffmpeg()`** — Install FFmpeg (static binary or source build). Reads `FFMPEG_VERSION`, `FFMPEG_TYPE`.
@@ -356,7 +360,7 @@ required package work permits a release adapter to publish its marker.
 - **`setup_java()`** — Install Temurin JDK via Adoptium repo. Reads `JAVA_VERSION`.
 - **`setup_mariadb()`** — Install/upgrade MariaDB (distro packages or official repo). Reads `MARIADB_VERSION`.
 - **`setup_mariadb_db()`** — Provision database + user. Reads `MARIADB_DB_NAME`/`USER`/`PASS`. Exports DB vars.
-- **`setup_meilisearch()`** — Install/upgrade MeiliSearch. Dump/restore migration for major upgrades.
+- **`setup_meilisearch()`** - Install/upgrade MeiliSearch. Selected full versions, including patches, use native TOML capability and checked private dump/import/count validation. Pre-exposure failures restore original data/binary. After public activation is attempted, failures retain the possibly-written candidate and recovery evidence, return nonzero and leave the prior marker. Health/version consumption gates the final release marker; public writes are never rolled back to frozen export counts.
 - **`setup_mongodb()`** — Install/upgrade MongoDB. AVX check. Reads `MONGO_VERSION`.
 - **`setup_mysql()`** — Install/upgrade MySQL (distro packages or official repo). Reads `MYSQL_VERSION`.
 - **`setup_mysql_db()`** — Provision a MySQL database + `%`-host user with database-only grants on an installed MySQL server. Reads `MYSQL_DB_NAME`/`USER` (required), `PASS` (generated 13-character alphanumeric when empty, a supplied value is used as given) and `MYSQL_DB_CREDS_FILE` (default `~/<app>.creds` from baked `APP`). Appends credentials and exports the DB vars; an existing database/user is an error, nothing is reset.

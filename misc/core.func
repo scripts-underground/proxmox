@@ -1666,6 +1666,27 @@ prompt_select() {
 #   # Require user input (no default)
 #   db_pass=$(prompt_password "Database password:" "" 60 12)
 # ------------------------------------------------------------------------------
+# Complete the entropy producer before filtering. Nothing is published until the
+# requested alphanumeric length exists; conditional callers get the exact error.
+generate_password() {
+  local length="${1:-13}" password='' entropy status
+  [[ "$length" =~ ^[1-9][0-9]*$ ]] || return 65
+  while ((${#password} < length)); do
+    entropy=$(openssl rand -base64 48) || {
+      status=$?
+      printf 'Failed to generate password entropy\n' >&2
+      return "$status"
+    }
+    entropy="${entropy//[^A-Za-z0-9]/}"
+    if [[ -z "$entropy" ]]; then
+      printf 'Password entropy contained no usable characters\n' >&2
+      return 1
+    fi
+    password+="$entropy"
+  done
+  printf '%s' "${password:0:length}"
+}
+
 prompt_password() {
   local message="${1:-Enter password:}"
   local default="${2:-}"
@@ -1676,8 +1697,7 @@ prompt_password() {
   # Generate random password if requested
   local generated=""
   if [[ "$default" == "generate" ]]; then
-    generated=$(openssl rand -base64 16 2> /dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)
-    [[ -z "$generated" ]] && generated=$(head /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 16)
+    generated=$(generate_password 16) || return $?
     default="$generated"
   fi
 
