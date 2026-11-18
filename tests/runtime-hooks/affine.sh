@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=affine
 script_type=lxc
-variants=(fresh update current no-worker custom-worker worker-stop worker-disable download build copy)
+variants=(fresh update current current-inactive no-worker custom-worker worker-dropin worker-query worker-stop worker-disable worker-reload checker web-start download build copy)
 hook_paths=()
 runtime_hooks_model() {
   apt() { printf '%s\n' "$*" >> "$c/packages"; }
@@ -30,8 +30,26 @@ runtime_hooks_model() {
   systemctl() {
     printf '%s\n' "$*" >> "$c/services"
     case "$*" in
+      'show --property=DropInPaths --value affine-worker.service')
+        [[ "$APP_FAULT" != worker-query ]] || return 59
+        [[ ! -f "$c/worker-dropins" ]] || cat "$c/worker-dropins"
+        ;;
       'stop affine-worker') [[ "$APP_FAULT" != worker-stop ]] || return 51 ;;
       'disable affine-worker') [[ "$APP_FAULT" != worker-disable ]] || return 51 ;;
+      'daemon-reload')
+        [[ "$APP_FAULT" != worker-reload || -f "$c/etc/systemd/system/affine-worker.service" ]] || return 51
+        if [[ -f "$c/etc/systemd/system/affine-worker.service" ]]; then
+          printf 'present\n' > "$c/manager-worker"
+        else
+          printf 'absent\n' > "$c/manager-worker"
+        fi
+        ;;
+      'stop affine-web') printf 'inactive\n' > "$c/web-state" ;;
+      'start affine-web')
+        [[ "$APP_FAULT" != web-start ]] || return 51
+        printf 'active\n' > "$c/web-state"
+        ;;
+      'enable -q --now redis-server affine-web') printf 'active\n' > "$c/web-state" ;;
       'reload-or-restart nginx')
         [[ -f "$c/nginx-validated" ]] || return 51
         : > "$c/nginx-activated"
@@ -47,6 +65,7 @@ runtime_hooks_model() {
     printf '%s\n' "${DATABASE_URL:-unset}" > "$c/migration-database"
   }
   curl() {
+    [[ "$APP_FAULT" != checker ]] || return 28
     local out='' url='' format='' body tag=v2.0.0
     while (($#)); do
       case "$1" in
@@ -71,13 +90,15 @@ runtime_hooks_model() {
 }
 runtime_hooks_variant() {
   case "$variant" in
-    custom-worker | worker-stop | worker-disable) fault="$variant" ;;
+    custom-worker | worker-dropin | worker-query | worker-stop | worker-disable | worker-reload | checker | web-start) fault="$variant" ;;
   esac
 }
 runtime_hooks_expected() {
   case "$fault" in
-    custom-worker) expected=65 ;;
-    worker-stop | worker-disable) expected=51 ;;
+    custom-worker | worker-dropin) expected=65 ;;
+    worker-query) expected=59 ;;
+    worker-stop | worker-disable | worker-reload | web-start) expected=51 ;;
+    checker) expected=28 ;;
   esac
 }
 runtime_hooks_setup() {
@@ -85,6 +106,8 @@ runtime_hooks_setup() {
   : > "$c/root/.profile"
   printf 'old\n' > "$c/home/.affine_app"
   for log in builds packages prerequisites nginx; do : > "$c/$log"; done
+  printf 'active\n' > "$c/web-state"
+  printf 'present\n' > "$c/manager-worker"
   mkdir -p "$c/payload/packages/backend/"{native,server/scripts} \
     "$c/payload/packages/frontend/apps/web/dist" "$c/payload/packages/frontend/admin/dist"
   printf 'web asset\n' > "$c/payload/packages/frontend/apps/web/dist/index.html"
@@ -117,8 +140,10 @@ UNIT
     case "$variant" in
       no-worker) rm "$c/etc/systemd/system/affine-worker.service" ;;
       custom-worker) printf '# USER customization\n' >> "$c/etc/systemd/system/affine-worker.service" ;;
-      current) printf '2.0.0\n' > "$c/home/.affine_app" ;;
+      worker-dropin) printf '%s\n' "$c/etc/systemd/system/affine-worker.service.d/override.conf" > "$c/worker-dropins" ;;
+      current | current-inactive) printf '2.0.0\n' > "$c/home/.affine_app" ;;
     esac
+    [[ "$variant" != current-inactive ]] || printf 'inactive\n' > "$c/web-state"
     if [[ -f "$c/etc/systemd/system/affine-worker.service" ]]; then
       sha256sum "$c/etc/systemd/system/affine-worker.service" | cut -d' ' -f1 > "$c/worker-before"
     fi
@@ -131,19 +156,20 @@ runtime_hooks_assert() {
     check "$(cat "$c/root/.affine/config/canary")" 'USER configuration' "$app/$variant live config preserved"
   fi
   case "$fault" in
-    custom-worker | worker-stop | worker-disable)
+    custom-worker | worker-dropin | worker-query | worker-stop | worker-disable)
       check "$(sha256sum "$c/etc/systemd/system/affine-worker.service" | cut -d' ' -f1)" "$(cat "$c/worker-before")" "$app/$variant refused retirement retains worker unit"
       check "$(stat -c %s "$c/builds")" 0 "$app/$variant refusal precedes app replacement/build"
+      check "$(cat "$c/opt/affine/code")" 'old code' "$app/$variant refusal preserves installed source"
       ;;
   esac
   if [[ "$rc" == 0 ]]; then
     if [[ "$role" == install ]]; then
       check "$(grep -cE '(^| )cmake( |$)' "$c/packages" || true)" 1 "$app/$variant fresh compiler dependency installed"
-    elif [[ "$variant" != current ]]; then
+    elif [[ "$variant" != current && "$variant" != current-inactive ]]; then
       check "$(cat "$c/migration-database")" 'postgresql://custom:secret@db.example.test/custom' "$app/$variant migration consumes saved database configuration"
       check "$(grep -c '^cmake$' "$c/prerequisites" || true)" 1 "$app/$variant installed compiler dependency ensured"
     fi
-    if [[ "$variant" != current ]]; then
+    if [[ "$variant" != current && "$variant" != current-inactive ]]; then
       check "$(cat "$c/opt/affine/packages/backend/server/static/index.html")" 'web asset' "$app/$variant web output reaches served root"
       check "$(cat "$c/opt/affine/packages/backend/server/static/admin/index.html")" 'admin asset' "$app/$variant admin output reaches served root"
     fi
@@ -151,13 +177,20 @@ runtime_hooks_assert() {
   fi
 }
 runtime_hooks_services_assert() {
+  check "$(cat "$c/web-state")" active "$app/$variant supported HTTP service active at completion"
   check "$(test -e "$c/etc/systemd/system/affine-worker.service" && printf present || printf absent)" absent "$app/$variant obsolete worker unit absent"
   check "$(grep -Ec '(start|--now).*affine-worker' "$c/services" || true)" 0 "$app/$variant never starts duplicate HTTP worker"
   check "$(test -e "$c/nginx-activated" && printf yes || printf no)" yes "$app/$variant validated nginx configuration activated"
   if [[ "$role" == update && "$variant" != no-worker ]]; then
     check "$(grep -q '^stop affine-worker$' "$c/services" && printf yes || printf no)" yes "$app/$variant legacy worker stopped"
     check "$(grep -q '^disable affine-worker$' "$c/services" && printf yes || printf no)" yes "$app/$variant legacy worker disabled"
-    check "$(grep -c '^daemon-reload$' "$c/services" || true)" 1 "$app/$variant retired unit removed from manager"
+    check "$(cat "$c/manager-worker")" absent "$app/$variant retired unit removed from manager"
+  fi
+  if [[ "$role" == update && "$variant" != current && "$variant" != current-inactive ]]; then
+    local stop_line start_line
+    stop_line=$(grep -n '^stop affine-web$' "$c/services" | tail -1 | cut -d: -f1)
+    start_line=$(grep -n '^start affine-web$' "$c/services" | tail -1 | cut -d: -f1)
+    check "$([[ -n "$stop_line" && -n "$start_line" ]] && ((start_line > stop_line)) && printf yes || printf no)" yes "$app/$variant supported service starts after the final stop"
   fi
 }
 runtime_hooks_retry_assert() {
@@ -165,7 +198,15 @@ runtime_hooks_retry_assert() {
   check "$(cat "$c/migration-database")" 'postgresql://custom:secret@db.example.test/custom' "$app/$variant pending retry consumes saved configuration"
   runtime_hooks_services_assert
 }
+runtime_hooks_failure_services_assert() {
+  local expected_starts=0
+  [[ "$fault" != web-start ]] || expected_starts=1
+  check "$(grep -Ec '^(start|reload|restart)|--now' "$c/services" || true)" "$expected_starts" "$app/$variant failure admits only its explicit failed-start attempt"
+  if [[ "$fault" == web-start ]]; then
+    check "$(cat "$c/web-state")" inactive "$app/$variant failed start leaves the backend inactive for pending retry"
+  fi
+}
 runtime_hooks_retry_needed() {
-  [[ "$role" == update && "$expected" != 0 && "$fault" != custom-worker ]]
+  [[ "$role" == update && "$expected" != 0 && "$fault" != custom-worker && "$fault" != worker-dropin ]]
 }
 runtime_hooks_main "$@"

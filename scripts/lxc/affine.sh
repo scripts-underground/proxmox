@@ -243,6 +243,18 @@ EOF
       msg_error "Customized $legacy_worker: migrate the obsolete worker manually before updating."
       return 65
     fi
+  fi
+
+  # Admit current on-disk overrides before service actions. This also completes
+  # a manager reload interrupted after an earlier run removed the base unit.
+  systemctl daemon-reload
+  if [[ -e "$legacy_worker" || -L "$legacy_worker" ]]; then
+    local worker_dropins
+    worker_dropins=$(systemctl show --property=DropInPaths --value affine-worker.service) || return $?
+    if [[ -n "$worker_dropins" ]]; then
+      msg_error "Customized affine-worker.service drop-ins: migrate the obsolete worker manually before updating."
+      return 65
+    fi
     systemctl stop affine-worker
     systemctl disable affine-worker
     rm -f "$legacy_worker"
@@ -259,7 +271,7 @@ EOF
     # Configuration stays in place; uploads/config under /root/.affine and
     # PostgreSQL data are outside the source replacement root.
     local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env)
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "affine_app" "toeverything/AFFiNE" "tarball" "latest" "/opt/affine"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "affine_app" "toeverything/AFFiNE" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/affine"
 
     msg_info "Rebuilding Application (Patience)"
     cd /opt/affine || exit
@@ -331,10 +343,16 @@ TURBO
     set -a && source /opt/affine/.env && set +a
     $STD node ./scripts/self-host-predeploy.js
 
-    msg_info "Starting Services"
-    systemctl start affine-web
-    msg_ok "Started Services"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
+
+  # Retirement can free the shared listener even when no rebuild is needed.
+  # A successful update always hands HTTP/jobs to the supported all-in-one unit.
+  msg_info "Starting Services"
+  systemctl start affine-web
+  msg_ok "Started Services"
   $STD nginx -t
   systemctl reload-or-restart nginx
   msg_ok "Updated Successfully!"
