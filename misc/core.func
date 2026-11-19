@@ -1150,6 +1150,7 @@ ensure_tput() {
 # exists. Release identity comes from that CT, never the creator's environment.
 _alpine_repository_policy() (
   _ar_action=${1:-check}
+  _ar_mirror=${2:-}
   _ar_id=$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-release) || return $?
   if [ "$_ar_id" != alpine ]; then
     [ "$_ar_action" = check ] && return 0
@@ -1169,36 +1170,125 @@ _alpine_repository_policy() (
   fi
   case "$_ar_action" in
     fresh)
-      printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories
-      return $?
+      printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories || return $?
       ;;
     check | mirror) ;;
     *) return 65 ;;
   esac
-  # An old latest-stable installation must not silently upgrade OR downgrade.
-  # Check every active Alpine source, including tagged ones, before any apk work.
-  _ar_other=$(awk -v branch="$_ar_branch" '
-    /^[[:space:]]*#/ { next }
+  # apk loads the main file, then the sorted union of non-hidden *.list names.
+  # /etc wins equal names (including empty files and /dev/null masks).
+  _ar_files=$(
+    [ ! -e /etc/apk/repositories ] || printf '%s\n' /etc/apk/repositories
+    for _ar_file in /etc/apk/repositories.d/*.list /lib/apk/repositories.d/*.list; do
+      [ -e "$_ar_file" ] || [ -L "$_ar_file" ] || continue
+      printf '%s\n' "${_ar_file##*/}"
+    done | LC_ALL=C sort -u | while IFS= read -r _ar_name; do
+      if [ -e "/etc/apk/repositories.d/$_ar_name" ] || [ -L "/etc/apk/repositories.d/$_ar_name" ]; then
+        printf '%s\n' "/etc/apk/repositories.d/$_ar_name"
+      else
+        printf '%s\n' "/lib/apk/repositories.d/$_ar_name"
+      fi
+    done
+  ) || return $?
+  IFS='
+'
+  set -f
+  # Splitting only on newlines retains spaces and shell metacharacters in names.
+  # shellcheck disable=SC2086
+  set -- $_ar_files
+  [ "$#" != 0 ] || set -- /dev/null
+  _ar_program='
+    function fail(reason) { print "unresolved repository: " reason; exit 65 }
+    function expand(value,    out, key, n, p, spec) {
+      out = ""
+      while ((p = index(value, "$"))) {
+        out = out substr(value, 1, p - 1)
+        value = substr(value, p + 1)
+        if (substr(value, 1, 1) != "{" || !(n = index(value, "}"))) fail("invalid variable")
+        spec = substr(value, 2, n - 2); key = spec
+        sub(/:.*/, "", key)
+        if (!(key in vars)) fail("undefined variable " key)
+        if (spec == key) out = out vars[key]
+        else {
+          spec = substr(spec, length(key) + 2)
+          if (spec !~ /^[0-9]+$/) fail("invalid variable length")
+          out = out substr(vars[key], 1, spec + 0)
+        }
+        value = substr(value, n + 1)
+      }
+      return out value
+    }
+    function word(    value, n) {
+      match(rest, /^[ \t]*[^ \t]+/)
+      n = RLENGTH; value = substr(rest, 1, n)
+      start = offset + match(value, /[^ \t]/)
+      offset += n; rest = substr(rest, n + 1)
+      sub(/^[ \t]+/, "", value)
+      return value
+    }
+    function native(url,    path, parts) {
+      path = url
+      sub(/^[a-zA-Z]+:\/\/[^\/]*/, "", path)
+      if (!match(path, /\/alpine\//)) return 0
+      path = substr(path, RSTART + RLENGTH)
+      split(path, parts, "/")
+      if (parts[1] != branch) { print parts[1]; exit 65 }
+      return 1
+    }
+    BEGIN { if (arch != "") vars["APK_ARCH"] = arch }
     {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^#/) break
-        if ($i ~ /^https?:\/\/[^\/]+\/alpine\//) {
-          split($i, url, "/")
-          if (url[5] != branch) { print url[5]; exit }
+      line = $0; rest = line; offset = 0
+      token = word()
+      if (token == "" || token ~ /^#/) {
+        if (FILENAME == target) print line
+        next
+      }
+      if (token == "set") {
+        sub(/^[ \t]+/, "", rest); default = 0
+        if (rest ~ /^-default[ \t]+/) { default = 1; sub(/^-default[ \t]+/, "", rest) }
+        eq = index(rest, "="); key = substr(rest, 1, eq - 1)
+        if (!eq || key !~ /^[a-zA-Z][a-zA-Z0-9_]*$/ || key ~ /^APK_/) fail("invalid assignment")
+        value = expand(substr(rest, eq + 1))
+        if (!default || !(key in vars)) vars[key] = value
+      } else {
+        if (token == "v2" || token == "v3" || token == "ndx") token = word()
+        if (token ~ /^@/) token = word()
+        url_start = start; url_length = length(token); url = expand(token)
+        sub(/\/+$/, "", url)
+        components = rest; sub(/[ \t]+#.*/, "", components)
+        components = expand(components)
+        count = split(components, comp, /[ \t]+/); is_native = 0; has_component = 0
+        for (i = 1; i <= count; i++) if (comp[i] != "") {
+          has_component = 1
+          if (native(url "/" comp[i])) is_native = 1
+        }
+        if (!has_component) is_native = native(url)
+        if (target != "" && is_native && url ~ /^https?:\/\//) {
+          sub(/:\/\/[^\/]*/, "://" mirror, url)
+          line = substr(line, 1, url_start - 1) url substr(line, url_start + url_length)
         }
       }
+      if (FILENAME == target) print line
     }
-  ' /etc/apk/repositories) || return $?
+  '
+  # Both admission and rewriting use the same effective, expanded source model.
+  # No repository bytes change until the complete inventory has been admitted.
+  _ar_arch=$(cat /etc/apk/arch 2> /dev/null) || _ar_arch=
+  _ar_other=$(awk -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@") || {
+    [ -n "$_ar_other" ] || _ar_other='unreadable inventory'
+  }
   if [ -n "$_ar_other" ]; then
     printf 'Alpine installed branch %s; repository branch %s differs. Explicit release selection is required; repositories unchanged.\n' "$_ar_branch" "$_ar_other" >&2
     return 65
   fi
   [ "$_ar_action" = mirror ] || return 0
-  _ar_mirror=${2:-}
   case "$_ar_mirror" in '' | *[!a-zA-Z0-9.-]*) return 65 ;; esac
-  # Change only the authority of active native Alpine URLs. Keep branch,
-  # components, tags, scheme, comments and unrelated operator repositories.
-  sed -i -E "s|^([[:space:]]*(@[^[:space:]]+[[:space:]]+)?https?://)[^/[:space:]]+(/alpine/$_ar_branch/)|\1$_ar_mirror\3|" /etc/apk/repositories
+  _ar_tmp=$(mktemp /etc/apk/.repositories.XXXXXX) || return $?
+  trap 'rm -f -- "$_ar_tmp"' EXIT
+  for _ar_file; do
+    awk -v branch="$_ar_branch" -v arch="$_ar_arch" -v mirror="$_ar_mirror" -v target="$_ar_file" "$_ar_program" "$@" > "$_ar_tmp" || return $?
+    cmp -s "$_ar_tmp" "$_ar_file" || cat "$_ar_tmp" > "$_ar_file" || return $?
+  done
 )
 
 _alpine_repository_contents() {

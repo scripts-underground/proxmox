@@ -58,10 +58,10 @@ check() {
   fi
 }
 for owner in base pkg upgrade runner; do
-  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine; do
+  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback; do
     [[ "$owner" != base || "$scenario" != non-alpine ]] || continue
     c="$work/$owner-$scenario"
-    mkdir -p "$c"/{bin,etc/apk,home,tmp,var/lib/scripts-underground/update-pending}
+    mkdir -p "$c"/{bin,etc/apk/repositories.d,lib/apk/repositories.d,home,tmp,var/lib/scripts-underground/update-pending}
     printf 'ID=alpine\nVERSION_ID=3.23.8\n' > "$c/etc/os-release"
     branch=v3.23
     case "$scenario" in
@@ -74,7 +74,27 @@ for owner in base pkg upgrade runner; do
     case "$scenario" in
       tagged-mixed) printf '@experimental https://other.invalid/alpine/v3.24/community\n' >> "$c/etc/apk/repositories" ;;
       disabled) printf '# https://other.invalid/alpine/latest-stable/community\n' >> "$c/etc/apk/repositories" ;;
+      alternate-edge) printf 'https://other.invalid/pub/mirrors/alpine/edge/main\n' >> "$c/etc/apk/repositories" ;;
+      alternate-fallback) sed -i 's|/alpine/|/pub/alpine/|g' "$c/etc/apk/repositories" ;;
+      typed-fallback) sed -i '2s/^/v2 /;3s/^/v3 /' "$c/etc/apk/repositories" ;;
+      ndx-fallback) sed -i '2s/^/ndx /;3s/^/ndx /' "$c/etc/apk/repositories" ;;
+      etc-edge | masked-edge) printf 'https://other.invalid/alpine/edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      lib-edge) printf 'https://other.invalid/alpine/edge/main\n' > "$c/lib/apk/repositories.d/operator.list" ;;
+      masked)
+        : > "$c/etc/apk/repositories.d/operator.list"
+        printf 'https://other.invalid/alpine/edge/main\n' > "$c/lib/apk/repositories.d/operator.list"
+        ;;
+      ignored-list)
+        printf 'https://other.invalid/alpine/edge/main\n' > "$c/etc/apk/repositories.d/operator.txt"
+        printf 'https://other.invalid/alpine/edge/main\n' > "$c/etc/apk/repositories.d/.hidden.list"
+        ;;
+      variable-edge | variable-fallback)
+        printf 'set release=%s\n' "$([[ "$scenario" == variable-edge ]] && echo edge || echo v3.23)" > "$c/lib/apk/repositories.d/00-vars.list"
+        printf 'set -default release=edge\nset root=https://original.invalid/pub/alpine\nv2 @operator ${root}/${release} main community # retained\nhttps://vendor.invalid/custom/packages\n' > "$c/etc/apk/repositories.d/10-operator.list"
+        ;;
+      component-edge) printf 'v2 https://other.invalid/pub/alpine edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
     esac
+    [[ "$scenario" != masked-edge ]] || printf 'https://other.invalid/alpine/v3.23/main\n' > "$c/lib/apk/repositories.d/operator.list"
     cp "$c/etc/apk/repositories" "$c/before"
     if [[ "$owner" == runner ]]; then
       printf 'prior pending bytes\n' > "$c/var/lib/scripts-underground/update-pending/alpine"
@@ -94,9 +114,13 @@ exit 0
 SHIM
     printf '#!/bin/sh\nexit 0\n' > "$c/bin/wget"
     cp "$c/bin/wget" "$c/bin/timeout"
-    ln -s /bin/sh "$c/bin/ash"
+    if [[ -n "${ALPINE_BUSYBOX:-}" ]]; then
+      for tool in ash awk sed sort cmp; do ln -s "$ALPINE_BUSYBOX" "$c/bin/$tool"; done
+    else
+      ln -s /bin/sh "$c/bin/ash"
+    fi
     chmod +x "$c/bin/"{apk,wget,timeout}
-    redirect() { sed -e "s|/var/lib/scripts-underground|$c/var/lib/scripts-underground|g" -e "s|/etc/|$c/etc/|g"; }
+    redirect() { sed -e "s|/var/lib/scripts-underground|$c/var/lib/scripts-underground|g" -e "s|/lib/apk/|$c/lib/apk/|g" -e "s|/etc/|$c/etc/|g"; }
     redirect < "$OWNER_ROOT/misc/core.func" > "$c/core.func"
     case "$owner" in
       base)
@@ -118,7 +142,13 @@ SHIM
       BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/error.log" VERBOSE=yes \
       timeout 30 bash "$0" --child > "$c/output" 2>&1 || rc=$?
     label="$owner/$scenario"
-    if [[ "$owner" == base ]]; then
+    if [[ "$scenario" == *-edge && "$scenario" != alternate-edge || "$scenario" == alternate-edge && "$owner" != base ]]; then
+      check "$rc" 65 "$label rejects every effective native source"
+      check "$(wc -l < "$c/events")" 0 "$label no package or hook effect"
+      if [[ "$owner" == runner ]]; then
+        check "$(cat "$c/var/lib/scripts-underground/update-pending/alpine")" 'prior pending bytes' "$label refusal preserves pending state"
+      fi
+    elif [[ "$owner" == base ]]; then
       check "$rc" 0 "$label creator completes"
       check "$(grep -c '/alpine/v3.23/' "$c/etc/apk/repositories" || true)" 2 "$label actual template branch pinned"
       check "$(grep -c latest-stable "$c/seen" 2> /dev/null || true)" 0 "$label package consumer never sees moving alias"
@@ -136,9 +166,14 @@ SHIM
       check "$(grep -c '^# operator comment\|# retained\|https://vendor.invalid/custom/packages' "$c/etc/apk/repositories" || true)" 3 "$label unrelated/comment/tag bytes retained"
     fi
     [[ "$rc" == 0 || "$rc" == 65 ]] || tail -n 8 "$c/output" >&2
-    if [[ "$owner" == pkg && "$scenario" == fallback ]]; then
+    if [[ "$owner" == pkg && "$scenario" == *fallback && "$scenario" != legacy-fallback ]]; then
       check "$(grep -c original.invalid "$c/etc/apk/repositories" || true)" 0 "$label mirror transport changed"
-      check "$(grep -c '^@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
+      check "$(grep -c '@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
+      if [[ "$scenario" == variable-fallback ]]; then
+        mirror=$(sed -n 's|^https://\([^/]*\)/.*|\1|p' "$c/etc/apk/repositories" | head -n 1)
+        check "$(grep -Fc "v2 @operator https://$mirror/pub/alpine/v3.23 main community # retained" "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label effective typed variable source rewritten"
+        check "$(grep -c 'https://vendor.invalid/custom/packages' "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label unrelated directory source retained"
+      fi
     fi
   done
 done
