@@ -796,6 +796,12 @@ legitimate hook can restart the CT. It shares the initial startup path's exact
 address-wait implementation, 20 attempts, one-second sleeps and timeout exit1.
 Only a ready address reaches description and access-URL publication; timeout
 prints the existing startup diagnostics, never a partial URL or success.
+Failed address probes are retryable observations within that same wait, not
+fatal stage calls. Both families clear failed probe output; IPv6 addresses still
+under DAD or marked dadfailed are not ready. Exhaustion retains the existing
+timeout diagnostics and exit1. Repair emits no installation completion before
+this finalization boundary. Optional verbose create diagnostics restore tracing
+and retain their owning failure branch's exit209 even when the diagnostic fails.
 
 #### 4.1.5 Bundle composition
 
