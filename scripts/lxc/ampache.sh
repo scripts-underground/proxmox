@@ -20,6 +20,8 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
+  # The release owns code, not an existing library or descendant mounted data.
+  local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" music)
   # Follow upstream's recommended Ampache 7 line on PHP 8.4. A 7 -> 8
   # migration (and PHP 8.5) requires a separate explicit decision.
   UPDATE_FORCE=1 check_for_gh_release "Ampache" "ampache/ampache" "latest" "" "7." || return $?
@@ -66,7 +68,44 @@ function install_script() {
     -e 's|^database_username = .*|database_username = "ampache"|' \
     -e "s|^database_password = .*|database_password = \"${MARIADB_DB_PASS}\"|" \
     /opt/ampache/config/ampache.cfg.php
-  chown -R www-data:www-data /opt/ampache
+  # Match replacement's mount boundary, including same-device/file bind mounts.
+  # Never recursively chown persistent data or dereference operator links.
+  local mount pattern entry path rest part
+  local -a ownership_prune=(-false) persistent=()
+  case "${CLEAN_INSTALL_KEEP:-}" in *$'\n'* | *$'\r'* | *$'\t'*) return 65 ;; esac
+  read -r -a persistent <<< "${CLEAN_INSTALL_KEEP:-}"
+  persistent+=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+  for entry in "${persistent[@]}"; do
+    [[ -n "$entry" ]] || return 65
+    case "/$entry/" in //* | *//* | */./* | */../* | *'*'* | *'?'* | *'['* | *']'*) return 65 ;; esac
+    path=/opt/ampache rest="$entry"
+    while [[ -n "$rest" ]]; do
+      part=${rest%%/*}
+      path+="/$part"
+      [[ ! -L "$path" && "$rest" == */* ]] || break
+      rest=${rest#*/}
+    done
+    pattern=${path//\\/\\\\}
+    pattern=${pattern//\*/\\*}
+    pattern=${pattern//\?/\\?}
+    pattern=${pattern//\[/\\[}
+    ownership_prune+=(-o -path "$pattern")
+  done
+  [[ -r /proc/self/mountinfo ]] || return 69
+  while read -r _ _ _ _ mount _; do
+    mount=${mount//\\040/ }
+    mount=${mount//\\011/$'\t'}
+    mount=${mount//\\012/$'\n'}
+    mount=${mount//\\134/$'\\'}
+    [[ "$mount" == /opt/ampache/* ]] || continue
+    pattern=${mount//\\/\\\\}
+    pattern=${pattern//\*/\\*}
+    pattern=${pattern//\?/\\?}
+    pattern=${pattern//\[/\\[}
+    ownership_prune+=(-o -path "$pattern")
+  done < /proc/self/mountinfo
+  chown -h www-data:www-data /opt/ampache
+  find /opt/ampache/ -mindepth 1 \( "${ownership_prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} +
   msg_ok "Configured Database Connection"
 
   msg_info "Importing Database Schema"
@@ -101,6 +140,7 @@ function update_script() {
     msg_error "No ${APP} Installation Found!"
     exit
   fi
+  local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" music)
 
   # Keep existing installations on Ampache 7 / PHP 8.4, just like fresh installs.
   # Ampache 8 / PHP 8.5 migration is a separate explicit decision.
@@ -114,12 +154,37 @@ function update_script() {
     # suppress their internal errexit. Its EXIT owner cannot replace the runner's
     # pending/cleanup owner and preserves the original failure even if recovery fails.
     (
-      local prior before after stop_attempted=0 activation_attempted=0
-      function ampache_runtime_state() (
+      local prior before after stop_attempted=0 write_phase=deployment
+      # One deployment footprint drives both integrity and live ownership writes.
+      # Restore/configuration has a wider footprint and is never auto-recoverable.
+      function ampache_footprint() (
         set -o pipefail
+        local operation="$1"
+        case "$operation" in fingerprint | ownership) ;; *) exit 65 ;; esac
         {
-          local path mount row pattern
-          local -a prune=(-path /opt/ampache/music)
+          local path mount row pattern entry rest part
+          local -a prune=(-false) persistent=()
+          # Consume the same persistence declarations as checked replacement,
+          # including a kept path's first live symlink ancestor.
+          case "${CLEAN_INSTALL_KEEP:-}" in *$'\n'* | *$'\r'* | *$'\t'*) exit 65 ;; esac
+          read -r -a persistent <<< "${CLEAN_INSTALL_KEEP:-}"
+          persistent+=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+          for entry in "${persistent[@]}"; do
+            [[ -n "$entry" ]] || exit 65
+            case "/$entry/" in //* | *//* | */./* | */../* | *'*'* | *'?'* | *'['* | *']'*) exit 65 ;; esac
+            path=/opt/ampache rest="$entry"
+            while [[ -n "$rest" ]]; do
+              part=${rest%%/*}
+              path+="/$part"
+              [[ ! -L "$path" && "$rest" == */* ]] || break
+              rest=${rest#*/}
+            done
+            pattern=${path//\\/\\\\}
+            pattern=${pattern//\*/\\*}
+            pattern=${pattern//\?/\\?}
+            pattern=${pattern//\[/\\[}
+            prune+=(-o -path "$pattern")
+          done
           [[ -r /proc/self/mountinfo ]] || exit 69
           # Media is persistent data, not deployment-owned code. Mountinfo also
           # identifies same-device bind mounts that find -xdev cannot exclude.
@@ -131,8 +196,10 @@ function update_script() {
             mount=${mount//\\012/$'\n'}
             mount=${mount//\\134/$'\\'}
             [[ "$mount" == /opt/ampache/* ]] || continue
-            printf 'mount:%s\0' "$row" || exit $?
-            stat -c '%f:%u:%g:%d:%i' -- "$mount" || exit $?
+            if [[ "$operation" == fingerprint ]]; then
+              printf 'mount:%s\0' "$row" || exit $?
+              stat -c '%f:%u:%g:%d:%i' -- "$mount" || exit $?
+            fi
             # find -path takes a pattern; preserve literal operator mount names.
             pattern=${mount//\\/\\\\}
             pattern=${pattern//\*/\\*}
@@ -140,6 +207,11 @@ function update_script() {
             pattern=${pattern//\[/\\[}
             prune+=(-o -path "$pattern")
           done < /proc/self/mountinfo
+          if [[ "$operation" == ownership ]]; then
+            chown -h www-data:www-data /opt/ampache || exit $?
+            find /opt/ampache/ -mindepth 1 \( "${prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} + || exit $?
+            exit 0
+          fi
           {
             printf '%s\0' /opt/ampache "$HOME/.ampache" || exit $?
             find /opt/ampache/ -mindepth 1 \( "${prune[@]}" \) -prune -o -print0 || exit $?
@@ -158,12 +230,16 @@ function update_script() {
               exit 65
             fi
           done
-        } | sha256sum
+        }
+      )
+      function ampache_runtime_state() (
+        set -o pipefail
+        ampache_footprint fingerprint | sha256sum
       )
       function ampache_recover() {
         local status=$?
         trap - EXIT
-        if [[ "$status" != 0 && "$stop_attempted" == 1 && "$activation_attempted" == 0 && "$prior" == active ]]; then
+        if [[ "$status" != 0 && "$stop_attempted" == 1 && "$write_phase" == deployment && "$prior" == active ]]; then
           after=$(ampache_runtime_state) || after=unverified
           if [[ "$after" == "$before" ]]; then
             systemctl start apache2 || msg_warn "Unable to restart previous Ampache service"
@@ -193,12 +269,16 @@ function update_script() {
 
       fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
 
+      # Backup is read-only with respect to the live runtime. Restore is not:
+      # it removes/copies config even through mounted parents. End eligibility
+      # BEFORE that writer (and subsequent chmod/chown), regardless of version.
+      write_phase=configuration
       restore_backup
       chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
-      chown -R www-data:www-data /opt/ampache
+      ampache_footprint ownership
 
       msg_info "Starting Service"
-      activation_attempted=1
+      write_phase=activation
       systemctl start apache2
       msg_ok "Started Service"
     )

@@ -6,18 +6,25 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=ampache
 script_type=lxc
-variants=(fresh fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions query stop stopped-missing-asset stopped-download stopped-backup stopped-copy media-files media-missing-asset runtime)
+variants=(fresh fresh-media fresh-kept-data fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions ownership query stop stopped-missing-asset stopped-download stopped-backup stopped-copy media-files media-missing-asset kept-data mounted-restore-missing mounted-restore-partial local-restore-missing local-restore-partial runtime)
 hook_paths=(/var/www www)
 runtime_hooks_model() {
   [[ "$APP_FAULT" != pin8 ]] || var_appversion=8.4.0
-  if [[ "$c" == *-media-* ]]; then
+  if [[ "$c" == *-media-* || "$c" == *-fresh-media ]]; then
     mount --bind "$c/external/media" '/opt/ampache/external media [live]*?'
+  fi
+  if [[ "$c" == *-mounted-restore-* ]]; then
+    mount --bind "$c/opt/ampache/config" /opt/ampache/config
+  fi
+  if [[ "$c" == *-kept-data ]]; then
+    CLEAN_INSTALL_KEEP=legacy-media
+    CLEAN_INSTALL_KEEP_PATHS=('user library' alias/library)
   fi
   sha256sum() {
     local input
     input=$(readlink /proc/self/fd/0) || return $?
     case "$input" in
-      */ampache/music/* | *'/external media [live]*?/'*) printf '%s\n' "$input" >> "$c/media-reads" ;;
+      */ampache/music/* | *'/external media [live]*?/'* | *'/ampache/user library/'* | */ampache/legacy-media/*) printf '%s\n' "$input" >> "$c/media-reads" ;;
     esac
     command sha256sum "$@"
   }
@@ -80,6 +87,11 @@ PY
     [[ "$APP_FAULT" != extract ]] || printf 'invalid ZIP\n' > "$1"
   }
   cp() {
+    if [[ "$APP_FAULT" == *-restore-* && "$1" == -a && "$3" == /opt/ampache.backup/files/opt/ampache/config/ampache.cfg.php ]]; then
+      [[ "$APP_FAULT" != *-restore-partial ]] || printf 'partial config\n' > /opt/ampache/config/ampache.cfg.php
+      printf 'restore copy failed after removal\n' > "$c/restore-consumer"
+      return 43
+    fi
     if [[ "$APP_FAULT" == backup && "${!#}" == /opt/ampache.backup/files/* ]]; then return 42; fi
     if [[ "$APP_FAULT" == copy || "$APP_FAULT" == partial ]] && [[ "${!#}" == /opt/ampache/* && "$*" == *'/deploy-source.'* ]]; then
       command cp "$@"
@@ -91,6 +103,10 @@ PY
   chmod() {
     [[ "$APP_FAULT" != permissions || "$*" != *'/opt/ampache/public/rest/.htaccess'* ]] || return 44
     command chmod "$@"
+  }
+  chown() {
+    command chown "$@" || return $?
+    [[ "$APP_FAULT" != ownership || "$*" != *'/opt/ampache'* ]] || return 45
   }
   rm() {
     [[ "$APP_FAULT" != restore || "${!#}" != /opt/ampache/config/ampache.cfg.php ]] || return 43
@@ -114,9 +130,11 @@ PY
   }
 }
 runtime_hooks_variant() {
-  case "$variant" in missing-asset | checker-error | pin8 | ipv6 | extract | backup | partial | restore | permissions | query | stop) fault="$variant" ;; esac
+  [[ "$variant" != fresh-media && "$variant" != fresh-kept-data ]] || role=install
+  case "$variant" in missing-asset | checker-error | pin8 | ipv6 | extract | backup | partial | restore | permissions | ownership | query | stop) fault="$variant" ;; esac
   [[ "$variant" != stopped-* ]] || fault="${variant#stopped-}"
   [[ "$variant" != media-missing-asset ]] || fault=missing-asset
+  [[ "$variant" != *-restore-* ]] || fault="$variant"
   [[ "$variant" != fresh-missing-asset ]] || {
     role=install
     fault=missing-asset
@@ -133,8 +151,9 @@ runtime_hooks_expected() {
     pin8) expected=65 ;;
     extract) expected=251 ;;
     backup) expected=42 ;;
-    restore) expected=43 ;;
+    restore | *-restore-*) expected=43 ;;
     permissions) expected=44 ;;
+    ownership) expected=45 ;;
     query) expected=53 ;;
     stop) expected=55 ;;
   esac
@@ -155,6 +174,29 @@ with zipfile.ZipFile(sys.argv[1],'w') as archive:
         'resources/sql/ampache.sql':'schema fixture\n',
     }.items(): archive.writestr(name,body)
 PY
+  if [[ "$variant" == *kept-data ]]; then
+    mkdir -p "$c/opt/ampache/user library" "$c/opt/ampache/legacy-media" "$c/external/library"
+    printf 'operator data\n' > "$c/opt/ampache/user library/canary"
+    printf 'operator data\n' > "$c/opt/ampache/legacy-media/canary"
+    printf 'operator data\n' > "$c/external/library/canary"
+    ln -s "$c/external" "$c/opt/ampache/alias"
+    python3 - "$c/release.zip" << 'PY'
+import sys,zipfile
+with zipfile.ZipFile(sys.argv[1],'a') as archive:
+    for path in ('user library/canary','legacy-media/canary','alias/library/canary'):
+        archive.writestr(path,'archive defaults\n')
+PY
+  fi
+  if [[ "$variant" == fresh-media ]]; then
+    mkdir -p "$c/opt/ampache/music" "$c/external/media" "$c/opt/ampache/external media [live]*?"
+    printf 'saved music\n' > "$c/opt/ampache/music/canary"
+    printf 'mounted media bytes\n' > "$c/external/media/track"
+    ln -s "$c/external/credential" "$c/opt/ampache/external-credential"
+    python3 - "$c/release.zip" << 'PY'
+import sys,zipfile
+with zipfile.ZipFile(sys.argv[1],'a') as archive: archive.writestr('music/canary','archive media defaults\n')
+PY
+  fi
   if [[ "$role" == update ]]; then
     mkdir -p "$c/opt/ampache/"{config,public/rest,public/play,advanced-config,music}
     printf 'saved database configuration\n' > "$c/opt/ampache/config/ampache.cfg.php"
@@ -166,10 +208,22 @@ PY
     case "$variant" in
       current | pending) printf '7.10.5\n' > "$c/home/.ampache" ;;
     esac
+    if [[ "$variant" == *-restore-* ]]; then
+      # Same-version forced repair: deploy code and marker are byte-identical,
+      # so only the mounted configuration consumer exposes the failed restore.
+      printf '7.10.5\n' > "$c/home/.ampache"
+      printf 'interrupted update\n' > "$c/state/ampache"
+      unzip -qo "$c/release.zip" -d "$c/opt/ampache"
+    fi
     [[ "$variant" != pending ]] || printf 'interrupted update\n' > "$c/state/ampache"
     if [[ "$variant" == media-* ]]; then
       mkdir -p "$c/external/media" "$c/opt/ampache/external media [live]*?"
       printf 'mounted media bytes\n' > "$c/external/media/track"
+      ln -s "$c/external/credential" "$c/opt/ampache/external-credential"
+      python3 - "$c/release.zip" << 'PY'
+import sys,zipfile
+with zipfile.ZipFile(sys.argv[1],'a') as archive: archive.writestr('music/canary','archive media defaults\n')
+PY
     fi
     local initial=active
     [[ "$variant" != stopped-* ]] || initial=inactive
@@ -177,6 +231,15 @@ PY
   fi
 }
 runtime_hooks_assert() {
+  if [[ "$variant" == *kept-data ]]; then
+    local path
+    check "$(stat -c %s "$c/media-reads")" 0 "$app/$variant declared persistent data never reaches hashing"
+    for path in "$c/opt/ampache/user library/canary" "$c/opt/ampache/legacy-media/canary" "$c/external/library/canary"; do
+      check "$(cat "$path")" 'operator data' "$app/$variant declared persistent bytes retained"
+      check "$(stat -c %u:%g "$path")" 0:0 "$app/$variant declared persistent ownership retained"
+    done
+    check "$(stat -c %u:%g "$c/opt/ampache/alias")" 0:0 "$app/$variant kept symlink ancestor ownership retained"
+  fi
   if [[ "$variant" == media-* ]]; then
     check "$(stat -c %s "$c/media-reads")" 0 "$app/$variant runtime verification never reads media or same-device mount contents"
     local fingerprint_status=0
@@ -186,8 +249,23 @@ assert re.fullmatch(rb'[0-9a-f]{64}  -\n',pathlib.Path(sys.argv[1]).read_bytes()
 PY
     check "$fingerprint_status" 0 "$app/$variant fingerprint exposes one text checksum, not binary metadata"
   fi
+  if [[ "$variant" == media-* || "$variant" == fresh-media ]]; then
+    check "$(cat "$c/opt/ampache/music/canary")" 'saved music' "$app/$variant archive defaults cannot replace library data"
+    check "$(stat -c %u:%g "$c/opt/ampache/music/canary")" 0:0 "$app/$variant library ownership remains operator-owned"
+    check "$(stat -c %u:%g "$c/external/media/track")" 0:0 "$app/$variant mounted data ownership remains operator-owned"
+    check "$(stat -c %u:%g "$c/external/credential")" 0:0 "$app/$variant ownership never follows an external symlink"
+  fi
   if [[ "$role" == update ]]; then
-    check "$(cat "$c/opt/ampache/config/ampache.cfg.php")" 'saved database configuration' "$app/$variant saved configuration retained"
+    if [[ "$variant" == *-restore-* ]]; then
+      check "$(cat "$c/restore-consumer")" 'restore copy failed after removal' "$app/$variant destructive restore reached copy failure"
+      local config=missing
+      [[ ! -f "$c/opt/ampache/config/ampache.cfg.php" ]] || config=$(cat "$c/opt/ampache/config/ampache.cfg.php")
+      [[ "$variant" != *-restore-partial ]] || check "$config" 'partial config' "$app/$variant partial bytes observed at config consumer"
+      [[ "$variant" != *-restore-missing ]] || check "$config" missing "$app/$variant missing file observed at config consumer"
+      check "$(cat "$c/recovery-state")" inactive "$app/$variant incomplete config cannot start Apache"
+    else
+      check "$(cat "$c/opt/ampache/config/ampache.cfg.php")" 'saved database configuration' "$app/$variant saved configuration retained"
+    fi
     check "$(cat "$c/opt/ampache/public/rest/.htaccess")" 'saved REST rules' "$app/$variant REST rules retained"
     check "$(cat "$c/opt/ampache/public/play/.htaccess")" 'saved play rules' "$app/$variant play rules retained"
     check "$(cat "$c/opt/ampache/advanced-config/canary")" 'saved advanced configuration' "$app/$variant advanced configuration retained"
