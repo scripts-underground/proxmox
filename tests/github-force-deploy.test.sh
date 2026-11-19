@@ -14,6 +14,7 @@ native_exit() {
   local status=$? capture=0
   trap - EXIT
   journalctl -u OliveTin.service --no-pager > "$work/package-journal.log" 2>&1 || capture=$?
+  journalctl -u postgresql.service -u postgresql@16-main.service -u meilisearch.service --no-pager > "$work/database-journal.log" 2>&1 || capture=$?
   local -a evidence=()
   local file
   for file in "$work"/*.log "$work"/*.html; do
@@ -33,6 +34,7 @@ native_exit() {
 trap native_exit EXIT
 export HOME="$work/home" INSTALL_LOG="$work/helper.log"
 mkdir "$HOME"
+source "$ROOT/tests/lib/core-databases.native.sh"
 target="$work/assets"
 
 # Numeric-v compatibility must return the actual release object, with assets,

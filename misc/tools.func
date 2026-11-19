@@ -504,7 +504,7 @@ prepare_repository_setup() {
 install_packages_with_retry() {
   local packages=("$@")
   local max_retries=3
-  local retry=0
+  local retry=0 install_status=100
 
   # Pre-check: ensure dpkg is not in a broken state
   if dpkg --audit 2>&1 | grep -q .; then
@@ -517,6 +517,8 @@ install_packages_with_retry() {
       -o Dpkg::Options::="--force-confold" \
       "${packages[@]}" 2> /dev/null; then
       return 0
+    else
+      install_status=$?
     fi
 
     retry=$((retry + 1))
@@ -546,13 +548,12 @@ install_packages_with_retry() {
               fi
             fi
           done
-          # If some packages installed, consider partial success
-          if [[ ${#failed[@]} -lt ${#packages[@]} ]]; then
-            if [[ ${#failed[@]} -gt 0 ]]; then
-              msg_warn "Partially installed. Failed packages: ${failed[*]}"
-            fi
+          # Every operand is required. One working client cannot certify a
+          # failed server; the final complete-set retry retains its APT status.
+          if [[ ${#failed[@]} -eq 0 ]]; then
             return 0
           fi
+          msg_warn "Required packages still failed: ${failed[*]}"
           ;;
       esac
 
@@ -576,7 +577,7 @@ install_packages_with_retry() {
   else
     msg_error "Hint: Package(s) exist in the repo but could not be installed — run 'apt-get install -f' inside the container or check for dependency conflicts."
   fi
-  return 100
+  return "$install_status"
 }
 
 # ------------------------------------------------------------------------------
@@ -978,13 +979,6 @@ EOF
         return 65
       fi
 
-      cleanup_old_repo_files "mysql" || return $?
-
-      if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
-        msg_error "Failed to import MySQL GPG key"
-        return 7
-      fi
-
       local distro_codename component architecture
       distro_codename=$(get_os_info codename) || return $?
       if [[ -z "$distro_id" || -z "$distro_codename" ]]; then
@@ -995,6 +989,7 @@ EOF
       if [[ "$distro_id" == "debian" ]]; then
         case "$distro_codename" in
           bookworm | bullseye) suite="$distro_codename" ;;
+          trixie | forky | sid) suite=trixie ;;
           *) suite="bookworm" ;;
         esac
       else
@@ -1011,6 +1006,26 @@ EOF
       if [[ -z "$suite" || -z "$architecture" ]]; then
         msg_error "Unable to determine the MySQL repository suite or architecture"
         return 65
+      fi
+
+      # Debian 13's libaio transition needs its native packages. Verify the
+      # selected component/architecture, rather than borrowing bookworm bytes.
+      if [[ "$distro_id" == debian && "$suite" == trixie ]]; then
+        local metadata components architectures
+        metadata=$(curl -fsSL --max-time 30 "${repo_url%/}/dists/${suite}/Release") || return $?
+        components=$(sed -n 's/^Components: //p' <<< "$metadata")
+        architectures=$(sed -n 's/^Architectures: //p' <<< "$metadata")
+        if ! grep -Fxq "Codename: $suite" <<< "$metadata" ||
+          [[ " $components " != *" $component "* || " $architectures " != *" $architecture "* ]]; then
+          msg_error "MySQL ${version} has no ${suite}/${component}/${architecture} repository metadata"
+          return 65
+        fi
+      fi
+
+      cleanup_old_repo_files "mysql" || return $?
+      if ! download_gpg_key "$gpg_key_url" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
+        msg_error "Failed to import MySQL GPG key"
+        return 7
       fi
 
       cat << EOF > /etc/apt/sources.list.d/mysql.sources || return $?
@@ -5233,7 +5248,49 @@ setup_adminer() {
 #   CLICKHOUSE_VERSION  - ClickHouse version to install (default: latest)
 # ------------------------------------------------------------------------------
 
-setup_clickhouse() {
+# Stage an authenticated package and let its own early instruction checks admit
+# the actual build. Historical x86 packages and ARM do not share one AVX2 policy.
+_clickhouse_stage_package() (
+  local version="$1" stage="$2" architecture index row filename digest package_version output status
+  architecture=$(dpkg --print-architecture) || return $?
+  [[ "$architecture" == amd64 || "$architecture" == arm64 ]] || return 65
+  download_gpg_key "https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key" "$stage/key.gpg" dearmor || return $?
+  curl_download "$stage/InRelease" "https://packages.clickhouse.com/deb/dists/stable/InRelease" || return $?
+  gpgv --keyring "$stage/key.gpg" --output "$stage/Release" "$stage/InRelease" || return $?
+  index="main/binary-${architecture}/Packages.gz"
+  digest=$(awk -v path="$index" '$0 == "SHA256:" {section=1; next} section && /^[^ ]/ {section=0} section && $3==path {print $1}' "$stage/Release") || return $?
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 65
+  curl_download "$stage/Packages.gz" "https://packages.clickhouse.com/deb/dists/stable/$index" || return $?
+  printf '%s  %s\n' "$digest" "$stage/Packages.gz" | sha256sum -c - || return $?
+  gzip -dc "$stage/Packages.gz" > "$stage/Packages" || return $?
+  awk -v arch="$architecture" 'BEGIN {RS=""; FS="\n"} {delete f; for(i=1;i<=NF;i++){n=index($i,": "); if(n) f[substr($i,1,n-1)]=substr($i,n+2)} if(f["Package"]=="clickhouse-common-static" && f["Architecture"]==arch) print f["Version"] " " f["Filename"] " " f["SHA256"]}' "$stage/Packages" > "$stage/candidates" || return $?
+  if [[ "$version" == latest ]]; then
+    row=$(sort -V "$stage/candidates" | tail -n1) || return $?
+  else
+    row=$(awk -v version="${version#v}" '$1==version {print}' "$stage/candidates") || return $?
+  fi
+  [[ -n "$row" && "$row" != *$'\n'* ]] || return 65
+  read -r package_version filename digest <<< "$row"
+  [[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$filename" == pool/*.deb && "$filename" != *..* && "$digest" =~ ^[0-9a-f]{64}$ ]] || return 65
+  curl_download "$stage/common.deb" "https://packages.clickhouse.com/deb/$filename" || return $?
+  printf '%s  %s\n' "$digest" "$stage/common.deb" | sha256sum -c - || return $?
+  [[ "$(dpkg-deb -f "$stage/common.deb" Package)" == clickhouse-common-static && "$(dpkg-deb -f "$stage/common.deb" Version)" == "$package_version" && "$(dpkg-deb -f "$stage/common.deb" Architecture)" == "$architecture" ]] || return 65
+  dpkg-deb -x "$stage/common.deb" "$stage/payload" || return $?
+  if output=$(cd "$stage" && "$stage/payload/usr/bin/clickhouse" server --version 2> "$stage/instruction-check.log"); then
+    [[ "$output" == *"version ${package_version} "* || "$output" == *"version ${package_version}."* ]] || return 65
+  else
+    status=$?
+    if [[ "$status" == 132 ]] || grep -Fq 'Instruction check fail' "$stage/instruction-check.log"; then
+      msg_error "Selected ClickHouse ${package_version}/${architecture} cannot execute its required CPU instructions"
+      return 236
+    fi
+    msg_error "Selected ClickHouse ${package_version}/${architecture} failed admission (status ${status})"
+    return "$status"
+  fi
+  printf '%s' "$package_version" > "$stage/version"
+)
+
+setup_clickhouse() (
   local CLICKHOUSE_VERSION="${CLICKHOUSE_VERSION:-latest}"
   local DISTRO_ID DISTRO_CODENAME
   DISTRO_ID=$(get_os_info id)
@@ -5244,21 +5301,14 @@ setup_clickhouse() {
   export NEEDRESTART_MODE=a
   export NEEDRESTART_SUSPEND=1
 
-  # Resolve "latest" version
-  if [[ "$CLICKHOUSE_VERSION" == "latest" ]]; then
-    CLICKHOUSE_VERSION=$(curl -fsSL --max-time 15 https://packages.clickhouse.com/tgz/stable/ 2> /dev/null |
-      grep -oP 'clickhouse-common-static-\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
-      sort -V | tail -n1 || echo "")
-
-    # Fallback to GitHub API if package server failed
-    if [[ -z "$CLICKHOUSE_VERSION" ]]; then
-      CLICKHOUSE_VERSION=$(get_latest_github_release "ClickHouse/ClickHouse") || true
-    fi
-
-    [[ -z "$CLICKHOUSE_VERSION" ]] && {
-      msg_error "Could not determine latest ClickHouse version from any source"
-      return 250
-    }
+  local clickhouse_stage status
+  clickhouse_stage=$(_tools_stage_dir clickhouse) || return $?
+  if _clickhouse_stage_package "$CLICKHOUSE_VERSION" "$clickhouse_stage"; then
+    CLICKHOUSE_VERSION=$(cat "$clickhouse_stage/version") || return $?
+  else
+    status=$?
+    msg_error "ClickHouse admission failed; evidence retained at ${clickhouse_stage}"
+    return "$status"
   fi
 
   # Get currently installed version
@@ -5272,10 +5322,8 @@ setup_clickhouse() {
     msg_info "Update ClickHouse $CLICKHOUSE_VERSION"
     ensure_apt_working || return 100
 
-    # Perform upgrade with retry logic (non-fatal if fails)
-    upgrade_packages_with_retry "clickhouse-server" "clickhouse-client" || {
-      msg_warn "ClickHouse package upgrade had issues, continuing with current version"
-    }
+    install_packages_with_retry "clickhouse-server=$CLICKHOUSE_VERSION" "clickhouse-client=$CLICKHOUSE_VERSION" "$clickhouse_stage/common.deb" || return $?
+    rm -rf -- "$clickhouse_stage" || return $?
     cache_installed_version "clickhouse" "$CLICKHOUSE_VERSION"
     msg_ok "Update ClickHouse $CLICKHOUSE_VERSION"
     return 0
@@ -5285,7 +5333,7 @@ setup_clickhouse() {
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" != "$CLICKHOUSE_VERSION" ]]; then
     msg_info "Upgrade ClickHouse from $CURRENT_VERSION to $CLICKHOUSE_VERSION"
     stop_all_services "clickhouse-server"
-    remove_old_tool_version "clickhouse"
+    # APT upgrades the same engine; no purge before selected-build admission.
   else
     msg_info "Setup ClickHouse $CLICKHOUSE_VERSION"
   fi
@@ -5304,7 +5352,7 @@ setup_clickhouse() {
     "https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key" \
     "https://packages.clickhouse.com/deb" \
     "stable" \
-    "main"
+    "main" || return $?
 
   # Install packages with retry logic
   $STD apt update || {
@@ -5312,7 +5360,7 @@ setup_clickhouse() {
     return 100
   }
 
-  install_packages_with_retry "clickhouse-server" "clickhouse-client" || {
+  install_packages_with_retry "clickhouse-server=$CLICKHOUSE_VERSION" "clickhouse-client=$CLICKHOUSE_VERSION" "$clickhouse_stage/common.deb" || {
     msg_error "Failed to install ClickHouse packages"
     return 100
   }
@@ -5336,8 +5384,9 @@ setup_clickhouse() {
   safe_service_restart clickhouse-server || true
 
   cache_installed_version "clickhouse" "$CLICKHOUSE_VERSION"
+  rm -rf -- "$clickhouse_stage" || return $?
   msg_ok "Setup ClickHouse $CLICKHOUSE_VERSION"
-}
+)
 
 # ------------------------------------------------------------------------------
 # Installs or updates Composer globally (robust, idempotent).
@@ -7599,8 +7648,16 @@ setup_mariadb_db() {
     return 65
   fi
 
+  local app_name="${APP:-${APPLICATION:-}}" CREDS_FILE="${MARIADB_DB_CREDS_FILE:-}"
+  app_name="${app_name,,}"
+  app_name="${app_name// /}"
+  if [[ -z "$CREDS_FILE" ]]; then
+    [[ -n "$app_name" && -n "${HOME:-}" ]] || return 65
+    CREDS_FILE="$HOME/$app_name.creds"
+  fi
+
   if [[ -z "${MARIADB_DB_PASS:-}" ]]; then
-    MARIADB_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+    MARIADB_DB_PASS=$(generate_password 13) || return $?
   fi
 
   msg_info "Setting up MariaDB Database"
@@ -7625,8 +7682,6 @@ setup_mariadb_db() {
 
   $STD mariadb -u root -e "FLUSH PRIVILEGES;"
 
-  local app_name="${APPLICATION,,}"
-  local CREDS_FILE="${MARIADB_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   _append_private_credentials "$CREDS_FILE" "MariaDB Credentials" \
     "Database: $MARIADB_DB_NAME" "User: $MARIADB_DB_USER" "Password: $MARIADB_DB_PASS" || return $?
 
@@ -7663,6 +7718,257 @@ setup_mariadb_db() {
 #   setup_meilisearch
 # ------------------------------------------------------------------------------
 
+_meilisearch_request() {
+  local url="$1" key="$2"
+  shift 2
+  local -a headers=()
+  [[ -z "$key" ]] || headers=(-H "Authorization: Bearer $key")
+  curl -fsS --connect-timeout 5 --max-time 15 "${headers[@]}" "$@" "$url"
+}
+
+_meilisearch_wait() {
+  local pid="$1" url="$2" key="$3" attempt response
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    kill -0 "$pid" 2> /dev/null || return 150
+    if response=$(_meilisearch_request "$url/health" "$key" 2> /dev/null) &&
+      jq -e '.status == "available"' <<< "$response" > /dev/null; then
+      kill -0 "$pid" 2> /dev/null || return 150
+      # A healthy unrelated listener is not proof that our child bound its port.
+      python3 - "$pid" "${url##*:}" << 'PY' || return 150
+import os,pathlib,sys
+pid,port=sys.argv[1],int(sys.argv[2]);root=pathlib.Path('/proc')/pid
+sockets={os.readlink(p)[8:-1] for p in (root/'fd').iterdir() if os.readlink(p).startswith('socket:[')}
+rows=[line.split() for line in (root/'net/tcp').read_text().splitlines()[1:]]
+sys.exit(0 if any(r[1]==f'0100007F:{port:04X}' and r[3]=='0A' and r[9] in sockets for r in rows) else 1)
+PY
+      return 0
+    fi
+    sleep 3
+  done
+  return 150
+}
+
+# Migration is confined to a sibling candidate. The stopped original database,
+# binary and configuration remain recoverable on every failure. After public
+# activation is attempted, the candidate may have acknowledged writes and must
+# never be automatically replaced by the prior database.
+# Dump/import is deliberately retained: no assumption that a selected historical
+# binary understands a newer dumpless-upgrade flag or on-disk format.
+_meilisearch_update() (
+  local selected="$1" current version_text fields db parent stage='' pid='' url key service_url dump_uid task response stats imported
+  local original_active=0 stopped=0 data_moved=0 candidate_live=0 binary_live=0 exposed=0 complete=0 status
+  version_text=$(/usr/bin/meilisearch --version) || return $?
+  if [[ "$version_text" =~ ^meilisearch[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then current="${BASH_REMATCH[1]}"; else return 65; fi
+  selected="${selected#v}"
+  [[ "$selected" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 65
+  ensure_dependencies python3 jq || return $?
+  # Establish a native parser before reading operator storage or stopping the
+  # service. Older distribution Pythons can consume python3-toml without pip.
+  local parser_probe='import importlib.util,sys;sys.exit(not any(importlib.util.find_spec(m) for m in ("tomllib","tomli","toml")))'
+  if ! python3 -c "$parser_probe"; then
+    ensure_dependencies python3-toml || {
+      status=$?
+      msg_error 'Meilisearch TOML parser capability could not be established'
+      return "$status"
+    }
+    python3 -c "$parser_probe" || {
+      msg_error 'Meilisearch TOML parser capability is unavailable after dependency setup'
+      return 69
+    }
+  fi
+  # Native TOML parsing preserves quoted paths/spaces and refuses malformed data;
+  # guessing a default path after a parse error would put the wrong data at risk.
+  fields=$(
+    python3 - /etc/meilisearch.toml << 'PY'
+import importlib,os,sys
+parser=None
+try:
+    for name in ('tomllib','tomli','toml'):
+        try:
+            parser=importlib.import_module(name)
+            break
+        except ModuleNotFoundError as error:
+            if error.name!=name: raise
+    if parser is None: raise ImportError('No native TOML parser')
+except ImportError:
+    print('Meilisearch TOML parser capability is unavailable',file=sys.stderr)
+    sys.exit(69)
+try:
+    with open(sys.argv[1],encoding='utf-8') as f: d=parser.loads(f.read())
+    values=[d.get('db_path','data.ms'), d.get('master_key',''), d.get('http_addr','127.0.0.1:7700')]
+    if any(not isinstance(v,str) or any(ord(c)<32 for c in v) for v in values): raise ValueError()
+    print(os.path.abspath(os.path.join('/',values[0])));print(values[1]);print(values[2])
+except Exception:
+    print('Cannot establish Meilisearch storage from its TOML configuration',file=sys.stderr)
+    sys.exit(65)
+PY
+  ) || return $?
+  local -a config_fields=()
+  mapfile -t config_fields <<< "$fields"
+  [[ ${#config_fields[@]} == 3 ]] || return 65
+  db="${config_fields[0]}"
+  key="${config_fields[1]}"
+  service_url="${config_fields[2]}"
+  case "$service_url" in 0.0.0.0:*) service_url="127.0.0.1:${service_url##*:}" ;; '[::]':*) service_url="[::1]:${service_url##*:}" ;; esac
+  service_url="http://$service_url"
+  [[ "$db" == /* && "$db" != / && -d "$db" && ! -L "$db" ]] || return 65
+  parent="${db%/*}"
+  [[ -n "$parent" ]] || parent=/
+  # This owner knows the generated service's config-only command. An operator
+  # storage/namespace override must not be silently replaced by guessed paths.
+  local service_command service_environment service_cwd service_root service_image
+  service_command=$(systemctl show --value --property=ExecStart meilisearch) || return $?
+  service_environment=$(systemctl show --value --property=Environment meilisearch) || return $?
+  service_cwd=$(systemctl show --value --property=WorkingDirectory meilisearch) || return $?
+  service_root=$(systemctl show --value --property=RootDirectory meilisearch) || return $?
+  service_image=$(systemctl show --value --property=RootImage meilisearch) || return $?
+  if [[ "$service_command" != *'argv[]=/usr/bin/meilisearch --config-file-path /etc/meilisearch.toml ;'* || "$service_environment" == *MEILI_* || (-n "$service_cwd" && "$service_cwd" != /) || -n "$service_root" || -n "$service_image" ]]; then
+    msg_error 'Meilisearch service overrides need explicit storage/migration handling; existing data was not changed'
+    return 65
+  fi
+  [[ ! -L /usr/bin/meilisearch ]] || return 65
+  stage=$(mktemp -d "$parent/.meilisearch-upgrade.XXXXXXXX") || return $?
+  # This EXIT owner exists only in the private update subshell, never globally.
+  _meilisearch_recover() {
+    local failure=$? recovery=0
+    trap - EXIT
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2> /dev/null || true
+      wait "$pid" 2> /dev/null || true
+      pid=''
+    fi
+    if [[ "$complete" == 0 && "$stopped" == 1 && "$exposed" == 0 ]]; then
+      if [[ "$candidate_live" == 1 || "$binary_live" == 1 ]]; then
+        systemctl stop meilisearch || recovery=$?
+      fi
+      if [[ "$recovery" == 0 && "$candidate_live" == 1 ]]; then
+        mv -T -- "$db" "$stage/failed-data" || recovery=$?
+      fi
+      if [[ "$recovery" == 0 && "$data_moved" == 1 ]]; then
+        if [[ -e "$db" || -L "$db" ]]; then recovery=65; else mv -T -- "$stage/original-data" "$db" || recovery=$?; fi
+      fi
+      if [[ "$recovery" == 0 && "$binary_live" == 1 ]]; then
+        _deploy_single_file "$stage/original-binary" meilisearch /usr/bin meilisearch || recovery=$?
+      fi
+      if [[ "$recovery" == 0 && "$original_active" == 1 ]]; then systemctl start meilisearch || recovery=$?; fi
+    fi
+    if [[ "$complete" == 0 ]]; then
+      msg_error "Meilisearch update failed (status ${failure}); recovery evidence retained at ${stage}"
+      if [[ "$exposed" == 1 ]]; then
+        msg_error "Public activation was attempted; candidate data and binary retained at ${db} and /usr/bin/meilisearch. Update remains pending; no automatic rollback was performed"
+      fi
+      [[ "$recovery" == 0 ]] || msg_error "Meilisearch automatic restoration failed (status ${recovery}); original data is retained at ${stage}/original-data or ${db}"
+    else
+      msg_info "Meilisearch prior database and binary retained at ${stage}"
+    fi
+    [[ "$failure" != 0 ]] || failure=$recovery
+    exit "$failure"
+  }
+  trap _meilisearch_recover EXIT
+  mkdir "$stage/home" "$stage/bin" "$stage/dumps" "$stage/snapshots" || return $?
+  cp -a -- /usr/bin/meilisearch "$stage/original-binary" || return $?
+  cp -a -- /etc/meilisearch.toml "$stage/original-config.toml" || return $?
+  # Private HOME keeps the real release marker unchanged until the consumer is
+  # ready. An explicit selected version cannot drift through a second latest read.
+  HOME="$stage/home" FORCE_DEPLOY=1 fetch_and_deploy_gh_release meilisearch meilisearch/meilisearch singlefile "$selected" "$stage/bin" "meilisearch-linux-$(get_system_arch both amd64 aarch64)" || return $?
+  [[ "$("$stage/bin/meilisearch" --version)" == "meilisearch $selected" ]] || return 65
+  local active
+  active=$(systemctl show --value --property=ActiveState meilisearch) || return $?
+  case "$active" in active) original_active=1 ;; inactive | failed) ;; *) return 65 ;; esac
+  stopped=1
+  systemctl stop meilisearch || return $?
+  active=$(systemctl show --value --property=ActiveState meilisearch) || return $?
+  [[ "$active" == inactive || "$active" == failed ]] || return 150
+  # Copy only after a checked stop. Export from that copy on an unadvertised
+  # loopback port, never from a public server that can acknowledge later writes.
+  cp -a -- "$db" "$stage/export-data" || return $?
+  local port
+  port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()') || return $?
+  [[ "$port" =~ ^[0-9]+$ ]] || return 65
+  url="http://127.0.0.1:$port"
+  (cd "$stage" && exec "$stage/original-binary" --config-file-path "$stage/original-config.toml" --db-path "$stage/export-data" --dump-dir "$stage/dumps" --snapshot-dir "$stage/snapshots" --http-addr "127.0.0.1:$port") > "$stage/export.log" 2>&1 &
+  pid=$!
+  _meilisearch_wait "$pid" "$url" "$key" || return $?
+  stats=$(_meilisearch_request "$url/stats" "$key") || return $?
+  stats=$(jq -ceS '.indexes | with_entries(.value |= {numberOfDocuments})' <<< "$stats") || return 65
+  local -a import_args=()
+  if [[ "$current" != "$selected" ]]; then
+    response=$(_meilisearch_request "$url/dumps" "$key" -X POST) || return $?
+    task=$(jq -er '.taskUid | select(type=="number" and .>=0 and floor==.)' <<< "$response") || return 65
+    local attempt dump_status
+    for ((attempt = 0; attempt < 60; attempt++)); do
+      kill -0 "$pid" 2> /dev/null || return 150
+      response=$(_meilisearch_request "$url/tasks/$task" "$key") || return $?
+      dump_status=$(jq -er '.status' <<< "$response") || return 65
+      case "$dump_status" in
+        succeeded) break ;;
+        enqueued | processing) sleep 2 ;;
+        *)
+          msg_error 'Meilisearch dump did not succeed; original database was not replaced'
+          return 150
+          ;;
+      esac
+    done
+    [[ "$dump_status" == succeeded ]] || return 150
+    dump_uid=$(jq -er '.details.dumpUid | select(type=="string")' <<< "$response") || return 65
+    [[ "$dump_uid" =~ ^[a-zA-Z0-9_-]+$ && -s "$stage/dumps/$dump_uid.dump" && ! -L "$stage/dumps/$dump_uid.dump" ]] || return 65
+    import_args=(--import-dump "$stage/dumps/$dump_uid.dump")
+  fi
+  kill "$pid" || return $?
+  status=0
+  wait "$pid" || status=$?
+  pid=''
+  [[ "$status" == 0 || "$status" == 143 ]] || return "$status"
+  if [[ "$current" == "$selected" ]]; then
+    mv -T -- "$stage/export-data" "$stage/candidate-data" || return $?
+  fi
+  # Import never sees the original path. Health establishes startup; the index
+  # inventory/document counts establish the migrated consumer before cutover.
+  (cd "$stage" && exec "$stage/bin/meilisearch" --config-file-path "$stage/original-config.toml" --db-path "$stage/candidate-data" --dump-dir "$stage/dumps" --snapshot-dir "$stage/snapshots" --http-addr "127.0.0.1:$port" "${import_args[@]}") > "$stage/import.log" 2>&1 &
+  pid=$!
+  _meilisearch_wait "$pid" "$url" "$key" || return $?
+  imported=$(_meilisearch_request "$url/stats" "$key") || return $?
+  imported=$(jq -ceS '.indexes | with_entries(.value |= {numberOfDocuments})' <<< "$imported") || return 65
+  [[ "$stats" == "$imported" ]] || {
+    msg_error 'Meilisearch imported index counts do not match the export'
+    return 150
+  }
+  kill "$pid" || return $?
+  status=0
+  wait "$pid" || status=$?
+  pid=''
+  [[ "$status" == 0 || "$status" == 143 ]] || return "$status"
+  [[ -d "$stage/candidate-data" && ! -L "$stage/candidate-data" ]] || return 65
+  # Both moves are same-filesystem and every displaced byte remains in this
+  # private recovery directory. A failed publication restores the original.
+  mv -T -- "$db" "$stage/original-data" || return $?
+  data_moved=1
+  mv -T -- "$stage/candidate-data" "$db" || return $?
+  candidate_live=1
+  _deploy_single_file "$stage/bin/meilisearch" meilisearch /usr/bin meilisearch || return $?
+  binary_live=1
+  # Start can acknowledge writes even if its command subsequently fails. This
+  # boundary precedes the attempt, not the later health/version observations.
+  exposed=1
+  systemctl start meilisearch || return $?
+  systemctl is-active --quiet meilisearch || return $?
+  response=$(_meilisearch_request "$service_url/health" "$key" --retry 10 --retry-connrefused --retry-delay 1) || return $?
+  jq -e '.status=="available"' <<< "$response" > /dev/null || return 150
+  response=$(_meilisearch_request "$service_url/version" "$key") || return $?
+  jq -e --arg version "$selected" '.pkgVersion==$version' <<< "$response" > /dev/null || return 150
+  # Counts were checked privately before exposure. Public writes may now change
+  # them legitimately; a frozen equality check cannot authorize data rollback.
+  local marker
+  marker=$(mktemp "$HOME/.meilisearch-version.XXXXXXXX") || return $?
+  printf '%s\n' "$selected" > "$marker" && mv -fT -- "$marker" "$HOME/.meilisearch" || {
+    status=$?
+    rm -f -- "$marker"
+    return "$status"
+  }
+  complete=1
+  msg_ok "Updated MeiliSearch ${current} -> ${selected}"
+)
+
 setup_meilisearch() {
   local MEILISEARCH_BIND="${MEILISEARCH_BIND:-127.0.0.1:7700}"
   local MEILISEARCH_ENV="${MEILISEARCH_ENV:-production}"
@@ -7677,175 +7983,15 @@ setup_meilisearch() {
 
   # Update mode: MeiliSearch already installed
   if [[ -f /usr/bin/meilisearch ]]; then
-    if check_for_gh_release "meilisearch" "meilisearch/meilisearch"; then
-      msg_info "Updating MeiliSearch"
-
-      # Get current and new version for compatibility check
-      local CURRENT_VERSION NEW_VERSION
-      CURRENT_VERSION=$(/usr/bin/meilisearch --version 2> /dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || CURRENT_VERSION="0.0.0"
-      NEW_VERSION="${CHECK_UPDATE_RELEASE#v}"
-
-      # Extract major.minor for comparison (Meilisearch requires dump/restore between minor versions)
-      local CURRENT_MAJOR_MINOR NEW_MAJOR_MINOR
-      CURRENT_MAJOR_MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f1,2)
-      NEW_MAJOR_MINOR=$(echo "$NEW_VERSION" | cut -d. -f1,2)
-
-      # Determine if migration is needed (different major.minor = incompatible DB format)
-      local NEEDS_MIGRATION=false
-      if [[ "$CURRENT_MAJOR_MINOR" != "$NEW_MAJOR_MINOR" ]]; then
-        NEEDS_MIGRATION=true
-        msg_info "MeiliSearch version change detected (${CURRENT_VERSION} → ${NEW_VERSION}), preparing data migration"
-      fi
-
-      # Read config values for dump/restore
-      local MEILI_HOST MEILI_PORT MEILI_MASTER_KEY MEILI_DUMP_DIR
-      MEILI_HOST="${MEILISEARCH_HOST:-127.0.0.1}"
-      MEILI_PORT="${MEILISEARCH_PORT:-7700}"
-      MEILI_DUMP_DIR="${MEILISEARCH_DUMP_DIR:-/var/lib/meilisearch/dumps}"
-      MEILI_MASTER_KEY=$(grep -E "^master_key\s*=" /etc/meilisearch.toml 2> /dev/null | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ' || true)
-
-      # Create dump before update if migration is needed
-      local DUMP_UID=""
-      if [[ "$NEEDS_MIGRATION" == "true" ]] && [[ -n "$MEILI_MASTER_KEY" ]]; then
-        msg_info "Creating MeiliSearch data dump before upgrade"
-
-        # Trigger dump creation
-        local DUMP_RESPONSE
-        DUMP_RESPONSE=$(curl -s -X POST "http://${MEILI_HOST}:${MEILI_PORT}/dumps" \
-          -H "Authorization: Bearer ${MEILI_MASTER_KEY}" \
-          -H "Content-Type: application/json" 2> /dev/null) || true
-
-        # The initial response only contains taskUid, not dumpUid
-        # dumpUid is only available after the task completes
-        local TASK_UID
-        TASK_UID=$(echo "$DUMP_RESPONSE" | grep -oP '"taskUid":\s*\K[0-9]+' || true)
-
-        if [[ -n "$TASK_UID" ]]; then
-          msg_info "Waiting for dump task ${TASK_UID} to complete..."
-          local MAX_WAIT=120
-          local WAITED=0
-          local TASK_RESULT=""
-
-          while [[ $WAITED -lt $MAX_WAIT ]]; do
-            TASK_RESULT=$(curl -s "http://${MEILI_HOST}:${MEILI_PORT}/tasks/${TASK_UID}" \
-              -H "Authorization: Bearer ${MEILI_MASTER_KEY}" 2> /dev/null) || true
-
-            local TASK_STATUS
-            TASK_STATUS=$(echo "$TASK_RESULT" | grep -oP '"status":\s*"\K[^"]+' || true)
-
-            if [[ "$TASK_STATUS" == "succeeded" ]]; then
-              # Extract dumpUid from the completed task details
-              DUMP_UID=$(echo "$TASK_RESULT" | grep -oP '"dumpUid":\s*"\K[^"]+' || true)
-              if [[ -n "$DUMP_UID" ]]; then
-                msg_ok "MeiliSearch dump created successfully: ${DUMP_UID}"
-              else
-                msg_warn "Dump task succeeded but could not extract dumpUid"
-              fi
-              break
-            elif [[ "$TASK_STATUS" == "failed" ]]; then
-              local ERROR_MSG
-              ERROR_MSG=$(echo "$TASK_RESULT" | grep -oP '"message":\s*"\K[^"]+' || echo "Unknown error")
-              msg_warn "MeiliSearch dump failed: ${ERROR_MSG}"
-              break
-            fi
-            sleep 2
-            WAITED=$((WAITED + 2))
-          done
-
-          if [[ $WAITED -ge $MAX_WAIT ]]; then
-            msg_warn "MeiliSearch dump timed out after ${MAX_WAIT}s"
-          fi
-        else
-          msg_warn "Could not trigger MeiliSearch dump (no taskUid in response)"
-          msg_info "Response was: ${DUMP_RESPONSE:-empty}"
-        fi
-      fi
-
-      # If migration is needed but dump failed, we have options:
-      # 1. Abort the update (safest, but annoying)
-      # 2. Backup data directory and proceed (allows manual recovery)
-      # 3. Just proceed and hope for the best (dangerous)
-      # We choose option 2: backup and proceed with warning
-      if [[ "$NEEDS_MIGRATION" == "true" ]] && [[ -z "$DUMP_UID" ]]; then
-        local MEILI_DB_PATH
-        MEILI_DB_PATH=$(grep -E "^db_path\s*=" /etc/meilisearch.toml 2> /dev/null | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ' || true)
-        MEILI_DB_PATH="${MEILI_DB_PATH:-/var/lib/meilisearch/data}"
-
-        if [[ -d "$MEILI_DB_PATH" ]] && [[ -n "$(ls -A "$MEILI_DB_PATH" 2> /dev/null)" ]]; then
-          local BACKUP_PATH="${MEILI_DB_PATH}.backup.$(date +%Y%m%d%H%M%S)"
-          msg_warn "Backing up MeiliSearch data to ${BACKUP_PATH}"
-          mv "$MEILI_DB_PATH" "$BACKUP_PATH"
-          mkdir -p "$MEILI_DB_PATH"
-          msg_info "Data backed up. After update, you may need to reindex your data."
-          msg_info "Old data is preserved at: ${BACKUP_PATH}"
-        fi
-      fi
-
-      # Stop service and update binary
-      systemctl stop meilisearch
-      fetch_and_deploy_gh_release "meilisearch" "meilisearch/meilisearch" "binary"
-
-      # If migration needed and dump was created, remove old data and import dump
-      if [[ "$NEEDS_MIGRATION" == "true" ]] && [[ -n "$DUMP_UID" ]]; then
-        local MEILI_DB_PATH
-        MEILI_DB_PATH=$(grep -E "^db_path\s*=" /etc/meilisearch.toml 2> /dev/null | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ' || true)
-        MEILI_DB_PATH="${MEILI_DB_PATH:-/var/lib/meilisearch/data}"
-
-        msg_info "Removing old MeiliSearch database for migration"
-        rm -rf "${MEILI_DB_PATH:?}"/*
-
-        # Import dump using CLI flag (this is the supported method)
-        local DUMP_FILE="${MEILI_DUMP_DIR}/${DUMP_UID}.dump"
-        if [[ -f "$DUMP_FILE" ]]; then
-          msg_info "Importing dump: ${DUMP_FILE}"
-
-          # Start meilisearch with --import-dump flag
-          # This is a one-time import that happens during startup
-          /usr/bin/meilisearch --config-file-path /etc/meilisearch.toml --import-dump "$DUMP_FILE" > /dev/null 2>&1 &
-          local MEILI_PID=$!
-
-          # Wait for meilisearch to become healthy (import happens during startup)
-          msg_info "Waiting for MeiliSearch to import and start..."
-          local MAX_WAIT=300
-          local WAITED=0
-          while [[ $WAITED -lt $MAX_WAIT ]]; do
-            if curl -sf "http://${MEILI_HOST}:${MEILI_PORT}/health" &> /dev/null; then
-              msg_ok "MeiliSearch is healthy after import"
-              break
-            fi
-            # Check if process is still running
-            if ! kill -0 $MEILI_PID 2> /dev/null; then
-              msg_warn "MeiliSearch process exited during import"
-              break
-            fi
-            sleep 3
-            WAITED=$((WAITED + 3))
-          done
-
-          # Stop the manual process
-          kill $MEILI_PID 2> /dev/null || true
-          wait $MEILI_PID 2> /dev/null || true
-          sleep 2
-
-          # Start via systemd for proper management
-          systemctl start meilisearch
-
-          if systemctl is-active --quiet meilisearch; then
-            msg_ok "MeiliSearch migrated successfully"
-          else
-            msg_warn "MeiliSearch failed to start after migration - check logs with: journalctl -u meilisearch"
-          fi
-        else
-          msg_warn "Dump file not found: ${DUMP_FILE}"
-          systemctl start meilisearch
-        fi
-      else
-        systemctl start meilisearch
-      fi
-
-      msg_ok "Updated MeiliSearch"
+    local update_status=0
+    if check_for_gh_release meilisearch meilisearch/meilisearch; then
+      _meilisearch_update "$CHECK_UPDATE_RELEASE"
+      return $?
+    else
+      update_status=$?
+      [[ "$update_status" == 1 ]] && return 0
+      return "$update_status"
     fi
-    return 0
   fi
 
   # Fresh install
@@ -8110,12 +8256,9 @@ setup_mysql() {
     if [[ -n "$CURRENT_VERSION" ]]; then
       msg_info "Update MySQL $CURRENT_VERSION"
       ensure_apt_working || return 100
-      upgrade_packages_with_retry "default-mysql-server" "default-mysql-client" ||
-        upgrade_packages_with_retry "mysql-server" "mysql-client" ||
-        upgrade_packages_with_retry "mariadb-server" "mariadb-client" || {
-        msg_error "Failed to upgrade MySQL/MariaDB packages"
-        return 100
-      }
+      # default-mysql-server can depend on MariaDB. A failed update does not
+      # authorize replacing an already selected MySQL engine.
+      upgrade_packages_with_retry "mysql-server" "mysql-client" || return $?
       cache_installed_version "mysql" "$CURRENT_VERSION"
       msg_ok "Update MySQL $CURRENT_VERSION"
       return 0
@@ -8164,6 +8307,27 @@ setup_mysql() {
     return 0
   fi
 
+  # Keep the existing Debian 13 fresh default (8.4 LTS), but never turn an
+  # installed MySQL into a different major or MariaDB when a producer fails.
+  if [[ "$DISTRO_ID" == debian && "$DISTRO_CODENAME" =~ ^(trixie|forky|sid)$ ]]; then
+    local selected_mysql="${CURRENT_VERSION:-8.4}" mysql_status
+    manage_tool_repository mysql "$selected_mysql" "https://repo.mysql.com/apt/debian" \
+      "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025" || return $?
+    $STD apt update || return $?
+    if [[ -n "$CURRENT_VERSION" ]]; then
+      upgrade_packages_with_retry mysql-community-server mysql-community-client || return $?
+    else
+      install_packages_with_retry mysql-community-server mysql-community-client || {
+        mysql_status=$?
+        msg_error "Failed to install MySQL ${selected_mysql}; no alternate engine was installed"
+        return "$mysql_status"
+      }
+    fi
+    cache_installed_version mysql "$selected_mysql"
+    msg_ok "Setup MySQL ${selected_mysql} (Debian ${DISTRO_CODENAME})"
+    return 0
+  fi
+
   # Scenario 2: Use official MySQL repository (USE_MYSQL_REPO=true)
   # Scenario 2a: Already at target version - just update packages
   if [[ -n "$CURRENT_VERSION" && "$CURRENT_VERSION" == "$MYSQL_VERSION" ]]; then
@@ -8194,47 +8358,6 @@ setup_mysql() {
     msg_error "Failed to prepare MySQL repository"
     return 100
   }
-
-  # Debian 13+ Fix: MySQL 8.0 incompatible with libaio1t64, use 8.4 LTS
-  if [[ "$DISTRO_ID" == "debian" && "$DISTRO_CODENAME" =~ ^(trixie|forky|sid)$ ]]; then
-    msg_info "Debian ${DISTRO_CODENAME} detected → using MySQL 8.4 LTS (libaio1t64 compatible)"
-
-    if ! download_gpg_key "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025" "/etc/apt/keyrings/mysql.gpg" "dearmor"; then
-      msg_error "Failed to import MySQL GPG key"
-      return 7
-    fi
-
-    cat > /etc/apt/sources.list.d/mysql.sources << EOF
-Types: deb
-URIs: https://repo.mysql.com/apt/debian/
-Suites: bookworm
-Components: mysql-8.4-lts
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/mysql.gpg
-EOF
-
-    $STD apt update || {
-      msg_error "Failed to update APT for MySQL 8.4 LTS"
-      return 100
-    }
-
-    # Install with retry logic
-    if ! install_packages_with_retry "mysql-community-server" "mysql-community-client"; then
-      msg_warn "MySQL 8.4 LTS installation failed – falling back to MariaDB"
-      cleanup_old_repo_files "mysql"
-      $STD apt update
-      install_packages_with_retry "mariadb-server" "mariadb-client" || {
-        msg_error "Failed to install database engine (MySQL/MariaDB fallback)"
-        return 100
-      }
-      msg_ok "Setup Database Engine (MariaDB fallback on Debian ${DISTRO_CODENAME})"
-      return 0
-    fi
-
-    cache_installed_version "mysql" "8.4"
-    msg_ok "Setup MySQL 8.4 LTS (Debian ${DISTRO_CODENAME})"
-    return 0
-  fi
 
   # Standard setup for other distributions
   local SUITE
@@ -8321,7 +8444,7 @@ EOF
 
 setup_mysql_db() {
   local db="${MYSQL_DB_NAME:-}" user="${MYSQL_DB_USER:-}" pass="${MYSQL_DB_PASS:-}"
-  local creds="${MYSQL_DB_CREDS_FILE:-}" rc=0 entropy=""
+  local creds="${MYSQL_DB_CREDS_FILE:-}" rc=0
 
   if [[ -z "$db" || -z "$user" ]]; then
     msg_error "MYSQL_DB_NAME and MYSQL_DB_USER must be set before calling setup_mysql_db"
@@ -8340,20 +8463,11 @@ setup_mysql_db() {
   fi
 
   if [[ -z "$pass" ]]; then
-    while ((${#pass} < 13)); do
-      entropy=$(openssl rand -base64 48) || {
-        rc=$?
-        msg_error "Failed to generate the MySQL password"
-        return "$rc"
-      }
-      entropy="${entropy//[^A-Za-z0-9]/}"
-      if [[ -z "$entropy" ]]; then
-        msg_error "Failed to generate the MySQL password"
-        return 1
-      fi
-      pass+="$entropy"
-    done
-    pass="${pass:0:13}"
+    pass=$(generate_password 13) || {
+      rc=$?
+      msg_error "Failed to generate the MySQL password"
+      return "$rc"
+    }
   fi
 
   local q="'" bt='`' bs='\' us='_' pc='%'
@@ -9148,10 +9262,10 @@ setup_postgresql() {
 
   setup_deb822_repo \
     "pgdg" \
-    "https://www.postgresql.org/media/keys/ACCC4CF8.asc" \
+    "https://apt.postgresql.org/pub/repos/apt/ACCC4CF8.asc" \
     "https://apt.postgresql.org/pub/repos/apt" \
     "$SUITE" \
-    "main"
+    "main" || return $?
 
   if ! $STD apt update; then
     msg_error "APT update failed for PostgreSQL repository"
@@ -9265,9 +9379,17 @@ setup_postgresql_db() {
     return 65
   fi
 
+  local app_name="${APP:-${APPLICATION:-}}" CREDS_FILE="${PG_DB_CREDS_FILE:-}"
+  app_name="${app_name,,}"
+  app_name="${app_name// /}"
+  if [[ -z "$CREDS_FILE" ]]; then
+    [[ -n "$app_name" && -n "${HOME:-}" ]] || return 65
+    CREDS_FILE="$HOME/$app_name.creds"
+  fi
+
   # Generate password if not provided
   if [[ -z "${PG_DB_PASS:-}" ]]; then
-    PG_DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c13)
+    PG_DB_PASS=$(generate_password 13) || return $?
   fi
 
   msg_info "Setting up PostgreSQL Database"
@@ -9321,8 +9443,6 @@ setup_postgresql_db() {
   fi
 
   # Save credentials
-  local app_name="${APPLICATION,,}"
-  local CREDS_FILE="${PG_DB_CREDS_FILE:-${HOME}/${app_name}.creds}"
   _append_private_credentials "$CREDS_FILE" "PostgreSQL Credentials" \
     "Database: $PG_DB_NAME" "User: $PG_DB_USER" "Password: $PG_DB_PASS" || return $?
 
