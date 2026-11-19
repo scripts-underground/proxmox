@@ -126,6 +126,8 @@ def framework_env(run, native, url, socket):
                   container_storage=n['storage'], template_storage=n['template_storage'], lxc_tmpdir=n['receiver_tmpdir'],
                   verbose='yes', gpu='no', timezone='UTC')
     env.update({'var_' + k: str(v) for k, v in values.items()})
+    if run.context.operation['suite']=='odysseus':
+        env['var_ns']=n['address']+' 1.1.1.1'
     return env
 
 
@@ -192,6 +194,37 @@ def receiving_outcome(run,native):
     run.record('receiving-install-outcome',dict(session=sid,path=log,flag=flag,failure_flag_absent=True,bytes=target.stat().st_size,sha256=sha(target.read_bytes()),context=environment))
 
 
+def creation_package_consumers(run,native):
+    """Use the normal created app for native repository and TLS consumers."""
+    import tarfile
+    result=native.dispatch('pct',['config',str(native.owner.spec.ctid)])
+    require(result.returncode==0,'native create configuration query failed')
+    servers=re.findall(r'^nameserver: (.+)$',result.stdout,re.M)
+    require(len(servers)==1 and servers[0].split()==[native.n['address'],'1.1.1.1'],'native create DNS list not persisted')
+    # DHCP may replace resolv.conf after PVE consumes the requested create settings.
+    resolver=checked(native,['cat','/etc/resolv.conf'])
+    run.record('native-create-dns-consumer',dict(nameservers=servers[0].split(),observed_config=result.stdout,guest_resolver=resolver))
+    source=Path(run.context.document['source']['path'])
+    archive=run.directory/'core-creation-subject.tar'
+    files=['misc/core.func','misc/error_handler.func','misc/install.func','misc/tools.func','tests/lib/core-creation.native.sh']
+    with tarfile.open(archive,'x') as tar:
+        for name in files:tar.add(source/name,arcname=name,recursive=False)
+    target=native.n['receiver_tmpdir']+'/core-creation-subject'
+    checked(native,['mkdir','-m','0700','--',target])
+    require(native.dispatch('pct',['push',str(native.owner.spec.ctid),str(archive),target+'/source.tar']).returncode==0,'core creation subject push')
+    checked(native,['tar','-xf',target+'/source.tar','-C',target])
+    result=native.dispatch('pct',['exec',str(native.owner.spec.ctid),'--','bash',target+'/tests/lib/core-creation.native.sh',target])
+    run.record('core-creation-packages-consumer',dict(status=result.returncode,stdout=result.stdout,stderr=result.stderr))
+    evidence=re.findall(r'^CORE_NATIVE_EVIDENCE (.+)$',result.stdout,re.M)
+    require(len(evidence)==1 and re.fullmatch(re.escape(native.n['receiver_tmpdir'])+r'/core-native\.[a-zA-Z0-9]+\.evidence\.tar\.gz',evidence[0]),'core consumer evidence identity')
+    saved=run.directory/'core-creation-native-evidence.tar.gz'
+    require(native.dispatch('pct',['pull',str(native.owner.spec.ctid),evidence[0],str(saved)]).returncode==0,'core consumer evidence pull')
+    saved.chmod(0o600)
+    run.record('core-creation-native-evidence',dict(path=str(saved),bytes=saved.stat().st_size,sha256=sha(saved.read_bytes())))
+    require(result.returncode==0 and 'CORE_CREATION_PACKAGES_NATIVE_PASS' in result.stdout,'native creation/packages consumer failed')
+    print(result.stdout,end='',flush=True)
+
+
 def main(suite,context=None):
     if context is None:context = admit_direct(suite, [])
     with Run(context) as run:
@@ -210,6 +243,7 @@ def main(suite,context=None):
                 require(status == 0, 'framework install failed; inspect preserved log')
                 receiving_outcome(run,native)
                 app_consumers(run,native,suite)
+                if suite=='odysseus':creation_package_consumers(run,native)
                 status = 0
         except (AdmissionError, OSError, ValueError, subprocess.SubprocessError) as error:
             run.record('app-failure', dict(status=status or 70, error=str(error)))

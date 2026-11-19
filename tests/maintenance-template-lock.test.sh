@@ -30,6 +30,7 @@ if [[ "${1:-}" == --worker ]]; then
   export BUILD_LOG="$CASE_ROOT/$CREATOR.log" DEBUG_LOGFILE="$CASE_ROOT/$CREATOR-error.log"
   export SESSION_ID="$CREATOR" CTID=19091 PCT_OSTYPE="${TEST_OS_TYPE:-alpine}" PCT_OSVERSION="${TEST_OS_VERSION:-3}"
   export CONTAINER_STORAGE=local PCT_OPTIONS='-rootfs local:1' STD='' VERBOSE=no
+  export HN=fixture BRG=vmbr0 CORE_COUNT=1 RAM_SIZE=256 CT_TYPE=1 PCT_DISK_SIZE=1
   export var_os="${TEST_OS:-alpine}" TEMPLATE_STORAGE="$TEST_STORAGE"
   export MODEL_TTY
   MODEL_TTY=$(readlink /proc/self/fd/2)
@@ -128,6 +129,7 @@ if [[ "${1:-}" == --worker ]]; then
         ;;
       update) return 0 ;;
       available)
+        [[ "${TEST_CATALOGUE_MISSING:-0}" != 1 ]] || return 0
         if [[ "${DISCOVERY_BARRIER:-0}" == 1 ]]; then
           printf ready > "$CASE_ROOT/$CREATOR-discovered"
           for ((i = 0; i < 200; i++)); do
@@ -238,7 +240,7 @@ if [[ "${1:-}" == --worker ]]; then
         TEMPLATE_PATH="$CASE_ROOT/$TEST_STORAGE/template/cache/old.tar.xz"
         _template_prepare_archive initial
         ;;
-      corrupt-local)
+      corrupt-local | corrupt-unlisted)
         ONLINE_TEMPLATE=''
         _template_prepare_archive initial
         ;;
@@ -337,7 +339,7 @@ fi
 python3 - "$SUBJECT_BUILD" "$SUBJECT/functions.sh" << 'PY'
 import pathlib,re,sys
 s=pathlib.Path(sys.argv[1]).read_text()
-functions=re.findall(r'^(?:_template_[a-z_]+|create_lxc_container)\(\) \{\n.*?^}',s,re.M|re.S)
+functions=re.findall(r'^(?:_template_[a-z_]+|validate_[a-z_]+|_pct_create(?:_options)?|create_lxc_container)\(\) \{\n.*?^}',s,re.M|re.S)
 assert functions and functions[-1].startswith('create_lxc_container()')
 if '_template_lock_acquire()' not in s:
  start=s.index('  lockfile="${LEGACY_LOCK_ROOT}/template.')
@@ -921,14 +923,15 @@ if [[ "$TEST_MODE" != --baseline ]]; then
   check "$(test -f "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" && printf correct || printf absent)" correct 'storage.cfg resolved archive reaches configured consumer path'
   unset FAIL_PATH_LOOKUP
 
-  for action in corrupt-local selection invalid-selection; do
+  for action in corrupt-local corrupt-unlisted selection invalid-selection; do
     new_case "owner-$action"
     export CACHE_ACTION="$action"
     cp "$CASE_ROOT/payload.tar.xz" "$CASE_ROOT/other/template/cache/old.tar.xz"
-    if [[ "$action" == corrupt-local ]]; then
+    if [[ "$action" == corrupt-local || "$action" == corrupt-unlisted ]]; then
       cp "$CASE_ROOT/payload.tar.xz" "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE"
       printf 'CORRUPT' | dd of="$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" conv=notrunc status=none
       cp "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" "$CASE_ROOT/corrupt-before"
+      if [[ "$action" == corrupt-unlisted ]]; then export TEST_CATALOGUE_MISSING=1; fi
     elif [[ "$action" == invalid-selection ]]; then
       TEST_TEMPLATE=invalid/name.tar.xz
       CACHE_ACTION=selection
@@ -939,13 +942,17 @@ if [[ "$TEST_MODE" != --baseline ]]; then
     wait "$pid" || rc=$?
     expected=0
     [[ "$action" != invalid-selection ]] || expected=220
+    [[ "$action" != corrupt-unlisted ]] || expected=222
     check "$rc" "$expected" "$action direct actual owner boundary outcome (not unreachable prompt claim)"
     check "$(cmp -s "$CASE_ROOT/payload.tar.xz" "$CASE_ROOT/other/template/cache/old.tar.xz" && printf same || printf changed)" same "$action preserves old selected archive bytes"
     if [[ "$action" == corrupt-local ]]; then
-      check "$(cmp -s "$CASE_ROOT/corrupt-before" "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" && printf same || printf changed)" same 'no-online corrupt local archive retains exact prior bytes'
-      check "$(grep -c download-start "$CASE_ROOT/timeline" || true)" 0 'no-online corrupt local archive is not redownloaded'
+      check "$(cmp -s "$CASE_ROOT/payload.tar.xz" "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" && printf repaired || printf corrupt)" repaired 'initial corrupt archive repaired from exact catalogue source'
+      check "$(grep -c download-start "$CASE_ROOT/timeline" || true)" 1 'initial repair uses one locked archive producer'
+    elif [[ "$action" == corrupt-unlisted ]]; then
+      check "$(cmp -s "$CASE_ROOT/corrupt-before" "$CASE_ROOT/other/template/cache/$TEST_TEMPLATE" && printf same || printf changed)" same 'unlisted corrupt operator-only archive retains exact prior bytes'
+      check "$(grep -c download-start "$CASE_ROOT/timeline" || true)" 0 'unlisted archive is not deleted for an unrecoverable download'
     fi
-    unset CACHE_ACTION
+    unset CACHE_ACTION TEST_CATALOGUE_MISSING
   done
 
   new_case stack-retry
