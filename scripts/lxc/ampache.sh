@@ -117,25 +117,48 @@ function update_script() {
       local prior before after stop_attempted=0 activation_attempted=0
       function ampache_runtime_state() (
         set -o pipefail
-        local path
         {
-          printf '%s\0' /opt/ampache "$HOME/.ampache" || exit $?
-          find /opt/ampache/ -print0 || exit $?
-        } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
-          printf '%s\0' "$path" || exit $?
-          if [[ ! -e "$path" && ! -L "$path" && "$path" == "$HOME/.ampache" ]]; then
-            printf 'absent\n' || exit $?
-            continue
-          fi
-          stat -c '%f:%u:%g' -- "$path" || exit $?
-          if [[ -L "$path" ]]; then
-            readlink -- "$path" || exit $?
-          elif [[ -f "$path" ]]; then
-            sha256sum < "$path" || exit $?
-          elif [[ ! -d "$path" ]]; then
-            exit 65
-          fi
-        done | sha256sum
+          local path mount row pattern
+          local -a prune=(-path /opt/ampache/music)
+          [[ -r /proc/self/mountinfo ]] || exit 69
+          # Media is persistent data, not deployment-owned code. Mountinfo also
+          # identifies same-device bind mounts that find -xdev cannot exclude.
+          # Record each mounted boundary without visiting or reading its contents.
+          while IFS= read -r row; do
+            read -r _ _ _ _ mount _ <<< "$row"
+            mount=${mount//\\040/ }
+            mount=${mount//\\011/$'\t'}
+            mount=${mount//\\012/$'\n'}
+            mount=${mount//\\134/$'\\'}
+            [[ "$mount" == /opt/ampache/* ]] || continue
+            printf 'mount:%s\0' "$row" || exit $?
+            stat -c '%f:%u:%g:%d:%i' -- "$mount" || exit $?
+            # find -path takes a pattern; preserve literal operator mount names.
+            pattern=${mount//\\/\\\\}
+            pattern=${pattern//\*/\\*}
+            pattern=${pattern//\?/\\?}
+            pattern=${pattern//\[/\\[}
+            prune+=(-o -path "$pattern")
+          done < /proc/self/mountinfo
+          {
+            printf '%s\0' /opt/ampache "$HOME/.ampache" || exit $?
+            find /opt/ampache/ -mindepth 1 \( "${prune[@]}" \) -prune -o -print0 || exit $?
+          } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
+            printf '%s\0' "$path" || exit $?
+            if [[ ! -e "$path" && ! -L "$path" && "$path" == "$HOME/.ampache" ]]; then
+              printf 'absent\n' || exit $?
+              continue
+            fi
+            stat -c '%f:%u:%g' -- "$path" || exit $?
+            if [[ -L "$path" ]]; then
+              readlink -- "$path" || exit $?
+            elif [[ -f "$path" ]]; then
+              sha256sum < "$path" || exit $?
+            elif [[ ! -d "$path" ]]; then
+              exit 65
+            fi
+          done
+        } | sha256sum
       )
       function ampache_recover() {
         local status=$?

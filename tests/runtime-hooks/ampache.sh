@@ -6,10 +6,21 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=ampache
 script_type=lxc
-variants=(fresh fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions query stop stopped-missing-asset stopped-download stopped-backup stopped-copy runtime)
+variants=(fresh fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions query stop stopped-missing-asset stopped-download stopped-backup stopped-copy media-files media-missing-asset runtime)
 hook_paths=(/var/www www)
 runtime_hooks_model() {
   [[ "$APP_FAULT" != pin8 ]] || var_appversion=8.4.0
+  if [[ "$c" == *-media-* ]]; then
+    mount --bind "$c/external/media" '/opt/ampache/external media [live]*?'
+  fi
+  sha256sum() {
+    local input
+    input=$(readlink /proc/self/fd/0) || return $?
+    case "$input" in
+      */ampache/music/* | *'/external media [live]*?/'*) printf '%s\n' "$input" >> "$c/media-reads" ;;
+    esac
+    command sha256sum "$@"
+  }
   apt() { :; }
   setup_php() {
     printf '%s\n' "$PHP_VERSION" >> "$c/php-calls"
@@ -86,6 +97,9 @@ PY
     command rm "$@"
   }
   systemctl() {
+    if [[ "$1" == stop && "$c" == *-media-* ]]; then
+      printf '%s\n' "${before:-unobserved}" > "$c/runtime-fingerprint"
+    fi
     if [[ "$1" == show ]]; then
       [[ "$APP_FAULT" != query ]] || return 53
       cat "$c/recovery-state"
@@ -102,6 +116,7 @@ PY
 runtime_hooks_variant() {
   case "$variant" in missing-asset | checker-error | pin8 | ipv6 | extract | backup | partial | restore | permissions | query | stop) fault="$variant" ;; esac
   [[ "$variant" != stopped-* ]] || fault="${variant#stopped-}"
+  [[ "$variant" != media-missing-asset ]] || fault=missing-asset
   [[ "$variant" != fresh-missing-asset ]] || {
     role=install
     fault=missing-asset
@@ -128,6 +143,7 @@ runtime_hooks_setup() {
   mkdir -p "$c/www/html"
   : > "$c/downloads"
   : > "$c/php-calls"
+  : > "$c/media-reads"
   python3 - "$c/release.zip" << 'PY'
 import sys,zipfile
 with zipfile.ZipFile(sys.argv[1],'w') as archive:
@@ -151,12 +167,25 @@ PY
       current | pending) printf '7.10.5\n' > "$c/home/.ampache" ;;
     esac
     [[ "$variant" != pending ]] || printf 'interrupted update\n' > "$c/state/ampache"
+    if [[ "$variant" == media-* ]]; then
+      mkdir -p "$c/external/media" "$c/opt/ampache/external media [live]*?"
+      printf 'mounted media bytes\n' > "$c/external/media/track"
+    fi
     local initial=active
     [[ "$variant" != stopped-* ]] || initial=inactive
     runtime_hooks_recovery_setup apache2 "$initial" "$c/opt/ampache" "$c/home/.ampache"
   fi
 }
 runtime_hooks_assert() {
+  if [[ "$variant" == media-* ]]; then
+    check "$(stat -c %s "$c/media-reads")" 0 "$app/$variant runtime verification never reads media or same-device mount contents"
+    local fingerprint_status=0
+    python3 - "$c/runtime-fingerprint" << 'PY' || fingerprint_status=$?
+import pathlib,re,sys
+assert re.fullmatch(rb'[0-9a-f]{64}  -\n',pathlib.Path(sys.argv[1]).read_bytes())
+PY
+    check "$fingerprint_status" 0 "$app/$variant fingerprint exposes one text checksum, not binary metadata"
+  fi
   if [[ "$role" == update ]]; then
     check "$(cat "$c/opt/ampache/config/ampache.cfg.php")" 'saved database configuration' "$app/$variant saved configuration retained"
     check "$(cat "$c/opt/ampache/public/rest/.htaccess")" 'saved REST rules' "$app/$variant REST rules retained"
