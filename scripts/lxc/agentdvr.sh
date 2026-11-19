@@ -84,7 +84,7 @@ function update_script() {
   ARCH=$(uname -m)
   [[ "$ARCH" == "x86_64" ]] && AGENT_PLATFORM="Linux64" || AGENT_PLATFORM="LinuxARM64"
   RELEASE=$(curl -fsSL "https://www.ispyconnect.com/api/Agent/DownloadLocation4?platform=${AGENT_PLATFORM}&fromVersion=0" | grep -o 'https://.*\.zip')
-  if [[ "${RELEASE}" != "$(cat ~/.agentdvr 2> /dev/null)" ]] || [[ ! -f ~/.agentdvr ]]; then
+  if [[ "${FORCE_DEPLOY:-0}" == 1 ]] || [[ "${RELEASE}" != "$(cat ~/.agentdvr 2> /dev/null)" ]] || [[ ! -f ~/.agentdvr ]]; then
     msg_info "Stopping service"
     systemctl stop AgentDVR
     msg_ok "Service stopped"
