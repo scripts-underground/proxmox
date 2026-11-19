@@ -19,7 +19,7 @@ Bambu Lab 3D printer management — monitor prints, manage files, and control Ba
 
 - Access the web UI at `http://<ip>:8000` to manage your Bambu Lab printers.
 - Configuration is stored in `/opt/bambuddy/.env`.
-- Data files and databases are in `/opt/bambuddy/data/`.
+- The default database is `/opt/bambuddy/bambuddy.db`; archives are in `/opt/bambuddy/archive/`, and authentication keys are in `/opt/bambuddy/data/`. Updates retain these and the other application data directories.
 
 ## Links
 
