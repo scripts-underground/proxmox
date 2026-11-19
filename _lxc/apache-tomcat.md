@@ -20,7 +20,7 @@ Apache Tomcat is an open-source implementation of the Jakarta Servlet, Jakarta E
 - Access the web UI at `http://<ip>:8080` to verify the installation.
 - Tomcat version and Java version can be customized by setting `TOMCAT_VERSION` and `JAVA_VERSION` environment variables before creation.
 - Java 21 is installed by default with Tomcat 11.
-- Updates preserve your configuration, webapps, and custom library jars.
+- Updates preserve configuration, webapps, custom library jars, `bin/setenv.sh`, logs, work and temporary application state.
 
 ## Links
 
