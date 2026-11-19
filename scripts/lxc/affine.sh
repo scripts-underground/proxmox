@@ -23,6 +23,7 @@ function install_script() {
   msg_info "Installing Dependencies"
   $STD apt install -y \
     build-essential \
+    cmake \
     git \
     pkg-config \
     openssl \
@@ -136,27 +137,8 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-  cat << EOF > /etc/systemd/system/affine-worker.service
-[Unit]
-Description=AFFiNE Background Worker
-After=network.target postgresql.service redis-server.service
-Requires=postgresql.service redis-server.service
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/affine/packages/backend/server
-EnvironmentFile=/opt/affine/.env
-Environment=LD_PRELOAD=libjemalloc.so.2
-Environment=NODE_OPTIONS=--max-old-space-size=1024
-ExecStart=/usr/bin/node ./dist/main.js --worker
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl enable -q --now redis-server affine-web affine-worker
+  # The default all-in-one server owns background jobs as well as HTTP.
+  systemctl enable -q --now redis-server affine-web
   msg_ok "Created Services"
 
   msg_info "Creating Admin User"
@@ -210,7 +192,9 @@ server {
 EOF
   ln -sf /etc/nginx/sites-available/affine.conf /etc/nginx/sites-enabled/
   rm -f /etc/nginx/sites-enabled/default
+  $STD nginx -t
   systemctl enable -q --now nginx
+  systemctl reload-or-restart nginx
   msg_ok "Configured Nginx"
 }
 
@@ -231,17 +215,72 @@ function update_script() {
     exit
   fi
 
+  # Resolve the release before retiring a worker that may own the live listener.
+  local release_status=0
   if check_for_gh_release "affine_app" "toeverything/AFFiNE"; then
+    release_status=0
+  else
+    release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
+  fi
+
+  # Retire only the obsolete unit this script installed. Operator-customized
+  # units need an explicit migration rather than silently deleting their work.
+  local legacy_worker=/etc/systemd/system/affine-worker.service
+  if [[ -e "$legacy_worker" || -L "$legacy_worker" ]]; then
+    if [[ ! -f "$legacy_worker" || -L "$legacy_worker" ]] || ! cmp -s "$legacy_worker" <(
+      cat << 'EOF'
+[Unit]
+Description=AFFiNE Background Worker
+After=network.target postgresql.service redis-server.service
+Requires=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/affine/packages/backend/server
+EnvironmentFile=/opt/affine/.env
+Environment=LD_PRELOAD=libjemalloc.so.2
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+ExecStart=/usr/bin/node ./dist/main.js --worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ); then
+      msg_error "Customized $legacy_worker: migrate the obsolete worker manually before updating."
+      return 65
+    fi
+  fi
+
+  # Admit current on-disk overrides before service actions. This also completes
+  # a manager reload interrupted after an earlier run removed the base unit.
+  systemctl daemon-reload
+  if [[ -e "$legacy_worker" || -L "$legacy_worker" ]]; then
+    local worker_dropins
+    worker_dropins=$(systemctl show --property=DropInPaths --value affine-worker.service) || return $?
+    if [[ -n "$worker_dropins" ]]; then
+      msg_error "Customized affine-worker.service drop-ins: migrate the obsolete worker manually before updating."
+      return 65
+    fi
+    systemctl stop affine-worker
+    systemctl disable affine-worker
+    rm -f "$legacy_worker"
+    systemctl daemon-reload
+  fi
+
+  if [[ "$release_status" == 0 ]]; then
+    ensure_dependencies cmake
+
     msg_info "Stopping Services"
-    systemctl stop affine-web affine-worker
+    systemctl stop affine-web
     msg_ok "Stopped Services"
 
-    msg_info "Backing up Data"
-    cp -r /root/.affine/storage /root/.affine_storage_backup 2> /dev/null || true
-    cp -r /root/.affine/config /root/.affine_config_backup 2> /dev/null || true
-    msg_ok "Backed up Data"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "affine_app" "toeverything/AFFiNE" "tarball" "latest" "/opt/affine"
+    # Configuration stays in place; uploads/config under /root/.affine and
+    # PostgreSQL data are outside the source replacement root.
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env)
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "affine_app" "toeverything/AFFiNE" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/affine"
 
     msg_info "Rebuilding Application (Patience)"
     cd /opt/affine || exit
@@ -253,12 +292,14 @@ function update_script() {
     export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
     export VITE_CORE_COMMIT_SHA=$(cat ~/.affine_app)
 
-    # Initialize git repo (required for build process)
+    # Build metadata must not invoke retained upstream developer hooks before
+    # dependencies exist, or reject an identical source on a pending retry.
+    export HUSKY=0
     git init -q
     git config user.email "build@local"
     git config user.name "Build"
     git add -A
-    git commit -q -m "update"
+    git commit -q --allow-empty -m "update"
 
     # Force Turbo to run sequentially
     mkdir -p /opt/affine/.turbo
@@ -311,17 +352,16 @@ TURBO
     set -a && source /opt/affine/.env && set +a
     $STD node ./scripts/self-host-predeploy.js
 
-    msg_info "Restoring Data"
-    cp -r /root/.affine_storage_backup/. /root/.affine/storage/ 2> /dev/null || true
-    cp -r /root/.affine_config_backup/. /root/.affine/config/ 2> /dev/null || true
-    rm -rf /root/.affine_storage_backup /root/.affine_config_backup
-    msg_ok "Restored Data"
-
-    msg_info "Starting Services"
-    systemctl start affine-web affine-worker
-    msg_ok "Started Services"
-    msg_ok "Updated Successfully!"
   fi
+
+  # Retirement can free the shared listener even when no rebuild is needed.
+  # A successful update always hands HTTP/jobs to the supported all-in-one unit.
+  msg_info "Starting Services"
+  systemctl start affine-web
+  msg_ok "Started Services"
+  $STD nginx -t
+  systemctl reload-or-restart nginx
+  msg_ok "Updated Successfully!"
   exit
 }
 
