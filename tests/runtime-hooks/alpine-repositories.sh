@@ -58,7 +58,7 @@ check() {
   fi
 }
 for owner in base pkg upgrade runner; do
-  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback trailing-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback literal-dollar-fallback dot-url-edge dot-component-edge dot-encoded-edge undefined-edge leading-space-edge; do
+  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback trailing-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback literal-dollar-fallback mixed-fallback dot-url-edge dot-component-edge dot-encoded-edge undefined-edge leading-space-edge; do
     [[ "$owner" != base || "$scenario" != non-alpine ]] || continue
     c="$work/$owner-$scenario"
     mkdir -p "$c"/{bin,etc/apk/repositories.d,lib/apk/repositories.d,home,tmp,var/lib/scripts-underground/update-pending}
@@ -97,6 +97,7 @@ for owner in base pkg upgrade runner; do
       literal-dollar-fallback)
         printf 'set key=main\nset -default -default key=${key}\nv2 @p$ss https://original.invalid/pub/alpine/v3.23 ${key} p$ss # retained\nhttps://vendor.invalid/p$ss\n' > "$c/etc/apk/repositories.d/operator.list"
         ;;
+      mixed-fallback) printf 'v2 https://original.invalid alpine/v3.23/main vendor/custom\n' > "$c/etc/apk/repositories.d/operator.list" ;;
       dot-url-edge) printf 'https://other.invalid/alpine/v3.23/../edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
       dot-component-edge) printf 'v2 https://other.invalid/alpine/v3.23 ../edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
       dot-encoded-edge) printf 'set component=%%2e%%2e/edge/main\nv3 https://other.invalid/alpine/v3.23 ${component}\n' > "$c/etc/apk/repositories.d/operator.list" ;;
@@ -105,6 +106,11 @@ for owner in base pkg upgrade runner; do
     esac
     [[ "$scenario" != masked-edge ]] || printf 'https://other.invalid/alpine/v3.23/main\n' > "$c/lib/apk/repositories.d/operator.list"
     cp "$c/etc/apk/repositories" "$c/before"
+    if [[ "$scenario" == variable-fallback ]]; then
+      cp "$c/etc/apk/repositories.d/10-operator.list" "$c/operator-before"
+    elif [[ "$scenario" == literal-dollar-fallback || "$scenario" == mixed-fallback ]]; then
+      cp "$c/etc/apk/repositories.d/operator.list" "$c/operator-before"
+    fi
     if [[ "$owner" == runner ]]; then
       printf 'prior pending bytes\n' > "$c/var/lib/scripts-underground/update-pending/alpine"
     fi
@@ -151,11 +157,24 @@ SHIM
       BUILD_LOG="$c/build.log" DEBUG_LOGFILE="$c/error.log" VERBOSE=yes \
       timeout 30 bash "$0" --child > "$c/output" 2>&1 || rc=$?
     label="$owner/$scenario"
+    expected_status=0
     if [[ "$scenario" == *-edge && "$scenario" != alternate-edge || "$scenario" == alternate-edge && "$owner" != base ]]; then
       check "$rc" 65 "$label rejects every effective native source"
       check "$(wc -l < "$c/events")" 0 "$label no package or hook effect"
       if [[ "$owner" == runner ]]; then
         check "$(cat "$c/var/lib/scripts-underground/update-pending/alpine")" 'prior pending bytes' "$label refusal preserves pending state"
+      fi
+    elif [[ ("$owner" == base || "$owner" == pkg) && ("$scenario" == variable-fallback || "$scenario" == literal-dollar-fallback || "$scenario" == mixed-fallback) ]]; then
+      expected_status=65
+      [[ "$owner" != base ]] || expected_status=1
+      check "$rc" "$expected_status" "$label mirror refuses without claiming success"
+      check "$(wc -l < "$c/events")" 1 "$label refused mirror never reaches another package effect"
+      operator_file="$c/etc/apk/repositories.d/operator.list"
+      [[ "$scenario" != variable-fallback ]] || operator_file="$c/etc/apk/repositories.d/10-operator.list"
+      check "$(cmp -s "$c/operator-before" "$operator_file" && echo unchanged || echo changed)" unchanged "$label declaration bytes retained"
+      check "$(grep -c "Cannot mirror $operator_file:" "$c/output" || true)" 1 "$label names refused file and line"
+      if [[ "$owner" == pkg ]]; then
+        check "$(cmp -s "$c/before" "$c/etc/apk/repositories" && echo unchanged || echo changed)" unchanged "$label refusal before any file publication"
       fi
     elif [[ "$owner" == base ]]; then
       check "$rc" 0 "$label creator completes"
@@ -174,23 +193,13 @@ SHIM
       check "$(grep -c '/alpine/v3.23/' "$c/etc/apk/repositories" || true)" 2 "$label branch retained"
       check "$(grep -c '^# operator comment\|# retained\|https://vendor.invalid/custom/packages' "$c/etc/apk/repositories" || true)" 3 "$label unrelated/comment/tag bytes retained"
     fi
-    [[ "$rc" == 0 || "$rc" == 65 ]] || tail -n 8 "$c/output" >&2
-    if [[ "$owner" == pkg && "$scenario" == *fallback && "$scenario" != legacy-fallback ]]; then
+    [[ "$rc" == 0 || "$rc" == 65 || "$rc" == "${expected_status:-}" ]] || tail -n 8 "$c/output" >&2
+    if [[ "$owner" == pkg && "$scenario" == *fallback && "$scenario" != legacy-fallback && "$scenario" != variable-fallback && "$scenario" != literal-dollar-fallback && "$scenario" != mixed-fallback ]]; then
       check "$(grep -c original.invalid "$c/etc/apk/repositories" || true)" 0 "$label mirror transport changed"
       check "$(grep -c '@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
       mirror_url=$(grep -o 'https://[^/]*' "$c/etc/apk/repositories" | head -n 1)
-      mirror=${mirror_url#https://}
       sed "s|https://original.invalid|$mirror_url|g" "$c/before" > "$c/expected"
-      check "$(cmp -s "$c/expected" "$c/etc/apk/repositories" && echo preserved || echo changed)" preserved "$label only authority changed"
-      if [[ "$scenario" == variable-fallback ]]; then
-        mirror=$(sed -n 's|^https://\([^/]*\)/.*|\1|p' "$c/etc/apk/repositories" | head -n 1)
-        check "$(grep -Fc "v2 @operator https://$mirror/pub/alpine/v3.23 main community # retained" "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label effective typed variable source rewritten"
-        check "$(grep -c 'https://vendor.invalid/custom/packages' "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label unrelated directory source retained"
-      fi
-      if [[ "$scenario" == literal-dollar-fallback ]]; then
-        check "$(grep -Fc 'https://vendor.invalid/p$ss' "$c/etc/apk/repositories.d/operator.list" || true)" 1 "$label literal vendor dollar is preserved"
-        check "$(grep -Fc "v2 @p\$ss https://$mirror/pub/alpine/v3.23 \${key} p\$ss # retained" "$c/etc/apk/repositories.d/operator.list" || true)" 1 "$label tag/components/dollars retained by shared mirror owner"
-      fi
+      check "$(cmp -s "$c/expected" "$c/etc/apk/repositories" && echo preserved || echo changed)" preserved "$label only host changed"
     fi
   done
 done

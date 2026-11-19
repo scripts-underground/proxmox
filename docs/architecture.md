@@ -781,8 +781,13 @@ Alpine's repository branch comes from the receiving template's native
 `VERSION_ID`, never from a moving distribution alias. Core owns one POSIX-shell
 policy and checked emitter, shared by the creator's pre-Bash setup, package
 helpers and frozen update runner. Fresh setup writes `v<major>.<minor>` main and
-community sources. Mirror fallback changes only active native source authorities,
-retaining their scheme, branch, components, tags, comments and unrelated sources.
+community sources. Mirror fallback changes only the URL host in literal active
+declarations whose every component is a native index, retaining all other source
+bytes, including scheme, port, branch, components, tags and final-newline state.
+Set lines and non-native declarations are untouched. A declaration containing any
+dollar byte or mixing native and non-native indexes is never rewritten. If it
+carries a native index, the mirror attempt refuses with its file and line before
+any publication; it cannot report a successful fallback over unchanged sources.
 Before package updates/upgrades or app update admission, a configured native
 branch different from the installed branch (including `latest-stable` or `edge`)
 refuses with the installed/configured state, without changing repositories or
@@ -797,8 +802,9 @@ sorted union of non-hidden `.list` names in `/etc/apk/repositories.d` and
 substitutes; other dollar bytes remain literal. Assignments expand before the
 `set -default` decision. Optional types/tags, original-token index inference,
 space-only component splitting and index deduplication follow native apk.
-Inline `#` tokens are components, not comments. Mirror fallback preserves these
-semantics, including when a materialized variable URL needs an explicit type.
+Inline `#` tokens are components, not comments. Mirror fallback never materializes
+expanded records back into source syntax, preserving non-recursive expansion and
+per-component authority instead of trying to serialize those semantics.
 
 The private `project` action observes that native inventory without admission or
 rewrites, including native partial-file parse behavior. Product admission is
@@ -815,7 +821,8 @@ never normalized during fallback.
 explicitly inside DO VM `scripts-underground-proxmox-core-alpine` (SFO3), with
 disk-backed TMPDIR. It compares the emitted ash/BusyBox-awk parser against the
 installed native apk in its owned Alpine CT, checking explicit index identities,
-actual HTTP requests and the origin-resolved paths. It retains per-case JSON;
+actual HTTP requests and the origin-resolved paths. It also checks exact written
+files and native requests after mirror success or refusal. It retains per-case JSON;
 native exit0 alone is not proof of a complete inventory. Ordinary fixture suites
 do not require pct or that CT. The oracle currently records apk3.0.9; reference
 source provenance (v3.0.0 and master) is not a claim of identical binary sources.

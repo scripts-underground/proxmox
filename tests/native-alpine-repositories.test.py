@@ -155,6 +155,38 @@ def cases():
         LIB + "10-bad.list": "set key=${missing}\n@ORIGIN@/alpine/edge/main\n",
         ETC + "20-valid.list": URL + "\n"})
     row("space-metachar-filename", "", [PIN + I2], files={ETC + "operator ;$x.list": URL + "\n"})
+    row("review-mixed-components", "v2 @ORIGIN@ alpine/v3.23/main vendor/custom\n",
+        [PIN + I2, "/vendor/custom" + I2])
+    row("mixed-components-reversed", "v2 @ORIGIN@ vendor/custom alpine/v3.23/main\n",
+        ["/vendor/custom" + I2, PIN + I2])
+    row("variable-native-url", "set root=" + URL + "\nv2 ${root}\n", [PIN + I2])
+    row("review-exposed-substitution", "set dollar=$\nset root=" + URL + "\nv2 ${root}/${dollar}{missing}\n",
+        [PIN + "/${missing}" + I2])
+    row("literal-native-dollar", URL + "/p$ss\n", [PIN + "/p$ss" + I2])
+    row("literal-official-still-mirrored", "set unused=" + URL + "\n"
+        "v2\t@operator\t@ORIGIN@/pub//alpine/v3.23/./main/// \t\n"
+        "@ORIGIN@/vendor/p$ss\n", ["/pub//alpine/v3.23/./main" + I2, "/vendor/p$ss" + I2])
+    row("mixed-in-directory-no-partial-publication", URL + "\n", [PIN + I2, "/vendor/custom" + I2],
+        files={ETC + "operator.list": "v2 @ORIGIN@ alpine/v3.23/main vendor/custom\n"})
+    # Explicit refusal locations, independent of the owner's classification.
+    refusals = {name: (MAIN, line) for name, line in (
+        ("literal-dollar-component", 1), ("literal-before-braced", 2), ("braced-url", 2),
+        ("assignment-time", 4), ("default-first", 2), ("default-keeps", 3),
+        ("default-repeated", 3), ("overwrite", 3), ("empty-value", 2),
+        ("assignment-spaces", 2), ("expanded-type-materialization", 2),
+        ("tag-literal-dollar", 1), ("tag-not-expanded", 1),
+        ("inference-before-expansion", 2), ("inference-raw-suffix", 2),
+        ("review-mixed-components", 1), ("mixed-components-reversed", 1),
+        ("variable-native-url", 2), ("review-exposed-substitution", 3),
+        ("literal-native-dollar", 1))}
+    for size in ("empty", "0", "1", "4", "100", "buffer-4095", "buffer-4096"):
+        refusals["slice-" + size] = (MAIN, 2)
+    refusals.update({"key-case-digits": (MAIN, 2),
+                     "main-before-dirs": (LIB + "10-use.list", 1),
+                     "sorted-union-variables": (ETC + "20-use.list", 2),
+                     "mixed-in-directory-no-partial-publication": (ETC + "operator.list", 1)})
+    for case in rows:
+        case["mirror_refusal"] = refusals.get(case["name"])
     return rows
 
 
@@ -200,10 +232,15 @@ def main():
         def log_message(self, *_):
             pass
 
-    server = ThreadingHTTPServer(("172.29.43.1", 0), Recorder)
+    # Two addresses of this guest reach the same recorder. Keeping the port
+    # observable proves that publication changes only the URL host, not authority.
+    mirror_host = re.search(r"inet ([0-9.]+)/", run(["ip", "-4", "-o", "addr", "show", "dev", "eth1"]).stdout).group(1)
+    assert mirror_host.startswith("10.")
+    server = ThreadingHTTPServer(("0.0.0.0", 0), Recorder)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     origin = "http://172.29.43.1:" + str(server.server_port)
+    mirror_origin = "http://" + mirror_host + ":" + str(server.server_port)
     results = []
     try:
         for case in cases():
@@ -241,14 +278,14 @@ for action in project check; do
   printf '%s' "$rc" > "$root/$action.status"
 done
 rc=0
-/bin/ash "$root/policy.sh" mirror mirror.invalid > "$root/mirror.out" 2> "$root/mirror.err" || rc=$?
+/bin/ash "$root/policy.sh" mirror "$2" > "$root/mirror.out" 2> "$root/mirror.err" || rc=$?
 printf '%s' "$rc" > "$root/mirror.status"
 rc=0
 /bin/ash "$root/policy.sh" project > "$root/after.out" 2> "$root/after.err" || rc=$?
 printf '%s' "$rc" > "$root/after.status"
 tar -cf - -C "$root" native.out native.err native.status project.out project.err project.status check.out check.err check.status mirror.out mirror.err mirror.status after.out after.err after.status
 '''
-            observed = subprocess.run(ct + ["/bin/ash", "-c", command, "_", root],
+            observed = subprocess.run(ct + ["/bin/ash", "-c", command, "_", root, mirror_host],
                                       input=payload.getvalue(), capture_output=True, timeout=45, check=True)
             with tarfile.open(fileobj=io.BytesIO(observed.stdout)) as archive:
                 def result(prefix):
@@ -256,6 +293,22 @@ tar -cf - -C "$root" native.out native.err native.status project.out project.err
                         return archive.extractfile(prefix + suffix).read().decode()
                     return SimpleNamespace(returncode=int(read(".status")), stdout=read(".out"), stderr=read(".err"))
                 native, projection, admission, mirror, after = (result(p) for p in ("native", "project", "check", "mirror", "after"))
+            before_requests = list(requests)
+            requests.clear()
+            consumed = subprocess.run(ct + ["/bin/ash", "-c", '''root=$1
+shift
+apk --root "$root" add --initdb --no-cache --allow-untrusted -v > "$root/consumed.out" 2> "$root/consumed.err"
+rc=$?
+printf '%s' "$rc" > "$root/consumed.status"
+tar -cf - -C "$root" consumed.out consumed.err consumed.status "$@"
+''', "_", root, *case["files"]], capture_output=True, timeout=45)
+            assert consumed.returncode == 0, consumed.stderr
+            with tarfile.open(fileobj=io.BytesIO(consumed.stdout)) as archive:
+                consumed_stderr = archive.extractfile("consumed.err").read().decode()
+                consumed_status = int(archive.extractfile("consumed.status").read())
+                written = {path: None if text is None else archive.extractfile(path).read().decode()
+                           for path, text in case["files"].items()}
+                assert all(not archive.getmember(path).isreg() for path, text in case["files"].items() if text is None)
             inventory = re.findall(r"WARNING: fetching (.*): HTTP 404: Not Found", native.stderr)
             expected = [origin + path for path in case["expected"]]
             errors = []
@@ -265,20 +318,52 @@ tar -cf - -C "$root" native.out native.err native.status project.out project.err
                 errors.append("owner projection != native inventory")
             if admission.returncode != case["policy"]:
                 errors.append("admission policy status")
-            mirrored = [p.replace(origin, "http://mirror.invalid", 1) if "/alpine/" in unquote(p) else p for p in expected]
-            if mirror.returncode != case["policy"]:
+            mirror_status = case["policy"] or (65 if case["mirror_refusal"] else 0)
+            mirrored = [p.replace(origin, mirror_origin, 1) if "/alpine/" in unquote(p) else p for p in expected]
+            final_inventory = expected if mirror_status else mirrored
+            if mirror.returncode != mirror_status:
                 errors.append("mirror admission policy status")
-            if after.returncode != 0 or after.stdout.splitlines() != (mirrored if not case["policy"] else expected):
+            if case["mirror_refusal"] and not case["policy"]:
+                path, line = case["mirror_refusal"]
+                if f"{root}/{path}:{line}:" not in mirror.stderr or "cannot mirror" not in mirror.stderr.lower():
+                    errors.append("mirror refusal lacks file/line diagnostic")
+            if after.returncode != 0 or after.stdout.splitlines() != final_inventory:
                 errors.append("mirror changed inventory semantics or refusal changed bytes")
-            if Counter(unquote(r["raw"]) for r in requests) != Counter(unquote(p) for p in case["expected"]):
+            expected_files = {}
+            effective = {MAIN}
+            names = {Path(path).name for path in case["files"]
+                     if path.startswith((ETC, LIB)) and not Path(path).name.startswith(".") and path.endswith(".list")}
+            effective.update(ETC + name if ETC + name in case["files"] else LIB + name for name in names)
+            for path, text in case["files"].items():
+                if text is None:
+                    expected_files[path] = None
+                    continue
+                lines = []
+                for line in text.splitlines(keepends=True):
+                    if not mirror_status and path in effective and not line.startswith(("set ", "#")) and "/alpine/" in unquote(line) and "$" not in line:
+                        line = line.replace("@ORIGIN@", mirror_origin, 1)
+                    lines.append(line.replace("@ORIGIN@", origin))
+                expected_files[path] = "".join(lines)
+            if written != expected_files:
+                errors.append("published file bytes differ from literal-only contract")
+            consumed_inventory = re.findall(r"WARNING: fetching (.*): HTTP 404: Not Found", consumed_stderr)
+            if consumed_status != 0 or consumed_inventory != final_inventory:
+                errors.append("native consumer after mirror differs from expected inventory")
+            final_paths = [p.removeprefix(mirror_origin if not mirror_status and p.startswith(mirror_origin + "/") else origin)
+                           for p in final_inventory]
+            if Counter(unquote(r["raw"]) for r in requests) != Counter(unquote(p) for p in final_paths):
+                errors.append("actual native requests after mirror differ from expected inventory")
+            if Counter(unquote(r["raw"]) for r in before_requests) != Counter(unquote(p) for p in case["expected"]):
                 errors.append("actual native requests differ from expected inventory")
-            if case["resolved"] is not None and Counter(r["resolved"] for r in requests) != Counter(case["resolved"]):
+            if case["resolved"] is not None and Counter(r["resolved"] for r in before_requests) != Counter(case["resolved"]):
                 errors.append("origin-resolved paths differ from explicit expectation")
             results.append(dict(**case, native=dict(status=native.returncode, stdout=native.stdout, stderr=native.stderr,
-                                                   inventory=inventory, requests=list(requests)),
+                                                   inventory=inventory, requests=before_requests),
                                 projection=dict(status=projection.returncode, stdout=projection.stdout, stderr=projection.stderr),
                                 admission=dict(status=admission.returncode, stderr=admission.stderr),
-                                mirror=dict(status=mirror.returncode, stderr=mirror.stderr, inventory=after.stdout.splitlines()), errors=errors))
+                                mirror=dict(status=mirror.returncode, stderr=mirror.stderr, inventory=after.stdout.splitlines(),
+                                            written=written, expected_files=expected_files, native_inventory=consumed_inventory,
+                                            native_status=consumed_status, native_stderr=consumed_stderr, requests=list(requests)), errors=errors))
             (args.workspace / "results.json").write_text(json.dumps(dict(complete=False, apk=version.stdout.strip(), cases=results), indent=2) + "\n")
             if errors:
                 print("MISMATCH " + case["name"] + ": " + "; ".join(errors), flush=True)
