@@ -780,6 +780,23 @@ unchanged; other source layouts are not claimed.
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
 
+`create_lxc_container` owns creation only, never after-install hook dispatch.
+Normal install and successful in-place package repair converge on
+`_finish_container_build`, which restores strict error handling and calls the
+optional post-build hook normally before finalization. Recursive verbose, OOM
+and DNS rebuilds return immediately after the inner build completes: only that
+successful inner owner dispatches the hook. Failed install/preparation paths do
+not dispatch it. Creator and hook stage calls must not be conditional operands:
+Bash would suppress errexit through their bodies and could turn a failed required
+operation into later success. Hook failures retain the existing ERR boundary and
+prevent description/post-install completion.
+
+`complete_install` establishes address readiness again after the hook, since a
+legitimate hook can restart the CT. It shares the initial startup path's exact
+address-wait implementation, 20 attempts, one-second sleeps and timeout exit1.
+Only a ready address reaches description and access-URL publication; timeout
+prints the existing startup diagnostics, never a partial URL or success.
+
 #### 4.1.5 Bundle composition
 
 The user's hook functions (`install_script`, `update_script`,
