@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=ampache
 script_type=lxc
-variants=(fresh fresh-media fresh-kept-data fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions ownership query stop stopped-missing-asset stopped-download stopped-backup stopped-copy media-files media-missing-asset kept-data mounted-restore-missing mounted-restore-partial local-restore-missing local-restore-partial runtime)
+variants=(fresh fresh-media fresh-media-alias fresh-kept-data fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions ownership query stop stopped-missing-asset stopped-download stopped-backup stopped-copy media-files media-alias media-missing-asset kept-data mounted-restore-missing mounted-restore-partial local-restore-missing local-restore-partial runtime)
 hook_paths=(/var/www www)
 runtime_hooks_model() {
   [[ "$APP_FAULT" != pin8 ]] || var_appversion=8.4.0
@@ -130,7 +130,7 @@ PY
   }
 }
 runtime_hooks_variant() {
-  [[ "$variant" != fresh-media && "$variant" != fresh-kept-data ]] || role=install
+  [[ "$variant" != fresh-media* && "$variant" != fresh-kept-data ]] || role=install
   case "$variant" in missing-asset | checker-error | pin8 | ipv6 | extract | backup | partial | restore | permissions | ownership | query | stop) fault="$variant" ;; esac
   [[ "$variant" != stopped-* ]] || fault="${variant#stopped-}"
   [[ "$variant" != media-missing-asset ]] || fault=missing-asset
@@ -187,7 +187,7 @@ with zipfile.ZipFile(sys.argv[1],'a') as archive:
         archive.writestr(path,'archive defaults\n')
 PY
   fi
-  if [[ "$variant" == fresh-media ]]; then
+  if [[ "$variant" == fresh-media* ]]; then
     mkdir -p "$c/opt/ampache/music" "$c/external/media" "$c/opt/ampache/external media [live]*?"
     printf 'saved music\n' > "$c/opt/ampache/music/canary"
     printf 'mounted media bytes\n' > "$c/external/media/track"
@@ -229,8 +229,21 @@ PY
     [[ "$variant" != stopped-* ]] || initial=inactive
     runtime_hooks_recovery_setup apache2 "$initial" "$c/opt/ampache" "$c/home/.ampache"
   fi
+  if [[ "$variant" == *-alias ]]; then
+    # The kernel reports mounts under this physical target, not the root alias.
+    mv -- "$c/opt/ampache" "$c/external/ampache-root"
+    ln -s -- "$c/external/ampache-root" "$c/opt/ampache"
+    if [[ "$role" == update ]]; then
+      runtime_hooks_recovery_setup apache2 active "$c/opt/ampache" "$c/external/ampache-root" "$c/home/.ampache"
+    fi
+  fi
 }
 runtime_hooks_assert() {
+  if [[ "$variant" == *-alias ]]; then
+    check "$(readlink "$c/opt/ampache")" "$c/external/ampache-root" "$app/$variant root alias retained"
+    check "$(stat -c %u:%g "$c/external/ampache-root")" 33:33 "$app/$variant physical deployment root ownership updated"
+    check "$(stat -c %u:%g "$c/opt/ampache/code")" 33:33 "$app/$variant deployment code ownership updated"
+  fi
   if [[ "$variant" == *kept-data ]]; then
     local path
     check "$(stat -c %s "$c/media-reads")" 0 "$app/$variant declared persistent data never reaches hashing"
@@ -249,7 +262,10 @@ assert re.fullmatch(rb'[0-9a-f]{64}  -\n',pathlib.Path(sys.argv[1]).read_bytes()
 PY
     check "$fingerprint_status" 0 "$app/$variant fingerprint exposes one text checksum, not binary metadata"
   fi
-  if [[ "$variant" == media-* || "$variant" == fresh-media ]]; then
+  if [[ "$variant" == media-* || "$variant" == fresh-media* ]]; then
+    check "$(stat -c %s "$c/media-reads")" 0 "$app/$variant mounted data never reaches hashing"
+    check "$(cat "$c/external/media/track")" 'mounted media bytes' "$app/$variant mounted bytes retained"
+    check "$(stat -c %u:%g "$c/external/media")" 0:0 "$app/$variant mounted directory ownership remains operator-owned"
     check "$(cat "$c/opt/ampache/music/canary")" 'saved music' "$app/$variant archive defaults cannot replace library data"
     check "$(stat -c %u:%g "$c/opt/ampache/music/canary")" 0:0 "$app/$variant library ownership remains operator-owned"
     check "$(stat -c %u:%g "$c/external/media/track")" 0:0 "$app/$variant mounted data ownership remains operator-owned"

@@ -49,16 +49,21 @@ function install_script() {
   setup_mariadb
   MARIADB_DB_USER="ampache" MARIADB_DB_NAME="ampache" setup_mariadb_db
 
+  # Use the kernel's physical namespace for every deployment/ownership boundary.
+  local ampache_root=/opt/ampache
+  mkdir -p -- "$ampache_root"
+  ampache_root=$(cd -- "$ampache_root" && pwd -P) || return $?
+
   # Deploy the selected tag exactly: a missing asset must not select an older release.
-  fetch_and_deploy_gh_release "ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
+  fetch_and_deploy_gh_release "ampache" "ampache/ampache" "prebuild" "$release" "$ampache_root" "ampache-*_all_php8.4.zip" "7."
 
   msg_info "Setting Up Ampache"
   rm -rf /var/www/html
-  ln -s /opt/ampache/public /var/www/html
-  mv /opt/ampache/public/rest/.htaccess.dist /opt/ampache/public/rest/.htaccess
-  mv /opt/ampache/public/play/.htaccess.dist /opt/ampache/public/play/.htaccess
-  cp /opt/ampache/config/ampache.cfg.php.dist /opt/ampache/config/ampache.cfg.php
-  chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
+  ln -s "$ampache_root/public" /var/www/html
+  mv "$ampache_root/public/rest/.htaccess.dist" "$ampache_root/public/rest/.htaccess"
+  mv "$ampache_root/public/play/.htaccess.dist" "$ampache_root/public/play/.htaccess"
+  cp "$ampache_root/config/ampache.cfg.php.dist" "$ampache_root/config/ampache.cfg.php"
+  chmod 664 "$ampache_root/public/rest/.htaccess" "$ampache_root/public/play/.htaccess"
   msg_ok "Set Up Ampache"
 
   msg_info "Configuring Database Connection"
@@ -67,7 +72,7 @@ function install_script() {
     -e 's|^database_name = .*|database_name = "ampache"|' \
     -e 's|^database_username = .*|database_username = "ampache"|' \
     -e "s|^database_password = .*|database_password = \"${MARIADB_DB_PASS}\"|" \
-    /opt/ampache/config/ampache.cfg.php
+    "$ampache_root/config/ampache.cfg.php"
   # Match replacement's mount boundary, including same-device/file bind mounts.
   # Never recursively chown persistent data or dereference operator links.
   local mount pattern entry path rest part
@@ -78,7 +83,7 @@ function install_script() {
   for entry in "${persistent[@]}"; do
     [[ -n "$entry" ]] || return 65
     case "/$entry/" in //* | *//* | */./* | */../* | *'*'* | *'?'* | *'['* | *']'*) return 65 ;; esac
-    path=/opt/ampache rest="$entry"
+    path="$ampache_root" rest="$entry"
     while [[ -n "$rest" ]]; do
       part=${rest%%/*}
       path+="/$part"
@@ -97,19 +102,19 @@ function install_script() {
     mount=${mount//\\011/$'\t'}
     mount=${mount//\\012/$'\n'}
     mount=${mount//\\134/$'\\'}
-    [[ "$mount" == /opt/ampache/* ]] || continue
+    [[ "$mount" == "$ampache_root/"* ]] || continue
     pattern=${mount//\\/\\\\}
     pattern=${pattern//\*/\\*}
     pattern=${pattern//\?/\\?}
     pattern=${pattern//\[/\\[}
     ownership_prune+=(-o -path "$pattern")
   done < /proc/self/mountinfo
-  chown -h www-data:www-data /opt/ampache
-  find /opt/ampache/ -mindepth 1 \( "${ownership_prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} +
+  chown -h www-data:www-data "$ampache_root"
+  find "$ampache_root/" -mindepth 1 \( "${ownership_prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} +
   msg_ok "Configured Database Connection"
 
   msg_info "Importing Database Schema"
-  mariadb -u ampache -p"${MARIADB_DB_PASS}" ampache < /opt/ampache/resources/sql/ampache.sql
+  mariadb -u ampache -p"${MARIADB_DB_PASS}" ampache < "$ampache_root/resources/sql/ampache.sql"
   msg_ok "Imported Database Schema"
 
   msg_info "Configuring PHP"
@@ -136,10 +141,12 @@ function update_script() {
   check_container_storage
   check_container_resources
 
-  if [[ ! -d /opt/ampache ]]; then
+  local ampache_root=/opt/ampache
+  if [[ ! -d "$ampache_root" ]]; then
     msg_error "No ${APP} Installation Found!"
     exit
   fi
+  ampache_root=$(cd -- "$ampache_root" && pwd -P) || return $?
   local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" music)
 
   # Keep existing installations on Ampache 7 / PHP 8.4, just like fresh installs.
@@ -172,7 +179,7 @@ function update_script() {
           for entry in "${persistent[@]}"; do
             [[ -n "$entry" ]] || exit 65
             case "/$entry/" in //* | *//* | */./* | */../* | *'*'* | *'?'* | *'['* | *']'*) exit 65 ;; esac
-            path=/opt/ampache rest="$entry"
+            path="$ampache_root" rest="$entry"
             while [[ -n "$rest" ]]; do
               part=${rest%%/*}
               path+="/$part"
@@ -195,7 +202,7 @@ function update_script() {
             mount=${mount//\\011/$'\t'}
             mount=${mount//\\012/$'\n'}
             mount=${mount//\\134/$'\\'}
-            [[ "$mount" == /opt/ampache/* ]] || continue
+            [[ "$mount" == "$ampache_root/"* ]] || continue
             if [[ "$operation" == fingerprint ]]; then
               printf 'mount:%s\0' "$row" || exit $?
               stat -c '%f:%u:%g:%d:%i' -- "$mount" || exit $?
@@ -208,13 +215,13 @@ function update_script() {
             prune+=(-o -path "$pattern")
           done < /proc/self/mountinfo
           if [[ "$operation" == ownership ]]; then
-            chown -h www-data:www-data /opt/ampache || exit $?
-            find /opt/ampache/ -mindepth 1 \( "${prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} + || exit $?
+            chown -h www-data:www-data "$ampache_root" || exit $?
+            find "$ampache_root/" -mindepth 1 \( "${prune[@]}" \) -prune -o -exec chown -h www-data:www-data -- {} + || exit $?
             exit 0
           fi
           {
-            printf '%s\0' /opt/ampache "$HOME/.ampache" || exit $?
-            find /opt/ampache/ -mindepth 1 \( "${prune[@]}" \) -prune -o -print0 || exit $?
+            printf '%s\0' "$ampache_root" "$HOME/.ampache" || exit $?
+            find "$ampache_root/" -mindepth 1 \( "${prune[@]}" \) -prune -o -print0 || exit $?
           } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
             printf '%s\0' "$path" || exit $?
             if [[ ! -e "$path" && ! -L "$path" && "$path" == "$HOME/.ampache" ]]; then
@@ -261,20 +268,20 @@ function update_script() {
 
       msg_info "Creating Backup"
       create_backup \
-        /opt/ampache/config/ampache.cfg.php \
-        /opt/ampache/public/rest/.htaccess \
-        /opt/ampache/public/play/.htaccess \
-        /opt/ampache/advanced-config
+        "$ampache_root/config/ampache.cfg.php" \
+        "$ampache_root/public/rest/.htaccess" \
+        "$ampache_root/public/play/.htaccess" \
+        "$ampache_root/advanced-config"
       msg_ok "Backup Created"
 
-      fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
+      fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "$ampache_root" "ampache-*_all_php8.4.zip" "7."
 
       # Backup is read-only with respect to the live runtime. Restore is not:
       # it removes/copies config even through mounted parents. End eligibility
       # BEFORE that writer (and subsequent chmod/chown), regardless of version.
       write_phase=configuration
       restore_backup
-      chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
+      chmod 664 "$ampache_root/public/rest/.htaccess" "$ampache_root/public/play/.htaccess"
       ampache_footprint ownership
 
       msg_info "Starting Service"
