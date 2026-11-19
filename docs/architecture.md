@@ -790,6 +790,36 @@ pending bytes. Direct-apk app hooks cannot bypass the terminal runner's check.
 No release migration is selected implicitly, including on already-drifted CTs.
 Existing frozen commands are not refreshed by a framework source update.
 
+The same parser owns the effective apk inventory: main file first, then the
+sorted union of non-hidden `.list` names in `/etc/apk/repositories.d` and
+`/lib/apk/repositories.d`. `/etc` wins equal names, including empty files and
+`/dev/null` masks. Variables cross file boundaries in this order. Only `${...}`
+substitutes; other dollar bytes remain literal. Assignments expand before the
+`set -default` decision. Optional types/tags, original-token index inference,
+space-only component splitting and index deduplication follow native apk.
+Inline `#` tokens are components, not comments. Mirror fallback preserves these
+semantics, including when a materialized variable URL needs an explicit type.
+
+The private `project` action observes that native inventory without admission or
+rewrites, including native partial-file parse behavior. Product admission is
+deliberately stricter: a malformed/unresolved file refuses65 instead of treating
+native partial consumption as the intended configuration. Native source paths
+must select the installed branch both lexically and after percent decoding and
+origin-style dot-segment resolution. Escaping the Alpine path or selecting a
+different branch refuses65 before package, hook or pending effects. Safe dot
+segments and unrelated vendor sources remain admitted; accepted path bytes are
+never normalized during fallback.
+
+`tests/native-alpine-repositories.test.py --ctid 3201 --workspace
+/home/builder/work/core-alpine/native-oracle --source <frozen-source>` runs
+explicitly inside DO VM `scripts-underground-proxmox-core-alpine` (SFO3), with
+disk-backed TMPDIR. It compares the emitted ash/BusyBox-awk parser against the
+installed native apk in its owned Alpine CT, checking explicit index identities,
+actual HTTP requests and the origin-resolved paths. It retains per-case JSON;
+native exit0 alone is not proof of a complete inventory. Ordinary fixture suites
+do not require pct or that CT. The oracle currently records apk3.0.9; reference
+source provenance (v3.0.0 and master) is not a claim of identical binary sources.
+
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
 

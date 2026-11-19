@@ -1172,7 +1172,7 @@ _alpine_repository_policy() (
     fresh)
       printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories || return $?
       ;;
-    check | mirror) ;;
+    check | mirror | project) ;;
     *) return 65 ;;
   esac
   # apk loads the main file, then the sorted union of non-hidden *.list names.
@@ -1198,74 +1198,146 @@ _alpine_repository_policy() (
   set -- $_ar_files
   [ "$#" != 0 ] || set -- /dev/null
   _ar_program='
-    function fail(reason) { print "unresolved repository: " reason; exit 65 }
+    # Native parse errors abandon only this file. Projection retains that partial
+    # inventory; productive admission deliberately refuses an incomplete parse.
+    function fail(reason) {
+      bad[FILENAME] = 1
+      if (action != "project") { print "unresolved repository: " reason; exit 65 }
+      return ""
+    }
     function expand(value,    out, key, n, p, spec) {
       out = ""
-      while ((p = index(value, "$"))) {
+      while ((p = index(value, "${"))) {
         out = out substr(value, 1, p - 1)
-        value = substr(value, p + 1)
-        if (substr(value, 1, 1) != "{" || !(n = index(value, "}"))) fail("invalid variable")
-        spec = substr(value, 2, n - 2); key = spec
+        value = substr(value, p + 2)
+        if (!(n = index(value, "}"))) return fail("invalid variable")
+        spec = substr(value, 1, n - 1); key = spec
         sub(/:.*/, "", key)
-        if (!(key in vars)) fail("undefined variable " key)
+        if (!(key in vars)) return fail("undefined variable " key)
+        if (length(out) + length(vars[key]) > 4096) return fail("variable buffer exceeded")
         if (spec == key) out = out vars[key]
         else {
           spec = substr(spec, length(key) + 2)
-          if (spec !~ /^[0-9]+$/) fail("invalid variable length")
+          if (spec !~ /^[0-9]*$/ || spec + 0 > 4096 - length(out)) return fail("invalid variable length")
           out = out substr(vars[key], 1, spec + 0)
         }
         value = substr(value, n + 1)
       }
+      if (length(out) + length(value) >= 4096) return fail("variable buffer exceeded")
       return out value
     }
     function word(    value, n) {
-      match(rest, /^[ \t]*[^ \t]+/)
+      match(rest, /^[^ \t]+/)
+      if (RLENGTH < 1) return ""
       n = RLENGTH; value = substr(rest, 1, n)
-      start = offset + match(value, /[^ \t]/)
+      start = offset + 1
       offset += n; rest = substr(rest, n + 1)
-      sub(/^[ \t]+/, "", value)
+      match(rest, /^[ \t]*/)
+      offset += RLENGTH; rest = substr(rest, RLENGTH + 1)
       return value
     }
-    function native(url,    path, parts) {
+    function is_url(value) { return value ~ /^\// || index(value, "://") > 1 }
+    function decode(path,    out, p, hex, digits) {
+      out = ""; digits = "0123456789abcdef"
+      while ((p = match(path, /%[0-9a-fA-F][0-9a-fA-F]/))) {
+        hex = tolower(substr(path, p + 1, 2))
+        out = out substr(path, 1, p - 1) sprintf("%c", (index(digits, substr(hex, 1, 1)) - 1) * 16 + index(digits, substr(hex, 2, 1)) - 1)
+        path = substr(path, p + 3)
+      }
+      return out path
+    }
+    function normalized(path,    parts, stack, n, top, j, out) {
+      n = split(path, parts, "/"); top = 0
+      for (j = 1; j <= n; j++) {
+        if (parts[j] == "" || parts[j] == ".") continue
+        if (parts[j] == "..") { if (top) top--; continue }
+        stack[++top] = parts[j]
+      }
+      out = ""
+      for (j = 1; j <= top; j++) out = out "/" stack[j]
+      return out
+    }
+    function release(path,    parts) {
+      if (!match(path, /\/alpine\//)) return ""
+      split(substr(path, RSTART + RLENGTH), parts, "/")
+      return parts[1]
+    }
+    function native(url,    path, raw, resolved) {
       path = url
-      sub(/^[a-zA-Z]+:\/\/[^\/]*/, "", path)
-      if (!match(path, /\/alpine\//)) return 0
-      path = substr(path, RSTART + RLENGTH)
-      split(path, parts, "/")
-      if (parts[1] != branch) { print parts[1]; exit 65 }
+      sub(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]*/, "", path)
+      # Inspect both native bytes and an origin-decoded/resolved path. Do not
+      # rewrite them: this is admission policy, not native grammar normalization.
+      path = decode(path); raw = release(path); resolved = release(normalized(path))
+      if (raw == "" && resolved == "") return 0
+      if ((raw != "" && raw != branch) || resolved != branch) {
+        print "unsafe path (configured branch " raw ", resolved branch " resolved ")"; exit 65
+      }
       return 1
+    }
+    function repository(url,    base, index_url, identity) {
+      base = url
+      if (type != "ndx") {
+        sub(/\/+$/, "", base)
+        index_url = base "/" arch "/" (type == "v3" ? "Packages.adb" : "APKINDEX.tar.gz")
+      } else {
+        index_url = url
+        sub(/\/[^\/]*$/, "", base)
+      }
+      if (action == "project") {
+        identity = base SUBSEP index_url
+        if (!(identity in seen)) { print index_url; seen[identity] = 1 }
+        return 0
+      }
+      return native(index_url)
     }
     BEGIN { if (arch != "") vars["APK_ARCH"] = arch }
     {
       line = $0; rest = line; offset = 0
-      token = word()
-      if (token == "" || token ~ /^#/) {
+      if (bad[FILENAME]) next
+      if (line == "" || line ~ /^#/) {
         if (FILENAME == target) print line
         next
       }
+      token = word()
+      if (token == "") { fail("missing record"); next }
       if (token == "set") {
-        sub(/^[ \t]+/, "", rest); default = 0
-        if (rest ~ /^-default[ \t]+/) { default = 1; sub(/^-default[ \t]+/, "", rest) }
+        default = 0
+        while (rest ~ /^-/) {
+          option = word()
+          if (option != "-default") { fail("invalid set option"); break }
+          default = 1
+        }
+        if (bad[FILENAME]) next
         eq = index(rest, "="); key = substr(rest, 1, eq - 1)
-        if (!eq || key !~ /^[a-zA-Z][a-zA-Z0-9_]*$/ || key ~ /^APK_/) fail("invalid assignment")
+        if (!eq || key !~ /^[a-zA-Z][a-zA-Z0-9_]*$/ || key ~ /^APK_/) { fail("invalid assignment"); next }
         value = expand(substr(rest, eq + 1))
+        if (bad[FILENAME]) next
         if (!default || !(key in vars)) vars[key] = value
       } else {
-        if (token == "v2" || token == "v3" || token == "ndx") token = word()
+        type = ""
+        if (token == "v2" || token == "v3" || token == "ndx") { type = token; token = word() }
+        else if (token !~ /^[@$]/ && !is_url(token)) { fail("unknown keyword"); next }
         if (token ~ /^@/) token = word()
+        if (token == "") { fail("missing URL"); next }
+        explicit_type = type
+        if (type == "") type = token ~ /[.](adb|tar[.]gz)$/ ? "ndx" : "v2"
         url_start = start; url_length = length(token); url = expand(token)
+        if (bad[FILENAME]) next
         base_url = url; sub(/\/+$/, "", base_url)
-        components = rest; sub(/[ \t]+#.*/, "", components)
-        components = expand(components)
-        count = split(components, comp, /[ \t]+/); is_native = 0; has_component = 0
+        if (!is_url(base_url)) { fail("invalid URL"); next }
+        had_components = rest != ""; components = expand(rest)
+        if (bad[FILENAME]) next
+        # apk_blob_foreach_word splits components on spaces only, unlike get_word.
+        count = split(components, comp, / +/); is_native = 0
         for (i = 1; i <= count; i++) if (comp[i] != "") {
-          has_component = 1
-          if (native(base_url "/" comp[i])) is_native = 1
+          if (repository(base_url "/" comp[i])) is_native = 1
         }
-        if (!has_component) is_native = native(base_url)
+        if (!had_components) is_native = repository(base_url)
         if (target != "" && is_native && url ~ /^https?:\/\//) {
           sub(/:\/\/[^\/]*/, "://" mirror, url)
           line = substr(line, 1, url_start - 1) url substr(line, url_start + url_length)
+          # Materializing a variable URL must not change native type inference.
+          if (explicit_type == "" && type == "v2" && url ~ /[.](adb|tar[.]gz)$/) line = "v2 " line
         }
       }
       if (FILENAME == target) print line
@@ -1274,6 +1346,10 @@ _alpine_repository_policy() (
   # Both admission and rewriting use the same effective, expanded source model.
   # No repository bytes change until the complete inventory has been admitted.
   _ar_arch=$(cat /etc/apk/arch 2> /dev/null) || _ar_arch=
+  if [ "$_ar_action" = project ]; then
+    awk -v action=project -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@"
+    return $?
+  fi
   _ar_other=$(awk -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@") || {
     [ -n "$_ar_other" ] || _ar_other='unreadable inventory'
   }

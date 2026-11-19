@@ -58,7 +58,7 @@ check() {
   fi
 }
 for owner in base pkg upgrade runner; do
-  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback trailing-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback; do
+  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback trailing-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback literal-dollar-fallback dot-url-edge dot-component-edge dot-encoded-edge undefined-edge leading-space-edge; do
     [[ "$owner" != base || "$scenario" != non-alpine ]] || continue
     c="$work/$owner-$scenario"
     mkdir -p "$c"/{bin,etc/apk/repositories.d,lib/apk/repositories.d,home,tmp,var/lib/scripts-underground/update-pending}
@@ -94,6 +94,14 @@ for owner in base pkg upgrade runner; do
         printf 'set -default release=edge\nset root=https://original.invalid/pub/alpine\nv2 @operator ${root}/${release} main community # retained\nhttps://vendor.invalid/custom/packages\n' > "$c/etc/apk/repositories.d/10-operator.list"
         ;;
       component-edge) printf 'v2 https://other.invalid/pub/alpine edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      literal-dollar-fallback)
+        printf 'set key=main\nset -default -default key=${key}\nv2 @p$ss https://original.invalid/pub/alpine/v3.23 ${key} p$ss # retained\nhttps://vendor.invalid/p$ss\n' > "$c/etc/apk/repositories.d/operator.list"
+        ;;
+      dot-url-edge) printf 'https://other.invalid/alpine/v3.23/../edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      dot-component-edge) printf 'v2 https://other.invalid/alpine/v3.23 ../edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      dot-encoded-edge) printf 'set component=%%2e%%2e/edge/main\nv3 https://other.invalid/alpine/v3.23 ${component}\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      undefined-edge) printf 'v2 ${missing}/alpine/edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
+      leading-space-edge) printf '  # silently aborts native file\nhttps://other.invalid/alpine/edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
     esac
     [[ "$scenario" != masked-edge ]] || printf 'https://other.invalid/alpine/v3.23/main\n' > "$c/lib/apk/repositories.d/operator.list"
     cp "$c/etc/apk/repositories" "$c/before"
@@ -171,12 +179,17 @@ SHIM
       check "$(grep -c original.invalid "$c/etc/apk/repositories" || true)" 0 "$label mirror transport changed"
       check "$(grep -c '@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
       mirror_url=$(grep -o 'https://[^/]*' "$c/etc/apk/repositories" | head -n 1)
+      mirror=${mirror_url#https://}
       sed "s|https://original.invalid|$mirror_url|g" "$c/before" > "$c/expected"
       check "$(cmp -s "$c/expected" "$c/etc/apk/repositories" && echo preserved || echo changed)" preserved "$label only authority changed"
       if [[ "$scenario" == variable-fallback ]]; then
         mirror=$(sed -n 's|^https://\([^/]*\)/.*|\1|p' "$c/etc/apk/repositories" | head -n 1)
         check "$(grep -Fc "v2 @operator https://$mirror/pub/alpine/v3.23 main community # retained" "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label effective typed variable source rewritten"
         check "$(grep -c 'https://vendor.invalid/custom/packages' "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label unrelated directory source retained"
+      fi
+      if [[ "$scenario" == literal-dollar-fallback ]]; then
+        check "$(grep -Fc 'https://vendor.invalid/p$ss' "$c/etc/apk/repositories.d/operator.list" || true)" 1 "$label literal vendor dollar is preserved"
+        check "$(grep -Fc "v2 @p\$ss https://$mirror/pub/alpine/v3.23 \${key} p\$ss # retained" "$c/etc/apk/repositories.d/operator.list" || true)" 1 "$label tag/components/dollars retained by shared mirror owner"
       fi
     fi
   done
