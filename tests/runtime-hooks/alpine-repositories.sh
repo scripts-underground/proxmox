@@ -58,7 +58,7 @@ check() {
   fi
 }
 for owner in base pkg upgrade runner; do
-  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback; do
+  for scenario in pinned fallback legacy legacy-fallback advanced tagged-mixed edge disabled non-alpine alternate-edge alternate-fallback typed-fallback ndx-fallback trailing-fallback etc-edge lib-edge masked masked-edge ignored-list variable-edge component-edge variable-fallback; do
     [[ "$owner" != base || "$scenario" != non-alpine ]] || continue
     c="$work/$owner-$scenario"
     mkdir -p "$c"/{bin,etc/apk/repositories.d,lib/apk/repositories.d,home,tmp,var/lib/scripts-underground/update-pending}
@@ -78,6 +78,7 @@ for owner in base pkg upgrade runner; do
       alternate-fallback) sed -i 's|/alpine/|/pub/alpine/|g' "$c/etc/apk/repositories" ;;
       typed-fallback) sed -i '2s/^/v2 /;3s/^/v3 /' "$c/etc/apk/repositories" ;;
       ndx-fallback) sed -i '2s/^/ndx /;3s/^/ndx /' "$c/etc/apk/repositories" ;;
+      trailing-fallback) sed -i 's|/main$|/main/|;s|/community #|/community/ #|' "$c/etc/apk/repositories" ;;
       etc-edge | masked-edge) printf 'https://other.invalid/alpine/edge/main\n' > "$c/etc/apk/repositories.d/operator.list" ;;
       lib-edge) printf 'https://other.invalid/alpine/edge/main\n' > "$c/lib/apk/repositories.d/operator.list" ;;
       masked)
@@ -115,7 +116,7 @@ SHIM
     printf '#!/bin/sh\nexit 0\n' > "$c/bin/wget"
     cp "$c/bin/wget" "$c/bin/timeout"
     if [[ -n "${ALPINE_BUSYBOX:-}" ]]; then
-      for tool in ash awk sed sort cmp; do ln -s "$ALPINE_BUSYBOX" "$c/bin/$tool"; done
+      for tool in ash awk sed sort cmp cp mv; do ln -s "$ALPINE_BUSYBOX" "$c/bin/$tool"; done
     else
       ln -s /bin/sh "$c/bin/ash"
     fi
@@ -169,6 +170,9 @@ SHIM
     if [[ "$owner" == pkg && "$scenario" == *fallback && "$scenario" != legacy-fallback ]]; then
       check "$(grep -c original.invalid "$c/etc/apk/repositories" || true)" 0 "$label mirror transport changed"
       check "$(grep -c '@testing https://' "$c/etc/apk/repositories" || true)" 1 "$label scheme and tag retained"
+      mirror_url=$(grep -o 'https://[^/]*' "$c/etc/apk/repositories" | head -n 1)
+      sed "s|https://original.invalid|$mirror_url|g" "$c/before" > "$c/expected"
+      check "$(cmp -s "$c/expected" "$c/etc/apk/repositories" && echo preserved || echo changed)" preserved "$label only authority changed"
       if [[ "$scenario" == variable-fallback ]]; then
         mirror=$(sed -n 's|^https://\([^/]*\)/.*|\1|p' "$c/etc/apk/repositories" | head -n 1)
         check "$(grep -Fc "v2 @operator https://$mirror/pub/alpine/v3.23 main community # retained" "$c/etc/apk/repositories.d/10-operator.list" || true)" 1 "$label effective typed variable source rewritten"
@@ -177,6 +181,17 @@ SHIM
     fi
   done
 done
+# A failed publication must keep the previous configuration, like sed -i did.
+c="$work/publication-failure"
+mkdir -p "$c/etc/apk"
+printf 'ID=alpine\nVERSION_ID=3.23.8\n' > "$c/etc/os-release"
+printf 'https://original.invalid/alpine/v3.23/main\n' > "$c/etc/apk/repositories"
+cp "$c/etc/apk/repositories" "$c/before"
+sed -e "s|/lib/apk/|$c/lib/apk/|g" -e "s|/etc/|$c/etc/|g" "$OWNER_ROOT/misc/core.func" > "$c/core.func"
+rc=0
+bash -c 'source "$1"; mv() { return 73; }; _alpine_repository_policy mirror new.invalid' _ "$c/core.func" > "$c/output" 2>&1 || rc=$?
+check "$rc" 73 'mirror publication failure preserves native status'
+check "$(cmp -s "$c/before" "$c/etc/apk/repositories" && echo unchanged || echo changed)" unchanged 'mirror publication failure preserves prior repository bytes'
 printf '%s failure(s); actual Alpine repository owners with explicit package/transport models\n' "$failures"
 [[ "$failures" == 0 ]]
 printf 'RUNTIME_HOOKS_RESULT failures=0\n'

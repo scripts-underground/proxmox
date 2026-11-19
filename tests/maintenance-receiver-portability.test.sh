@@ -127,7 +127,7 @@ policy_root="$work/alpine-policy"
 command mkdir -p "$policy_root/etc/apk"
 printf 'ID=alpine\nVERSION_ID=3.23.8\n' > "$policy_root/etc/os-release"
 printf '# retained\nhttps://old.invalid/alpine/v3.23/main\n@testing https://old.invalid/alpine/v3.23/community # tagged\nhttps://vendor.invalid/custom\n' > "$policy_root/etc/apk/repositories"
-for t in awk sed sort cat mktemp cmp rm; do ln -sf "$ALPINE_BUSYBOX" "$ashbin/$t"; done
+for t in awk sed sort cat mktemp cmp rm cp mv; do ln -sf "$ALPINE_BUSYBOX" "$ashbin/$t"; done
 policy=$(bash -c 'source "$1/misc/core.func"; _alpine_repository_contents' _ "$ROOT" | sed -e "s|/lib/apk/|$policy_root/lib/apk/|g" -e "s|/etc/|$policy_root/etc/|g")
 rc=0
 env -i PATH="$ashbin" TMPDIR="$work" "$ALPINE_BUSYBOX" sh -c "$policy"$'\n''_alpine_repository_policy mirror new.invalid' > "$policy_root/output" 2>&1 || rc=$?
