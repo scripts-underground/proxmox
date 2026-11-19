@@ -110,30 +110,80 @@ function update_script() {
       msg_error "Ampache requires a 7.x release on PHP 8.4; refusing ${release}"
       return 65
     fi
-    msg_info "Stopping Service"
-    systemctl stop apache2
-    msg_ok "Stopped Service"
+    # Keep required helpers in a plain strict subshell: a conditional call would
+    # suppress their internal errexit. Its EXIT owner cannot replace the runner's
+    # pending/cleanup owner and preserves the original failure even if recovery fails.
+    (
+      local prior before after stop_attempted=0 activation_attempted=0
+      function ampache_runtime_state() (
+        set -o pipefail
+        local path
+        {
+          printf '%s\0' /opt/ampache "$HOME/.ampache" || exit $?
+          find /opt/ampache/ -print0 || exit $?
+        } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
+          printf '%s\0' "$path" || exit $?
+          if [[ ! -e "$path" && ! -L "$path" && "$path" == "$HOME/.ampache" ]]; then
+            printf 'absent\n' || exit $?
+            continue
+          fi
+          stat -c '%f:%u:%g' -- "$path" || exit $?
+          if [[ -L "$path" ]]; then
+            readlink -- "$path" || exit $?
+          elif [[ -f "$path" ]]; then
+            sha256sum < "$path" || exit $?
+          elif [[ ! -d "$path" ]]; then
+            exit 65
+          fi
+        done | sha256sum
+      )
+      function ampache_recover() {
+        local status=$?
+        trap - EXIT
+        if [[ "$status" != 0 && "$stop_attempted" == 1 && "$activation_attempted" == 0 && "$prior" == active ]]; then
+          after=$(ampache_runtime_state) || after=unverified
+          if [[ "$after" == "$before" ]]; then
+            systemctl start apache2 || msg_warn "Unable to restart previous Ampache service"
+          else
+            msg_warn "Previous Ampache runtime is unverified; Apache stays stopped"
+          fi
+        fi
+        exit "$status"
+      }
+      prior=$(systemctl show apache2 --property=ActiveState --value)
+      case "$prior" in active | inactive | failed) ;; *) return 65 ;; esac
+      before=$(ampache_runtime_state)
+      trap ampache_recover EXIT
 
-    msg_info "Creating Backup"
-    create_backup \
-      /opt/ampache/config/ampache.cfg.php \
-      /opt/ampache/public/rest/.htaccess \
-      /opt/ampache/public/play/.htaccess \
-      /opt/ampache/advanced-config
-    msg_ok "Backup Created"
+      msg_info "Stopping Service"
+      stop_attempted=1
+      systemctl stop apache2
+      msg_ok "Stopped Service"
 
-    fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
+      msg_info "Creating Backup"
+      create_backup \
+        /opt/ampache/config/ampache.cfg.php \
+        /opt/ampache/public/rest/.htaccess \
+        /opt/ampache/public/play/.htaccess \
+        /opt/ampache/advanced-config
+      msg_ok "Backup Created"
 
-    restore_backup
-    chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
-    chown -R www-data:www-data /opt/ampache
+      fetch_and_deploy_gh_release "Ampache" "ampache/ampache" "prebuild" "$release" "/opt/ampache" "ampache-*_all_php8.4.zip" "7."
 
-    msg_info "Starting Service"
-    systemctl start apache2
-    msg_ok "Started Service"
+      restore_backup
+      chmod 664 /opt/ampache/public/rest/.htaccess /opt/ampache/public/play/.htaccess
+      chown -R www-data:www-data /opt/ampache
+
+      msg_info "Starting Service"
+      activation_attempted=1
+      systemctl start apache2
+      msg_ok "Started Service"
+    )
     msg_ok "Updated successfully!"
     get_lxc_ip
-    msg_info "Complete database update by visiting: http://${LOCAL_IP}/update.php"
+    local host="$LOCAL_IP"
+    [[ "$host" != *:* ]] || host="[$host]"
+    msg_info "Complete database update by visiting: http://${host}/update.php"
   else
     local status=$?
     [[ "$status" == 1 ]] || return "$status"

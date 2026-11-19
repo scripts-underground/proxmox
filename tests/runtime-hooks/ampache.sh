@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=ampache
 script_type=lxc
-variants=(fresh fresh-missing-asset fresh-pin8 update current pending pin8 missing-asset checker-error download runtime)
+variants=(fresh fresh-missing-asset fresh-pin8 update ipv6 current pending pin8 missing-asset checker-error download extract backup copy partial restore permissions query stop stopped-missing-asset stopped-download stopped-backup stopped-copy runtime)
 hook_paths=(/var/www www)
 runtime_hooks_model() {
   [[ "$APP_FAULT" != pin8 ]] || var_appversion=8.4.0
@@ -20,6 +20,10 @@ runtime_hooks_model() {
   setup_mariadb_db() { MARIADB_DB_PASS=fixture; }
   mariadb() { cat > "$c/schema-import"; }
   a2enmod() { :; }
+  get_lxc_ip() {
+    LOCAL_IP=10.20.30.40
+    [[ "$APP_FAULT" != ipv6 ]] || LOCAL_IP=2001:db8::40
+  }
   curl() {
     local out='' url='' format='' tag=''
     while (($#)); do
@@ -62,17 +66,42 @@ PY
     printf '%s\n' "$2" >> "$c/downloads"
     [[ "$APP_FAULT" != download ]] || return 22
     command cp "$c/release.zip" "$1"
+    [[ "$APP_FAULT" != extract ]] || printf 'invalid ZIP\n' > "$1"
+  }
+  cp() {
+    if [[ "$APP_FAULT" == backup && "${!#}" == /opt/ampache.backup/files/* ]]; then return 42; fi
+    if [[ "$APP_FAULT" == copy || "$APP_FAULT" == partial ]] && [[ "${!#}" == /opt/ampache/* && "$*" == *'/deploy-source.'* ]]; then
+      command cp "$@"
+      [[ "$APP_FAULT" != partial ]] || printf 'unverified mutation\n' > /opt/ampache/.env
+      return 41
+    fi
+    command cp "$@"
+  }
+  chmod() {
+    [[ "$APP_FAULT" != permissions || "$*" != *'/opt/ampache/public/rest/.htaccess'* ]] || return 44
+    command chmod "$@"
+  }
+  rm() {
+    [[ "$APP_FAULT" != restore || "${!#}" != /opt/ampache/config/ampache.cfg.php ]] || return 43
+    command rm "$@"
   }
   systemctl() {
+    if [[ "$1" == show ]]; then
+      [[ "$APP_FAULT" != query ]] || return 53
+      cat "$c/recovery-state"
+      return
+    fi
+    if [[ "$1" == stop && "$APP_FAULT" == stop ]]; then return 55; fi
     if [[ "$1" == start && "$APP_FAULT" == runtime ]]; then
       printf 'failed-start apache2\n' >> "$c/services"
       return 51
     fi
-    printf '%s\n' "$*" >> "$c/services"
+    if [[ -f "$c/recovery-service" ]]; then runtime_hooks_recovery_service "$@"; else printf '%s\n' "$*" >> "$c/services"; fi
   }
 }
 runtime_hooks_variant() {
-  case "$variant" in missing-asset | checker-error | pin8) fault="$variant" ;; esac
+  case "$variant" in missing-asset | checker-error | pin8 | ipv6 | extract | backup | partial | restore | permissions | query | stop) fault="$variant" ;; esac
+  [[ "$variant" != stopped-* ]] || fault="${variant#stopped-}"
   [[ "$variant" != fresh-missing-asset ]] || {
     role=install
     fault=missing-asset
@@ -83,7 +112,17 @@ runtime_hooks_variant() {
   }
 }
 runtime_hooks_expected() {
-  case "$variant" in missing-asset | fresh-missing-asset) expected=252 ;; checker-error) expected=22 ;; pin8 | fresh-pin8) expected=65 ;; esac
+  case "$fault" in
+    missing-asset | copy | partial) expected=252 ;;
+    checker-error) expected=22 ;;
+    pin8) expected=65 ;;
+    extract) expected=251 ;;
+    backup) expected=42 ;;
+    restore) expected=43 ;;
+    permissions) expected=44 ;;
+    query) expected=53 ;;
+    stop) expected=55 ;;
+  esac
 }
 runtime_hooks_setup() {
   mkdir -p "$c/www/html"
@@ -112,6 +151,9 @@ PY
       current | pending) printf '7.10.5\n' > "$c/home/.ampache" ;;
     esac
     [[ "$variant" != pending ]] || printf 'interrupted update\n' > "$c/state/ampache"
+    local initial=active
+    [[ "$variant" != stopped-* ]] || initial=inactive
+    runtime_hooks_recovery_setup apache2 "$initial" "$c/opt/ampache" "$c/home/.ampache"
   fi
 }
 runtime_hooks_assert() {
@@ -129,7 +171,9 @@ runtime_hooks_assert() {
       check "$(cat "$c/downloads")" 'https://fixture.invalid/7.10.5/ampache-7.10.5_all_php8.4.zip' "$app/$variant exact selected release without fallback"
       check "$(cat "$c/opt/ampache/code")" 'new code' "$app/$variant deployed code consumer"
       if [[ "$role" == update ]]; then
-        check "$(grep -c 'http://10.20.30.40/update.php' "$c/output" || true)" 1 "$app/$variant container-owned update URL"
+        local host=10.20.30.40
+        [[ "$variant" != ipv6 ]] || host='[2001:db8::40]'
+        check "$(grep -Fc "http://${host}/update.php" "$c/output" || true)" 1 "$app/$variant container-owned update URL"
       else
         check "$(cat "$c/php-calls")" 8.4 "$app/fresh supported PHP line"
       fi
@@ -141,6 +185,14 @@ runtime_hooks_assert() {
     local previous=7.10.4
     [[ "$role" != install ]] || previous=old
     check "$(cat "$c/home/.ampache")" "$previous" "$app/$variant failed selection leaves marker unchanged"
+  fi
+  if [[ "$role" == update && "$rc" != 0 ]]; then
+    check "$(grep -c 'Updated successfully!' "$c/output" || true)" 0 "$app/$variant failure cannot publish success"
+    if [[ "$fault" == query ]]; then
+      check "$(stat -c %s "$c/services")" 0 "$app/query failed state query precedes all service control"
+    fi
+  elif [[ "$role" == update && "$variant" != current ]]; then
+    check "$(cat "$c/recovery-state")" active "$app/$variant successful deployment activates service"
   fi
 }
 runtime_hooks_retry_assert() {
