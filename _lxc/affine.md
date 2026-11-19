@@ -26,7 +26,7 @@ Open-source, privacy-first workspace for notes, docs, and knowledge management w
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/scripts/lxc/affine.sh)"
   ```
 
-  This runs the current update hook with the existing maintenance/resource checks, without creating a new container or replacing the frozen `update` command. Repeat the source-update command for retries or future revised hooks; ordinary `update` still runs its installed generation.
+  This runs the current update hook with the existing maintenance/resource checks, without creating a new container or replacing the frozen `update` command. After migration, use this source-update command for **all subsequent updates**, including ordinary release updates and retries. Do not run the old frozen `update` command: it can stop `affine-web` and then fail when stopping the removed worker, leaving the application offline.
 
 ## Links
 

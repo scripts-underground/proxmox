@@ -107,6 +107,7 @@ runtime_hooks_setup() {
   printf 'old\n' > "$c/home/.affine_app"
   for log in builds packages prerequisites nginx; do : > "$c/$log"; done
   printf 'active\n' > "$c/web-state"
+  [[ "$role" != install ]] || printf 'inactive\n' > "$c/web-state"
   printf 'present\n' > "$c/manager-worker"
   mkdir -p "$c/payload/packages/backend/"{native,server/scripts} \
     "$c/payload/packages/frontend/apps/web/dist" "$c/payload/packages/frontend/admin/dist"
@@ -156,10 +157,15 @@ runtime_hooks_assert() {
     check "$(cat "$c/root/.affine/config/canary")" 'USER configuration' "$app/$variant live config preserved"
   fi
   case "$fault" in
-    custom-worker | worker-dropin | worker-query | worker-stop | worker-disable)
+    custom-worker | worker-dropin | worker-query | worker-stop | worker-disable | checker)
       check "$(sha256sum "$c/etc/systemd/system/affine-worker.service" | cut -d' ' -f1)" "$(cat "$c/worker-before")" "$app/$variant refused retirement retains worker unit"
       check "$(stat -c %s "$c/builds")" 0 "$app/$variant refusal precedes app replacement/build"
       check "$(cat "$c/opt/affine/code")" 'old code' "$app/$variant refusal preserves installed source"
+      ;;
+  esac
+  case "$fault" in
+    custom-worker | worker-dropin | worker-query | checker)
+      check "$(grep -Ec '^(stop|disable) affine-worker$' "$c/services" || true)" 0 "$app/$variant admission refusal preserves the existing worker listener"
       ;;
   esac
   if [[ "$rc" == 0 ]]; then

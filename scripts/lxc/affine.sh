@@ -215,6 +215,15 @@ function update_script() {
     exit
   fi
 
+  # Resolve the release before retiring a worker that may own the live listener.
+  local release_status=0
+  if check_for_gh_release "affine_app" "toeverything/AFFiNE"; then
+    release_status=0
+  else
+    release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
+  fi
+
   # Retire only the obsolete unit this script installed. Operator-customized
   # units need an explicit migration rather than silently deleting their work.
   local legacy_worker=/etc/systemd/system/affine-worker.service
@@ -261,7 +270,7 @@ EOF
     systemctl daemon-reload
   fi
 
-  if check_for_gh_release "affine_app" "toeverything/AFFiNE"; then
+  if [[ "$release_status" == 0 ]]; then
     ensure_dependencies cmake
 
     msg_info "Stopping Services"
@@ -343,9 +352,6 @@ TURBO
     set -a && source /opt/affine/.env && set +a
     $STD node ./scripts/self-host-predeploy.js
 
-  else
-    local release_status=$?
-    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
 
   # Retirement can free the shared listener even when no rebuild is needed.
