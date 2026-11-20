@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tarfile
 import threading
@@ -187,6 +188,33 @@ def cases():
                      "mixed-in-directory-no-partial-publication": (ETC + "operator.list", 1)})
     for case in rows:
         case["mirror_refusal"] = refusals.get(case["name"])
+    for name, filename in (("backslash-t", "operator\\test.list"), ("backslash-n", "operator\\name.list"),
+                           ("equals", "branch=edge.list"), ("leading-minus", "-operator.list")):
+        row("transport-path-" + name, "", [PIN + I2], files={ETC + filename: URL + "\n"})
+    row("transport-path-newline", "", [PIN + I2], 65,
+        files={ETC + "operator\narch=poison.list": URL + "\n"})
+    rows[-1].update(project_status=65, diagnostics={action: "newline in repository filename" for action in ("project", "check", "mirror")})
+    for name, arch in (("backslash-t", "x86_64\\test"), ("backslash-x", "x86_64\\x32")):
+        row("transport-arch-" + name, URL + "\n", [PIN + "/" + arch + "/APKINDEX.tar.gz"],
+            files={"etc/apk/arch": arch + "\n"})
+    for name, value in (("backslash-t", "mirror\\test.invalid"), ("backslash-x", "mirror\\x31.invalid"),
+                        ("newline", "mirror\ninvalid")):
+        row("transport-mirror-" + name, URL + "\n", [PIN + I2])
+        rows[-1].update(mirror_value=value, mirror_status=65, diagnostics={"mirror": "mirror"})
+    for name, value in (("backslash-t", "3.23\\test"), ("backslash-x", "3.\\x32")):
+        row("transport-branch-" + name, URL + "\n", [PIN + I2], 65,
+            files={"etc/os-release": "ID=alpine\nVERSION_ID=" + value + "\n"})
+        rows[-1].update(project_status=65, diagnostics={action: "release branch" for action in ("project", "check", "mirror")})
+    row("transport-ambient-fields", URL + "\n", [PIN + I2], files={"unrelated": "preserve me\n"})
+    rows[-1]["environment"] = {"_ar_target": "@ROOT@/etc/apk/repositories", "_ar_stage": "@ROOT@/unrelated",
+                               "_ar_lines": "999", "_ar_newline": "0", "_ar_action": "mirror",
+                               "_ar_mirror": "poison.invalid", "_ar_branch": "edge", "_ar_arch": "poison\\tarch"}
+    for fault in ("empty", "truncated", "early-receipt"):
+        row("transport-writer-" + fault, URL + "\n@ORIGIN@/alpine/v3.23/community\n",
+            [PIN + I2, "/alpine/v3.23/community" + I2])
+        rows[-1].update(writer_fault=fault, mirror_status=65, diagnostics={"mirror": "incomplete"})
+    for case in rows:
+        case.setdefault("mirror_refusal", None)
     return rows
 
 
@@ -250,7 +278,28 @@ def main():
             files = {"etc/os-release": "ID=alpine\nVERSION_ID=3.23.8\n", "etc/apk/arch": "x86_64\n",
                      **case["files"]}
             policy = closure.stdout.replace("/lib/apk/", root + "/lib/apk/").replace("/etc/", root + "/etc/")
-            files["policy.sh"] = policy + '\n_alpine_repository_policy "$@"\n'
+            preamble = "".join("export " + key + "=" + shlex.quote(value.replace("@ROOT@", root)) + "\n"
+                               for key, value in case.get("environment", {}).items())
+            if "writer_fault" in case:
+                preamble += '''awk() {
+  writer=0
+  [ -z "${_ar_stage:-}" ] || writer=1
+  for value; do case "$value" in target=*) writer=1;; esac; done
+  if [ "$writer" = 1 ]; then
+    case @FAULT@ in
+      empty) : ;;
+      truncated|early-receipt)
+        if [ -n "${_ar_stage:-}" ]; then printf 'truncated\n' > "$_ar_stage"
+        else printf 'truncated\n'; fi
+        [ @FAULT@ != early-receipt ] || printf 'complete:1\n'
+        ;;
+    esac
+    return 0
+  fi
+  command awk "$@"
+}
+'''.replace("@FAULT@", case["writer_fault"])
+            files["policy.sh"] = preamble + policy + '\n_alpine_repository_policy "$@"\n'
             payload = io.BytesIO()
             with tarfile.open(fileobj=payload, mode="w") as archive:
                 for path, text in files.items():
@@ -285,7 +334,7 @@ rc=0
 printf '%s' "$rc" > "$root/after.status"
 tar -cf - -C "$root" native.out native.err native.status project.out project.err project.status check.out check.err check.status mirror.out mirror.err mirror.status after.out after.err after.status
 '''
-            observed = subprocess.run(ct + ["/bin/ash", "-c", command, "_", root, mirror_host],
+            observed = subprocess.run(ct + ["/bin/ash", "-c", command, "_", root, case.get("mirror_value", mirror_host)],
                                       input=payload.getvalue(), capture_output=True, timeout=45, check=True)
             with tarfile.open(fileobj=io.BytesIO(observed.stdout)) as archive:
                 def result(prefix):
@@ -314,11 +363,12 @@ tar -cf - -C "$root" consumed.out consumed.err consumed.status "$@"
             errors = []
             if native.returncode != 0 or inventory != expected:
                 errors.append("native inventory differs from explicit expected identities/count")
-            if projection.returncode != 0 or projection.stdout.splitlines() != inventory:
+            project_status = case.get("project_status", 0)
+            if projection.returncode != project_status or projection.stdout.splitlines() != ([] if project_status else inventory):
                 errors.append("owner projection != native inventory")
             if admission.returncode != case["policy"]:
                 errors.append("admission policy status")
-            mirror_status = case["policy"] or (65 if case["mirror_refusal"] else 0)
+            mirror_status = case.get("mirror_status", case["policy"] or (65 if case["mirror_refusal"] else 0))
             mirrored = [p.replace(origin, mirror_origin, 1) if "/alpine/" in unquote(p) else p for p in expected]
             final_inventory = expected if mirror_status else mirrored
             if mirror.returncode != mirror_status:
@@ -327,8 +377,12 @@ tar -cf - -C "$root" consumed.out consumed.err consumed.status "$@"
                 path, line = case["mirror_refusal"]
                 if f"{root}/{path}:{line}:" not in mirror.stderr or "cannot mirror" not in mirror.stderr.lower():
                     errors.append("mirror refusal lacks file/line diagnostic")
-            if after.returncode != 0 or after.stdout.splitlines() != final_inventory:
+            if after.returncode != project_status or after.stdout.splitlines() != ([] if project_status else final_inventory):
                 errors.append("mirror changed inventory semantics or refusal changed bytes")
+            for action, diagnostic in case.get("diagnostics", {}).items():
+                result = {"project": projection, "check": admission, "mirror": mirror}[action]
+                if diagnostic not in result.stderr.lower():
+                    errors.append(action + " lacks transport refusal diagnostic")
             expected_files = {}
             effective = {MAIN}
             names = {Path(path).name for path in case["files"]

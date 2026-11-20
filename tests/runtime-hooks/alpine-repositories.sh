@@ -214,6 +214,29 @@ rc=0
 bash -c 'source "$1"; mv() { return 73; }; _alpine_repository_policy mirror new.invalid' _ "$c/core.func" > "$c/output" 2>&1 || rc=$?
 check "$rc" 73 'mirror publication failure preserves native status'
 check "$(cmp -s "$c/before" "$c/etc/apk/repositories" && echo unchanged || echo changed)" unchanged 'mirror publication failure preserves prior repository bytes'
+for fault in empty truncated early-receipt; do
+  c="$work/writer-$fault"
+  mkdir -p "$c/etc/apk"
+  printf 'ID=alpine\nVERSION_ID=3.23.8\n' > "$c/etc/os-release"
+  printf 'https://original.invalid/alpine/v3.23/main\nhttps://original.invalid/alpine/v3.23/community\n' > "$c/etc/apk/repositories"
+  cp "$c/etc/apk/repositories" "$c/before"
+  sed -e "s|/lib/apk/|$c/lib/apk/|g" -e "s|/etc/|$c/etc/|g" "$OWNER_ROOT/misc/core.func" > "$c/core.func"
+  rc=0
+  WRITER_FAULT="$fault" bash -c '
+    source "$1"
+    awk() {
+      if [[ -n "${_ar_stage:-}" ]]; then
+        if [[ "$WRITER_FAULT" != empty ]]; then printf "truncated\n" > "$_ar_stage"; fi
+        [[ "$WRITER_FAULT" != early-receipt ]] || printf "complete:1\n"
+        return 0
+      fi
+      command awk "$@"
+    }
+    _alpine_repository_policy mirror new.invalid
+  ' _ "$c/core.func" > "$c/output" 2>&1 || rc=$?
+  check "$rc" 65 "$fault writer success without complete receipt refuses"
+  check "$(cmp -s "$c/before" "$c/etc/apk/repositories" && echo unchanged || echo changed)" unchanged "$fault writer never publishes truncated bytes"
+done
 printf '%s failure(s); actual Alpine repository owners with explicit package/transport models\n' "$failures"
 [[ "$failures" == 0 ]]
 printf 'RUNTIME_HOOKS_RESULT failures=0\n'

@@ -806,6 +806,17 @@ Inline `#` tokens are components, not comments. Mirror fallback never materializ
 expanded records back into source syntax, preserving non-recursive expansion and
 per-component authority instead of trying to serialize those semantics.
 
+All shell-provided policy values enter awk through invocation-scoped environment
+assignments and ENVIRON, never escape-decoded `-v` values. File operands are
+asserted absolute or `./` prefixed, so equals and leading-minus basenames remain
+data. Newline-bearing inventory filenames refuse before line-delimited discovery
+or any fresh/publication write; backslashes are preserved. Each mirror writer
+checks target operand membership and exact consumed/emitted record counts, closes
+its owned stage, then emits a completion receipt. The caller requires that exact
+receipt and refuses an empty stage for a non-empty source before publication.
+Producer status0 alone cannot certify complete output. No new executable
+dependency or multi-file transaction is introduced.
+
 The private `project` action observes that native inventory without admission or
 rewrites, including native partial-file parse behavior. Product admission is
 deliberately stricter: a malformed/unresolved file refuses65 instead of treating

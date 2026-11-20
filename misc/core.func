@@ -1168,6 +1168,19 @@ _alpine_repository_policy() (
     printf 'Cannot determine the installed Alpine release branch; repositories unchanged\n' >&2
     return 65
   fi
+  # The effective inventory below is line-delimited. Refuse ambiguous names
+  # before serialization or any fresh/publication write, never split them into
+  # relative awk operands (including assignment-looking or option-like text).
+  for _ar_file in /etc/apk/repositories.d/*.list /lib/apk/repositories.d/*.list; do
+    [ -e "$_ar_file" ] || [ -L "$_ar_file" ] || continue
+    case "$_ar_file" in
+      *'
+'*)
+        printf 'Cannot load Alpine repositories: newline in repository filename: %s; repositories unchanged\n' "$_ar_file" >&2
+        return 65
+        ;;
+    esac
+  done
   case "$_ar_action" in
     fresh)
       printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories || return $?
@@ -1197,6 +1210,15 @@ _alpine_repository_policy() (
   # shellcheck disable=SC2086
   set -- $_ar_files
   [ "$#" != 0 ] || set -- /dev/null
+  for _ar_file; do
+    case "$_ar_file" in
+      /* | ./*) ;;
+      *)
+        printf 'Cannot load Alpine repositories: ambiguous file operand: %s\n' "$_ar_file" >&2
+        return 65
+        ;;
+    esac
+  done
   _ar_program='
     # Native parse errors abandon only this file. Projection retains that partial
     # inventory; productive admission deliberately refuses an incomplete parse.
@@ -1300,11 +1322,19 @@ _alpine_repository_policy() (
       return prefix substr(authority, 1, user_length) mirror substr(url, length(prefix) + user_length + length(host) + 1)
     }
     function emit(line) {
-      if (FILENAME == target) printf "%s%s", (emitted++ ? "\n" : ""), line
+      if (FILENAME == target) printf "%s%s", (emitted++ ? "\n" : ""), line > stage
     }
-    BEGIN { if (arch != "") vars["APK_ARCH"] = arch }
+    BEGIN {
+      action = ENVIRON["_ar_action"]; branch = ENVIRON["_ar_branch"]
+      arch = ENVIRON["_ar_arch"]; mirror = ENVIRON["_ar_mirror"]
+      target = ENVIRON["_ar_target"]; stage = ENVIRON["_ar_stage"]
+      newline = ENVIRON["_ar_newline"]; expected = ENVIRON["_ar_lines"]
+      if (arch != "") vars["APK_ARCH"] = arch
+      for (operand = 1; operand < ARGC; operand++) if (ARGV[operand] == target) target_operand = 1
+    }
     {
       line = $0; rest = line; offset = 0
+      if (FILENAME == target) target_records++
       if (bad[FILENAME]) next
       if (line == "" || line ~ /^#/) {
         emit(line)
@@ -1355,16 +1385,29 @@ _alpine_repository_policy() (
       }
       emit(line)
     }
-    END { if (emitted && newline) printf "\n" }
+    END {
+      if (target != "") {
+        if (!target_operand || target_records != expected + 0 || emitted != target_records) {
+          print "Incomplete Alpine repository writer: " target > "/dev/stderr"; exit 65
+        }
+        if (emitted && newline + 0) printf "\n" > stage
+        if (emitted && close(stage)) {
+          print "Incomplete Alpine repository writer close: " target > "/dev/stderr"; exit 65
+        }
+        print "complete:" (emitted + 0)
+      }
+    }
   '
   # Both admission and rewriting use the same effective, expanded source model.
   # No repository bytes change until the complete inventory has been admitted.
   _ar_arch=$(cat /etc/apk/arch 2> /dev/null) || _ar_arch=
   if [ "$_ar_action" = project ]; then
-    awk -v action=project -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@"
+    _ar_action=project _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+      awk "$_ar_program" "$@"
     return $?
   fi
-  _ar_other=$(awk -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@") || {
+  _ar_other=$(_ar_action=check _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+    awk "$_ar_program" "$@") || {
     [ -n "$_ar_other" ] || _ar_other='unreadable inventory'
   }
   if [ -n "$_ar_other" ]; then
@@ -1372,22 +1415,37 @@ _alpine_repository_policy() (
     return 65
   fi
   [ "$_ar_action" = mirror ] || return 0
-  case "$_ar_mirror" in '' | *[!a-zA-Z0-9.-]*) return 65 ;; esac
+  case "$_ar_mirror" in
+    '' | *[!a-zA-Z0-9.-]*)
+      printf 'Cannot mirror Alpine repositories: invalid mirror hostname; repositories unchanged\n' >&2
+      return 65
+      ;;
+  esac
   # A native index does not authorize serializing its entire declaration. Check
   # every declaration before publishing any file; variables and mixed components
   # must retain their exact source bytes and make this mirror unavailable.
-  awk -v action=mirror -v branch="$_ar_branch" -v arch="$_ar_arch" "$_ar_program" "$@" >&2 || return $?
+  _ar_action=mirror _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+    awk "$_ar_program" "$@" >&2 || return $?
   _ar_tmp=
   trap 'rm -f -- "$_ar_tmp"' EXIT
   for _ar_file; do
     _ar_tmp=$(mktemp "$_ar_file.XXXXXX") || return $?
+    case "$_ar_tmp" in /* | ./*) ;; *) return 65 ;; esac
     cp -p "$_ar_file" "$_ar_tmp" || return $?
     # read retains an unterminated final record even when it returns EOF. Keep
     # this pre-Bash closure within its existing executable dependency set.
-    _ar_newline=0
-    while IFS= read -r _ar_last; do _ar_newline=1; done < "$_ar_file"
-    [ -z "$_ar_last" ] || _ar_newline=0
-    awk -v action=mirror -v branch="$_ar_branch" -v arch="$_ar_arch" -v mirror="$_ar_mirror" -v target="$_ar_file" -v newline="$_ar_newline" "$_ar_program" "$@" > "$_ar_tmp" || return $?
+    _ar_newline=0 _ar_lines=0
+    while IFS= read -r _ar_last; do
+      _ar_newline=1 _ar_lines=$((_ar_lines + 1))
+    done < "$_ar_file"
+    if [ -n "$_ar_last" ]; then _ar_newline=0 _ar_lines=$((_ar_lines + 1)); fi
+    _ar_complete=$(_ar_action=mirror _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror="$_ar_mirror" \
+      _ar_target="$_ar_file" _ar_stage="$_ar_tmp" _ar_newline="$_ar_newline" _ar_lines="$_ar_lines" \
+      awk "$_ar_program" "$@") || return $?
+    if [ "$_ar_complete" != "complete:$_ar_lines" ] || { [ -s "$_ar_file" ] && [ ! -s "$_ar_tmp" ]; }; then
+      printf 'Incomplete Alpine repository writer: %s; file not published\n' "$_ar_file" >&2
+      return 65
+    fi
     if cmp -s "$_ar_tmp" "$_ar_file"; then
       rm -f -- "$_ar_tmp" || return $?
     else
