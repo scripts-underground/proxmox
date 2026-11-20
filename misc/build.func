@@ -3897,6 +3897,41 @@ _prepare_container_bundles() {
   fi
 }
 
+# Alpine's pre-Bash package stage keeps its emitted policy local to this owner,
+# independent of the creator's other OS/backend control flow.
+_alpine_base_packages() {
+  sleep 3
+  local _alpine_policy
+  _alpine_policy=$(_alpine_repository_contents) || exit $?
+  _receiving_exec /bin/sh -c "$_alpine_policy"'
+    _alpine_repository_policy fresh
+  '
+  _receiving_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
+    msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
+    local alpine_exit=0
+    _receiving_exec ash -c "$_alpine_policy"'
+      ALPINE_MIRRORS="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
+      for m in $(printf "%s\n" $ALPINE_MIRRORS | shuf); do
+        _alpine_repository_policy mirror "$m" || exit $?
+        if wget -q --spider --timeout=2 "http://$m/alpine/" 2>/dev/null; then
+          echo "  Attempting mirror: $m"
+          if apk update >/dev/null 2>&1 && apk add bash newt curl openssh nano mc ncurses jq >/dev/null 2>&1; then
+            echo "  CDN set to $m: tests passed"
+            exit 0
+          else
+            echo "  Mirror $m failed"
+          fi
+        fi
+      done
+      exit 2
+    ' && alpine_exit=0 || alpine_exit=$?
+    if [[ $alpine_exit -ne 0 ]]; then
+      msg_error "apk base packages installation failed"
+      exit 1
+    fi
+  }
+}
+
 # ------------------------------------------------------------------------------
 # build_container()
 #
@@ -4369,38 +4404,7 @@ EOF
   fi
   # Continue with standard container setup
   if [ "$var_os" == "alpine" ]; then
-    sleep 3
-    _receiving_exec /bin/sh -c 'cat <<EOF >/etc/apk/repositories
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
-EOF'
-    _receiving_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
-      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
-      local alpine_exit=0
-      _receiving_exec ash -c '
-        ALPINE_MIRRORS="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
-        for m in $(printf "%s\n" $ALPINE_MIRRORS | shuf); do
-          if wget -q --spider --timeout=2 "http://$m/alpine/latest-stable/main/" 2>/dev/null; then
-            echo "  Attempting mirror: $m"
-            cat <<EOF >/etc/apk/repositories
-http://$m/alpine/latest-stable/main
-http://$m/alpine/latest-stable/community
-EOF
-            if apk update >/dev/null 2>&1 && apk add bash newt curl openssh nano mc ncurses jq >/dev/null 2>&1; then
-              echo "  CDN set to $m: tests passed"
-              exit 0
-            else
-              echo "  Mirror $m failed"
-            fi
-          fi
-        done
-        exit 2
-      ' && alpine_exit=0 || alpine_exit=$?
-      if [[ $alpine_exit -ne 0 ]]; then
-        msg_error "apk base packages installation failed"
-        exit 1
-      fi
-    }
+    _alpine_base_packages
   elif [[ "$var_os" =~ ^(debian|ubuntu|devuan)$ ]]; then
     sleep 3
     LANG=${LANG:-en_US.UTF-8}
