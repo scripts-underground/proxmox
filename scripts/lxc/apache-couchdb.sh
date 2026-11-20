@@ -60,7 +60,11 @@ function update_script() {
   fi
   msg_info "Updating Apache CouchDB"
   $STD apt update
-  $STD apt install -y --only-upgrade couchdb
+  local -a reinstall=()
+  if [[ "${FORCE_DEPLOY:-0}" == 1 ]]; then
+    reinstall=(--reinstall)
+  fi
+  $STD apt install -y --only-upgrade "${reinstall[@]}" couchdb
   msg_ok "Updated Apache CouchDB"
   msg_ok "Updated successfully!"
   exit
