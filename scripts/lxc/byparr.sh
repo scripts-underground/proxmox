@@ -63,7 +63,8 @@ function install_script() {
   msg_info "Configuring Byparr"
   cd /opt/Byparr || exit
   $STD uv sync --link-mode copy
-  $STD uv run camoufox fetch
+  $STD uv run playwright install-deps firefox
+  $STD uv run python -m invisible_playwright fetch
   msg_ok "Configured Byparr"
 
   msg_info "Creating Service"
@@ -103,12 +104,18 @@ function update_script() {
     exit
   fi
 
+  if [[ -f /opt/Byparr/.env ]]; then
+    chown root:root /opt/Byparr/.env
+    chmod 0600 /opt/Byparr/.env
+  fi
+
   if check_for_gh_release "Byparr" "ThePhaseless/Byparr"; then
     msg_info "Stopping Service"
     systemctl stop byparr
     msg_ok "Stopped Service"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Byparr" "ThePhaseless/Byparr" "tarball" "latest"
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:+$CLEAN_INSTALL_KEEP }.env" \
+      fetch_and_deploy_gh_release "Byparr" "ThePhaseless/Byparr" "tarball" "$CHECK_UPDATE_RELEASE"
 
     if ! dpkg -l | grep -q ffmpeg; then
       msg_info "Installing dependencies"
@@ -155,13 +162,17 @@ function update_script() {
     msg_info "Configuring Byparr"
     cd /opt/Byparr || exit
     $STD uv sync --link-mode copy
-    $STD uv run camoufox fetch
+    $STD uv run playwright install-deps firefox
+    $STD uv run python -m invisible_playwright fetch
     msg_ok "Configured Byparr"
 
     msg_info "Starting Service"
     systemctl start byparr
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
