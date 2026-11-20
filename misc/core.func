@@ -908,6 +908,71 @@ _app_maintenance_import_guard() {
   done
 }
 
+# Detach only at service-manager exec, never at productive child creation. The
+# persistent per-key directory is private lock metadata, not a temporary root.
+_app_maintenance_service_boundary() {
+  local _am_fd=$1 _am_key=$2 _am_identity=$3
+  local _am_dir=/var/lib/scripts-underground/maintenance-locks/.$2.services
+  local _am_name _am_tool _am_stat _am_stage _am_status _am_metadata _am_part _am_remaining=${PATH-} _am_path=''
+  local -a _am_names=() _am_tools=()
+  # A stale inherited PATH must not resolve this key's previous wrapper to itself.
+  while :; do
+    _am_part=${_am_remaining%%:*}
+    if [[ "$_am_part" != "$_am_dir" ]]; then
+      _am_path+="${_am_path+:}$_am_part"
+    fi
+    [[ "$_am_remaining" == *:* ]] || break
+    _am_remaining=${_am_remaining#*:}
+  done
+  _am_path=${_am_path#:}
+  for _am_name in rc-service openrc supervise-daemon start-stop-daemon service systemctl systemd-run; do
+    _am_tool=$(PATH=$_am_path type -P "$_am_name") || continue
+    [[ "$_am_tool" == /* ]] || _am_tool=$PWD/$_am_tool
+    _am_names+=("$_am_name") _am_tools+=("$_am_tool")
+  done
+  ((${#_am_names[@]})) || return 0
+  type -P mktemp chmod mv rm > /dev/null || {
+    _app_maintenance_refuse 69 "$_am_key requires executable mktemp, chmod, mv and rm for service isolation"
+    return $?
+  }
+  _am_stat=$(type -P stat) || return 69
+  [[ "$_am_stat" == /* ]] || _am_stat=$PWD/$_am_stat
+  if [[ ! -e "$_am_dir" && ! -L "$_am_dir" ]]; then
+    command mkdir -m 0700 -- "$_am_dir" || return 69
+  fi
+  [[ ! -L "$_am_dir" && -d "$_am_dir" && "$(command stat -c '%u:%a' -- "$_am_dir")" == 0:700 ]] || {
+    _app_maintenance_refuse 69 "unsafe service-launch directory $_am_dir"
+    return $?
+  }
+  for _am_name in "${!_am_names[@]}"; do
+    _am_tool=${_am_tools[$_am_name]} _am_name=${_am_names[$_am_name]}
+    if [[ -e "$_am_dir/$_am_name" || -L "$_am_dir/$_am_name" ]]; then
+      _am_metadata=$(command stat -c '%u:%a:%h' -- "$_am_dir/$_am_name") || return 69
+      [[ ! -L "$_am_dir/$_am_name" && -f "$_am_dir/$_am_name" && "$_am_metadata" == 0:700:1 ]] || {
+        _app_maintenance_refuse 69 "unsafe service-launch executable $_am_dir/$_am_name"
+        return $?
+      }
+    fi
+    _am_stage=$(command mktemp "$_am_dir/.launch.XXXXXXXX") || return 69
+    _am_status=0
+    {
+      printf '#!/bin/bash\nPATH=%q\nexport PATH\n' "$_am_path" &&
+        printf '_am_fd=%q\n_am_identity=%q\n_am_stat=%q\n' "$_am_fd" "$_am_identity" "$_am_stat" &&
+        printf '%s\n' '[[ -d /proc/self/fd ]] || exit 69' 'if [[ -e "/proc/self/fd/$_am_fd" ]]; then' '  _am_actual=$(command "$_am_stat" -Lc '\''%d:%i'\'' -- "/proc/self/fd/$_am_fd") || exit 69' '  if [[ "$_am_actual" == "$_am_identity" ]]; then exec {_am_fd}>&-; fi' 'fi' &&
+        printf 'exec %q "$@"\n' "$_am_tool"
+    } > "$_am_stage" || _am_status=$?
+    if [[ "$_am_status" == 0 ]]; then command chmod 0700 -- "$_am_stage" || _am_status=$?; fi
+    if [[ "$_am_status" == 0 ]]; then command mv -f -- "$_am_stage" "$_am_dir/$_am_name" || _am_status=$?; fi
+    if [[ "$_am_status" != 0 ]]; then
+      command rm -f -- "$_am_stage"
+      _app_maintenance_refuse 69 "cannot publish service-launch executable $_am_dir/$_am_name"
+      return $?
+    fi
+  done
+  PATH="$_am_dir:$_am_path"
+  export PATH
+}
+
 _app_maintenance_lock() {
   local _am_key=${1:-} _am_policy=${2:-borrow}
   local _am_root=/var/lib/scripts-underground/maintenance-locks
@@ -1004,6 +1069,13 @@ _app_maintenance_lock() {
     fi
     return $?
   fi
+  if [[ "$_am_borrow" == 0 ]]; then
+    _am_metadata=${_am_before%:0:600:1:0}
+    _app_maintenance_service_boundary "$_am_fd" "$_am_key" "$_am_metadata" || {
+      exec {_am_fd}>&-
+      return 69
+    }
+  fi
   _APP_MAINTENANCE_FD=$_am_fd _APP_MAINTENANCE_KEY=$_am_key
   export -n _APP_MAINTENANCE_FD _APP_MAINTENANCE_KEY
 }
@@ -1026,7 +1098,7 @@ app_maintenance_begin() {
 # Emit only this component's acquisition definitions for cold offline consumers.
 # The owner, not each consumer, maintains the complete dependency closure.
 app_maintenance_contents() {
-  declare -f _app_maintenance_refuse _app_maintenance_import_guard _app_maintenance_lock app_maintenance_acquire || return $?
+  declare -f _app_maintenance_refuse _app_maintenance_import_guard _app_maintenance_service_boundary _app_maintenance_lock app_maintenance_acquire || return $?
 }
 
 # Only the actual background UI spawn calls this. Productive children retain the
