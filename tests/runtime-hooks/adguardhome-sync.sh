@@ -35,7 +35,7 @@ runtime_hooks_model() {
     command mkdir "$@"
   }
   cp() {
-    [[ "$APP_FAULT" != backup-copy || "${!#}" != "$var_addon_backup_dir/files"* ]] || return 74
+    [[ "$APP_FAULT" != backup-copy || "${!#}" != "$var_addon_backup_dir/"*/files* ]] || return 74
     if [[ "$APP_FAULT" == copy || "$APP_FAULT" == copy-unrestored ]] && [[ "$*" == *'/deploy-source.'* && "${!#}" == /opt/* ]]; then
       command cp "$@"
       [[ "$APP_FAULT" != copy-unrestored ]] || printf 'unverified extra bytes\n' > /opt/adguardhome-sync/unowned-partial
@@ -78,6 +78,10 @@ runtime_hooks_assert() {
   if [[ "$fault" == stop ]]; then check "$(stat -c %s "$c/downloads")" 0 "$app refused stop prevents replacement"; fi
 }
 addon_release_consumer_assert() {
+  local backup_input="/opt/$app/settings/operator config.yaml"
+  [[ "$variant" != external-* ]] || backup_input="$c/config/config.yaml"
+  runtime_hooks_backup_assert "$c/backup" "$backup_input" 'operator config'
+  check "$(test -e "$c/backup/.manifest" && printf stale || printf scoped)" scoped "$app success never leaves reusable unscoped backup manifest"
   check "$(cat "$c/opt/$app/code")" 'new code' "$app selected source consumer"
   check "$(cat "$config_file")" 'operator config' "$app consumer retains config"
   check "$(stat -c '%d:%i' "$config_file")" "$(cat "$c/config-inode")" "$app consumer retains config inode"

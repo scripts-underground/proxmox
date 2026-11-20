@@ -3,6 +3,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=coder-code-server
+runtime_hooks_observed_commands=(systemctl _deploy_release_deb)
+runtime_hooks_selected_service=code-server@fixture-editor
 release_app=coder-code-server release_mode=binary release_asset=code-server_2_amd64.deb
 addon_release_setup() { :; }
 addon_release_consumer_assert() { check "$(cat "$c/package-consumer")" 'selected v2.0.0' "$app selected package consumer"; }

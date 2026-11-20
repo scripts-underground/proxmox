@@ -105,23 +105,10 @@ function update_script() {
   if check_for_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter"; then
     local was_running=0 update_status=0 before after
     function actual_budget_exporter_state() (
-      set -o pipefail
-      local path
-      {
-        printf '%s\0' "$var_addon_config_path" || exit $?
-        find "$var_addon_install_path/" -print0 || exit $?
-      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
-        printf '%s\0' "$path" || exit $?
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-        elif [[ -f "$path" ]]; then
-          sha256sum < "$path" || exit $?
-        elif [[ ! -d "$path" ]]; then exit 65; fi
-      done | sha256sum
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path" --unit actual-budget-prometheus-exporter
     )
-    before=$(actual_budget_exporter_state) || return $?
-    if systemctl is-active --quiet actual-budget-prometheus-exporter; then was_running=1; fi
+    before=$(actual_budget_exporter_state) || before=unverified
+    addon_service_begin actual-budget-prometheus-exporter was_running || return $?
     msg_info "Stopping service"
     systemctl stop actual-budget-prometheus-exporter || update_status=$?
     if [[ "$update_status" == 0 ]]; then
@@ -129,17 +116,8 @@ function update_script() {
       # Contain helper exits and check every required step even under this
       # returning recovery boundary. Include node_modules in the state proof.
       (
-        # Preserve both the selected pathname and any in-tree symlink target.
-        # The replacement owner protects symlink ancestors and source defaults.
-        local root_path config_path
         local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
-        for root_path in "$(realpath -ms -- "$var_addon_install_path")" "$(realpath -m -- "$var_addon_install_path")"; do
-          for config_path in "$(realpath -ms -- "$var_addon_config_path")" "$(realpath -m -- "$var_addon_config_path")"; do
-            if [[ "$config_path" == "$root_path/"* ]]; then
-              CLEAN_INSTALL_KEEP_PATHS+=("${config_path#"$root_path/"}")
-            fi
-          done
-        done
+        addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path" || exit $?
         CLEAN_INSTALL=1 fetch_and_deploy_gh_release "actual-budget-prometheus-exporter" "sakowicz/actual-budget-prometheus-exporter" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
         NODE_VERSION="22" setup_nodejs || exit $?
         msg_info "Building Actual-Budget-Prometheus-Exporter"
@@ -151,7 +129,7 @@ function update_script() {
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(actual_budget_exporter_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         systemctl start actual-budget-prometheus-exporter || msg_warn "Unable to restart previous Actual Budget exporter service"
       elif [[ "$after" != "$before" ]]; then
         msg_warn "Previous Actual Budget exporter installation is unverified; service stays stopped"
@@ -160,7 +138,7 @@ function update_script() {
     fi
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      systemctl start actual-budget-prometheus-exporter
+      addon_service_complete actual-budget-prometheus-exporter || return $?
       msg_ok "Started service"
     fi
     msg_ok "Updated successfully!"

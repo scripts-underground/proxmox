@@ -27,12 +27,21 @@ function install_script() {
   $STD apt install -y curl gnupg
   # Complete the producer before executing any downloaded code. A pipe can
   # execute a partial response and accept an empty failed download as success.
-  local installer installer_status=0 cleanup_status=0
+  local installer installer_status=0 cleanup_status=0 custody_status=0
   installer=$(mktemp "${TMPDIR:-/tmp}/crowdsec-installer.XXXXXXXX") || return $?
   curl -fsSL https://install.crowdsec.net -o "$installer" || installer_status=$?
   if [[ "$installer_status" == 0 && ! -s "$installer" ]]; then installer_status=251; fi
-  if [[ "$installer_status" == 0 ]]; then $STD bash "$installer" || installer_status=$?; fi
-  rm -f -- "$installer" || cleanup_status=$?
+  if [[ "$installer_status" == 0 ]]; then bash -n "$installer" || installer_status=$?; fi
+  addon_record_owned_file "$installer" || custody_status=$?
+  if [[ "$custody_status" == 0 ]]; then
+    if [[ "$installer_status" == 0 ]]; then $STD bash "$installer" || installer_status=$?; fi
+    addon_remove_owned_file "$installer" || cleanup_status=$?
+  else
+    # No external code ran without custody. Retire this invocation's exact stage;
+    # a failed receipt writer must not permit execution of untracked bytes.
+    cleanup_status=$custody_status
+    rm -f -- "$installer" || msg_warn "Installer preparation retained at $installer"
+  fi
   [[ "$installer_status" != 0 ]] || installer_status=$cleanup_status
   [[ "$installer_status" == 0 ]] || return "$installer_status"
   msg_ok "Setup ${APP} Repository"
@@ -64,6 +73,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
+  addon_remove_owned_file
   $STD apt remove --purge -y "$var_addon_pkg" "$var_addon_bouncer_pkg"
   rm -f "$var_addon_repo_list"
   msg_ok "${APP} has been uninstalled"

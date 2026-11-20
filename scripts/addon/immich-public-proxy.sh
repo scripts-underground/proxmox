@@ -79,11 +79,10 @@ function install_script() {
   done
 
   msg_info "Creating configuration"
-  cat << EOF > "$var_addon_config_path/.env"
+  addon_write_private_file "$var_addon_config_path/.env" << EOF
 NODE_ENV=production
 IMMICH_URL=http://${DOMAIN}:2283
 EOF
-  chmod 600 "$var_addon_config_path/.env"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
@@ -119,41 +118,20 @@ function post_install_script() {
 function update_script() {
   if check_for_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy"; then
     local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
-    local config service was_running=0 update_status=0 before after
-    for config in "$var_addon_config_path/.env" "$var_addon_config_path/config.json"; do
-      case "$config" in
-        "$var_addon_install_path"/*) CLEAN_INSTALL_KEEP_PATHS+=("${config#"$var_addon_install_path"/}") ;;
-      esac
-    done
+    local service was_running=0 update_status=0 before after
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || return $?
     service=$(basename "$var_addon_service_path" .service)
     function immich_proxy_state() (
-      set -o pipefail
-      local path
-      {
-        printf '%s\0' "$var_addon_config_path/.env" || exit $?
-        if [[ -e "$var_addon_config_path/config.json" || -L "$var_addon_config_path/config.json" ]]; then
-          printf '%s\0' "$var_addon_config_path/config.json" || exit $?
-        fi
-        find "$var_addon_install_path/" -print0 || exit $?
-      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
-        printf '%s\0' "$path" || exit $?
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-          if [[ -f "$path" ]]; then sha256sum < "$path" || exit $?; fi
-        elif [[ -f "$path" ]]; then
-          sha256sum < "$path" || exit $?
-        elif [[ ! -d "$path" ]]; then exit 65; fi
-      done | sha256sum
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path/.env" --optional "$var_addon_config_path/config.json" --unit "$service"
     )
-    before=$(immich_proxy_state) || return $?
-    if systemctl is-active --quiet "$service"; then was_running=1; fi
+    before=$(immich_proxy_state) || before=unverified
+    addon_service_begin "$service" was_running || return $?
     msg_info "Stopping service"
     systemctl stop "$service" || update_status=$?
     if [[ "$update_status" == 0 ]]; then
       msg_ok "Stopped service"
       (
-        BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || exit $?
+        addon_backup_create "$var_addon_backup_dir" "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || exit $?
         if command -v node &> /dev/null; then
           msg_ok "Node.js already installed ($(node -v))"
         else
@@ -171,7 +149,7 @@ function update_script() {
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(immich_proxy_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         systemctl start "$service" || msg_warn "Unable to restart previous Immich Public Proxy service"
       elif [[ "$after" != "$before" ]]; then
         msg_warn "Previous Immich Public Proxy installation is unverified; service stays stopped"
@@ -180,9 +158,10 @@ function update_script() {
     fi
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      systemctl start "$service"
+      addon_service_complete "$service" || return $?
       msg_ok "Started service"
     fi
+    addon_backup_complete "$var_addon_backup_dir" || return $?
     msg_ok "Updated successfully"
   else
     local release_status=$?

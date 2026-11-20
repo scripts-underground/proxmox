@@ -52,9 +52,7 @@ function install_script() {
   fi
 
   fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "latest"
-  if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
-    install -D -m 0755 /usr/bin/nextcloud-exporter "$var_addon_bin_path"
-  fi
+  addon_publish_executable /usr/bin/nextcloud-exporter "$var_addon_bin_path"
 
   msg_info "Creating configuration"
   install -m 0600 /dev/null "$var_addon_config_path"
@@ -99,7 +97,7 @@ function post_install_script() {
 }
 
 function update_script() {
-  if [[ ! -f "$var_addon_bin_path" ]]; then
+  if [[ ! -f "$var_addon_bin_path" && ! -f /usr/bin/nextcloud-exporter ]]; then
     msg_error "${APP} is not installed. Nothing to update."
     exit 233
   fi
@@ -108,39 +106,22 @@ function update_script() {
     # The package may change its unit as well as the executable. Only an equal
     # consumed executable/config/unit footprint admits recovery after failure.
     function nextcloud_exporter_state() (
-      set -o pipefail
-      local path
-      for path in "$var_addon_bin_path" "$var_addon_config_path" "/etc/systemd/system/${var_addon_service}.service"; do
-        printf '%s\0' "$path" || exit $?
-        if [[ ! -e "$path" && ! -L "$path" ]]; then
-          printf 'absent\0'
-          continue
-        fi
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-          stat -Lc '%f:%u:%g' -- "$path" || exit $?
-        fi
-        [[ -f "$path" ]] || exit 65
-        sha256sum < "$path" || exit $?
-      done | sha256sum
+      addon_runtime_fingerprint --file "$var_addon_bin_path" --file "$var_addon_config_path" --unit "$var_addon_service"
     )
-    before=$(nextcloud_exporter_state) || return $?
-    if systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
+    before=$(nextcloud_exporter_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     systemctl stop "$var_addon_service" || update_status=$?
     if [[ "$update_status" == 0 ]]; then
       msg_ok "Stopped service"
       (
         fetch_and_deploy_gh_release "nextcloud-exporter" "$var_addon_repo" "binary" "$CHECK_UPDATE_RELEASE" || exit $?
-        if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
-          install -D -m 0755 /usr/bin/nextcloud-exporter "$var_addon_bin_path" || exit $?
-        fi
+        addon_publish_executable /usr/bin/nextcloud-exporter "$var_addon_bin_path" || exit $?
       ) || update_status=$?
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(nextcloud_exporter_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         systemctl start "$var_addon_service" || msg_warn "Unable to restart previous Nextcloud exporter service"
       elif [[ "$after" != "$before" ]]; then
         msg_warn "Previous Nextcloud exporter installation is unverified; service stays stopped"
@@ -150,7 +131,7 @@ function update_script() {
 
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      systemctl start "$var_addon_service"
+      addon_service_complete "$var_addon_service" || return $?
       msg_ok "Started service"
     fi
     msg_ok "Updated successfully!"
@@ -164,13 +145,13 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
   svc_prepare_uninstall "$var_addon_service"
+  if [[ ! "$var_addon_bin_path" -ef /usr/bin/nextcloud-exporter ]]; then
+    addon_remove_executable "$var_addon_bin_path"
+  fi
   rm -f "/etc/systemd/system/${var_addon_service}.service"
 
   if dpkg -l | grep -q nextcloud-exporter; then
     $STD apt remove -y nextcloud-exporter || $STD dpkg -r nextcloud-exporter
-  fi
-  if [[ "$var_addon_bin_path" != /usr/bin/nextcloud-exporter ]]; then
-    rm -f "$var_addon_bin_path"
   fi
 
   rm -f "$var_addon_config_path"

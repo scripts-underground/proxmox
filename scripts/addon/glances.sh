@@ -110,7 +110,12 @@ function update_script() {
   fi
   msg_info "Updating ${APP}"
   cd "$var_addon_app_dir" || exit
-  setup_uv
+  # Reuse a capable installed tool without setup_uv's unpinned latest lookup.
+  # Probe the exact command family this update consumes; an unusable executable
+  # still goes through the existing runtime owner and preserves setup failure.
+  if ! command -v uv > /dev/null 2>&1 || ! uv --version > /dev/null 2>&1 || ! uv pip install --help > /dev/null 2>&1; then
+    setup_uv || return $?
+  fi
   source .venv/bin/activate
   $STD uv pip install --upgrade "glances[web]"
   deactivate

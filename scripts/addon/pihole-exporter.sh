@@ -119,28 +119,12 @@ function update_script() {
   if check_for_gh_release "pihole-exporter" "$var_addon_repo"; then
     local was_running=0 update_status=0 before after
     function pihole_exporter_state() (
-      set -o pipefail
-      local path
-      # Include in-tree files an operator config may reference, not only the
-      # executable. Publication and compilation can both change this footprint.
-      {
-        printf '%s\0' "$var_addon_config_path" || exit $?
-        find "$var_addon_install_path/" -print0 || exit $?
-      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
-        printf '%s\0' "$path" || exit $?
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-          if [[ -f "$path" ]]; then sha256sum < "$path" || exit $?; fi
-        elif [[ -f "$path" ]]; then
-          sha256sum < "$path" || exit $?
-        elif [[ ! -d "$path" ]]; then exit 65; fi
-      done | sha256sum
+      local -a inputs=(--file "$var_addon_config_path")
+      [[ "$INIT_SYSTEM" != openrc ]] || inputs=(--optional "$var_addon_config_path")
+      addon_runtime_fingerprint --tree "$var_addon_install_path" "${inputs[@]}" --unit "$var_addon_service"
     )
-    before=$(pihole_exporter_state) || return $?
-    if [[ "$INIT_SYSTEM" == openrc ]]; then
-      if rc-service "$var_addon_service" status > /dev/null 2>&1; then was_running=1; fi
-    elif systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
+    before=$(pihole_exporter_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
       rc-service "$var_addon_service" stop || update_status=$?
@@ -160,7 +144,7 @@ function update_script() {
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(pihole_exporter_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         if [[ "$INIT_SYSTEM" == openrc ]]; then
           rc-service "$var_addon_service" start || msg_warn "Unable to restart previous Pi-hole exporter"
         else
@@ -173,11 +157,7 @@ function update_script() {
     fi
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        rc-service "$var_addon_service" start
-      else
-        systemctl start "$var_addon_service"
-      fi
+      addon_service_complete "$var_addon_service" || return $?
       msg_ok "Started service"
     fi
     msg_ok "Updated successfully!"

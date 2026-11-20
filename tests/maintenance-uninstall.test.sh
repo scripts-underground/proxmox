@@ -38,7 +38,8 @@ docker() {
 }
 MODEL
       if [[ "$owner" == addon ]]; then
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --addon "$c" > "$c/stage/addon_lxc.func"
+        printf '\naddon_baseline() { :; }\n' >> "$c/stage/addon_lxc.func"
         cat "$c/model.sh" >> "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$ROOT/scripts/addon/dockge.sh" > "$c/hook.sh"
       else

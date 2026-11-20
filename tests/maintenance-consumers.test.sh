@@ -78,7 +78,8 @@ for mode in no yes; do
     python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$c/stage/install.func"
     printf 'fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
-    cat > "$c/stage/addon_lxc.func" << 'STUBS'
+    python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --addon "$c" > "$c/stage/addon_lxc.func"
+    cat >> "$c/stage/addon_lxc.func" << 'STUBS'
 addon_baseline() { :; }
 stop_spinner() { :; }
 msg_info() { :; }

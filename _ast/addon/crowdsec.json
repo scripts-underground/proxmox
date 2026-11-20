@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "crowdsec",
   "type": "addon",
-  "total_lines": 91,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 tteck\n# Author: tteck (tteckster)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://www.crowdsec.net/ | Github: https://github.com/crowdsecurity/crowdsec\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"CrowdSec\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_pkg=\"${var_addon_pkg:-crowdsec}\"\nvar_addon_bouncer_pkg=\"${var_addon_bouncer_pkg:-crowdsec-firewall-bouncer-iptables}\"\nvar_addon_repo_list=\"${var_addon_repo_list:-/etc/apt/sources.list.d/crowdsec_crowdsec.list}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu only)\"\n    exit 1\n  fi\n\n  msg_info \"Setting up ${APP} Repository\"\n  $STD apt update\n  $STD apt install -y curl gnupg\n  # Complete the producer before executing any downloaded code. A pipe can\n  # execute a partial response and accept an empty failed download as success.\n  local installer installer_status=0 cleanup_status=0\n  installer=$(mktemp \"${TMPDIR:-/tmp}/crowdsec-installer.XXXXXXXX\") || return $?\n  curl -fsSL https://install.crowdsec.net -o \"$installer\" || installer_status=$?\n  if [[ \"$installer_status\" == 0 \u0026\u0026 ! -s \"$installer\" ]]; then installer_status=251; fi\n  if [[ \"$installer_status\" == 0 ]]; then $STD bash \"$installer\" || installer_status=$?; fi\n  rm -f -- \"$installer\" || cleanup_status=$?\n  [[ \"$installer_status\" != 0 ]] || installer_status=$cleanup_status\n  [[ \"$installer_status\" == 0 ]] || return \"$installer_status\"\n  msg_ok \"Setup ${APP} Repository\"\n\n  msg_info \"Installing ${APP}\"\n  $STD apt update\n  $STD apt install -y \"$var_addon_pkg\"\n  msg_ok \"Installed ${APP}\"\n\n  msg_info \"Installing ${APP} Firewall Bouncer\"\n  $STD apt install -y \"$var_addon_bouncer_pkg\"\n  msg_ok \"Installed ${APP} Firewall Bouncer\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Local API:${CL} ${BGN}http://${LOCAL_IP}:8080${CL}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  msg_info \"Updating ${APP}\"\n  $STD apt update\n  $STD apt install --only-upgrade -y \"$var_addon_pkg\" \"$var_addon_bouncer_pkg\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  $STD apt remove --purge -y \"$var_addon_pkg\" \"$var_addon_bouncer_pkg\"\n  rm -f \"$var_addon_repo_list\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\") --script-id crowdsec -- \"$@\"\n",
+  "total_lines": 101,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 tteck\n# Author: tteck (tteckster)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://www.crowdsec.net/ | Github: https://github.com/crowdsecurity/crowdsec\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"CrowdSec\"\n\n# Bundle-consumed configuration (var_addon_* is baked into update/uninstall\n# bundles at install time — hooks may reference these directly)\nvar_addon_pkg=\"${var_addon_pkg:-crowdsec}\"\nvar_addon_bouncer_pkg=\"${var_addon_bouncer_pkg:-crowdsec-firewall-bouncer-iptables}\"\nvar_addon_repo_list=\"${var_addon_repo_list:-/etc/apt/sources.list.d/crowdsec_crowdsec.list}\"\n\nfunction install_script() {\n  if [[ \"$OS_FAMILY\" != \"debian\" ]]; then\n    msg_error \"Unsupported OS: ${OS_TYPE} (Debian/Ubuntu only)\"\n    exit 1\n  fi\n\n  msg_info \"Setting up ${APP} Repository\"\n  $STD apt update\n  $STD apt install -y curl gnupg\n  # Complete the producer before executing any downloaded code. A pipe can\n  # execute a partial response and accept an empty failed download as success.\n  local installer installer_status=0 cleanup_status=0 custody_status=0\n  installer=$(mktemp \"${TMPDIR:-/tmp}/crowdsec-installer.XXXXXXXX\") || return $?\n  curl -fsSL https://install.crowdsec.net -o \"$installer\" || installer_status=$?\n  if [[ \"$installer_status\" == 0 \u0026\u0026 ! -s \"$installer\" ]]; then installer_status=251; fi\n  if [[ \"$installer_status\" == 0 ]]; then bash -n \"$installer\" || installer_status=$?; fi\n  addon_record_owned_file \"$installer\" || custody_status=$?\n  if [[ \"$custody_status\" == 0 ]]; then\n    if [[ \"$installer_status\" == 0 ]]; then $STD bash \"$installer\" || installer_status=$?; fi\n    addon_remove_owned_file \"$installer\" || cleanup_status=$?\n  else\n    # No external code ran without custody. Retire this invocation's exact stage;\n    # a failed receipt writer must not permit execution of untracked bytes.\n    cleanup_status=$custody_status\n    rm -f -- \"$installer\" || msg_warn \"Installer preparation retained at $installer\"\n  fi\n  [[ \"$installer_status\" != 0 ]] || installer_status=$cleanup_status\n  [[ \"$installer_status\" == 0 ]] || return \"$installer_status\"\n  msg_ok \"Setup ${APP} Repository\"\n\n  msg_info \"Installing ${APP}\"\n  $STD apt update\n  $STD apt install -y \"$var_addon_pkg\"\n  msg_ok \"Installed ${APP}\"\n\n  msg_info \"Installing ${APP} Firewall Bouncer\"\n  $STD apt install -y \"$var_addon_bouncer_pkg\"\n  msg_ok \"Installed ${APP} Firewall Bouncer\"\n}\n\nfunction post_install_script() {\n  echo \"\"\n  msg_ok \"${APP} installed successfully\"\n  echo -e \"${INFO}${YW}Local API:${CL} ${BGN}http://${LOCAL_IP}:8080${CL}\"\n  echo -e \"${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}\"\n}\n\nfunction update_script() {\n  msg_info \"Updating ${APP}\"\n  $STD apt update\n  $STD apt install --only-upgrade -y \"$var_addon_pkg\" \"$var_addon_bouncer_pkg\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\nfunction uninstall_script() {\n  msg_info \"Uninstalling ${APP}\"\n  addon_remove_owned_file\n  $STD apt remove --purge -y \"$var_addon_pkg\" \"$var_addon_bouncer_pkg\"\n  rm -f \"$var_addon_repo_list\"\n  msg_ok \"${APP} has been uninstalled\"\n}\n\n# Addons run inside arbitrary containers that may lack curl — ensure the\n# transport before sourcing the framework (everything else is bootstrapped\n# by install.func from this point on)\nif ! command -v curl \u003e /dev/null 2\u003e\u00261; then\n  if [[ -f /etc/alpine-release ]]; then\n    apk update \u0026\u003e /dev/null \u0026\u0026 apk add --no-cache curl \u0026\u003e /dev/null\n  else\n    apt-get update \u0026\u003e /dev/null \u0026\u0026 apt-get install -y curl \u0026\u003e /dev/null\n  fi\nfi\ncommand -v curl \u003e /dev/null 2\u003e\u00261 || {\n  echo \"FATAL: curl is required and could not be installed\" \u003e\u00262\n  exit 1\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/addon_lxc\") --script-id crowdsec -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -34,12 +34,21 @@
     "  $STD apt install -y curl gnupg",
     "  # Complete the producer before executing any downloaded code. A pipe can",
     "  # execute a partial response and accept an empty failed download as success.",
-    "  local installer installer_status=0 cleanup_status=0",
+    "  local installer installer_status=0 cleanup_status=0 custody_status=0",
     "  installer=$(mktemp \"${TMPDIR:-/tmp}/crowdsec-installer.XXXXXXXX\") || return $?",
     "  curl -fsSL https://install.crowdsec.net -o \"$installer\" || installer_status=$?",
     "  if [[ \"$installer_status\" == 0 \u0026\u0026 ! -s \"$installer\" ]]; then installer_status=251; fi",
-    "  if [[ \"$installer_status\" == 0 ]]; then $STD bash \"$installer\" || installer_status=$?; fi",
-    "  rm -f -- \"$installer\" || cleanup_status=$?",
+    "  if [[ \"$installer_status\" == 0 ]]; then bash -n \"$installer\" || installer_status=$?; fi",
+    "  addon_record_owned_file \"$installer\" || custody_status=$?",
+    "  if [[ \"$custody_status\" == 0 ]]; then",
+    "    if [[ \"$installer_status\" == 0 ]]; then $STD bash \"$installer\" || installer_status=$?; fi",
+    "    addon_remove_owned_file \"$installer\" || cleanup_status=$?",
+    "  else",
+    "    # No external code ran without custody. Retire this invocation's exact stage;",
+    "    # a failed receipt writer must not permit execution of untracked bytes.",
+    "    cleanup_status=$custody_status",
+    "    rm -f -- \"$installer\" || msg_warn \"Installer preparation retained at $installer\"",
+    "  fi",
     "  [[ \"$installer_status\" != 0 ]] || installer_status=$cleanup_status",
     "  [[ \"$installer_status\" == 0 ]] || return \"$installer_status\"",
     "  msg_ok \"Setup ${APP} Repository\"",
@@ -71,6 +80,7 @@
     "",
     "function uninstall_script() {",
     "  msg_info \"Uninstalling ${APP}\"",
+    "  addon_remove_owned_file",
     "  $STD apt remove --purge -y \"$var_addon_pkg\" \"$var_addon_bouncer_pkg\"",
     "  rm -f \"$var_addon_repo_list\"",
     "  msg_ok \"${APP} has been uninstalled\"",
@@ -101,7 +111,7 @@
     {
       "name": "install_script",
       "start_line": 19,
-      "end_line": 48,
+      "end_line": 57,
       "name_span": {
         "start_line": 19,
         "start_col": 10,
@@ -112,36 +122,36 @@
     },
     {
       "name": "post_install_script",
-      "start_line": 50,
-      "end_line": 55,
+      "start_line": 59,
+      "end_line": 64,
       "name_span": {
-        "start_line": 50,
+        "start_line": 59,
         "start_col": 10,
-        "end_line": 50,
+        "end_line": 59,
         "end_col": 29,
         "kind": ""
       }
     },
     {
       "name": "update_script",
-      "start_line": 57,
-      "end_line": 63,
+      "start_line": 66,
+      "end_line": 72,
       "name_span": {
-        "start_line": 57,
+        "start_line": 66,
         "start_col": 10,
-        "end_line": 57,
+        "end_line": 66,
         "end_col": 23,
         "kind": ""
       }
     },
     {
       "name": "uninstall_script",
-      "start_line": 65,
-      "end_line": 70,
+      "start_line": 74,
+      "end_line": 80,
       "name_span": {
-        "start_line": 65,
+        "start_line": 74,
         "start_col": 10,
-        "end_line": 65,
+        "end_line": 74,
         "end_col": 26,
         "kind": ""
       }
@@ -201,12 +211,12 @@
   ],
   "global_ranges": [
     {
-      "start_line": 75,
-      "end_line": 75
+      "start_line": 85,
+      "end_line": 85
     },
     {
-      "start_line": 82,
-      "end_line": 82
+      "start_line": 92,
+      "end_line": 92
     }
   ],
   "heredocs": [],
@@ -670,6 +680,21 @@
     {
       "kind": "var-assign",
       "op": "=",
+      "start_line": 30,
+      "start_col": 55,
+      "end_line": 30,
+      "end_col": 71
+    },
+    {
+      "kind": "var-name",
+      "start_line": 30,
+      "start_col": 55,
+      "end_line": 30,
+      "end_col": 69
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 31,
       "start_col": 3,
       "end_line": 31,
@@ -977,732 +1002,828 @@
       "end_col": 42
     },
     {
-      "kind": "param-exp",
+      "kind": "command",
       "start_line": 34,
       "start_col": 43,
       "end_line": 34,
       "end_col": 47
     },
     {
-      "kind": "command",
-      "start_line": 34,
-      "start_col": 48,
-      "end_line": 34,
-      "end_col": 52
-    },
-    {
       "kind": "string-dq",
       "start_line": 34,
-      "start_col": 53,
+      "start_col": 51,
       "end_line": 34,
-      "end_col": 65
+      "end_col": 63
     },
     {
       "kind": "param-exp",
       "start_line": 34,
-      "start_col": 54,
+      "start_col": 52,
       "end_line": 34,
-      "end_col": 64
+      "end_col": 62
     },
     {
       "kind": "operator",
       "op": "||",
       "start_line": 34,
-      "start_col": 66,
+      "start_col": 64,
       "end_line": 34,
-      "end_col": 68
+      "end_col": 66
     },
     {
       "kind": "var-assign",
       "op": "=",
       "start_line": 34,
-      "start_col": 69,
+      "start_col": 67,
       "end_line": 34,
-      "end_col": 88
+      "end_col": 86
     },
     {
       "kind": "var-name",
       "start_line": 34,
-      "start_col": 69,
+      "start_col": 67,
       "end_line": 34,
-      "end_col": 85
+      "end_col": 83
     },
     {
       "kind": "param-exp",
       "start_line": 34,
-      "start_col": 86,
+      "start_col": 84,
       "end_line": 34,
-      "end_col": 88
+      "end_col": 86
     },
     {
       "kind": "operator",
       "op": ";",
       "start_line": 34,
-      "start_col": 88,
+      "start_col": 86,
       "end_line": 34,
-      "end_col": 89
+      "end_col": 87
     },
     {
       "kind": "keyword",
       "op": "fi",
       "start_line": 34,
-      "start_col": 90,
+      "start_col": 88,
       "end_line": 34,
-      "end_col": 92
+      "end_col": 90
     },
     {
       "kind": "command",
       "start_line": 35,
       "start_col": 3,
       "end_line": 35,
-      "end_col": 5
+      "end_col": 26
     },
     {
       "kind": "string-dq",
       "start_line": 35,
-      "start_col": 12,
+      "start_col": 27,
       "end_line": 35,
-      "end_col": 24
+      "end_col": 39
     },
     {
       "kind": "param-exp",
       "start_line": 35,
-      "start_col": 13,
+      "start_col": 28,
       "end_line": 35,
-      "end_col": 23
+      "end_col": 38
     },
     {
       "kind": "operator",
       "op": "||",
       "start_line": 35,
-      "start_col": 25,
+      "start_col": 40,
       "end_line": 35,
-      "end_col": 27
+      "end_col": 42
     },
     {
       "kind": "var-assign",
       "op": "=",
       "start_line": 35,
-      "start_col": 28,
+      "start_col": 43,
       "end_line": 35,
-      "end_col": 45
+      "end_col": 60
     },
     {
       "kind": "var-name",
       "start_line": 35,
-      "start_col": 28,
+      "start_col": 43,
       "end_line": 35,
-      "end_col": 42
+      "end_col": 57
     },
     {
       "kind": "param-exp",
       "start_line": 35,
-      "start_col": 43,
+      "start_col": 58,
       "end_line": 35,
-      "end_col": 45
+      "end_col": 60
     },
     {
-      "kind": "operator",
-      "op": "[[",
+      "kind": "keyword",
+      "op": "if",
       "start_line": 36,
       "start_col": 3,
       "end_line": 36,
       "end_col": 5
     },
     {
-      "kind": "string-dq",
+      "kind": "operator",
+      "op": "[[",
       "start_line": 36,
       "start_col": 6,
       "end_line": 36,
-      "end_col": 25
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 9,
+      "end_line": 36,
+      "end_col": 26
     },
     {
       "kind": "param-exp",
       "start_line": 36,
-      "start_col": 7,
+      "start_col": 10,
       "end_line": 36,
-      "end_col": 24
+      "end_col": 25
     },
     {
       "kind": "test-operator",
-      "op": "!=",
+      "op": "==",
       "start_line": 36,
-      "start_col": 26,
+      "start_col": 27,
       "end_line": 36,
-      "end_col": 28
+      "end_col": 29
     },
     {
       "kind": "operator",
       "op": "]]",
       "start_line": 36,
-      "start_col": 31,
+      "start_col": 32,
       "end_line": 36,
-      "end_col": 33
+      "end_col": 34
     },
     {
       "kind": "operator",
-      "op": "||",
+      "op": ";",
       "start_line": 36,
       "start_col": 34,
       "end_line": 36,
-      "end_col": 36
+      "end_col": 35
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "keyword",
+      "op": "then",
       "start_line": 36,
-      "start_col": 37,
+      "start_col": 36,
       "end_line": 36,
-      "end_col": 69
+      "end_col": 40
     },
     {
-      "kind": "var-name",
-      "start_line": 36,
-      "start_col": 37,
-      "end_line": 36,
-      "end_col": 53
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 36,
-      "start_col": 54,
-      "end_line": 36,
-      "end_col": 69
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 37,
+      "start_col": 5,
+      "end_line": 37,
+      "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
       "start_line": 37,
-      "start_col": 3,
+      "start_col": 8,
       "end_line": 37,
-      "end_col": 5
+      "end_col": 10
     },
     {
       "kind": "string-dq",
       "start_line": 37,
-      "start_col": 6,
+      "start_col": 11,
       "end_line": 37,
-      "end_col": 25
+      "end_col": 30
     },
     {
       "kind": "param-exp",
       "start_line": 37,
-      "start_col": 7,
+      "start_col": 12,
       "end_line": 37,
-      "end_col": 24
+      "end_col": 29
     },
     {
       "kind": "test-operator",
       "op": "==",
       "start_line": 37,
-      "start_col": 26,
-      "end_line": 37,
-      "end_col": 28
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 37,
       "start_col": 31,
       "end_line": 37,
       "end_col": 33
     },
     {
       "kind": "operator",
-      "op": "||",
+      "op": "]]",
       "start_line": 37,
-      "start_col": 34,
+      "start_col": 36,
       "end_line": 37,
-      "end_col": 36
+      "end_col": 38
     },
     {
-      "kind": "command",
+      "kind": "operator",
+      "op": ";",
       "start_line": 37,
-      "start_col": 37,
+      "start_col": 38,
       "end_line": 37,
-      "end_col": 43
+      "end_col": 39
     },
     {
-      "kind": "string-dq",
+      "kind": "keyword",
+      "op": "then",
       "start_line": 37,
-      "start_col": 44,
+      "start_col": 40,
       "end_line": 37,
-      "end_col": 63
+      "end_col": 44
     },
     {
       "kind": "param-exp",
       "start_line": 37,
       "start_col": 45,
       "end_line": 37,
-      "end_col": 62
+      "end_col": 49
     },
     {
       "kind": "command",
-      "start_line": 38,
-      "start_col": 3,
-      "end_line": 38,
-      "end_col": 9
+      "start_line": 37,
+      "start_col": 50,
+      "end_line": 37,
+      "end_col": 54
     },
     {
       "kind": "string-dq",
-      "start_line": 38,
-      "start_col": 10,
-      "end_line": 38,
-      "end_col": 35
+      "start_line": 37,
+      "start_col": 55,
+      "end_line": 37,
+      "end_col": 67
     },
     {
       "kind": "param-exp",
-      "start_line": 38,
-      "start_col": 17,
-      "end_line": 38,
-      "end_col": 23
-    },
-    {
-      "kind": "command",
-      "start_line": 40,
-      "start_col": 3,
-      "end_line": 40,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 40,
-      "start_col": 12,
-      "end_line": 40,
-      "end_col": 31
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 40,
-      "start_col": 24,
-      "end_line": 40,
-      "end_col": 30
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 41,
-      "start_col": 3,
-      "end_line": 41,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 41,
-      "start_col": 8,
-      "end_line": 41,
-      "end_col": 11
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 42,
-      "start_col": 3,
-      "end_line": 42,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 42,
-      "start_col": 8,
-      "end_line": 42,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 42,
-      "start_col": 23,
-      "end_line": 42,
-      "end_col": 39
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 42,
-      "start_col": 24,
-      "end_line": 42,
-      "end_col": 38
-    },
-    {
-      "kind": "command",
-      "start_line": 43,
-      "start_col": 3,
-      "end_line": 43,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 43,
-      "start_col": 10,
-      "end_line": 43,
-      "end_col": 28
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 43,
-      "start_col": 21,
-      "end_line": 43,
-      "end_col": 27
-    },
-    {
-      "kind": "command",
-      "start_line": 45,
-      "start_col": 3,
-      "end_line": 45,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 45,
-      "start_col": 12,
-      "end_line": 45,
-      "end_col": 48
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 45,
-      "start_col": 24,
-      "end_line": 45,
-      "end_col": 30
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 46,
-      "start_col": 3,
-      "end_line": 46,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 46,
-      "start_col": 8,
-      "end_line": 46,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 46,
-      "start_col": 23,
-      "end_line": 46,
-      "end_col": 47
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 46,
-      "start_col": 24,
-      "end_line": 46,
-      "end_col": 46
-    },
-    {
-      "kind": "command",
-      "start_line": 47,
-      "start_col": 3,
-      "end_line": 47,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 47,
-      "start_col": 10,
-      "end_line": 47,
-      "end_col": 45
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 47,
-      "start_col": 21,
-      "end_line": 47,
-      "end_col": 27
+      "start_line": 37,
+      "start_col": 56,
+      "end_line": 37,
+      "end_col": 66
     },
     {
       "kind": "operator",
-      "op": "}",
-      "start_line": 48,
-      "start_col": 1,
-      "end_line": 48,
-      "end_col": 2
+      "op": "||",
+      "start_line": 37,
+      "start_col": 68,
+      "end_line": 37,
+      "end_col": 70
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 37,
+      "start_col": 71,
+      "end_line": 37,
+      "end_col": 90
+    },
+    {
+      "kind": "var-name",
+      "start_line": 37,
+      "start_col": 71,
+      "end_line": 37,
+      "end_col": 87
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 37,
+      "start_col": 88,
+      "end_line": 37,
+      "end_col": 90
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 37,
+      "start_col": 90,
+      "end_line": 37,
+      "end_col": 91
     },
     {
       "kind": "keyword",
-      "op": "function",
-      "start_line": 50,
-      "start_col": 1,
-      "end_line": 50,
-      "end_col": 9
-    },
-    {
-      "kind": "function-name",
-      "start_line": 50,
-      "start_col": 10,
-      "end_line": 50,
-      "end_col": 29
-    },
-    {
-      "kind": "operator",
-      "op": "{",
-      "start_line": 50,
-      "start_col": 32,
-      "end_line": 50,
-      "end_col": 33
+      "op": "fi",
+      "start_line": 37,
+      "start_col": 92,
+      "end_line": 37,
+      "end_col": 94
     },
     {
       "kind": "command",
-      "start_line": 51,
-      "start_col": 3,
-      "end_line": 51,
-      "end_col": 7
+      "start_line": 38,
+      "start_col": 5,
+      "end_line": 38,
+      "end_col": 28
     },
     {
       "kind": "string-dq",
-      "start_line": 51,
-      "start_col": 8,
-      "end_line": 51,
-      "end_col": 10
-    },
-    {
-      "kind": "command",
-      "start_line": 52,
-      "start_col": 3,
-      "end_line": 52,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 52,
-      "start_col": 10,
-      "end_line": 52,
+      "start_line": 38,
+      "start_col": 29,
+      "end_line": 38,
       "end_col": 41
     },
     {
       "kind": "param-exp",
-      "start_line": 52,
-      "start_col": 11,
-      "end_line": 52,
-      "end_col": 17
+      "start_line": 38,
+      "start_col": 30,
+      "end_line": 38,
+      "end_col": 40
     },
     {
-      "kind": "command",
-      "start_line": 53,
-      "start_col": 3,
-      "end_line": 53,
-      "end_col": 7
+      "kind": "operator",
+      "op": "||",
+      "start_line": 38,
+      "start_col": 42,
+      "end_line": 38,
+      "end_col": 44
     },
     {
-      "kind": "string-dq",
-      "start_line": 53,
-      "start_col": 11,
-      "end_line": 53,
-      "end_col": 75
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 38,
+      "start_col": 45,
+      "end_line": 38,
+      "end_col": 62
+    },
+    {
+      "kind": "var-name",
+      "start_line": 38,
+      "start_col": 45,
+      "end_line": 38,
+      "end_col": 59
     },
     {
       "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 12,
-      "end_line": 53,
+      "start_line": 38,
+      "start_col": 60,
+      "end_line": 38,
+      "end_col": 62
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 39,
+      "start_col": 3,
+      "end_line": 39,
+      "end_col": 7
+    },
+    {
+      "kind": "comment",
+      "start_line": 40,
+      "start_col": 5,
+      "end_line": 40,
+      "end_col": 82
+    },
+    {
+      "kind": "comment",
+      "start_line": 41,
+      "start_col": 5,
+      "end_line": 41,
+      "end_col": 76
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 42,
+      "start_col": 5,
+      "end_line": 42,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 42,
+      "start_col": 5,
+      "end_line": 42,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 19,
-      "end_line": 53,
-      "end_col": 24
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 34,
-      "end_line": 53,
-      "end_col": 39
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 40,
-      "end_line": 53,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 53,
-      "end_line": 53,
-      "end_col": 64
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 53,
-      "start_col": 69,
-      "end_line": 53,
-      "end_col": 74
+      "start_line": 42,
+      "start_col": 20,
+      "end_line": 42,
+      "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 54,
-      "start_col": 3,
-      "end_line": 54,
+      "start_line": 43,
+      "start_col": 5,
+      "end_line": 43,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 54,
-      "start_col": 11,
-      "end_line": 54,
-      "end_col": 101
+      "start_line": 43,
+      "start_col": 14,
+      "end_line": 43,
+      "end_col": 26
     },
     {
       "kind": "param-exp",
-      "start_line": 54,
-      "start_col": 12,
-      "end_line": 54,
-      "end_col": 19
+      "start_line": 43,
+      "start_col": 15,
+      "end_line": 43,
+      "end_col": 25
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 43,
+      "start_col": 27,
+      "end_line": 43,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 43,
+      "start_col": 30,
+      "end_line": 43,
+      "end_col": 38
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 39,
+      "end_line": 43,
+      "end_col": 85
     },
     {
       "kind": "param-exp",
-      "start_line": 54,
-      "start_col": 19,
-      "end_line": 54,
+      "start_line": 43,
+      "start_col": 74,
+      "end_line": 43,
+      "end_col": 84
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 44,
+      "start_col": 3,
+      "end_line": 44,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 45,
+      "start_col": 6,
+      "end_line": 45,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 45,
+      "start_col": 7,
+      "end_line": 45,
       "end_col": 24
     },
     {
-      "kind": "param-exp",
-      "start_line": 54,
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 45,
+      "start_col": 26,
+      "end_line": 45,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 45,
       "start_col": 31,
-      "end_line": 54,
+      "end_line": 45,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 45,
+      "start_col": 34,
+      "end_line": 45,
       "end_col": 36
     },
     {
-      "kind": "param-exp",
-      "start_line": 54,
-      "start_col": 44,
-      "end_line": 54,
-      "end_col": 55
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 45,
+      "start_col": 37,
+      "end_line": 45,
+      "end_col": 69
+    },
+    {
+      "kind": "var-name",
+      "start_line": 45,
+      "start_col": 37,
+      "end_line": 45,
+      "end_col": 53
     },
     {
       "kind": "param-exp",
-      "start_line": 54,
-      "start_col": 58,
-      "end_line": 54,
+      "start_line": 45,
+      "start_col": 54,
+      "end_line": 45,
+      "end_col": 69
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 46,
+      "start_col": 3,
+      "end_line": 46,
+      "end_col": 5
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 6,
+      "end_line": 46,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 7,
+      "end_line": 46,
+      "end_col": 24
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 46,
+      "start_col": 26,
+      "end_line": 46,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 46,
+      "start_col": 31,
+      "end_line": 46,
+      "end_col": 33
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 46,
+      "start_col": 34,
+      "end_line": 46,
+      "end_col": 36
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 37,
+      "end_line": 46,
+      "end_col": 43
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 44,
+      "end_line": 46,
       "end_col": 63
     },
     {
       "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 45,
+      "end_line": 46,
+      "end_col": 62
+    },
+    {
+      "kind": "command",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 47,
+      "start_col": 10,
+      "end_line": 47,
+      "end_col": 35
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 47,
+      "start_col": 17,
+      "end_line": 47,
+      "end_col": 23
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 3,
+      "end_line": 49,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 12,
+      "end_line": 49,
+      "end_col": 31
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 49,
+      "start_col": 24,
+      "end_line": 49,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 50,
+      "start_col": 3,
+      "end_line": 50,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 50,
+      "start_col": 8,
+      "end_line": 50,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 51,
+      "start_col": 3,
+      "end_line": 51,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 51,
+      "start_col": 8,
+      "end_line": 51,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 51,
+      "start_col": 23,
+      "end_line": 51,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 51,
+      "start_col": 24,
+      "end_line": 51,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 52,
+      "start_col": 3,
+      "end_line": 52,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 52,
+      "start_col": 10,
+      "end_line": 52,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 52,
+      "start_col": 21,
+      "end_line": 52,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
       "start_line": 54,
-      "start_col": 73,
+      "start_col": 3,
       "end_line": 54,
-      "end_col": 78
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 54,
+      "start_col": 12,
+      "end_line": 54,
+      "end_col": 48
     },
     {
       "kind": "param-exp",
       "start_line": 54,
-      "start_col": 89,
+      "start_col": 24,
       "end_line": 54,
-      "end_col": 100
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 55,
+      "start_col": 3,
+      "end_line": 55,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 55,
+      "start_col": 8,
+      "end_line": 55,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 55,
+      "start_col": 23,
+      "end_line": 55,
+      "end_col": 47
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 55,
+      "start_col": 24,
+      "end_line": 55,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 56,
+      "start_col": 3,
+      "end_line": 56,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 56,
+      "start_col": 10,
+      "end_line": 56,
+      "end_col": 45
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 56,
+      "start_col": 21,
+      "end_line": 56,
+      "end_col": 27
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 55,
+      "start_line": 57,
       "start_col": 1,
-      "end_line": 55,
+      "end_line": 57,
       "end_col": 2
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 57,
+      "start_line": 59,
       "start_col": 1,
-      "end_line": 57,
+      "end_line": 59,
       "end_col": 9
     },
     {
       "kind": "function-name",
-      "start_line": 57,
+      "start_line": 59,
       "start_col": 10,
-      "end_line": 57,
-      "end_col": 23
+      "end_line": 59,
+      "end_col": 29
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 57,
-      "start_col": 26,
-      "end_line": 57,
-      "end_col": 27
+      "start_line": 59,
+      "start_col": 32,
+      "end_line": 59,
+      "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 58,
-      "start_col": 3,
-      "end_line": 58,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 58,
-      "start_col": 12,
-      "end_line": 58,
-      "end_col": 29
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 58,
-      "start_col": 22,
-      "end_line": 58,
-      "end_col": 28
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 59,
-      "start_col": 3,
-      "end_line": 59,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 59,
-      "start_col": 8,
-      "end_line": 59,
-      "end_col": 11
-    },
-    {
-      "kind": "param-exp",
       "start_line": 60,
       "start_col": 3,
       "end_line": 60,
       "end_col": 7
     },
     {
-      "kind": "command",
+      "kind": "string-dq",
       "start_line": 60,
       "start_col": 8,
       "end_line": 60,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 60,
-      "start_col": 38,
-      "end_line": 60,
-      "end_col": 54
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 60,
-      "start_col": 39,
-      "end_line": 60,
-      "end_col": 53
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 60,
-      "start_col": 55,
-      "end_line": 60,
-      "end_col": 79
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 60,
-      "start_col": 56,
-      "end_line": 60,
-      "end_col": 78
+      "end_col": 10
     },
     {
       "kind": "command",
@@ -1716,7 +1837,14 @@
       "start_line": 61,
       "start_col": 10,
       "end_line": 61,
-      "end_col": 33
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 61,
+      "start_col": 11,
+      "end_line": 61,
+      "end_col": 17
     },
     {
       "kind": "command",
@@ -1726,521 +1854,769 @@
       "end_col": 7
     },
     {
+      "kind": "string-dq",
+      "start_line": 62,
+      "start_col": 11,
+      "end_line": 62,
+      "end_col": 75
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 12,
+      "end_line": 62,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 19,
+      "end_line": 62,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 34,
+      "end_line": 62,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 40,
+      "end_line": 62,
+      "end_col": 46
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 53,
+      "end_line": 62,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 62,
+      "start_col": 69,
+      "end_line": 62,
+      "end_col": 74
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 63,
+      "start_col": 11,
+      "end_line": 63,
+      "end_col": 101
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 12,
+      "end_line": 63,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 19,
+      "end_line": 63,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 31,
+      "end_line": 63,
+      "end_col": 36
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 44,
+      "end_line": 63,
+      "end_col": 55
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 58,
+      "end_line": 63,
+      "end_col": 63
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 73,
+      "end_line": 63,
+      "end_col": 78
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 89,
+      "end_line": 63,
+      "end_col": 100
+    },
+    {
       "kind": "operator",
       "op": "}",
-      "start_line": 63,
+      "start_line": 64,
       "start_col": 1,
-      "end_line": 63,
+      "end_line": 64,
       "end_col": 2
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 65,
+      "start_line": 66,
       "start_col": 1,
-      "end_line": 65,
+      "end_line": 66,
       "end_col": 9
     },
     {
       "kind": "function-name",
-      "start_line": 65,
+      "start_line": 66,
       "start_col": 10,
-      "end_line": 65,
+      "end_line": 66,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 66,
+      "start_col": 26,
+      "end_line": 66,
+      "end_col": 27
+    },
+    {
+      "kind": "command",
+      "start_line": 67,
+      "start_col": 3,
+      "end_line": 67,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 67,
+      "start_col": 12,
+      "end_line": 67,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 67,
+      "start_col": 22,
+      "end_line": 67,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 68,
+      "start_col": 3,
+      "end_line": 68,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 68,
+      "start_col": 8,
+      "end_line": 68,
+      "end_col": 11
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 69,
+      "start_col": 3,
+      "end_line": 69,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 69,
+      "start_col": 8,
+      "end_line": 69,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 38,
+      "end_line": 69,
+      "end_col": 54
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 69,
+      "start_col": 39,
+      "end_line": 69,
+      "end_col": 53
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 69,
+      "start_col": 55,
+      "end_line": 69,
+      "end_col": 79
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 69,
+      "start_col": 56,
+      "end_line": 69,
+      "end_col": 78
+    },
+    {
+      "kind": "command",
+      "start_line": 70,
+      "start_col": 3,
+      "end_line": 70,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 70,
+      "start_col": 10,
+      "end_line": 70,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 71,
+      "start_col": 3,
+      "end_line": 71,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 72,
+      "start_col": 1,
+      "end_line": 72,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 74,
+      "start_col": 1,
+      "end_line": 74,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 74,
+      "start_col": 10,
+      "end_line": 74,
       "end_col": 26
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 65,
+      "start_line": 74,
       "start_col": 29,
-      "end_line": 65,
+      "end_line": 74,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 66,
+      "start_line": 75,
       "start_col": 3,
-      "end_line": 66,
+      "end_line": 75,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 66,
+      "start_line": 75,
       "start_col": 12,
-      "end_line": 66,
+      "end_line": 75,
       "end_col": 33
     },
     {
       "kind": "param-exp",
-      "start_line": 66,
+      "start_line": 75,
       "start_col": 26,
-      "end_line": 66,
+      "end_line": 75,
       "end_col": 32
     },
     {
-      "kind": "param-exp",
-      "start_line": 67,
+      "kind": "command",
+      "start_line": 76,
       "start_col": 3,
-      "end_line": 67,
+      "end_line": 76,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 77,
+      "start_col": 3,
+      "end_line": 77,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 67,
+      "start_line": 77,
       "start_col": 8,
-      "end_line": 67,
+      "end_line": 77,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 67,
+      "start_line": 77,
       "start_col": 30,
-      "end_line": 67,
+      "end_line": 77,
       "end_col": 46
     },
     {
       "kind": "param-exp",
-      "start_line": 67,
+      "start_line": 77,
       "start_col": 31,
-      "end_line": 67,
+      "end_line": 77,
       "end_col": 45
     },
     {
       "kind": "string-dq",
-      "start_line": 67,
+      "start_line": 77,
       "start_col": 47,
-      "end_line": 67,
+      "end_line": 77,
       "end_col": 71
     },
     {
       "kind": "param-exp",
-      "start_line": 67,
+      "start_line": 77,
       "start_col": 48,
-      "end_line": 67,
+      "end_line": 77,
       "end_col": 70
     },
     {
       "kind": "command",
-      "start_line": 68,
+      "start_line": 78,
       "start_col": 3,
-      "end_line": 68,
+      "end_line": 78,
       "end_col": 5
     },
     {
       "kind": "string-dq",
-      "start_line": 68,
+      "start_line": 78,
       "start_col": 9,
-      "end_line": 68,
+      "end_line": 78,
       "end_col": 31
     },
     {
       "kind": "param-exp",
-      "start_line": 68,
+      "start_line": 78,
       "start_col": 10,
-      "end_line": 68,
+      "end_line": 78,
       "end_col": 30
     },
     {
       "kind": "command",
-      "start_line": 69,
+      "start_line": 79,
       "start_col": 3,
-      "end_line": 69,
+      "end_line": 79,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 69,
+      "start_line": 79,
       "start_col": 10,
-      "end_line": 69,
+      "end_line": 79,
       "end_col": 39
     },
     {
       "kind": "param-exp",
-      "start_line": 69,
+      "start_line": 79,
       "start_col": 11,
-      "end_line": 69,
+      "end_line": 79,
       "end_col": 17
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 70,
+      "start_line": 80,
       "start_col": 1,
-      "end_line": 70,
+      "end_line": 80,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 72,
+      "start_line": 82,
       "start_col": 1,
-      "end_line": 72,
+      "end_line": 82,
       "end_col": 73
     },
     {
       "kind": "comment",
-      "start_line": 73,
+      "start_line": 83,
       "start_col": 1,
-      "end_line": 73,
+      "end_line": 83,
       "end_col": 75
     },
     {
       "kind": "comment",
-      "start_line": 74,
+      "start_line": 84,
       "start_col": 1,
-      "end_line": 74,
+      "end_line": 84,
       "end_col": 38
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 1,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 3
     },
     {
       "kind": "operator",
       "op": "!",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 4,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 6,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 13
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 22,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 23
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 35,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 37
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 38,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 39
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 75,
+      "start_line": 85,
       "start_col": 40,
-      "end_line": 75,
+      "end_line": 85,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 3,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 6,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 9,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 11
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 32,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 34
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 34,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 35
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 76,
+      "start_line": 86,
       "start_col": 36,
-      "end_line": 76,
+      "end_line": 86,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 77,
+      "start_line": 87,
       "start_col": 5,
-      "end_line": 77,
+      "end_line": 87,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 77,
+      "start_line": 87,
       "start_col": 16,
-      "end_line": 77,
+      "end_line": 87,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 77,
+      "start_line": 87,
       "start_col": 29,
-      "end_line": 77,
+      "end_line": 87,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 77,
+      "start_line": 87,
       "start_col": 32,
-      "end_line": 77,
+      "end_line": 87,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 77,
+      "start_line": 87,
       "start_col": 56,
-      "end_line": 77,
+      "end_line": 87,
       "end_col": 58
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 78,
+      "start_line": 88,
       "start_col": 3,
-      "end_line": 78,
+      "end_line": 88,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 79,
+      "start_line": 89,
       "start_col": 5,
-      "end_line": 79,
+      "end_line": 89,
       "end_col": 12
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 79,
+      "start_line": 89,
       "start_col": 20,
-      "end_line": 79,
+      "end_line": 89,
       "end_col": 22
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 79,
+      "start_line": 89,
       "start_col": 33,
-      "end_line": 79,
+      "end_line": 89,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 79,
+      "start_line": 89,
       "start_col": 36,
-      "end_line": 79,
+      "end_line": 89,
       "end_col": 43
     },
     {
       "kind": "operator",
       "op": "\u0026\u003e",
-      "start_line": 79,
+      "start_line": 89,
       "start_col": 60,
-      "end_line": 79,
+      "end_line": 89,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 80,
+      "start_line": 90,
       "start_col": 3,
-      "end_line": 80,
+      "end_line": 90,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 81,
+      "start_line": 91,
       "start_col": 1,
-      "end_line": 81,
+      "end_line": 91,
       "end_col": 3
     },
     {
       "kind": "command",
-      "start_line": 82,
+      "start_line": 92,
       "start_col": 1,
-      "end_line": 82,
+      "end_line": 92,
       "end_col": 8
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 82,
+      "start_line": 92,
       "start_col": 17,
-      "end_line": 82,
+      "end_line": 92,
       "end_col": 18
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 82,
+      "start_line": 92,
       "start_col": 30,
-      "end_line": 82,
+      "end_line": 92,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 82,
+      "start_line": 92,
       "start_col": 34,
-      "end_line": 82,
+      "end_line": 92,
       "end_col": 36
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 82,
+      "start_line": 92,
       "start_col": 37,
-      "end_line": 82,
+      "end_line": 92,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 83,
+      "start_line": 93,
       "start_col": 3,
-      "end_line": 83,
+      "end_line": 93,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 83,
+      "start_line": 93,
       "start_col": 8,
-      "end_line": 83,
+      "end_line": 93,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": "\u003e\u0026",
-      "start_line": 83,
+      "start_line": 93,
       "start_col": 61,
-      "end_line": 83,
+      "end_line": 93,
       "end_col": 63
     },
     {
       "kind": "command",
-      "start_line": 84,
+      "start_line": 94,
       "start_col": 3,
-      "end_line": 84,
+      "end_line": 94,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 85,
+      "start_line": 95,
       "start_col": 1,
-      "end_line": 85,
+      "end_line": 95,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 87,
+      "start_line": 97,
       "start_col": 1,
-      "end_line": 87,
+      "end_line": 97,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 88,
+      "start_line": 98,
       "start_col": 1,
-      "end_line": 88,
+      "end_line": 98,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 89,
+      "start_line": 99,
       "start_col": 1,
-      "end_line": 89,
+      "end_line": 99,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 1,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 8,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 59
     },
     {
       "kind": "command",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 10,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 21,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 58
     },
     {
       "kind": "param-exp",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 22,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 84,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 88
     },
     {
       "kind": "param-exp",
-      "start_line": 90,
+      "start_line": 100,
       "start_col": 85,
-      "end_line": 90,
+      "end_line": 100,
       "end_col": 87
     }
   ],
-  "bootstrap_line": 90,
+  "bootstrap_line": 100,
   "hooks": {
     "header_info": false,
     "install_script": true,

@@ -4,6 +4,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=cronmaster
+runtime_hooks_observed_commands=(systemctl curl_download)
+runtime_hooks_observe_recovery=1
 script_type=addon
 variants=(fresh update checker download stop uninstall stopped-download stopped-update copy copy-unrestored backup)
 hook_paths=()
@@ -17,10 +19,10 @@ runtime_hooks_variant() {
 runtime_hooks_model() {
   systemctl() {
     [[ "$1/$APP_FAULT" != stop/stop ]] || return 47
-    if [[ "$1" == show ]]; then
-      printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'
-    elif [[ -f "$c/recovery-service" ]]; then
+    if [[ -f "$c/recovery-service" ]]; then
       runtime_hooks_recovery_service "$@"
+    elif [[ "$1" == show ]]; then
+      printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'
     else printf '%s\n' "$*" >> "$c/services"; fi
   }
   cp() {
@@ -94,6 +96,8 @@ runtime_hooks_assert() {
     check "$(stat -Lc %a "$c/config/operator.env")" 600 "$app/$variant configured mode retained"
     check "$(stat -Lc '%d:%i' "$c/config/operator.env")" "$(cat "$c/config-inode")" "$app/$variant config inode stays live"
     if [[ "$rc" == 0 ]]; then
+      runtime_hooks_backup_assert "$c/backup" /opt/cronmaster/settings/operator.env 'operator cron configuration'
+      check "$(test -e "$c/backup/.manifest" && printf stale || printf scoped)" scoped "$app success never leaves reusable unscoped backup manifest"
       check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app selected source reaches consumer"
       check "$(grep -c 'fixture/cronmaster/releases/tags/v2.0.0$' "$c/requests" || true)" 1 "$app selected release and baked repository reach deployment"
       if [[ "$variant" == stopped-update ]]; then
@@ -107,6 +111,8 @@ runtime_hooks_assert() {
   fi
 }
 runtime_hooks_retry_assert() {
+  runtime_hooks_backup_assert "$c/backup" /opt/cronmaster/settings/operator.env 'operator cron configuration'
+  check "$(test -e "$c/backup/.manifest" && printf stale || printf scoped)" scoped "$app successful retry retires operation backup"
   check "$(cat "$c/opt/cronmaster/server.js")" 'new cron consumer' "$app pending retry reaches consumer"
   check "$(cat "$c/config/operator.env")" 'operator cron configuration' "$app pending retry retains configuration"
   if [[ "$variant" == stopped-download ]]; then

@@ -30,6 +30,1212 @@ ADDON_MARKER_DIR="/var/lib/scripts-underground/addons"
 _addon_command_path() { printf '/usr/local/sbin/%s_%s\n' "$1" "$APP_SLUG"; }
 _addon_alias_path() { printf '/usr/bin/%s-%s\n' "$1" "$APP_SLUG"; }
 
+# Admit the actual native representation flags before app preparation. An
+# editable source model and a resolved validation model serve different owners.
+addon_compose_require() {
+  local _acr_help _acr_flag
+  _acr_help=$(docker compose config --help) || return $?
+  for _acr_flag in "$@"; do
+    if ! grep -Eq -- "(^|[[:space:]])${_acr_flag}([[:space:]]|$)" <<< "$_acr_help"; then
+      msg_error "${APP} requires Docker Compose config ${_acr_flag} support (v2.35.0 or newer); update the plugin before installation."
+      return 69
+    fi
+  done
+}
+
+# Preserve YAML nodes while removing only the short-bind ambiguity exposed by
+# Compose's unresolved parser. No dotenv parsing or interpolation happens here.
+_addon_compose_preprocess() {
+  python3 - "$1" "$2" << 'PY'
+import sys,yaml
+from pathlib import Path
+from yaml.nodes import ScalarNode,MappingNode,SequenceNode
+
+STR='tag:yaml.org,2002:str'
+MAP='tag:yaml.org,2002:map'
+BOOL='tag:yaml.org,2002:bool'
+def scalar(value):return ScalarNode(STR,value)
+def field(node,key):
+    if isinstance(node,MappingNode):
+        for name,value in node.value:
+            if isinstance(name,ScalarNode) and name.value==key:return value
+    return None
+def split_bind(value):
+    parts,affected,stack=[],[],[]
+    start=i=0
+    colon_operator=False
+    while i<len(value):
+        if value.startswith('$$',i):
+            # An escaped interpolation is literal data. Still balance its
+            # braces so its colons cannot become short-form separators.
+            if value.startswith('$${',i):stack.append(False);i+=3
+            else:i+=2
+            continue
+        if value.startswith('${',i):stack.append(True);i+=2;continue
+        char=value[i]
+        if char=='{' and stack:stack.append(stack[-1])
+        elif char=='}' and stack:stack.pop()
+        elif char==':' and stack:
+            if i+1<len(value) and value[i+1] in '-?+' and any(stack):colon_operator=True
+        elif char==':' and not stack:
+            parts.append(value[start:i]);affected.append(colon_operator)
+            start=i+1;colon_operator=False
+        i+=1
+    parts.append(value[start:]);affected.append(colon_operator)
+    return parts,affected
+def mapping(values):return MappingNode(MAP,[(scalar(key),value) for key,value in values])
+def long_bind(node):
+    if not isinstance(node,ScalarNode) or node.tag!=STR:return node
+    parts,affected=split_bind(node.value)
+    if len(parts) not in (2,3) or not any(affected[:2]):return node
+    source,target=parts[:2]
+    readonly=False
+    bind=[('create_host_path',ScalarNode(BOOL,'true'))]
+    extra=[]
+    # Keep the native short-form mode semantics (compose-go v2.6 format/volume.go),
+    # including its last ro/rw winner and supported bind options.
+    for option in parts[2].split(',') if len(parts)==3 else []:
+        if option in ('ro','rw'):readonly=option=='ro'
+        elif option in ('private','rprivate','shared','rshared','slave','rslave'):
+            bind=[(key,value) for key,value in bind if key!='propagation']+[('propagation',scalar(option))]
+        elif option in ('z','Z'):
+            bind=[(key,value) for key,value in bind if key!='selinux']+[('selinux',scalar(option))]
+        elif option=='nocopy':extra=[('volume',mapping([('nocopy',ScalarNode(BOOL,'true'))]))]
+    return mapping([('type',scalar('bind')),('source',scalar(source)),('target',scalar(target)),
+                    ('read_only',ScalarNode(BOOL,str(readonly).lower())),('bind',mapping(bind))]+extra)
+try:
+    original=Path(sys.argv[1]).read_text()
+    root=yaml.compose(original,Loader=yaml.SafeLoader)
+    services=field(root,'services')
+    changed=False
+    if isinstance(services,MappingNode):
+        seen=set()
+        for _,service in services.value:
+            volumes=field(service,'volumes')
+            if isinstance(volumes,SequenceNode) and id(volumes) not in seen:
+                seen.add(id(volumes))
+                for index,node in enumerate(volumes.value):
+                    replacement=long_bind(node)
+                    if replacement is not node:volumes.value[index]=replacement;changed=True
+    # A conservative package pre-check may match only an unrelated expression.
+    # In that case not even YAML formatting changes are necessary.
+    output=yaml.serialize(root,Dumper=yaml.SafeDumper) if changed else original
+    Path(sys.argv[2]).write_text(output)
+except yaml.YAMLError as error:
+    mark=getattr(error,'problem_mark',None)
+    where='' if mark is None else f' at line {mark.line+1}, column {mark.column+1}'
+    print('Cannot prepare Compose YAML'+where,file=sys.stderr)
+    sys.exit(65)
+except (OSError,ValueError) as error:
+    print('Cannot prepare Compose YAML: '+type(error).__name__,file=sys.stderr)
+    sys.exit(65)
+PY
+}
+
+# Compose's unresolved native model may retain environment as its list form.
+# Project that documented KEY[=VALUE] representation into a map without parsing
+# dotenv or resolving expressions. A bare key stays null (native inheritance),
+# and only the first equals separates the key from its unchanged value.
+addon_compose_source() {
+  local _acs_model _acs_input _acs_stage _acs_index _acs_status=0 _acs_probe _acs_package
+  local -a _acs_args=("$@") _acs_stages=()
+  for ((_acs_index = 0; _acs_index < ${#_acs_args[@]}; _acs_index++)); do
+    case "${_acs_args[_acs_index]}" in
+      -f | --file)
+        _acs_index=$((_acs_index + 1))
+        _acs_input=${_acs_args[_acs_index]}
+        ;;
+      *) continue ;;
+    esac
+    # Fetched files normally need no extra runtime. A false-positive match may
+    # admit PyYAML, but never rewrites unrelated YAML nodes or installs on update.
+    if grep -qF '${' "$_acs_input" && grep -Eq ':[?+-]' "$_acs_input"; then :; else
+      _acs_probe=$?
+      if [[ "$_acs_probe" != 1 ]]; then
+        _acs_status=$_acs_probe
+        break
+      fi
+      continue
+    fi
+    if ! python3 -c 'from yaml import compose, serialize; from yaml.nodes import ScalarNode, MappingNode, SequenceNode' &> /dev/null; then
+      _acs_package=python3-yaml
+      [[ "$OS_FAMILY" != alpine ]] || _acs_package=py3-yaml
+      ensure_dependencies "$_acs_package" >&2 || {
+        _acs_status=$?
+        break
+      }
+      python3 -c 'from yaml import compose, serialize; from yaml.nodes import ScalarNode, MappingNode, SequenceNode' &> /dev/null || {
+        _acs_status=$?
+        break
+      }
+    fi
+    _acs_stage=$(mktemp "$(dirname -- "$_acs_input")/.addon-compose.XXXXXXXX") || {
+      _acs_status=$?
+      break
+    }
+    _acs_stages+=("$_acs_stage")
+    _addon_compose_preprocess "$_acs_input" "$_acs_stage" || {
+      _acs_status=$?
+      break
+    }
+    _acs_args[_acs_index]=$_acs_stage
+  done
+  if [[ "$_acs_status" == 0 ]]; then
+    _acs_model=$(docker compose "${_acs_args[@]}" config --no-interpolate --no-env-resolution --no-path-resolution --format json) || _acs_status=$?
+  fi
+  for _acs_stage in "${_acs_stages[@]}"; do
+    if rm -f -- "$_acs_stage"; then :; else
+      _acs_probe=$?
+      msg_warn "Compose preparation retained at $_acs_stage" >&2
+      [[ "$_acs_status" != 0 ]] || _acs_status=$_acs_probe
+    fi
+  done
+  [[ "$_acs_status" == 0 ]] || return "$_acs_status"
+  jq '(.services[] | select(has("environment")) | .environment) |=
+    if type == "array" then
+      reduce .[] as $entry ({};
+        ($entry | index("=")) as $equals |
+        if $equals == null then .[$entry] = null
+        else .[$entry[0:$equals]] = $entry[($equals + 1):] end)
+    else . end' <<< "$_acs_model"
+}
+
+# Initial secret content is private before the first byte, including when a
+# downloaded source already supplied a public default file. Never truncate the
+# live consumer or follow an operator's selected link while preparing content.
+addon_write_private_file() (
+  local _awp_path=${1:?destination required} _awp_parent _awp_stage _awp_status=0
+  [[ ! -L "$_awp_path" && (! -e "$_awp_path" || -f "$_awp_path") ]] || return 65
+  _awp_parent=$(dirname -- "$_awp_path") || return $?
+  umask 077
+  mkdir -p -- "$_awp_parent" || return $?
+  _awp_stage=$(mktemp -- "$_awp_parent/.addon-private.XXXXXXXX") || return $?
+  cat > "$_awp_stage" || _awp_status=$?
+  if [[ "$_awp_status" == 0 ]]; then
+    mv -T -- "$_awp_stage" "$_awp_path" || _awp_status=$?
+  fi
+  if [[ "$_awp_status" != 0 ]]; then
+    rm -f -- "$_awp_stage" || msg_warn "Private preparation retained at $_awp_stage"
+  fi
+  return "$_awp_status"
+)
+
+# The pending-update flag certifies unfinished work, not prior operator intent.
+# Keep an owed activation as checked data under the same maintenance owner.
+_addon_service_identity() {
+  [[ -n "$1" && "$1" != -* && "$1" != */* && "$1" != *[[:space:]]* ]] || return 65
+}
+
+_addon_private_state_path() {
+  local _aap_out=$1 _aap_root=$2
+  local _aap_remaining _aap_part _aap_dir='' _aap_metadata _aap_mode
+  app_maintenance_acquire "${APP_SLUG:-}" || return $?
+  _aap_remaining=${_aap_root#/}
+  while [[ -n "$_aap_remaining" ]]; do
+    _aap_part=${_aap_remaining%%/*}
+    _aap_dir+="/$_aap_part"
+    if [[ ! -e "$_aap_dir" && ! -L "$_aap_dir" ]]; then
+      _aap_mode=0755
+      [[ "$_aap_dir" != "$_aap_root" ]] || _aap_mode=0700
+      command mkdir -m "$_aap_mode" -- "$_aap_dir" || return $?
+    fi
+    [[ -d "$_aap_dir" && ! -L "$_aap_dir" ]] || return 69
+    _aap_metadata=$(command stat -c '%u:%a' -- "$_aap_dir") || return $?
+    _aap_mode=${_aap_metadata#*:}
+    [[ "${_aap_metadata%%:*}" == 0 && "$_aap_mode" =~ ^[0-7]+$ ]] &&
+      (((8#$_aap_mode & 0022) == 0)) &&
+      [[ "$_aap_dir" != "$_aap_root" || "$_aap_mode" == 700 ]] || return 69
+    if [[ "$_aap_remaining" == */* ]]; then _aap_remaining=${_aap_remaining#*/}; else _aap_remaining=''; fi
+  done
+  printf -v "$_aap_out" '%s' "$_aap_root/$APP_SLUG"
+}
+
+_addon_executable_path() {
+  _addon_private_state_path "$1" /var/lib/scripts-underground/addon-executables
+}
+
+_addon_executable_identity() (
+  set -o pipefail
+  [[ -f "$1" && ! -L "$1" ]] || return 65
+  local _aei_metadata _aei_hash
+  _aei_metadata=$(stat -c '%d:%i:%u:%g:%a' -- "$1") || return $?
+  _aei_hash=$(sha256sum < "$1") || return $?
+  printf '%s:%s\n' "$_aei_metadata" "${_aei_hash%% *}"
+)
+
+_addon_executable_read() {
+  local _aer_record=$1 _aer_dest=$2 _aer_out=$3 _aer_meta _aer_tail _aer_identity
+  local -a _aer_rows=()
+  [[ -f "$_aer_record" && ! -L "$_aer_record" ]] || return 69
+  _aer_meta=$(stat -c '%u:%a:%h' -- "$_aer_record") || return $?
+  [[ "$_aer_meta" == 0:600:1 ]] || return 69
+  _aer_tail=$(
+    set -o pipefail
+    tail -c1 -- "$_aer_record" | base64 -w0
+  ) || return $?
+  [[ "$_aer_tail" == AA== ]] || return 65
+  mapfile -d '' -t _aer_rows < "$_aer_record" || return $?
+  [[ ${#_aer_rows[@]} == 4 && "${_aer_rows[0]}" == v1 ]] || return 65
+  [[ -z "$_aer_dest" || "${_aer_rows[1]}" == "$_aer_dest" ]] || return 65
+  local _aer_normalized
+  _addon_input_normalize _aer_normalized "${_aer_rows[1]}" || return $?
+  [[ "$_aer_normalized" == "${_aer_rows[1]}" && "$_aer_normalized" != / ]] || return 65
+  for _aer_identity in "${_aer_rows[@]:2}"; do
+    [[ "$_aer_identity" == - || "$_aer_identity" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+:[a-f0-9]{64}$ ]] || return 65
+  done
+  local -n _aer_result="$_aer_out"
+  _aer_result=("${_aer_rows[@]}")
+}
+
+# A package alias is already the selected executable. Separate copies are staged
+# completely before rename. The private data record precedes publication so an
+# interrupted publisher cannot leave an owned copy without independent custody.
+addon_publish_executable() {
+  [[ $# == 2 ]] || return 65
+  local _ape_source=$1 _ape_dest _ape_record _ape_stage _ape_identity _ape_current _ape_previous=- _ape_status=0
+  local -a _ape_rows=()
+  [[ -f "$_ape_source" ]] || return 65
+  [[ ! "$_ape_source" -ef "$2" ]] || return 0
+  _addon_input_normalize _ape_dest "$2" || return $?
+  [[ ! -L "$_ape_dest" && (! -e "$_ape_dest" || -f "$_ape_dest") ]] || return 65
+  _addon_executable_path _ape_record || return $?
+  if [[ -e "$_ape_record" || -L "$_ape_record" ]]; then
+    _addon_executable_read "$_ape_record" "$_ape_dest" _ape_rows || return $?
+    if _ape_current=$(_addon_executable_identity "$_ape_dest"); then
+      if [[ "$_ape_current" == "${_ape_rows[2]}" || "$_ape_current" == "${_ape_rows[3]}" ]]; then _ape_previous=$_ape_current; fi
+    fi
+  fi
+  mkdir -p -- "${_ape_dest%/*}" || return $?
+  _ape_stage=$(mktemp -- "${_ape_dest%/*}/.addon-executable.XXXXXXXX") || return $?
+  install -m 0755 -- "$_ape_source" "$_ape_stage" || _ape_status=$?
+  if [[ "$_ape_status" == 0 ]]; then chmod 0755 -- "$_ape_stage" || _ape_status=$?; fi
+  if [[ "$_ape_status" == 0 ]]; then _ape_identity=$(_addon_executable_identity "$_ape_stage") || _ape_status=$?; fi
+  if [[ "$_ape_status" == 0 ]]; then
+    # Keep only the current positively owned preimage and this candidate, not a
+    # journal. Failed preparation never transfers ownership of a legacy file.
+    addon_write_private_file "$_ape_record" < <(printf '%s\0' v1 "$_ape_dest" "$_ape_identity" "$_ape_previous") || _ape_status=$?
+  fi
+  if [[ "$_ape_status" == 0 ]]; then mv -T -- "$_ape_stage" "$_ape_dest" || _ape_status=$?; fi
+  if [[ -e "$_ape_stage" ]]; then rm -f -- "$_ape_stage" || msg_warn "Executable preparation retained at $_ape_stage"; fi
+  return "$_ape_status"
+}
+
+addon_remove_executable() {
+  [[ $# == 1 ]] || return 65
+  local _are_dest _are_record _are_current
+  local -a _are_rows=()
+  _addon_input_normalize _are_dest "$1" || return $?
+  _addon_executable_path _are_record || return $?
+  [[ -e "$_are_record" || -L "$_are_record" ]] || {
+    msg_warn "Unowned executable retained at $_are_dest"
+    return 0
+  }
+  _addon_executable_read "$_are_record" "$_are_dest" _are_rows || return $?
+  if [[ -e "$_are_dest" || -L "$_are_dest" ]]; then
+    _are_current=$(_addon_executable_identity "$_are_dest") || _are_current=unverified
+    if [[ "$_are_current" == "${_are_rows[2]}" || "$_are_current" == "${_are_rows[3]}" ]]; then
+      rm -f -- "$_are_dest" || return $?
+    else
+      msg_warn "Changed executable retained at $_are_dest; remove it manually if no longer needed"
+    fi
+  fi
+  rm -f -- "$_are_record"
+}
+
+# Publish a complete private regular file without replacing an occupied name.
+# Custody precedes exposure; a later cold remover needs neither source stage nor
+# a generated-command refresh to distinguish this inode from operator data.
+addon_publish_owned_file() {
+  [[ $# == 2 ]] || return 65
+  local _apf_source=$1 _apf_dest _apf_record _apf_identity _apf_meta
+  local -a _apf_rows=()
+  [[ -f "$_apf_source" && ! -L "$_apf_source" ]] || return 65
+  _apf_meta=$(stat -c '%u:%a:%h' -- "$_apf_source") || return $?
+  [[ "$_apf_meta" == 0:600:1 ]] || return 65
+  _addon_input_normalize _apf_dest "$2" || return $?
+  _addon_private_state_path _apf_record /var/lib/scripts-underground/addon-owned-files || return $?
+  if [[ -e "$_apf_record" || -L "$_apf_record" ]]; then
+    _addon_executable_read "$_apf_record" "$_apf_dest" _apf_rows || return $?
+    return 65
+  fi
+  [[ ! -e "$_apf_dest" && ! -L "$_apf_dest" ]] || return 65
+  _apf_identity=$(_addon_executable_identity "$_apf_source") || return $?
+  addon_write_private_file "$_apf_record" < <(printf '%s\0' v1 "$_apf_dest" "$_apf_identity" -) || return $?
+  ln -T -- "$_apf_source" "$_apf_dest"
+}
+
+addon_owned_file_identity() {
+  [[ $# == 2 ]] || return 65
+  local _aoi_out=$1 _aoi_dest _aoi_record _aoi_current _aoi_links
+  local -a _aoi_rows=()
+  printf -v "$_aoi_out" '%s' ''
+  _addon_input_normalize _aoi_dest "$2" || return $?
+  _addon_private_state_path _aoi_record /var/lib/scripts-underground/addon-owned-files || return $?
+  [[ -e "$_aoi_record" || -L "$_aoi_record" ]] || return 0
+  _addon_executable_read "$_aoi_record" "$_aoi_dest" _aoi_rows || return $?
+  _aoi_current=$(_addon_executable_identity "$_aoi_dest") || return 0
+  _aoi_links=$(stat -c %h -- "$_aoi_dest") || return $?
+  if [[ "$_aoi_links" == 1 && ("$_aoi_current" == "${_aoi_rows[2]}" || "$_aoi_current" == "${_aoi_rows[3]}") ]]; then
+    printf -v "$_aoi_out" '%s' "$_aoi_current"
+  fi
+}
+
+# A caller-created private stage has no second publication pathname. Capture its
+# exact identity before an external consumer runs so cold cleanup owns only this
+# inode and can recover without replaying that consumer or sweeping TMPDIR.
+addon_record_owned_file() {
+  [[ $# == 1 ]] || return 65
+  local _arcf_dest _arcf_record _arcf_meta _arcf_identity
+  _addon_input_normalize _arcf_dest "$1" || return $?
+  [[ -f "$_arcf_dest" && ! -L "$_arcf_dest" ]] || return 65
+  _arcf_meta=$(stat -c '%u:%a:%h' -- "$_arcf_dest") || return $?
+  [[ "$_arcf_meta" == 0:600:1 ]] || return 65
+  _addon_private_state_path _arcf_record /var/lib/scripts-underground/addon-owned-files || return $?
+  [[ ! -e "$_arcf_record" && ! -L "$_arcf_record" ]] || return 65
+  _arcf_identity=$(_addon_executable_identity "$_arcf_dest") || return $?
+  addon_write_private_file "$_arcf_record" < <(printf '%s\0' v1 "$_arcf_dest" "$_arcf_identity" -)
+}
+
+# Advance positive custody only over an exact owned preimage. As with executable
+# publication, retain that preimage alongside the candidate until rename succeeds.
+addon_replace_owned_file() {
+  [[ $# == 3 && -n "$3" ]] || return 65
+  local _arof_source=$1 _arof_dest _arof_before=$3 _arof_current _arof_record _arof_meta _arof_identity
+  [[ -f "$_arof_source" && ! -L "$_arof_source" ]] || return 65
+  _arof_meta=$(stat -c '%u:%a:%h' -- "$_arof_source") || return $?
+  [[ "$_arof_meta" == 0:600:1 ]] || return 65
+  _addon_input_normalize _arof_dest "$2" || return $?
+  addon_owned_file_identity _arof_current "$_arof_dest" || return $?
+  [[ "$_arof_current" == "$_arof_before" ]] || return 65
+  _arof_identity=$(_addon_executable_identity "$_arof_source") || return $?
+  _addon_private_state_path _arof_record /var/lib/scripts-underground/addon-owned-files || return $?
+  addon_write_private_file "$_arof_record" < <(printf '%s\0' v1 "$_arof_dest" "$_arof_identity" "$_arof_before") || return $?
+  mv -T -- "$_arof_source" "$_arof_dest"
+}
+
+addon_remove_owned_file() {
+  [[ $# == 0 || $# == 1 ]] || return 65
+  local _arf_dest='' _arf_record _arf_current _arf_links
+  local -a _arf_rows=()
+  if [[ $# == 1 ]]; then _addon_input_normalize _arf_dest "$1" || return $?; fi
+  _addon_private_state_path _arf_record /var/lib/scripts-underground/addon-owned-files || return $?
+  [[ -e "$_arf_record" || -L "$_arf_record" ]] || {
+    [[ -z "$_arf_dest" ]] || msg_warn "Unowned file retained at $_arf_dest"
+    return 0
+  }
+  _addon_executable_read "$_arf_record" "$_arf_dest" _arf_rows || return $?
+  _arf_dest=${_arf_rows[1]}
+  if [[ -e "$_arf_dest" || -L "$_arf_dest" ]]; then
+    _arf_current=$(_addon_executable_identity "$_arf_dest") || _arf_current=unverified
+    _arf_links=$(stat -c %h -- "$_arf_dest") || return $?
+    if [[ "$_arf_links" == 1 && ("$_arf_current" == "${_arf_rows[2]}" || "$_arf_current" == "${_arf_rows[3]}") ]]; then
+      rm -f -- "$_arf_dest" || return $?
+    else
+      msg_warn "Changed or linked file retained at $_arf_dest; remove it manually if no longer needed"
+    fi
+  fi
+  rm -f -- "$_arf_record"
+}
+
+# A fresh admitted attempt owns its root identity, not arbitrary root contents.
+# Only complete files published by this owner receive removal authority. Native
+# resource teardown remains the adapter's responsibility after exposure begins.
+_addon_install_path() {
+  _addon_private_state_path "$1" /var/lib/scripts-underground/addon-install-attempts
+}
+
+_addon_install_read() {
+  local _air_out=$1 _air_record=$2 _air_meta _air_tail _air_i _air_path
+  local -a _air_rows=()
+  [[ -f "$_air_record" && ! -L "$_air_record" ]] || return 69
+  _air_meta=$(stat -c '%u:%a:%h' -- "$_air_record") || return $?
+  [[ "$_air_meta" == 0:600:1 ]] || return 69
+  _air_tail=$(
+    set -o pipefail
+    tail -c1 -- "$_air_record" | base64 -w0
+  ) || return $?
+  [[ "$_air_tail" == AA== ]] || return 65
+  mapfile -d '' -t _air_rows < "$_air_record" || return $?
+  [[ ${#_air_rows[@]} -ge 7 && $((${#_air_rows[@]} % 2)) == 1 && "${_air_rows[0]}" == v1 && -n "${_air_rows[3]}" ]] || return 65
+  [[ "${_air_rows[2]}" =~ ^[0-9]+:[0-9]+$ && "${_air_rows[5]}" =~ ^[01]$ ]] || return 65
+  case "${_air_rows[4]}" in prepared | exposed | ready | safe | cleaned) ;; *) return 65 ;; esac
+  [[ "${_air_rows[4]}" == prepared || "${_air_rows[4]}" == cleaned || -n "${_air_rows[6]}" ]] || return 65
+  _addon_input_normalize _air_path "${_air_rows[1]}" || return $?
+  [[ "$_air_path" == "${_air_rows[1]}" && "$_air_path" != / ]] || return 65
+  local -A _air_seen=()
+  for ((_air_i = 7; _air_i < ${#_air_rows[@]}; _air_i += 2)); do
+    _addon_input_normalize _air_path "${_air_rows[_air_i]}" || return $?
+    [[ "$_air_path" == "${_air_rows[_air_i]}" && "$_air_path" != / && ! -v '_air_seen[$_air_path]' ]] || return 65
+    _air_seen["$_air_path"]=1
+    if [[ "${_air_rows[_air_i + 1]}" == d:* ]]; then
+      [[ "${_air_rows[_air_i + 1]}" =~ ^d:[0-9]+:[0-9]+$ && "${_air_path%/*}" == "${_air_rows[1]}" ]] || return 65
+    else
+      [[ "${_air_rows[_air_i + 1]}" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+:[a-f0-9]{64}$ ]] || return 65
+    fi
+  done
+  local -n _air_result=$_air_out
+  _air_result=("${_air_rows[@]}")
+}
+
+_addon_install_check_root() {
+  local -n _aic_rows=$1
+  if [[ ! -e "${_aic_rows[1]}" && ! -L "${_aic_rows[1]}" ]]; then
+    [[ "${_aic_rows[4]}" == cleaned ]] || return 65
+  else
+    [[ -d "${_aic_rows[1]}" && ! -L "${_aic_rows[1]}" ]] || return 65
+    [[ "$(stat -c '%d:%i' -- "${_aic_rows[1]}")" == "${_aic_rows[2]}" ]] || return 65
+  fi
+}
+
+addon_install_status() {
+  [[ $# == 3 && -n "$3" ]] || return 65
+  local _ais_out=$1 _ais_root _ais_record
+  local -a _ais_rows=()
+  _addon_input_normalize _ais_root "$2" || return $?
+  _addon_install_path _ais_record || return $?
+  if [[ ! -e "$_ais_record" && ! -L "$_ais_record" ]]; then
+    printf -v "$_ais_out" '%s' absent
+    return 0
+  fi
+  _addon_install_read _ais_rows "$_ais_record" || return $?
+  [[ "${_ais_rows[1]}" == "$_ais_root" && "${_ais_rows[3]}" == "$3" ]] || return 65
+  _addon_install_check_root _ais_rows || return $?
+  printf -v "$_ais_out" '%s' "${_ais_rows[4]}"
+}
+
+addon_install_begin() {
+  [[ $# == 2 && -n "$2" ]] || return 65
+  local _aib_root _aib_record _aib_state _aib_created=0 _aib_identity
+  addon_install_status _aib_state "$@" || return $?
+  [[ "$_aib_state" == absent ]] || return 65
+  _addon_input_normalize _aib_root "$1" || return $?
+  [[ "$_aib_root" != / && ! -L "$_aib_root" ]] || return 65
+  if [[ ! -e "$_aib_root" ]]; then
+    mkdir -p -- "$_aib_root" || return $?
+    _aib_created=1
+  fi
+  [[ -d "$_aib_root" ]] || return 65
+  _aib_identity=$(stat -c '%d:%i' -- "$_aib_root") || return $?
+  _addon_install_path _aib_record || return $?
+  addon_write_private_file "$_aib_record" < <(printf '%s\0' v1 "$_aib_root" "$_aib_identity" "$2" prepared "$_aib_created" '')
+}
+
+# Only an absent immediate child of the admitted root can acquire directory
+# custody. Neither existing directories nor their contents are adopted.
+addon_install_create_directory() {
+  [[ $# == 3 ]] || return 65
+  local _aid_dest _aid_root _aid_record _aid_state _aid_identity
+  local -a _aid_rows=()
+  addon_install_status _aid_state "$2" "$3" || return $?
+  [[ "$_aid_state" == prepared ]] || return 65
+  _addon_input_normalize _aid_root "$2" || return $?
+  _addon_input_normalize _aid_dest "$1" || return $?
+  [[ "${_aid_dest%/*}" == "$_aid_root" && ! -e "$_aid_dest" && ! -L "$_aid_dest" ]] || return 65
+  _addon_install_path _aid_record || return $?
+  _addon_install_read _aid_rows "$_aid_record" || return $?
+  mkdir -- "$_aid_dest" || return $?
+  _aid_identity=$(stat -c 'd:%d:%i' -- "$_aid_dest") || return $?
+  _aid_rows+=("$_aid_dest" "$_aid_identity")
+  addon_write_private_file "$_aid_record" < <(printf '%s\0' "${_aid_rows[@]}")
+}
+
+addon_install_publish_file() {
+  [[ $# == 4 ]] || return 65
+  local _aip_source=$1 _aip_dest _aip_record _aip_state _aip_identity _aip_meta _aip_i
+  local -a _aip_rows=()
+  addon_install_status _aip_state "$3" "$4" || return $?
+  [[ "$_aip_state" == prepared && -f "$_aip_source" && ! -L "$_aip_source" ]] || return 65
+  _aip_meta=$(stat -c '%u:%a:%h' -- "$_aip_source") || return $?
+  [[ "$_aip_meta" == 0:600:1 ]] || return 65
+  _addon_input_normalize _aip_dest "$2" || return $?
+  [[ ! -e "$_aip_dest" && ! -L "$_aip_dest" ]] || return 65
+  _addon_install_path _aip_record || return $?
+  _addon_install_read _aip_rows "$_aip_record" || return $?
+  for ((_aip_i = 7; _aip_i < ${#_aip_rows[@]}; _aip_i += 2)); do [[ "${_aip_rows[_aip_i]}" != "$_aip_dest" ]] || return 65; done
+  _aip_identity=$(_addon_executable_identity "$_aip_source") || return $?
+  _aip_rows+=("$_aip_dest" "$_aip_identity")
+  addon_write_private_file "$_aip_record" < <(printf '%s\0' "${_aip_rows[@]}") || return $?
+  ln -T -- "$_aip_source" "$_aip_dest"
+}
+
+_addon_install_transition() {
+  [[ $# == 3 || ($# == 4 && "$1" == exposed && -n "$4") ]] || return 65
+  local _ait_next=$1 _ait_state _ait_record
+  local -a _ait_rows=()
+  addon_install_status _ait_state "$2" "$3" || return $?
+  case "$_ait_state/$_ait_next" in prepared/exposed | exposed/ready | exposed/safe | ready/safe | safe/safe) ;; *) return 65 ;; esac
+  _addon_install_path _ait_record || return $?
+  _addon_install_read _ait_rows "$_ait_record" || return $?
+  if [[ "$_ait_next" == exposed ]]; then
+    [[ $# == 4 ]] || return 65
+    _ait_rows[6]=$4
+  fi
+  _ait_rows[4]=$_ait_next
+  addon_write_private_file "$_ait_record" < <(printf '%s\0' "${_ait_rows[@]}")
+}
+
+addon_install_expose() { _addon_install_transition exposed "$@"; }
+addon_install_complete() { _addon_install_transition ready "$@"; }
+addon_install_consumer_identity() {
+  [[ $# == 3 ]] || return 65
+  local _aici_out=$1 _aici_state _aici_record
+  local -a _aici_rows=()
+  addon_install_status _aici_state "$2" "$3" || return $?
+  [[ "$_aici_state" == exposed || "$_aici_state" == ready || "$_aici_state" == safe ]] || return 65
+  _addon_install_path _aici_record || return $?
+  _addon_install_read _aici_rows "$_aici_record" || return $?
+  printf -v "$_aici_out" '%s' "${_aici_rows[6]}"
+}
+# An adapter calls this only after positive scoped teardown/inventory, never on
+# an ambiguous daemon failure. Before exposure no external teardown is owed.
+addon_install_teardown_complete() { _addon_install_transition safe "$@"; }
+
+_addon_install_file_parents_match() {
+  local -n _aif_rows=$1
+  local _aif_path=$2 _aif_i
+  for ((_aif_i = 7; _aif_i < ${#_aif_rows[@]}; _aif_i += 2)); do
+    [[ "${_aif_rows[_aif_i + 1]}" == d:* && "$_aif_path" == "${_aif_rows[_aif_i]}/"* ]] || continue
+    [[ -d "${_aif_rows[_aif_i]}" && ! -L "${_aif_rows[_aif_i]}" ]] || return 65
+    [[ "$(stat -c 'd:%d:%i' -- "${_aif_rows[_aif_i]}")" == "${_aif_rows[_aif_i + 1]}" ]] || return 65
+  done
+}
+
+addon_install_cleanup() {
+  [[ $# == 2 ]] || return 65
+  local _aix_state _aix_record _aix_i _aix_current _aix_child
+  local -a _aix_rows=()
+  addon_install_status _aix_state "$@" || return $?
+  case "$_aix_state" in prepared | safe | cleaned) ;; *) return 65 ;; esac
+  _addon_install_path _aix_record || return $?
+  _addon_install_read _aix_rows "$_aix_record" || return $?
+  # Record safety before removal, so a cold retry tolerates already removed files.
+  _aix_rows[4]=cleaned
+  addon_write_private_file "$_aix_record" < <(printf '%s\0' "${_aix_rows[@]}") || return $?
+  # Reverse publication order removes owned leaves before their created parent.
+  for ((_aix_i = ${#_aix_rows[@]} - 2; _aix_i >= 7; _aix_i -= 2)); do
+    [[ -e "${_aix_rows[_aix_i]}" || -L "${_aix_rows[_aix_i]}" ]] || continue
+    if [[ "${_aix_rows[_aix_i + 1]}" == d:* ]]; then
+      _aix_current=$(stat -c 'd:%d:%i' -- "${_aix_rows[_aix_i]}") || return $?
+      if [[ -d "${_aix_rows[_aix_i]}" && ! -L "${_aix_rows[_aix_i]}" && "$_aix_current" == "${_aix_rows[_aix_i + 1]}" ]]; then
+        _aix_child=$(find "${_aix_rows[_aix_i]}" -mindepth 1 -maxdepth 1 -print -quit) || return $?
+        if [[ -z "$_aix_child" ]]; then
+          rmdir -- "${_aix_rows[_aix_i]}" || return $?
+        else msg_warn "Unlisted directory contents retained; manual cleanup: ${_aix_rows[_aix_i]}"; fi
+      else msg_warn "Changed install directory retained; manual cleanup: ${_aix_rows[_aix_i]}"; fi
+      continue
+    fi
+    if ! _addon_install_file_parents_match _aix_rows "${_aix_rows[_aix_i]}"; then
+      msg_warn "Changed install parent retained; manual cleanup: ${_aix_rows[_aix_i]}"
+      continue
+    fi
+    _aix_current=$(_addon_executable_identity "${_aix_rows[_aix_i]}") || _aix_current=unknown
+    if [[ "$_aix_current" == "${_aix_rows[_aix_i + 1]}" && "$(stat -c %h -- "${_aix_rows[_aix_i]}")" == 1 ]]; then
+      rm -f -- "${_aix_rows[_aix_i]}" || return $?
+    else msg_warn "Changed install file retained; manual cleanup: ${_aix_rows[_aix_i]}"; fi
+  done
+  if [[ -d "${_aix_rows[1]}" ]]; then
+    _aix_child=$(find "${_aix_rows[1]}" -mindepth 1 -maxdepth 1 -print -quit) || return $?
+    if [[ -n "$_aix_child" ]]; then
+      msg_warn "Unlisted install contents retained; manual cleanup: ${_aix_rows[1]}"
+    elif [[ "${_aix_rows[5]}" == 1 ]]; then rmdir -- "${_aix_rows[1]}" || return $?; fi
+  fi
+}
+
+addon_install_retire() {
+  [[ $# == 0 || ($# == 1 && "$1" == --check) ]] || return 65
+  local _airt_record _airt_i _airt_current _airt_child
+  local -a _airt_rows=()
+  _addon_install_path _airt_record || return $?
+  [[ -e "$_airt_record" || -L "$_airt_record" ]] || return 0
+  _addon_install_read _airt_rows "$_airt_record" || return $?
+  [[ "${_airt_rows[4]}" == cleaned ]] || return 65
+  _addon_install_check_root _airt_rows || return $?
+  for ((_airt_i = 7; _airt_i < ${#_airt_rows[@]}; _airt_i += 2)); do
+    [[ -e "${_airt_rows[_airt_i]}" || -L "${_airt_rows[_airt_i]}" ]] || continue
+    if [[ "${_airt_rows[_airt_i + 1]}" == d:* ]]; then
+      _airt_current=$(stat -c 'd:%d:%i' -- "${_airt_rows[_airt_i]}") || return $?
+      if [[ -d "${_airt_rows[_airt_i]}" && ! -L "${_airt_rows[_airt_i]}" && "$_airt_current" == "${_airt_rows[_airt_i + 1]}" ]]; then
+        _airt_child=$(find "${_airt_rows[_airt_i]}" -mindepth 1 -maxdepth 1 -print -quit) || return $?
+        [[ -n "$_airt_child" ]] || return 65
+      fi
+      continue
+    fi
+    _addon_install_file_parents_match _airt_rows "${_airt_rows[_airt_i]}" || continue
+    _airt_current=$(_addon_executable_identity "${_airt_rows[_airt_i]}") || _airt_current=unknown
+    # Edited/foreign or additionally linked files are intentional preservation,
+    # but an exact still-removable publication means cleanup has not finished.
+    [[ "$_airt_current" != "${_airt_rows[_airt_i + 1]}" || "$(stat -c %h -- "${_airt_rows[_airt_i]}")" != 1 ]] || return 65
+  done
+  [[ "${1:-}" != --check ]] || return 0
+  rm -f -- "$_airt_record"
+}
+
+addon_install_guard() {
+  local _aig_record
+  local -a _aig_rows=()
+  _addon_install_path _aig_record || return $?
+  [[ -e "$_aig_record" || -L "$_aig_record" ]] || return 0
+  _addon_install_read _aig_rows "$_aig_record" || return $?
+  _addon_install_check_root _aig_rows || return $?
+  [[ "${_aig_rows[4]}" == ready ]] && return 0
+  msg_warn "Unfinished installation for ${APP_SLUG}; use its explicit uninstall recovery"
+  return 65
+}
+
+_addon_activation_path() {
+  _addon_private_state_path "$1" /var/lib/scripts-underground/addon-service-actions
+}
+
+_addon_teardown_path() {
+  _addon_private_state_path "$1" /var/lib/scripts-underground/addon-teardowns
+}
+
+# This receipt certifies only the named adapter's completed teardown and the
+# selected lexical files. It never owns an install tree's unlisted contents.
+_addon_teardown_file_identity() {
+  local _atf_path=$1 _atf_meta _atf_hash
+  if [[ -L "$_atf_path" ]]; then
+    _atf_meta=$(stat -c '%d:%i:%u:%g:%a' -- "$_atf_path") || return $?
+    _atf_hash=$(
+      set -o pipefail
+      readlink -- "$_atf_path" | sha256sum
+    ) || return $?
+    printf 'l:%s:%s\n' "$_atf_meta" "${_atf_hash%% *}"
+  elif [[ ! -e "$_atf_path" ]]; then
+    printf '%s\n' -
+  else
+    _atf_hash=$(_addon_executable_identity "$_atf_path") || return $?
+    printf 'f:%s\n' "$_atf_hash"
+  fi
+}
+
+_addon_teardown_read() {
+  local _atr_out=$1 _atr_record=$2 _atr_meta _atr_tail _atr_i _atr_path
+  local -a _atr_rows=()
+  [[ -f "$_atr_record" && ! -L "$_atr_record" ]] || return 69
+  _atr_meta=$(stat -c '%u:%a:%h' -- "$_atr_record") || return $?
+  [[ "$_atr_meta" == 0:600:1 ]] || return 69
+  _atr_tail=$(
+    set -o pipefail
+    tail -c1 -- "$_atr_record" | base64 -w0
+  ) || return $?
+  [[ "$_atr_tail" == AA== ]] || return 65
+  mapfile -d '' -t _atr_rows < "$_atr_record" || return $?
+  [[ ${#_atr_rows[@]} -ge 7 && $((${#_atr_rows[@]} % 2)) == 1 && "${_atr_rows[0]}" == v1 && -n "${_atr_rows[3]}" ]] || return 65
+  [[ "${_atr_rows[2]}" =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+$ && ("${_atr_rows[4]}" == started || "${_atr_rows[4]}" == 'done') ]] || return 65
+  _addon_input_normalize _atr_path "${_atr_rows[1]}" || return $?
+  [[ "$_atr_path" == "${_atr_rows[1]}" && "$_atr_path" != / ]] || return 65
+  for ((_atr_i = 5; _atr_i < ${#_atr_rows[@]}; _atr_i += 2)); do
+    _addon_input_normalize _atr_path "${_atr_rows[_atr_i]}" || return $?
+    [[ "$_atr_path" == "${_atr_rows[_atr_i]}" && "$_atr_path" != / ]] || return 65
+    [[ "${_atr_rows[_atr_i + 1]}" == - || "${_atr_rows[_atr_i + 1]}" =~ ^[fl]:[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+:[a-f0-9]{64}$ ]] || return 65
+  done
+  local -n _atr_result=$_atr_out
+  _atr_result=("${_atr_rows[@]}")
+}
+
+_addon_teardown_check() {
+  local -n _atc_rows=$1
+  local _atc_meta _atc_current _atc_i
+  if [[ -e "${_atc_rows[1]}" || -L "${_atc_rows[1]}" ]]; then
+    [[ -d "${_atc_rows[1]}" ]] || return 65
+    _atc_meta=$(stat -Lc '%d:%i:%u:%g:%a' -- "${_atc_rows[1]}") || return $?
+    [[ "$_atc_meta" == "${_atc_rows[2]}" ]] || return 65
+  else
+    [[ "${_atc_rows[4]}" == 'done' ]] || return 65
+  fi
+  for ((_atc_i = 5; _atc_i < ${#_atc_rows[@]}; _atc_i += 2)); do
+    _atc_current=$(_addon_teardown_file_identity "${_atc_rows[_atc_i]}") || return $?
+    if [[ "${_atc_rows[4]}" == 'done' && "$_atc_current" == - ]]; then continue; fi
+    [[ "$_atc_current" == "${_atc_rows[_atc_i + 1]}" ]] || {
+      msg_warn "Changed teardown input retained: ${_atc_rows[_atc_i]}"
+      return 65
+    }
+  done
+}
+
+addon_teardown_status() {
+  [[ $# -ge 4 ]] || return 65
+  local _ats_out=$1 _ats_root _ats_resource=$3 _ats_record _ats_path _ats_i=5
+  local -a _ats_rows=()
+  _addon_input_normalize _ats_root "$2" || return $?
+  _addon_teardown_path _ats_record || return $?
+  if [[ ! -e "$_ats_record" && ! -L "$_ats_record" ]]; then
+    printf -v "$_ats_out" '%s' absent
+    return 0
+  fi
+  _addon_teardown_read _ats_rows "$_ats_record" || return $?
+  [[ "${_ats_rows[1]}" == "$_ats_root" && "${_ats_rows[3]}" == "$_ats_resource" && ${#_ats_rows[@]} == $((5 + 2 * ($# - 3))) ]] || return 65
+  shift 3
+  for _ats_path in "$@"; do
+    _addon_input_normalize _ats_path "$_ats_path" || return $?
+    [[ "$_ats_path" == "${_ats_rows[_ats_i]}" ]] || return 65
+    _ats_i=$((_ats_i + 2))
+  done
+  _addon_teardown_check _ats_rows || return $?
+  printf -v "$_ats_out" '%s' "${_ats_rows[4]}"
+}
+
+addon_teardown_begin() {
+  [[ $# -ge 3 && -n "$2" ]] || return 65
+  local _atb_state _atb_record _atb_root _atb_meta _atb_path _atb_identity
+  local -a _atb_rows=()
+  addon_teardown_status _atb_state "$@" || return $?
+  [[ "$_atb_state" == absent ]] || return 0
+  _addon_input_normalize _atb_root "$1" || return $?
+  [[ "$_atb_root" != / && -d "$_atb_root" ]] || return 65
+  _atb_meta=$(stat -Lc '%d:%i:%u:%g:%a' -- "$_atb_root") || return $?
+  _atb_rows=(v1 "$_atb_root" "$_atb_meta" "$2" started)
+  shift 2
+  for _atb_path in "$@"; do
+    _addon_input_normalize _atb_path "$_atb_path" || return $?
+    _atb_identity=$(_addon_teardown_file_identity "$_atb_path") || return $?
+    _atb_rows+=("$_atb_path" "$_atb_identity")
+  done
+  _addon_teardown_path _atb_record || return $?
+  addon_write_private_file "$_atb_record" < <(printf '%s\0' "${_atb_rows[@]}")
+}
+
+addon_teardown_complete() {
+  local _atd_state _atd_record
+  local -a _atd_rows=()
+  addon_teardown_status _atd_state "$@" || return $?
+  [[ "$_atd_state" != absent ]] || return 65
+  _addon_teardown_path _atd_record || return $?
+  _addon_teardown_read _atd_rows "$_atd_record" || return $?
+  _atd_rows[4]='done'
+  addon_write_private_file "$_atd_record" < <(printf '%s\0' "${_atd_rows[@]}")
+}
+
+addon_teardown_remove() {
+  local _atm_state _atm_record _atm_i _atm_current _atm_child
+  local -a _atm_rows=()
+  addon_teardown_status _atm_state "$@" || return $?
+  [[ "$_atm_state" == 'done' ]] || return 65
+  _addon_teardown_path _atm_record || return $?
+  _addon_teardown_read _atm_rows "$_atm_record" || return $?
+  for ((_atm_i = 5; _atm_i < ${#_atm_rows[@]}; _atm_i += 2)); do
+    _atm_current=$(_addon_teardown_file_identity "${_atm_rows[_atm_i]}") || return $?
+    [[ "$_atm_current" != - ]] || continue
+    [[ "$_atm_current" == "${_atm_rows[_atm_i + 1]}" ]] || return 65
+    rm -f -- "${_atm_rows[_atm_i]}" || return $?
+  done
+  if [[ -L "${_atm_rows[1]}" ]]; then
+    msg_warn "Install root link retained: ${_atm_rows[1]}"
+  elif [[ -d "${_atm_rows[1]}" ]]; then
+    _atm_child=$(find "${_atm_rows[1]}" -mindepth 1 -maxdepth 1 -print -quit) || return $?
+    if [[ -n "$_atm_child" ]]; then msg_warn "Unlisted install contents retained: ${_atm_rows[1]}"; else rmdir -- "${_atm_rows[1]}" || return $?; fi
+  fi
+}
+
+# Called by the addon footer only after the hook and command/marker retirement.
+addon_teardown_retire() {
+  [[ $# == 0 || ($# == 1 && "$1" == --check) ]] || return 65
+  local _att_record _att_i
+  local -a _att_rows=()
+  _addon_teardown_path _att_record || return $?
+  [[ -e "$_att_record" || -L "$_att_record" ]] || return 0
+  _addon_teardown_read _att_rows "$_att_record" || return $?
+  [[ "${_att_rows[4]}" == 'done' ]] || return 65
+  _addon_teardown_check _att_rows || return $?
+  for ((_att_i = 5; _att_i < ${#_att_rows[@]}; _att_i += 2)); do
+    [[ ! -e "${_att_rows[_att_i]}" && ! -L "${_att_rows[_att_i]}" ]] || return 65
+  done
+  [[ "${1:-}" != --check ]] || return 0
+  rm -f -- "$_att_record"
+}
+
+addon_teardown_guard() {
+  local _atg_record
+  local -a _atg_rows=()
+  _addon_teardown_path _atg_record || return $?
+  [[ -e "$_atg_record" || -L "$_atg_record" ]] || return 0
+  _addon_teardown_read _atg_rows "$_atg_record" || return $?
+  msg_warn "Unfinished teardown for ${APP_SLUG}; resume its uninstall before installation or update"
+  return 65
+}
+
+_addon_backup_path() {
+  _addon_private_state_path "$1" /var/lib/scripts-underground/addon-backup-actions
+}
+
+# The configured backup directory is a namespace, not proof of ownership of
+# its existing contents. Only a freshly allocated private child is our store.
+_addon_backup_root() {
+  local _abr_out=$1 _abr_input=$2 _abr_root _abr_remaining _abr_dir='' _abr_part _abr_meta _abr_mode
+  [[ "$_abr_input" == /* && "$_abr_input" != *[$'\n\r']* ]] || return 65
+  _abr_root=$(realpath -m -- "$_abr_input") || return $?
+  [[ "$_abr_root" != / ]] || return 65
+  _abr_remaining=${_abr_root#/}
+  while [[ -n "$_abr_remaining" ]]; do
+    _abr_part=${_abr_remaining%%/*}
+    _abr_dir+="/$_abr_part"
+    if [[ ! -e "$_abr_dir" && ! -L "$_abr_dir" ]]; then
+      mkdir -m 0700 -- "$_abr_dir" || return $?
+    fi
+    [[ -d "$_abr_dir" && ! -L "$_abr_dir" ]] || return 69
+    _abr_meta=$(stat -c '%u:%a' -- "$_abr_dir") || return $?
+    _abr_mode=${_abr_meta#*:}
+    [[ "${_abr_meta%%:*}" == 0 && "$_abr_mode" =~ ^[0-7]+$ ]] &&
+      (((8#$_abr_mode & 0022) == 0)) || return 69
+    if [[ "$_abr_remaining" == */* ]]; then _abr_remaining=${_abr_remaining#*/}; else _abr_remaining=''; fi
+  done
+  printf -v "$_abr_out" '%s' "$_abr_root"
+}
+
+_addon_backup_read() {
+  local _abr_record=$1 _abr_root=$2 _abr_out=$3 _abr_meta _abr_tail _abr_suffix _abr_field
+  local -a _abr_rows=()
+  [[ -f "$_abr_record" && ! -L "$_abr_record" ]] || return 69
+  _abr_meta=$(stat -c '%u:%a:%h' -- "$_abr_record") || return $?
+  [[ "$_abr_meta" == 0:600:1 ]] || return 69
+  _abr_tail=$(
+    set -o pipefail
+    tail -c1 -- "$_abr_record" | base64 -w0
+  ) || return $?
+  [[ "$_abr_tail" == AA== ]] || return 65
+  mapfile -d '' -t _abr_rows < "$_abr_record" || return $?
+  [[ ${#_abr_rows[@]} -ge 5 && "${_abr_rows[0]}" == v1 && "${_abr_rows[1]}" == "$_abr_root" &&
+    "${_abr_rows[2]}" == "$_abr_root/.addon-$APP_SLUG."* ]] || return 65
+  _abr_suffix=${_abr_rows[2]#"$_abr_root/.addon-$APP_SLUG."}
+  [[ "$_abr_suffix" =~ ^[a-zA-Z0-9]{8}$ ]] || return 65
+  [[ -d "${_abr_rows[2]}" && ! -L "${_abr_rows[2]}" ]] || return 69
+  _abr_meta=$(stat -c '%u:%a:%d:%i' -- "${_abr_rows[2]}") || return $?
+  [[ "$_abr_meta" == "0:700:${_abr_rows[3]}" ]] || return 69
+  for _abr_field in "${_abr_rows[@]:4}"; do
+    [[ "$_abr_field" == /* && "$_abr_field" != *[$'\n\r']* ]] || return 65
+  done
+  local -n _abr_result="$_abr_out"
+  _abr_result=("${_abr_rows[@]}")
+}
+
+addon_backup_create() {
+  local _abc_root _abc_record _abc_path _abc_resolved _abc_store _abc_stage _abc_meta _abc_status=0
+  local -a _abc_inputs=() _abc_rows=()
+  [[ $# -ge 2 ]] || return 65
+  _addon_backup_path _abc_record || return $?
+  _addon_backup_root _abc_root "$1" || return $?
+  shift
+  for _abc_path in "$@"; do
+    [[ "$_abc_path" == /* && "$_abc_path" != *[$'\n\r']* ]] || return 65
+    _abc_path=$(realpath -ms -- "$_abc_path") || return $?
+    _abc_inputs+=("$_abc_path")
+    # The consumer reads the target, not just the lexical configuration link.
+    _abc_resolved=$(realpath -m -- "$_abc_path") || return $?
+    [[ "$_abc_resolved" == "$_abc_path" ]] || _abc_inputs+=("$_abc_resolved")
+  done
+  if [[ -e "$_abc_record" || -L "$_abc_record" ]]; then
+    _addon_backup_read "$_abc_record" "$_abc_root" _abc_rows || return $?
+    [[ ${#_abc_rows[@]} == $((${#_abc_inputs[@]} + 4)) ]] || return 65
+    local _abc_i
+    for _abc_i in "${!_abc_inputs[@]}"; do
+      [[ "${_abc_rows[$((_abc_i + 4))]}" == "${_abc_inputs[$_abc_i]}" ]] || return 65
+    done
+    _abc_store=${_abc_rows[2]}
+  else
+    _abc_store=$(mktemp -d -- "$_abc_root/.addon-$APP_SLUG.XXXXXXXX") || return $?
+    _abc_meta=$(stat -c '%d:%i' -- "$_abc_store") || return $?
+    _abc_stage=$(mktemp -- "${_abc_record}.XXXXXXXX") || return $?
+    printf '%s\0' v1 "$_abc_root" "$_abc_store" "$_abc_meta" "${_abc_inputs[@]}" > "$_abc_stage" || _abc_status=$?
+    if [[ "$_abc_status" == 0 ]]; then ln -- "$_abc_stage" "$_abc_record" || _abc_status=$?; fi
+    if rm -f -- "$_abc_stage"; then :; else
+      local _abc_cleanup=$?
+      [[ "$_abc_status" != 0 ]] || _abc_status=$_abc_cleanup
+    fi
+    if [[ "$_abc_status" != 0 ]]; then
+      msg_warn "Unpublished backup preparation retained at $_abc_store"
+      return "$_abc_status"
+    fi
+  fi
+  (
+    umask 077
+    BACKUP_DIR="$_abc_store" create_backup "${_abc_inputs[@]}"
+  )
+}
+
+addon_backup_complete() {
+  local _abk_root _abk_record
+  local -a _abk_rows=()
+  _addon_backup_path _abk_record || return $?
+  [[ -e "$_abk_record" || -L "$_abk_record" ]] || return 0
+  _addon_backup_root _abk_root "$1" || return $?
+  _addon_backup_read "$_abk_record" "$_abk_root" _abk_rows || return $?
+  # Rotation, not deletion: retain recovery copies and any unknown contents.
+  # Only the private active receipt can make a child eligible for retry reuse.
+  rm -f -- "$_abk_record" || return $?
+  msg_ok "Completed backup retained at ${_abk_rows[2]}"
+}
+
+_addon_activation_read() {
+  local _aar_path=$1 _aar_service=$2 _aar_metadata
+  local -a _aar_rows=()
+  _addon_service_identity "$_aar_service" || return $?
+  [[ -f "$_aar_path" && ! -L "$_aar_path" ]] || return 69
+  _aar_metadata=$(command stat -c '%u:%a:%h' -- "$_aar_path") || return $?
+  [[ "$_aar_metadata" == 0:600:1 ]] || return 69
+  mapfile -t _aar_rows < "$_aar_path" || return $?
+  [[ ${#_aar_rows[@]} == 3 && "${_aar_rows[0]}" == v1 &&
+    "${_aar_rows[1]}" == "$INIT_SYSTEM" && "${_aar_rows[2]}" == "$_aar_service" ]] || return 65
+}
+
+# "starting" is positive activation intent (including systemd auto-restart),
+# but is deliberately not sufficient to retire an obligation after start.
+_addon_service_activity() {
+  local _asa_service=$1 _asa_out=$2 _asa_state _asa_key _asa_value _asa_active='' _asa_load='' _asa_enabled=''
+  local _asa_rc=0 _asa_fields=0 _asa_count=0 _asa_activity=stopped
+  _addon_service_identity "$_asa_service" || return $?
+  case "${INIT_SYSTEM:-}" in
+    systemd)
+      _asa_state=$(systemctl show --property=LoadState --property=ActiveState --property=UnitFileState -- "$_asa_service") || return $?
+      while IFS='=' read -r _asa_key _asa_value; do
+        _asa_count=$((_asa_count + 1))
+        case "$_asa_key" in
+          LoadState)
+            _asa_load=$_asa_value
+            _asa_fields=$((_asa_fields | 1))
+            ;;
+          ActiveState)
+            _asa_active=$_asa_value
+            _asa_fields=$((_asa_fields | 2))
+            ;;
+          UnitFileState)
+            _asa_enabled=$_asa_value
+            _asa_fields=$((_asa_fields | 4))
+            ;;
+          *) return 22 ;;
+        esac
+      done <<< "$_asa_state"
+      [[ "$_asa_fields" == 7 && "$_asa_count" == 3 ]] || return 22
+      case "$_asa_load" in loaded | masked | not-found | bad-setting | error) ;; *) return 22 ;; esac
+      case "$_asa_enabled" in '' | bad | enabled | enabled-runtime | linked | linked-runtime | alias | indirect | disabled | static | masked | masked-runtime | generated | transient) ;; *) return 22 ;; esac
+      case "$_asa_active" in
+        active | reloading) _asa_activity=running ;;
+        activating) _asa_activity=starting ;;
+        inactive | failed | deactivating) ;;
+        *) return 22 ;;
+      esac
+      ;;
+    openrc)
+      rc-service "$_asa_service" status > /dev/null 2>&1 || _asa_rc=$?
+      case "$_asa_rc" in
+        0) _asa_activity=running ;;
+        3) ;; # openrc-run's documented stopped state
+        *) return "$_asa_rc" ;;
+      esac
+      ;;
+    *) return 69 ;;
+  esac
+  printf -v "$_asa_out" '%s' "$_asa_activity"
+}
+
+addon_service_begin() {
+  [[ $# == 2 && "$2" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && "$2" != _asb_* ]] || return 65
+  local _asb_service=$1 _asb_out=$2 _asb_path _asb_activity _asb_stage _asb_status=0 _asb_cleanup=0
+  _addon_activation_path _asb_path || return $?
+  if [[ -e "$_asb_path" || -L "$_asb_path" ]]; then
+    _addon_activation_read "$_asb_path" "$_asb_service" || return $?
+    printf -v "$_asb_out" '%s' 1
+    return 0
+  fi
+  _addon_service_activity "$_asb_service" _asb_activity || return $?
+  if [[ "$_asb_activity" == running || "$_asb_activity" == starting ]]; then
+    _asb_stage=$(mktemp "${_asb_path%/*}/.${APP_SLUG}.XXXXXXXX") || return $?
+    printf '%s\n' v1 "$INIT_SYSTEM" "$_asb_service" > "$_asb_stage" || _asb_status=$?
+    if [[ "$_asb_status" == 0 ]]; then ln -T -- "$_asb_stage" "$_asb_path" || _asb_status=$?; fi
+    rm -f -- "$_asb_stage" || _asb_cleanup=$?
+    [[ "$_asb_status" != 0 ]] || _asb_status=$_asb_cleanup
+    [[ "$_asb_status" == 0 ]] || return "$_asb_status"
+  fi
+  if [[ -f "$_asb_path" ]]; then printf -v "$_asb_out" '%s' 1; else printf -v "$_asb_out" '%s' 0; fi
+}
+
+addon_service_complete() {
+  [[ $# == 1 || ($# == 2 && "$2" == restart) ]] || return 65
+  local _asc_service=$1 _asc_action=${2:-start} _asc_path _asc_activity
+  _addon_activation_path _asc_path || return $?
+  [[ -e "$_asc_path" || -L "$_asc_path" ]] || return 0
+  _addon_activation_read "$_asc_path" "$_asc_service" || return $?
+  if [[ "$INIT_SYSTEM" == openrc ]]; then
+    rc-service "$_asc_service" "$_asc_action" || return $?
+  else
+    systemctl "$_asc_action" "$_asc_service" || return $?
+  fi
+  _addon_service_activity "$_asc_service" _asc_activity || return $?
+  [[ "$_asc_activity" == running ]] || return 69
+  _addon_activation_read "$_asc_path" "$_asc_service" || return $?
+  rm -f -- "$_asc_path"
+}
+
+# Only the successful addon uninstall footer retires unfinished activation.
+# A failed hook never reaches this owner, and unsafe state keeps commands usable.
+addon_service_retire() {
+  [[ $# == 0 ]] || return 65
+  local _asr_path
+  local -a _asr_rows=()
+  _addon_activation_path _asr_path || return $?
+  [[ -e "$_asr_path" || -L "$_asr_path" ]] || return 0
+  [[ -f "$_asr_path" && ! -L "$_asr_path" ]] || return 69
+  mapfile -t _asr_rows < "$_asr_path" || return $?
+  [[ ${#_asr_rows[@]} == 3 ]] || return 65
+  _addon_activation_read "$_asr_path" "${_asr_rows[2]}" || return $?
+  rm -f -- "$_asr_path"
+}
+
+# Normalize lexical spelling without following links or depending on GNU realpath.
+# Resolved coordinates are selected separately at the consuming boundary below.
+_addon_input_normalize() {
+  local _ain_out=$1 _ain_value=$2 _ain_part _ain_result='' _ain_index
+  local -a _ain_parts=()
+  [[ -n "$_ain_value" ]] || return 65
+  [[ "$_ain_value" == /* ]] || _ain_value="$PWD/$_ain_value"
+  while [[ -n "$_ain_value" ]]; do
+    _ain_part=${_ain_value%%/*}
+    case "$_ain_part" in
+      '' | .) ;;
+      ..)
+        if ((${#_ain_parts[@]})); then
+          _ain_index=$((${#_ain_parts[@]} - 1))
+          unset '_ain_parts[_ain_index]'
+        fi
+        ;;
+      *) _ain_parts+=("$_ain_part") ;;
+    esac
+    if [[ "$_ain_value" == */* ]]; then _ain_value=${_ain_value#*/}; else _ain_value=''; fi
+  done
+  for _ain_part in "${_ain_parts[@]}"; do _ain_result+="/$_ain_part"; done
+  printf -v "$_ain_out" '%s' "${_ain_result:-/}"
+}
+
+# Extend the caller's local inherited keep array with lexical inputs AND their
+# in-tree resolved targets. External inputs never become replacement authority.
+addon_keep_inputs() {
+  [[ $# -ge 2 && "$1" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && "$1" != _aki_* ]] || return 65
+  local -n _aki_keeps=$1
+  local _aki_root _aki_real_root _aki_input _aki_lexical _aki_resolved _aki_base _aki_path _aki_relative _aki_status
+  local -A _aki_seen=()
+  _addon_input_normalize _aki_root "$2" || return $?
+  [[ "$_aki_root" != / && -d "$2" ]] || return 65
+  _aki_real_root=$(readlink -f -- "$2") || return $?
+  shift 2
+  for _aki_input in "${_aki_keeps[@]}"; do
+    [[ -n "$_aki_input" ]] || return 65
+    _aki_seen["$_aki_input"]=1
+  done
+  for _aki_input in "$@"; do
+    _addon_input_normalize _aki_lexical "$_aki_input" || return $?
+    if _aki_resolved=$(readlink -f -- "$_aki_input"); then
+      :
+    else
+      _aki_status=$?
+      [[ ! -e "$_aki_input" && ! -L "$_aki_input" ]] || return "$_aki_status"
+      _aki_resolved=''
+    fi
+    for _aki_base in "$_aki_root" "$_aki_real_root"; do
+      for _aki_path in "$_aki_lexical" "$_aki_resolved"; do
+        [[ "$_aki_path" == "$_aki_base/"* ]] || continue
+        _aki_relative=${_aki_path#"$_aki_base/"}
+        [[ ! -v '_aki_seen[$_aki_relative]' ]] || continue
+        _aki_keeps+=("$_aki_relative")
+        _aki_seen["$_aki_relative"]=1
+      done
+    done
+  done
+}
+
+# A fingerprint certifies recovery inputs, not whether a new package may repair
+# them. Callers may proceed with an unknown preimage, but must never recover it.
+_addon_runtime_file() {
+  local _arf_path=$1 _arf_optional=${2:-0} _arf_directory=${3:-0} _arf_target
+  printf '%s\0' "$_arf_path" || return $?
+  if [[ ! -e "$_arf_path" && ! -L "$_arf_path" ]]; then
+    [[ "$_arf_optional" == 1 ]] || return 65
+    printf 'absent\0'
+    return
+  fi
+  stat -c '%f:%u:%g' -- "$_arf_path" || return $?
+  if [[ -L "$_arf_path" ]]; then
+    readlink -- "$_arf_path" || return $?
+    _arf_target=$(readlink -f -- "$_arf_path") || return $?
+    printf '%s\0' "$_arf_target" || return $?
+    # Do not read devices/FIFOs or assert closure over an untraversed link tree.
+    [[ -f "$_arf_target" ]] || return 65
+    stat -Lc '%f:%u:%g' -- "$_arf_path" || return $?
+    sha256sum < "$_arf_path" || return $?
+  elif [[ -f "$_arf_path" ]]; then
+    sha256sum < "$_arf_path" || return $?
+  elif [[ ! -d "$_arf_path" || "$_arf_directory" != 1 ]]; then
+    return 65
+  fi
+}
+
+# Native properties are typed data. Never split systemctl's printable path list.
+_addon_runtime_unit_paths() {
+  local _arup_service=$1 _arup_object _arup_json _arup_property
+  _addon_service_identity "$_arup_service" || return $?
+  [[ "$_arup_service" == *.service ]] || _arup_service+=.service
+  _arup_json=$(busctl --json=short call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager LoadUnit s "$_arup_service") || return $?
+  _arup_object=$(jq -er 'select(.type == "o" and (.data|type) == "array" and (.data|length) == 1 and (.data[0]|type) == "string") | .data[0]' <<< "$_arup_json") || return $?
+  _arup_json=$(busctl --json=short get-property org.freedesktop.systemd1 "$_arup_object" org.freedesktop.systemd1.Unit LoadState) || return $?
+  jq -e '.type == "s" and .data == "loaded"' > /dev/null <<< "$_arup_json" || return 65
+  for _arup_property in FragmentPath DropInPaths; do
+    _arup_json=$(busctl --json=short get-property org.freedesktop.systemd1 "$_arup_object" org.freedesktop.systemd1.Unit "$_arup_property") || return $?
+    if [[ "$_arup_property" == FragmentPath ]]; then
+      jq -je 'if .type == "s" and (.data|type) == "string" and (.data|startswith("/")) then .data,"\u0000" else error("Invalid unit fragment path") end' <<< "$_arup_json" || return $?
+    else
+      jq -j 'if .type == "as" and (.data|type) == "array" and all(.data[]; type == "string" and startswith("/")) then .data[] | ., "\u0000" else error("Invalid unit drop-in paths") end' <<< "$_arup_json" || return $?
+    fi
+  done
+}
+
+addon_runtime_fingerprint() (
+  set -o pipefail
+  local _arf_kind _arf_value _arf_path _arf_paths
+  [[ $# -gt 0 ]] || return 65
+  {
+    while (($#)); do
+      [[ $# -ge 2 ]] || return 65
+      _arf_kind=$1 _arf_value=$2
+      shift 2
+      printf '%s\0%s\0' "$_arf_kind" "$_arf_value" || return $?
+      case "$_arf_kind" in
+        --file | --optional)
+          [[ "$_arf_kind" != --file || -f "$_arf_value" ]] || return 65
+          [[ "$_arf_kind" != --optional || ! -e "$_arf_value" || -f "$_arf_value" ]] || return 65
+          _addon_runtime_file "$_arf_value" "$([[ "$_arf_kind" == --optional ]] && printf 1 || printf 0)" || return $?
+          ;;
+        --tree)
+          [[ -d "$_arf_value" ]] || return 65
+          # A selected root may itself be a link; capture that spelling and the
+          # real root, then walk without following nested directory symlinks.
+          if [[ -L "$_arf_value" ]]; then
+            stat -c '%f:%u:%g' -- "$_arf_value" || return $?
+            readlink -- "$_arf_value" || return $?
+            readlink -f -- "$_arf_value" || return $?
+          fi
+          find "${_arf_value%/}/" -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' _arf_path; do
+            _addon_runtime_file "$_arf_path" 0 1 || return $?
+          done || return $?
+          ;;
+        --unit)
+          if [[ "${INIT_SYSTEM:-}" == openrc ]]; then
+            _addon_service_identity "$_arf_value" || return $?
+            _addon_runtime_file "/etc/init.d/$_arf_value" || return $?
+            _addon_runtime_file "/etc/conf.d/$_arf_value" 1 || return $?
+          elif [[ "${INIT_SYSTEM:-}" == systemd ]]; then
+            # Checked encoded capture preserves NULs and the query's status.
+            # A raw process substitution would hide producer query failures.
+            _arf_paths=$(_addon_runtime_unit_paths "$_arf_value" | base64 -w0) || return $?
+            while IFS= read -r -d '' _arf_path; do
+              _addon_runtime_file "$_arf_path" || return $?
+            done < <(printf '%s' "$_arf_paths" | base64 -d)
+          else return 69; fi
+          ;;
+        *) return 65 ;;
+      esac
+    done
+  } | sha256sum
+)
+
 # ------------------------------------------------------------------------------
 # SECTION 2: GUARD & INIT
 # ------------------------------------------------------------------------------
@@ -211,6 +1417,9 @@ _addon_installed_state() {
       fi
     done
   else
+    [[ ! -e "/var/lib/scripts-underground/addon-teardowns/$APP_SLUG" && ! -L "/var/lib/scripts-underground/addon-teardowns/$APP_SLUG" ]] || _ais_state=unmarked
+    [[ ! -e "/var/lib/scripts-underground/addon-owned-files/$APP_SLUG" && ! -L "/var/lib/scripts-underground/addon-owned-files/$APP_SLUG" ]] || _ais_state=unmarked
+    [[ ! -e "/var/lib/scripts-underground/addon-install-attempts/$APP_SLUG" && ! -L "/var/lib/scripts-underground/addon-install-attempts/$APP_SLUG" ]] || _ais_state=unmarked
     for _ais_role in update uninstall; do
       _ais_path=$(_addon_command_path "$_ais_role")
       [[ ! -e "$_ais_path" && ! -L "$_ais_path" ]] || _ais_state=unmarked
@@ -395,6 +1604,8 @@ addon_guard_installed() {
 # Idempotent: exits immediately when the baseline is already satisfied.
 # ------------------------------------------------------------------------------
 addon_baseline() {
+  addon_teardown_guard || return $?
+  addon_install_guard || return $?
   local -a pkgs=()
   command -v gpg > /dev/null 2>&1 || pkgs+=("gnupg")
   command -v sudo > /dev/null 2>&1 || pkgs+=("sudo")
