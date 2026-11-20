@@ -19,6 +19,8 @@ var_version="${var_version:-13}"
 var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
+# Stock native build peak child RSS: 761 MiB. Add 512 MiB for Caddy, the Go
+# driver and kernel overhead, then round up to 1536 MiB for either cold hook.
 function install_script() {
   msg_info "Installing Dependencies"
   $STD apt install -y \
@@ -36,14 +38,32 @@ function install_script() {
   $STD apt install -y caddy
   msg_ok "Installed Caddy"
 
-  read -r -p "${TAB3}Would you like to install xCaddy Addon? <y/N> " prompt
+  local prompt=""
+  read -r -p "${TAB3}Would you like to install xCaddy Addon? <y/N> " prompt || true
   if [[ "${prompt,,}" =~ ^(y|yes)$ ]]; then
+    # Retain the opt-in so `update` can retry after the CT memory is raised.
+    touch /root/.xcaddy-requested
+    local memory_mib memory_max=max
+    memory_mib=$(awk '/^MemTotal:/ {print int($2 / 1024); exit}' "/proc/meminfo")
+    [[ "$memory_mib" =~ ^[0-9]+$ ]] || memory_mib=0
+    if [[ -r /sys/fs/cgroup/memory.max ]]; then
+      read -r memory_max < /sys/fs/cgroup/memory.max || true
+      if [[ "$memory_max" =~ ^[0-9]+$ ]] && ((memory_mib == 0 || memory_max / 1048576 < memory_mib)); then
+        memory_mib=$((memory_max / 1048576))
+      fi
+    fi
+    if ((memory_mib < 1536)); then
+      msg_warn "xCaddy requires at least 1536 MiB RAM (detected ${memory_mib} MiB); skipping xCaddy. Plain Caddy remains installed."
+      msg_warn "Increase this CT's memory in Proxmox Resources > Memory, then rerun update inside this CT."
+      return 0
+    fi
     setup_go
     fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary"
 
     msg_info "Setup xCaddy"
     $STD apt install -y git
     $STD xcaddy build
+    rm -f /root/.xcaddy-requested
     msg_ok "Setup xCaddy"
   fi
 }
@@ -62,22 +82,44 @@ function update_script() {
 
   if [[ ! -d /etc/caddy ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   msg_info "Updating Caddy LXC"
   $STD apt update
   $STD apt upgrade -y
+  if [[ "${FORCE_DEPLOY:-0}" == 1 ]]; then
+    $STD apt install -y --reinstall caddy
+  fi
   msg_ok "Updated Caddy LXC"
 
-  if command -v xcaddy > /dev/null 2>&1; then
+  if command -v xcaddy > /dev/null 2>&1 || [[ -f /root/.xcaddy-requested ]]; then
     if check_for_gh_release "xcaddy" "caddyserver/xcaddy"; then
+      # Admit before changing Go, xCaddy, its release marker or the built binary.
+      local memory_mib memory_max=max
+      memory_mib=$(awk '/^MemTotal:/ {print int($2 / 1024); exit}' "/proc/meminfo")
+      [[ "$memory_mib" =~ ^[0-9]+$ ]] || memory_mib=0
+      if [[ -r /sys/fs/cgroup/memory.max ]]; then
+        read -r memory_max < /sys/fs/cgroup/memory.max || true
+        if [[ "$memory_max" =~ ^[0-9]+$ ]] && ((memory_mib == 0 || memory_max / 1048576 < memory_mib)); then
+          memory_mib=$((memory_max / 1048576))
+        fi
+      fi
+      if ((memory_mib < 1536)); then
+        msg_warn "xCaddy requires at least 1536 MiB RAM (detected ${memory_mib} MiB); skipping xCaddy. Existing xCaddy binaries are unchanged."
+        msg_warn "Increase this CT's memory in Proxmox Resources > Memory, then rerun update inside this CT."
+        return 1
+      fi
       setup_go
-      fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary"
+      fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary" "$CHECK_UPDATE_RELEASE"
 
       msg_info "Updating xCaddy"
       $STD xcaddy build
+      rm -f /root/.xcaddy-requested
       msg_ok "Updated xCaddy"
+    else
+      local status=$?
+      [[ "$status" == 1 ]] || return "$status"
     fi
   fi
   msg_ok "Updated successfully!"
