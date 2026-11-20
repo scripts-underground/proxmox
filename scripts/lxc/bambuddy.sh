@@ -84,29 +84,81 @@ function update_script() {
 
   if [[ ! -d /opt/bambuddy ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   ensure_dependencies ffmpeg
 
   if check_for_gh_release "bambuddy" "maziggy/bambuddy"; then
+    # Keep application state at its live paths even if deployment/build fails.
+    # Read configured paths with the installed application's own parsers before
+    # replacing its source. An active service's environment takes precedence.
+    local keep_file service_pid
+    keep_file=$(mktemp) || return $?
+    service_pid=$(systemctl show bambuddy --property=MainPID --value) || {
+      local status=$?
+      rm -f -- "$keep_file"
+      return "$status"
+    }
+    (
+      cd /opt/bambuddy || exit
+      .venv/bin/python - "$service_pid" > "$keep_file" << 'PY'
+import os, pathlib, shlex, subprocess, sys
+root = pathlib.Path('/opt/bambuddy')
+pid = int(sys.argv[1])
+if pid:
+    # No environment/credential values are emitted, only protected path names.
+    for entry in pathlib.Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
+        if entry:
+            key, value = os.fsdecode(entry).split('=', 1)
+            if key != 'TMPDIR':
+                os.environ[key] = value
+else:
+    environment = subprocess.check_output(['systemctl', 'show', 'bambuddy', '--property=Environment', '--value'], text=True)
+    for entry in shlex.split(environment):
+        key, value = entry.split('=', 1)
+        if key != 'TMPDIR':
+            os.environ[key] = value
+from backend.app.core.config import settings
+from sqlalchemy.engine import make_url
+paths = [settings.archive_dir, settings.plate_calibration_dir, settings.log_dir]
+base = pathlib.Path(settings.base_dir)
+if base.absolute() != root:
+    paths.append(base)
+url = make_url(settings.database_url)
+if url.get_backend_name() == 'sqlite' and url.database and url.database != ':memory:':
+    database = pathlib.Path(url.database)
+    paths.extend(pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm', '-journal'))
+for path in paths:
+    path = pathlib.Path(os.path.abspath(path))
+    if path == root:
+        raise ValueError('Configured data path overlaps the application source root')
+    if root in path.parents:
+        sys.stdout.buffer.write(os.fsencode(str(path.relative_to(root))) + b'\0')
+PY
+    ) || {
+      local status=$?
+      rm -f -- "$keep_file"
+      return "$status"
+    }
+    local -a configured_paths=()
+    mapfile -d '' -t configured_paths < "$keep_file"
+    rm -f -- "$keep_file"
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" "${configured_paths[@]}"
+      .env .venv data bambuddy.db bambuddy.db-wal bambuddy.db-shm bambuddy.db-journal
+      bambutrack.db bambutrack.db-wal bambutrack.db-shm bambutrack.db-journal
+      archive virtual_printer firmware icons projects overlay-branding photos
+      notification_photos spoolbuddy/ssh timelapse_frames backups logs)
+
     msg_info "Stopping Service"
     systemctl stop bambuddy
     msg_ok "Stopped Service"
 
-    msg_info "Backing up Configuration and Data"
-    create_backup /opt/bambuddy/.env \
-      /opt/bambuddy/data \
-      /opt/bambuddy/bambuddy.db \
-      /opt/bambuddy/bambutrack.db \
-      /opt/bambuddy/archive
-    msg_ok "Backed up Configuration and Data"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bambuddy" "maziggy/bambuddy" "tarball" "latest" "/opt/bambuddy"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bambuddy" "maziggy/bambuddy" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/bambuddy"
 
     msg_info "Updating Python Dependencies"
     cd /opt/bambuddy || exit
-    $STD uv venv --clear
+    $STD uv venv --allow-existing
     $STD uv pip install -r requirements.txt
     msg_ok "Updated Python Dependencies"
 
@@ -116,12 +168,13 @@ function update_script() {
     $STD npm run build
     msg_ok "Rebuilt Frontend"
 
-    restore_backup
-
     msg_info "Starting Service"
     systemctl start bambuddy
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
