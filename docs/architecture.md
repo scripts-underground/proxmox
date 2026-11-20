@@ -1474,7 +1474,12 @@ setpriv access check evaluates the mounted directory itself under that identity,
 not root or host-only ancestors. New directories receive the selected identity;
 existing metadata is preserved. Unknown image account names and inaccessible binds
 refuse with a diagnostic before either live file is published or startup attempted.
-The setpriv package is admitted only when the command is missing.
+The dependency owner admits setpriv by harmless current-identity probes of both
+consumed group modes, not by command name or version. A reduced BusyBox applet
+therefore selects Alpine's setpriv package; an already capable tool installs
+nothing. The same explicit capability form is available to other dependency
+callers. Exact package installation and repeated capability validation precede
+the selected-runtime access check; ordinary dependency-list callers are unchanged.
 Komodo probes effective dotenv key presence with a minimal native model, including
 export/space and explicitly
 empty values. Only missing current names receive literal legacy alias expressions;
@@ -1630,6 +1635,14 @@ recovery does not retire its obligation. File Browser uses this same owner and
 requests replacement activation only when owed. The addon-profile uninstall
 footer retires checked activation state only after the hook succeeds and before
 removing commands/marker; generic LXC footers are unchanged.
+
+Addon path canonicalization has one Bash/readlink owner, usable before Python or
+GNU utilities exist on Alpine. It resolves links before later dot-dot components,
+allows missing components and rejects active link cycles without changing valid
+repeated-link paths. Arcane, Homebrew maintenance and addon backup coordinates
+consume it. Lexical-only backup input spelling uses the existing normalizer and
+never dereferences the configuration link. Native BusyBox regression coverage is
+separate from the Debian-based runtime models and full application installation.
 
 Addon failure recovery uses a shared declared-input fingerprint owner. App
 adapters identify runtime trees, required/optional files and the selected unit;

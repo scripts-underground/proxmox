@@ -864,7 +864,7 @@ _addon_backup_path() {
 _addon_backup_root() {
   local _abr_out=$1 _abr_input=$2 _abr_root _abr_remaining _abr_dir='' _abr_part _abr_meta _abr_mode
   [[ "$_abr_input" == /* && "$_abr_input" != *[$'\n\r']* ]] || return 65
-  _abr_root=$(realpath -m -- "$_abr_input") || return $?
+  _abr_root=$(addon_resolve_path "$_abr_input") || return $?
   [[ "$_abr_root" != / ]] || return 65
   _abr_remaining=${_abr_root#/}
   while [[ -n "$_abr_remaining" ]]; do
@@ -918,10 +918,10 @@ addon_backup_create() {
   shift
   for _abc_path in "$@"; do
     [[ "$_abc_path" == /* && "$_abc_path" != *[$'\n\r']* ]] || return 65
-    _abc_path=$(realpath -ms -- "$_abc_path") || return $?
+    _addon_input_normalize _abc_path "$_abc_path" || return $?
     _abc_inputs+=("$_abc_path")
     # The consumer reads the target, not just the lexical configuration link.
-    _abc_resolved=$(realpath -m -- "$_abc_path") || return $?
+    _abc_resolved=$(addon_resolve_path "$_abc_path") || return $?
     [[ "$_abc_resolved" == "$_abc_path" ]] || _abc_inputs+=("$_abc_resolved")
   done
   if [[ -e "$_abc_record" || -L "$_abc_record" ]]; then
@@ -1079,6 +1079,55 @@ addon_service_retire() {
   [[ ${#_asr_rows[@]} == 3 ]] || return 65
   _addon_activation_read "$_asr_path" "${_asr_rows[2]}" || return $?
   rm -f -- "$_asr_path"
+}
+
+# Canonicalize existing links before later dot-dot components, allowing missing
+# components like realpath -m. BusyBox readlink supplies link data, not GNU flags.
+# Only active expansion cycles are rejected: repeated independent links are valid.
+addon_resolve_path() (
+  [[ $# == 1 && -n "$1" ]] || return 65
+  local -A _arp_links=()
+  _addon_resolve_path "$1" || return $?
+  printf '\n'
+)
+
+_addon_resolve_path() {
+  local _arp_pending=$1 _arp_result='' _arp_part _arp_candidate _arp_target _arp_status
+  if [[ "$_arp_pending" != /* ]]; then
+    _arp_result=$(pwd -P && printf '.') || return $?
+    _arp_result=${_arp_result%$'\n.'}
+    [[ "$_arp_result" != / ]] || _arp_result=''
+  fi
+  while [[ -n "$_arp_pending" ]]; do
+    _arp_part=${_arp_pending%%/*}
+    if [[ "$_arp_pending" == */* ]]; then _arp_pending=${_arp_pending#*/}; else _arp_pending=''; fi
+    case "$_arp_part" in
+      '' | .) ;;
+      ..) _arp_result=${_arp_result%/*} ;;
+      *)
+        _arp_candidate="$_arp_result/$_arp_part"
+        if [[ -L "$_arp_candidate" ]]; then
+          [[ ! -v '_arp_links[$_arp_candidate]' ]] || return 1
+          _arp_links["$_arp_candidate"]=1
+          # A sentinel retains newline bytes in link targets across capture.
+          _arp_target=$(readlink -n -- "$_arp_candidate" && printf '.') || return $?
+          _arp_target=${_arp_target%.}
+          [[ "$_arp_target" == /* ]] || _arp_target="$_arp_result/$_arp_target"
+          if _arp_result=$(_addon_resolve_path "$_arp_target" && printf '.'); then
+            _arp_result=${_arp_result%.}
+          else
+            _arp_status=$?
+            return "$_arp_status"
+          fi
+          unset '_arp_links[$_arp_candidate]'
+          [[ "$_arp_result" != / ]] || _arp_result=''
+        else
+          _arp_result=$_arp_candidate
+        fi
+        ;;
+    esac
+  done
+  printf '%s' "${_arp_result:-/}"
 }
 
 # Normalize lexical spelling without following links or depending on GNU realpath.
