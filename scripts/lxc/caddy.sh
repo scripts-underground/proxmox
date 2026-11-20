@@ -36,7 +36,8 @@ function install_script() {
   $STD apt install -y caddy
   msg_ok "Installed Caddy"
 
-  read -r -p "${TAB3}Would you like to install xCaddy Addon? <y/N> " prompt
+  local prompt=""
+  read -r -p "${TAB3}Would you like to install xCaddy Addon? <y/N> " prompt || true
   if [[ "${prompt,,}" =~ ^(y|yes)$ ]]; then
     setup_go
     fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary"
@@ -62,22 +63,28 @@ function update_script() {
 
   if [[ ! -d /etc/caddy ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   msg_info "Updating Caddy LXC"
   $STD apt update
   $STD apt upgrade -y
+  if [[ "${FORCE_DEPLOY:-0}" == 1 ]]; then
+    $STD apt install -y --reinstall caddy
+  fi
   msg_ok "Updated Caddy LXC"
 
   if command -v xcaddy > /dev/null 2>&1; then
     if check_for_gh_release "xcaddy" "caddyserver/xcaddy"; then
       setup_go
-      fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary"
+      fetch_and_deploy_gh_release "xcaddy" "caddyserver/xcaddy" "binary" "$CHECK_UPDATE_RELEASE"
 
       msg_info "Updating xCaddy"
       $STD xcaddy build
       msg_ok "Updated xCaddy"
+    else
+      local status=$?
+      [[ "$status" == 1 ]] || return "$status"
     fi
   fi
   msg_ok "Updated successfully!"
