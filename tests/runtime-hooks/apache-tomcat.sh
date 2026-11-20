@@ -5,11 +5,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=apache-tomcat
 script_type=lxc
-variants=(fresh override update current pending index download extract copy start)
+variants=(fresh override update current pending index empty download extract mismatch ambiguous copy stopped rollback cleanup start)
 hook_paths=(/tmp tmp)
 
 runtime_hooks_variant() {
-  case "$variant" in index | extract | start) fault=$variant ;; esac
+  case "$variant" in index | empty | extract | mismatch | ambiguous | rollback | cleanup | start) fault=$variant ;; stopped) fault=copy ;; esac
   [[ "$variant" != override ]] || role=install
 }
 runtime_hooks_model() {
@@ -30,24 +30,54 @@ runtime_hooks_model() {
     done
     if [[ "$url" == */tomcat-"$(cat "$c/major")"/ ]]; then
       [[ "$APP_FAULT" != index ]] || return 28
-      printf '<a href="v%s/">release</a>\n' "$(cat "$c/target-version")"
+      if [[ "$APP_FAULT" == empty ]]; then
+        printf '<html>no releases</html>\n'
+      else
+        printf '<a href="v%s/">release</a>\n' "$(cat "$c/target-version")"
+      fi
     else
       [[ "$APP_FAULT" != download ]] || return 22
       if [[ "$APP_FAULT" == extract ]]; then
         # A truncated distribution must never replace live files.
         tar -czf "$out" -C "$c" payload
         truncate -s 64 "$out"
+      elif [[ "$APP_FAULT" == mismatch ]]; then
+        # A milestone header must not satisfy the selected stable release.
+        mkdir -p "$c/mismatch"
+        command cp -a "$c/payload" "$c/mismatch/"
+        printf 'Apache Tomcat Version %s-M1\n' "$(cat "$c/target-version")" > "$c/mismatch/payload/RELEASE-NOTES"
+        tar -czf "$out" -C "$c/mismatch" payload
       else
         tar -czf "$out" -C "$c" payload
       fi
     fi
   }
   systemctl() {
-    printf '%s\n' "$*" >> "$c/services"
-    [[ "$1" != start && "$*" != *--now* ]] || {
-      [[ "$APP_FAULT" != start ]] || return 51
+    [[ "$1" != start || "$APP_FAULT" != start ]] || return 51
+    if [[ -f "$c/recovery-service" ]]; then
+      runtime_hooks_recovery_service "$@" || return
+    else
+      printf '%s\n' "$*" >> "$c/services"
+    fi
+    if [[ "$1" == start || "$*" == *--now* ]]; then
       "/opt/tomcat-$(cat "$c/major")/bin/catalina.sh" > "$c/started-version"
-    }
+    fi
+  }
+  # Live-copy failure as in the shared copy model; rollback also loses its restore.
+  cp() {
+    if [[ ("$APP_FAULT" == copy || "$APP_FAULT" == rollback) && "${!#}" == /opt/* && "$*" == *'/deploy-source.'* ]]; then
+      command cp -a -- "$3" "${!#}"
+      return 41
+    fi
+    command cp "$@"
+  }
+  mv() {
+    [[ "$APP_FAULT" != rollback || "$1" != -n ]] || return 1
+    command mv "$@"
+  }
+  rm() {
+    [[ "$APP_FAULT" != cleanup || $# != 3 || "$1" != -rf || "$3" != */tomcat-update.* || "$3" == */tomcat-update.*/* ]] || return 1
+    command rm "$@"
   }
 }
 runtime_hooks_setup() {
@@ -84,10 +114,17 @@ runtime_hooks_setup() {
       printf 'interrupted repair\n' > "$c/state/$app"
       rm "$c/opt/tomcat-11/bin/catalina.sh"
     fi
+    local initial=active
+    [[ "$variant" != stopped ]] || initial=inactive
+    runtime_hooks_recovery_setup tomcat "$initial" "$c/opt/tomcat-11"
+    if [[ "$variant" == ambiguous ]]; then
+      mkdir -p "$c/opt/tomcat-10/bin"
+      printf 'Apache Tomcat Version 10.1.48\n' > "$c/opt/tomcat-10/RELEASE-NOTES"
+    fi
   fi
 }
 runtime_hooks_expected() {
-  case "$fault" in index) expected=28 ;; extract) expected=251 ;; start) expected=51 ;; esac
+  case "$fault" in index) expected=28 ;; empty | mismatch | ambiguous) expected=65 ;; extract) expected=251 ;; rollback) expected=252 ;; start) expected=51 ;; esac
 }
 runtime_hooks_assert() {
   if [[ "$role" == install && "$rc" == 0 ]]; then
@@ -102,23 +139,33 @@ runtime_hooks_assert() {
     if [[ "$rc" == 0 ]]; then
       check "$("$c/opt/tomcat-11/bin/catalina.sh" 2> /dev/null || true)" consumer-11.0.29 "$app/$variant final executable consumer"
       check "$(cat "$c/opt/tomcat-11/lib/catalina.jar")" 'new runtime jar' "$app/$variant distribution library upgraded"
+      if [[ "$variant" == current ]]; then
+        check "$(grep -Ec '^(stop|start|restart) ' "$c/services" || true)" 0 "$app/$variant current release neither stops nor starts the service"
+      else
+        check "$(cat "$c/started-version" 2> /dev/null || true)" consumer-11.0.29 "$app/$variant service starts the deployed runtime"
+        check "$(cat "$c/recovery-state")" active "$app/$variant service active after update"
+      fi
     fi
     case "$fault" in
-      index | download | extract | copy)
+      index | empty | download | extract | mismatch | ambiguous | copy)
         check "$("$c/opt/tomcat-11/bin/catalina.sh" 2> /dev/null || true)" consumer-11.0.28 "$app/$variant failed preparation preserves old consumer"
         if [[ "$fault" != copy ]]; then
           check "$(grep -c '^stop ' "$c/services" || true)" 0 "$app/$variant failed preparation does not stop listener"
         fi
         ;;
     esac
+    case "$variant" in
+      copy) check "$(cat "$c/started-version" 2> /dev/null || true)" consumer-11.0.28 "$app/$variant verified rollback restarts the old runtime" ;;
+      stopped | rollback) check "$(test -f "$c/started-version" && printf started || printf none)" none "$app/$variant failed update leaves Tomcat stopped" ;;
+      cleanup) check "$(grep -c 'Unable to remove Tomcat staging directory' "$c/output" || true)" 1 "$app/$variant reports staging cleanup failure" ;;
+    esac
+    # The retry assertion observes only the retry's own service start.
+    rm -f -- "$c/started-version"
   fi
 }
+runtime_hooks_retry_needed() { [[ "$role" == update && "$expected" != 0 && "$variant" != ambiguous ]]; }
 runtime_hooks_retry_assert() {
   check "$("$c/opt/tomcat-11/bin/catalina.sh")" consumer-11.0.29 "$app/$variant pending retry consumer"
-}
-runtime_hooks_failure_services_assert() {
-  local expected_starts=0
-  [[ "$fault" != start ]] || expected_starts=1
-  check "$(grep -Ec '^(start|reload|restart)|--now' "$c/services" || true)" "$expected_starts" "$app/$variant failure admits only its explicit failed-start attempt"
+  check "$(cat "$c/started-version" 2> /dev/null || true)" consumer-11.0.29 "$app/$variant pending retry starts the deployed runtime"
 }
 runtime_hooks_main "$@"

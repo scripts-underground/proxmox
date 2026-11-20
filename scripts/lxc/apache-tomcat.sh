@@ -34,7 +34,8 @@ function install_script() {
   local listing latest_version tomcat_url tomcat_dir="/opt/tomcat-$var_lxc_tomcat_version"
   msg_info "Installing Tomcat ${tomcat_major}"
   listing=$(curl -fsSL "https://dlcdn.apache.org/tomcat/tomcat-${tomcat_major}/") || return $?
-  latest_version=$(printf '%s\n' "$listing" | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?/' | sort -V | tail -n1 | sed 's/\/$//; s/v//')
+  # A listing without release links yields an empty version, not an errexit abort.
+  latest_version=$(printf '%s\n' "$listing" | { grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?/' || [[ $? == 1 ]]; } | sort -V | tail -n1 | sed 's/\/$//; s/v//')
   if [[ -z "$latest_version" ]]; then
     msg_error "Failed to fetch latest version for Tomcat ${tomcat_major}"
     return 65
@@ -83,8 +84,14 @@ function update_script() {
   check_container_storage
   check_container_resources
 
-  local tomcat_dir tomcat_major current_version listing latest_version tomcat_url stage rc=0
-  tomcat_dir=$(ls -d /opt/tomcat-* 2> /dev/null | head -n1) || return 1
+  local tomcat_dir tomcat_major current_version listing latest_version staged_version tomcat_url stage rc=0
+  local -a trees=()
+  mapfile -t trees < <(compgen -G '/opt/tomcat-*' || true)
+  if [[ ${#trees[@]} -gt 1 ]]; then
+    msg_error "Multiple Tomcat trees found (${trees[*]}); cannot select the runtime to update"
+    return 65
+  fi
+  tomcat_dir=${trees[0]:-}
   if [[ -z $tomcat_dir || ! -d $tomcat_dir ]]; then
     msg_error "No ${APP} Installation Found!"
     return 1
@@ -95,9 +102,10 @@ function update_script() {
     msg_error "Cannot determine Tomcat major version from path: $tomcat_dir"
     return 65
   fi
-  current_version=$(grep -oP 'Apache Tomcat Version \K[0-9.]+' "$tomcat_dir/RELEASE-NOTES" 2> /dev/null || echo "unknown")
+  current_version=$(grep -oP 'Apache Tomcat Version \K[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?' "$tomcat_dir/RELEASE-NOTES" 2> /dev/null | head -n1) || current_version=unknown
   listing=$(curl -fsSL "https://dlcdn.apache.org/tomcat/tomcat-${tomcat_major}/") || return $?
-  latest_version=$(printf '%s\n' "$listing" | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?/' | sort -V | tail -n1 | sed 's/\/$//; s/v//')
+  # A listing without release links yields an empty version, not an errexit abort.
+  latest_version=$(printf '%s\n' "$listing" | { grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?/' || [[ $? == 1 ]]; } | sort -V | tail -n1 | sed 's/\/$//; s/v//')
 
   if [[ -z $latest_version ]]; then
     msg_error "Failed to fetch latest version for Tomcat ${tomcat_major}"
@@ -114,19 +122,40 @@ function update_script() {
   tomcat_url="https://dlcdn.apache.org/tomcat/tomcat-${tomcat_major}/v${latest_version}/bin/apache-tomcat-${latest_version}.tar.gz"
   fetch_and_deploy_from_url "$tomcat_url" "$stage" || rc=$?
   if [[ "$rc" == 0 ]]; then
-    if [[ ! -x "$stage/bin/catalina.sh" || ! -f "$stage/lib/catalina.jar" ]] ||
-      ! grep -Fq "Apache Tomcat Version ${latest_version}" "$stage/RELEASE-NOTES"; then
+    staged_version=$(grep -oP 'Apache Tomcat Version \K[0-9]+\.[0-9]+\.[0-9]+(-M[0-9]+)?' "$stage/RELEASE-NOTES" 2> /dev/null | head -n1) || staged_version=''
+    if [[ ! -x "$stage/bin/catalina.sh" || ! -f "$stage/lib/catalina.jar" || "$staged_version" != "$latest_version" ]]; then
       msg_error "Downloaded distribution does not match Tomcat ${latest_version}"
       rc=65
     fi
   fi
 
   # CATALINA_BASE shares this tree with the distribution. Keep operator-owned
-  # paths in place; merge mode also retains custom jars and other old-only files.
+  # paths in place; merge mode also retains old-only files such as added jars.
   local CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:-}"
   local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" conf webapps logs work temp bin/setenv.sh bin/setenv.bat)
+  # Fingerprint the replaceable runtime; keep paths never leave the live tree.
+  function tomcat_runtime_state() {
+    local entry
+    local -a keep=() prune=(-path './.deploy-aside.*')
+    read -r -a keep <<< "$CLEAN_INSTALL_KEEP"
+    for entry in "${CLEAN_INSTALL_KEEP_PATHS[@]}" "${keep[@]}"; do prune+=(-o -path "./$entry"); done
+    (
+      set -o pipefail
+      cd -- "$tomcat_dir" || exit
+      {
+        find . -mindepth 1 \( "${prune[@]}" \) -prune -o -printf '%P\t%y\t%m\t%U:%G\t%l\n' | LC_ALL=C sort || exit
+        find . -mindepth 1 \( "${prune[@]}" \) -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum || exit
+      } | sha256sum
+    )
+  }
+  local was_active=0 stopped=0 before_state='' after_state=''
   if [[ "$rc" == 0 ]]; then
+    before_state=$(tomcat_runtime_state) || rc=$?
+  fi
+  if [[ "$rc" == 0 ]]; then
+    if systemctl is-active --quiet tomcat; then was_active=1; fi
     msg_info "Stopping Tomcat service"
+    stopped=1
     systemctl stop tomcat || rc=$?
   fi
   if [[ "$rc" == 0 ]]; then
@@ -135,12 +164,22 @@ function update_script() {
   fi
   local cleanup_rc=0
   rm -rf -- "$stage" || cleanup_rc=$?
-  [[ "$rc" != 0 ]] || rc=$cleanup_rc
-  [[ "$rc" == 0 ]] || return "$rc"
+  if [[ "$rc" != 0 ]]; then
+    # Restart a previously running service only on the verified old runtime.
+    if [[ "$stopped" == 1 && "$was_active" == 1 ]]; then
+      if after_state=$(tomcat_runtime_state) && [[ "$after_state" == "$before_state" ]]; then
+        systemctl start tomcat || msg_error "Unable to restart the restored Tomcat runtime"
+      else
+        msg_error "Previous Tomcat runtime is not verified; service left stopped"
+      fi
+    fi
+    return "$rc"
+  fi
 
   msg_info "Starting Tomcat service"
-  systemctl start tomcat
+  systemctl start tomcat || return $?
   msg_ok "Started Tomcat service"
+  [[ "$cleanup_rc" == 0 ]] || msg_warn "Unable to remove Tomcat staging directory $stage"
   msg_ok "Updated successfully!"
   exit
 }
