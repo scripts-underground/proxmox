@@ -8,6 +8,9 @@ set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")
 if [[ "${1:-}" == --child ]]; then
   c="$CASE_ROOT"
+  # Creator Alpine setup emits the actual shared pre-Bash repository policy.
+  # shellcheck source=/dev/null
+  source "$c/core.func"
   # shellcheck source=/dev/null
   source "$OWNER_ROOT/misc/bundle.func"
   msg_info() { :; }
@@ -91,7 +94,8 @@ for spec in "${cases[@]}"; do
     ctbin="$c/ctbin"
     mkdir -p "$c/etc/apt" "$c/etc/apk" "$c/var/lib/apt/lists" "$c/root" "$ctbin" "$c/creator-parent"
     printf '%s\n' "$failfirst" > "$c/failfirst"
-    printf 'ID=%s\n' "$os" > "$c/etc/os-release"
+    printf 'ID=%s\nVERSION_ID=3.23.8\n' "$os" > "$c/etc/os-release"
+    sed -e "s|/lib/apk/|$c/lib/apk/|g" -e "s|/etc/|$c/etc/|g" "$OWNER_ROOT/misc/core.func" > "$c/core.func"
     printf 'deb http://original.example.invalid/debian bookworm main\n' > "$c/etc/apt/sources.list"
     : > "$c/events"
     : > "$c/pcts"
@@ -133,10 +137,10 @@ SHIM
     if [[ "$os" == alpine ]]; then
       if [[ -n "${ALPINE_BUSYBOX:-}" ]]; then
         ash="$ALPINE_BUSYBOX"
-        tools=(ash sh test mkdir mktemp rm cat sed ls cp mv chmod stat awk grep head cut tr xargs shuf)
+        tools=(ash sh test mkdir mktemp rm cat sed ls cp mv chmod stat awk grep head cut tr xargs shuf sort cmp)
         for t in "${tools[@]}"; do ln -s "$ALPINE_BUSYBOX" "$ctbin/$t"; done
       else
-        tools=(sh test mkdir mktemp rm cat sed ls cp mv chmod stat awk grep head cut tr xargs shuf)
+        tools=(sh test mkdir mktemp rm cat sed ls cp mv chmod stat awk grep head cut tr xargs shuf sort cmp)
         for t in "${tools[@]}"; do ln -s "$(command -v "$t")" "$ctbin/$t"; done
         ln -s "$(command -v sh)" "$ctbin/ash"
       fi
@@ -152,6 +156,7 @@ SHIM
     chmod +x "$ctbin/getent"
     # Region texts come from the actual owner; system paths are redirected into the case root.
     {
+      sed -n '/^_alpine_base_packages() {/,/^}/p' "$BF"
       if [[ "$mode" == repair ]]; then
         printf 'run_repair() {\n'
         awk '
