@@ -35,14 +35,14 @@ function install_script() {
     return 65
   fi
   # First anchor source-derived defaults when the install root itself is relative.
-  [[ "$var_addon_compose_file" != "$var_addon_install_path/compose.yaml" ]] || var_addon_compose_file=$(realpath -m -- "$var_addon_compose_file") || return $?
-  [[ "$var_addon_env_file" != "$var_addon_install_path/.env" ]] || var_addon_env_file=$(realpath -m -- "$var_addon_env_file") || return $?
+  [[ "$var_addon_compose_file" != "$var_addon_install_path/compose.yaml" ]] || var_addon_compose_file=$(addon_resolve_path "$var_addon_compose_file") || return $?
+  [[ "$var_addon_env_file" != "$var_addon_install_path/.env" ]] || var_addon_env_file=$(addon_resolve_path "$var_addon_env_file") || return $?
   # Bind relative selections once to the project, not the install caller's cwd.
-  var_addon_install_path=$(realpath -m -- "$var_addon_install_path") || return $?
+  var_addon_install_path=$(addon_resolve_path "$var_addon_install_path") || return $?
   [[ "$var_addon_compose_file" == /* ]] || var_addon_compose_file="$var_addon_install_path/$var_addon_compose_file"
   [[ "$var_addon_env_file" == /* ]] || var_addon_env_file="$var_addon_install_path/$var_addon_env_file"
-  var_addon_compose_file=$(realpath -m -- "$var_addon_compose_file") || return $?
-  var_addon_env_file=$(realpath -m -- "$var_addon_env_file") || return $?
+  var_addon_compose_file=$(addon_resolve_path "$var_addon_compose_file") || return $?
+  var_addon_env_file=$(addon_resolve_path "$var_addon_env_file") || return $?
   if [[ "$var_addon_compose_file" == "$var_addon_env_file" || -e "$var_addon_compose_file" || -L "$var_addon_compose_file" || -e "$var_addon_env_file" || -L "$var_addon_env_file" ]]; then
     msg_error "Arcane compose or environment path is already occupied; preserve it and use explicit adoption."
     return 65
@@ -134,11 +134,14 @@ function install_script() {
         $s.volumes[]? | select(.type == "bind" and ("unix://" + .target) == $host) | .source' "$model") || return $?
       if [[ -n "$socket" && -S "$socket" ]]; then groups=$(stat -Lc %g -- "$socket") || return $?; fi
     fi
-    if ! command -v setpriv > /dev/null 2>&1; then
-      if [[ "$OS_FAMILY" == alpine ]]; then
-        ensure_dependencies setpriv || return $?
-      else ensure_dependencies util-linux || return $?; fi
-    fi
+    local identity_package=util-linux probe_uid probe_gid
+    [[ "$OS_FAMILY" != alpine ]] || identity_package=setpriv
+    probe_uid=$(id -u) || return $?
+    probe_gid=$(id -g) || return $?
+    # BusyBox supplies setpriv without UID/GID/group switching. Probe harmless
+    # child commands, not its name/version, and verify both consumed group modes.
+    ensure_dependencies --capability "$identity_package" -- setpriv --reuid="$probe_uid" --regid="$probe_gid" --clear-groups sh -c : || return $?
+    ensure_dependencies --capability "$identity_package" -- setpriv --reuid="$probe_uid" --regid="$probe_gid" --groups="$probe_gid" sh -c : || return $?
     local -a group_args=(--clear-groups)
     [[ -z "$groups" ]] || group_args=(--groups="$groups")
     [[ "$projects_created" == 0 ]] || chown "$uid:$gid" "$var_addon_proj_dir" || return $?
@@ -208,7 +211,7 @@ function post_install_script() {
 }
 
 function update_script() {
-  var_addon_install_path=$(realpath -m -- "$var_addon_install_path") || return $?
+  var_addon_install_path=$(addon_resolve_path "$var_addon_install_path") || return $?
   [[ "$var_addon_compose_file" == /* ]] || var_addon_compose_file="$var_addon_install_path/$var_addon_compose_file"
   [[ "$var_addon_env_file" == /* ]] || var_addon_env_file="$var_addon_install_path/$var_addon_env_file"
   local -a compose_env=()
@@ -238,7 +241,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  var_addon_install_path=$(realpath -m -- "$var_addon_install_path") || return $?
+  var_addon_install_path=$(addon_resolve_path "$var_addon_install_path") || return $?
   [[ "$var_addon_compose_file" == /* ]] || var_addon_compose_file="$var_addon_install_path/$var_addon_compose_file"
   [[ "$var_addon_env_file" == /* ]] || var_addon_env_file="$var_addon_install_path/$var_addon_env_file"
   local -a compose_env=()

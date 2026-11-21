@@ -196,7 +196,7 @@ function post_install_script() {
 
 function update_script() {
   local prefix="${var_addon_brew_home}/.linuxbrew"
-  prefix=$(realpath -m -- "$prefix") || return $?
+  prefix=$(addon_resolve_path "$prefix") || return $?
   if [[ ! -x "${prefix}/bin/brew" ]]; then
     msg_error "No ${APP} installation found!"
     return 233
@@ -229,7 +229,7 @@ function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
   local prefix="${var_addon_brew_home}/.linuxbrew" owner record install_state
-  prefix=$(realpath -m -- "$prefix") || return $?
+  prefix=$(addon_resolve_path "$prefix") || return $?
   addon_install_status install_state "$prefix" homebrew || return $?
   if [[ "$install_state" != absent && ! -x "$prefix/bin/brew" ]]; then
     case "$install_state" in

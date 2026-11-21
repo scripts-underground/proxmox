@@ -210,6 +210,11 @@ pct() {
     exec)
       [[ "$3" == -- ]] || return 99
       shift 3
+      if [[ "$1" == mkdir ]]; then
+        [[ $# == 4 && "$2" == -p && "$3" == -- && "$4" == "$work" ]] || return 99
+        command "$@"
+        return $?
+      fi
       case "$1" in mktemp | chmod | mv | rm) ;; *) return 99 ;; esac
       local argument
       for argument in "${@:2}"; do
@@ -221,6 +226,21 @@ pct() {
   esac
 }
 APP=Probe NSAPP=probe REPO_BASE=offline CTID=9876
+for request in unrelated missing-p missing-separator extra-path extra-option other-command; do
+  args=(mkdir -p -- "$work")
+  case "$request" in
+    unrelated) args[3]="$work/forbidden-parent" ;;
+    missing-p) args=(mkdir -- "$work") ;;
+    missing-separator) args=(mkdir -p "$work") ;;
+    extra-path) args+=("$work/forbidden-extra") ;;
+    extra-option) args+=(--mode=0777) ;;
+    other-command) args=(touch "$work/forbidden-file") ;;
+  esac
+  rc=0
+  pct exec "$CTID" -- "${args[@]}" || rc=$?
+  [[ "$rc" == 99 ]]
+done
+printf 'PASS bundle transport admits only exact destination-parent preparation\n'
 ENABLE_GPU=yes GPU_TYPE='AMD NVIDIA' INSTALL_NVIDIA_DRIVERS=no CT_TYPE=0
 update_script() { printf '%s|%s|%s|%s\n' "$ENABLE_GPU" "$GPU_TYPE" "$INSTALL_NVIDIA_DRIVERS" "$CTTYPE"; }
 build_bundle update update_script "$work/bundle.sh" 0700 update_script
