@@ -8,7 +8,7 @@ repo: https://github.com/rustmailer/bichon
 site: https://github.com/rustmailer/bichon
 port: 15630
 cpu: 1
-ram: 512
+ram: 1024
 disk: 4
 maintainer: tremor021
 ---
