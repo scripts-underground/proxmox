@@ -67,26 +67,26 @@ function update_script() {
 
   if [[ ! -d /opt/cinny ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    return 1
+  fi
+  if [[ ! -f /opt/cinny/config.json ]]; then
+    msg_error "Missing /opt/cinny/config.json; restore the saved configuration before updating."
+    return 1
   fi
 
   if check_for_gh_release "cinny" "cinnyapp/cinny"; then
-    msg_info "Backing up Configuration"
-    cp /opt/cinny/config.json /opt/cinny_config.json.bak
-    msg_ok "Backed up Configuration"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cinny" "cinnyapp/cinny" "prebuild" "latest" "/opt/cinny" "cinny-*.tar.gz"
-
-    msg_info "Restoring Configuration"
-    cp /opt/cinny_config.json.bak /opt/cinny/config.json
-    rm -f /opt/cinny_config.json.bak
-    msg_ok "Restored Configuration"
+    # Read by the framework's checked replacement owner.
+    # shellcheck disable=SC2034
+    local CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:-} config.json"
+    fetch_and_deploy_gh_release "cinny" "cinnyapp/cinny" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/cinny" "cinny-*.tar.gz"
 
     msg_info "Restarting nginx"
     $STD rc-service nginx restart
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
-  exit
 }
 
 # framework bootstrap
