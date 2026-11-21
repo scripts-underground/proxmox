@@ -5,12 +5,95 @@
 # These inputs/outputs are consumed by the sourced producers and callbacks.
 # shellcheck disable=SC2034,SC2154
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
+source "$ROOT/tests/lib/runtime-hooks/contract.sh"
 
 check() {
   if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
     printf 'FAIL %s expected <%s>, got <%s>\n' "$3" "$2" "$1" >&2
     failures=$((failures + 1))
   fi
+}
+
+# External-effect models opt in by command, never by application name. Events
+# describe completed model work, not native package/build or service proof.
+runtime_hooks_event() {
+  python3 -B - "$c/events.jsonl" "${APP_ATTEMPT:-1}" "${INIT_SYSTEM:-unknown}" "$@" << 'PY'
+import json,sys
+path,attempt,manager,phase,command,cwd,*argv=sys.argv[1:]
+with open(path,'a') as f:
+    f.write(json.dumps(dict(attempt=int(attempt),manager=manager,phase=phase,command=command,cwd=cwd,argv=argv))+'\n')
+PY
+}
+runtime_hooks_event_count() {
+  python3 -B - "$c/events.jsonl" "${observation_attempt:-1}" "$@" << 'PY'
+import json,sys
+from pathlib import Path
+path,attempt,phase,command,cwd,*argv=sys.argv[1:]
+rows=[json.loads(line) for line in Path(path).read_text().splitlines()] if Path(path).exists() else []
+print(sum(row['attempt']==int(attempt) and row['phase']==phase and row['command']==command and row['cwd']==cwd and row['argv']==argv for row in rows))
+PY
+}
+runtime_hooks_completed_assert() {
+  local count
+  count=$(runtime_hooks_event_count complete "$@")
+  check "$((count > 0))" 1 "$app/$variant attempt ${observation_attempt:-1} completes $1 with exact inputs"
+}
+runtime_hooks_compose_assert() {
+  local file=$1 env=$2 expected=$3 observed
+  observed=$(
+    python3 -B - "$c/events.jsonl" "$observation_attempt" "$file" "$env" << 'PY'
+import json,sys
+from pathlib import Path
+path,attempt,file,env=sys.argv[1:]
+rows=[json.loads(line) for line in Path(path).read_text().splitlines()] if Path(path).exists() else []
+calls=[row['argv'] for row in rows if row['attempt']==int(attempt) and row['phase']=='enter' and row['command']=='docker' and row['argv'][0]=='compose' and any(action in row['argv'] for action in ('pull','up','down'))]
+def operand(args,flag):
+    indexes=[i for i,arg in enumerate(args) if arg==flag]
+    return args[indexes[0]+1] if len(indexes)==1 and indexes[0]+1<len(args) else None
+print(len(calls) if all(operand(args,'-f')==file and (operand(args,'--env-file')==env if env else '--env-file' not in args) for args in calls) else -1)
+PY
+  )
+  check "$observed" "$expected" "$app/$variant attempt $observation_attempt exact Compose file/environment operands"
+}
+runtime_hooks_retained_file_assert() {
+  check "$(cmp -s -- "$1" "$2" && printf preserved || printf changed)" preserved "$app/$variant failed teardown retains exact selected file"
+}
+runtime_hooks_observed_call() {
+  local command=$1 status=0 selected=${runtime_hooks_selected_service:-} action unit
+  shift
+  runtime_hooks_event enter "$command" "$PWD" "$@"
+  case "$command" in
+    systemctl | rc-service)
+      if [[ "$command" == systemctl ]]; then
+        [[ "$INIT_SYSTEM" == systemd ]] || return 65
+        action=$1 unit=${!#}
+      else
+        [[ "$INIT_SYSTEM" == openrc ]] || return 65
+        local -a operands=("$@")
+        [[ "${operands[0]}" != --ifstarted ]] || operands=("${operands[@]:1}")
+        unit=${operands[0]} action=${operands[1]}
+      fi
+      [[ ! -f "$c/recovery-service" ]] || selected=$(cat "$c/recovery-service")
+      case "$action" in
+        show | is-active | status | start | restart | try-restart | stop | enable | disable | reload)
+          [[ -z "$selected" || "${unit%.service}" == "${selected%.service}" ]] || return 65
+          ;;
+      esac
+      ;;
+  esac
+  "runtime_hooks_observed_$command" "$@"
+  status=$?
+  [[ "$status" != 0 ]] || runtime_hooks_event complete "$command" "$PWD" "$@"
+  return "$status"
+}
+runtime_hooks_observe_commands() {
+  local command
+  for command in "${runtime_hooks_observed_commands[@]}"; do
+    [[ "$command" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || return 65
+    declare -F "$command" > /dev/null || return 65
+    eval "$(declare -f "$command" | sed "1s/$command/runtime_hooks_observed_$command/")"
+    eval "$command() { runtime_hooks_observed_call $command \"\$@\"; }"
+  done
 }
 
 runtime_hooks_runtime_models() {
@@ -29,6 +112,28 @@ runtime_hooks_runtime_models() {
     printf '%s\n' "$*" >> "$c/services"
     if [[ "$1" == show ]]; then printf 'LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n'; fi
   }
+  busctl() {
+    local selected property=${!#} unit_path
+    [[ -f "$c/recovery-service" ]] || return 4
+    selected=$(cat "$c/recovery-service")
+    selected=${selected%.service}.service
+    unit_path="$c/etc/systemd/system/$selected"
+    case "$*" in
+      *'Manager LoadUnit s '*)
+        [[ "$property" == "$selected" ]] || return 4
+        printf '{"type":"o","data":["/fixture/selected"]}\n'
+        ;;
+      *'/fixture/selected org.freedesktop.systemd1.Unit '*)
+        case "$property" in
+          LoadState) printf '{"type":"s","data":"loaded"}\n' ;;
+          FragmentPath) jq -cn --arg path "$unit_path" '{type:"s",data:$path}' ;;
+          DropInPaths) printf '{"type":"as","data":[]}\n' ;;
+          *) return 4 ;;
+        esac
+        ;;
+      *) return 4 ;;
+    esac
+  }
   curl_download() {
     [[ "$APP_FAULT" != download ]] || return 22
     if [[ "$1" == *.deb ]]; then printf package > "$1"; else tar -czf "$1" -C "$c" payload; fi
@@ -44,6 +149,14 @@ runtime_hooks_runtime_models() {
     command cp "$@"
   }
   runtime_hooks_model
+  # Fault injection ends on a cold retry; the guest's init manager does not.
+  # Keep the first selected platform independent of APP_FAULT across attempts.
+  if [[ -f "$c/fixture-init-system" ]]; then
+    IFS= read -r INIT_SYSTEM < "$c/fixture-init-system" || return $?
+  elif [[ -n "${INIT_SYSTEM:-}" ]]; then
+    printf '%s\n' "$INIT_SYSTEM" > "$c/fixture-init-system"
+  fi
+  runtime_hooks_observe_commands
 }
 
 # Cases opt in with the service's prior state and complete runtime footprint.
@@ -61,16 +174,29 @@ runtime_hooks_recovery_setup() {
   printf '%s\n' "$2" > "$c/recovery-state"
   shift 2
   : > "$c/recovery-paths"
-  local path
+  local path service
+  service=$(cat "$c/recovery-service")
+  service=${service%.service}
+  mkdir -p "$c/etc/systemd/system" "$c/etc/init.d"
+  for path in "$c/etc/systemd/system/$service.service" "$c/etc/init.d/$service"; do
+    [[ -e "$path" ]] || printf 'fixture service input\n' > "$path"
+    printf '%s\0' "${path#/}" >> "$c/recovery-paths"
+  done
   for path in "$@"; do printf '%s\0' "${path#/}" >> "$c/recovery-paths"; done
   runtime_hooks_recovery_digest > "$c/recovery-before"
   : > "$c/recovery-starts"
 }
 runtime_hooks_recovery_service() {
   local action=$1 service=${!#} digest
-  if [[ "$action" == is-active || "$action" == status ]]; then
-    [[ "$(cat "$c/recovery-state")" == active ]]
+  if [[ "$action" == show ]]; then
+    [[ "$service" == "$(cat "$c/recovery-service")" ]] || return 4
+    printf 'LoadState=loaded\nActiveState=%s\nUnitFileState=enabled\n' "$(cat "$c/recovery-state")"
     return
+  fi
+  if [[ "$action" == is-active || "$action" == status ]]; then
+    [[ "$service" == "$(cat "$c/recovery-service")" ]] || return 4
+    [[ "$(cat "$c/recovery-state")" == active ]] && return 0
+    return 3
   fi
   printf '%s %s\n' "$action" "$service" >> "$c/services"
   [[ "$service" == "$(cat "$c/recovery-service")" ]] || return 0
@@ -83,6 +209,40 @@ runtime_hooks_recovery_service() {
       ;;
   esac
 }
+
+# A cold retry belongs to the original operation, not to the state left behind
+# by the failed attempt. App callbacks still prove their own updated consumer.
+runtime_hooks_backup_assert() {
+  local root=$1 input=$2 expected_bytes=$3 store
+  local -a stores=()
+  while IFS= read -r -d '' store; do stores+=("${store%/.manifest}"); done < <(find "$root" -mindepth 2 -maxdepth 2 -type f -name .manifest -print0)
+  check "${#stores[@]}" 1 "$app/$variant one operation snapshot survives retries"
+  [[ ${#stores[@]} == 1 ]] || return 0
+  store=${stores[0]}
+  check "$(stat -c %a "$store")" 700 "$app/$variant private backup store"
+  check "$(grep -xcF -- "$input" "$store/.manifest" || true)" 1 "$app/$variant backup manifest identifies actual configured input"
+  check "$(cat "$store/files$input")" "$expected_bytes" "$app/$variant actual consumed input was backed up"
+  check "$(test -e "$c/addon-backup-actions/$app" && printf pending || printf retired)" retired "$app/$variant successful operation retires backup receipt"
+}
+
+runtime_hooks_retry_services_assert() {
+  [[ -f "$c/recovery-service" ]] || return 0
+  local desired
+  case "${runtime_hooks_activation:-}" in
+    intent-preserving) desired=$(cat "$c/recovery-initial") ;;
+    start-on-success) desired=active ;;
+    *)
+      check "${runtime_hooks_activation:-undeclared}" 'intent-preserving or start-on-success' "$app/$variant service observer requires an explicit activation contract"
+      return 0
+      ;;
+  esac
+  check "$(cat "$c/recovery-state")" "$desired" "$app/$variant successful retry satisfies $runtime_hooks_activation activation"
+  if [[ "$desired" == active ]]; then
+    check "$(($(wc -l < "$c/recovery-starts") > retry_starts_before))" 1 "$app/$variant successful retry performs a fresh activation"
+  else
+    check "$(wc -l < "$c/recovery-starts")" 0 "$app/$variant successful retry never starts an initially stopped service"
+  fi
+}
 runtime_hooks_failure_services_assert() {
   local starts digest final initial desired=inactive
   starts=$(grep -Ec '^(start|reload|restart)|--now' "$c/services" || true)
@@ -92,7 +252,7 @@ runtime_hooks_failure_services_assert() {
   fi
   initial=$(cat "$c/recovery-initial")
   final=$(runtime_hooks_recovery_digest) || final=unverified
-  if [[ "$initial" == active && "$final" == "$(cat "$c/recovery-before")" ]]; then desired=active; fi
+  if [[ "$initial" == active && "$final" == "$(cat "$c/recovery-before")" && ! -f "$c/recovery-unverified" ]]; then desired=active; fi
   check "$(cat "$c/recovery-state")" "$desired" "$app/$variant failed update preserves safe prior service state"
   check "$starts" "$(wc -l < "$c/recovery-starts")" "$app/$variant no dependent service starts during recovery"
   while IFS= read -r digest; do
@@ -149,7 +309,11 @@ runtime_hooks_child() {
 runtime_hooks_invoke() {
   local invoke_role=$1 invoke_fault=$2 output=$3 build_log=$4 errors_log=$5
   case "$invoke_role" in install | update | uninstall) ;; *) return 65 ;; esac
-  env -i PATH="$PATH" HOME="$c/home" TMPDIR="$TMPDIR" APP_FIXTURE="$c" APP_CASE="$app" APP_ROLE="$invoke_role" APP_FAULT="$invoke_fault" APP="$app" NSAPP="$app" LOCAL_IP=10.20.30.40 VERBOSE="$mode" BUILD_LOG="$build_log" DEBUG_LOGFILE="$errors_log" MAINTENANCE_REFERENCES="$MAINTENANCE_REFERENCES" \
+  observation_attempt=0
+  [[ ! -f "$c/attempt" ]] || read -r observation_attempt < "$c/attempt"
+  observation_attempt=$((observation_attempt + 1))
+  printf '%s\n' "$observation_attempt" > "$c/attempt"
+  env -i PATH="$PATH" HOME="$c/home" TMPDIR="$TMPDIR" APP_ATTEMPT="$observation_attempt" APP_FIXTURE="$c" APP_CASE="$app" APP_ROLE="$invoke_role" APP_FAULT="$invoke_fault" APP="$app" NSAPP="$app" LOCAL_IP=10.20.30.40 VERBOSE="$mode" BUILD_LOG="$build_log" DEBUG_LOGFILE="$errors_log" MAINTENANCE_REFERENCES="$MAINTENANCE_REFERENCES" \
     CASE_ROOT="$c" FAULT="$invoke_fault" RUNTIME_HOOKS_CASE="$(realpath "$0")" unshare -m --propagation private -- bash "$0" --child < "$c/stdin" > "$output" 2>&1
 }
 
@@ -161,7 +325,7 @@ import pathlib,re,subprocess,sys,shlex
 root=pathlib.Path(sys.argv[1]);kind,app=sys.argv[2:4];c=pathlib.Path(sys.argv[4])
 mapping={'/etc':str(c/'etc'),'/root':str(c/'root')}
 mapping.update((key,str(c/value)) for key,value in zip(sys.argv[5::2],sys.argv[6::2],strict=True))
-pattern=r'(?<![A-Za-z0-9_./-])('+ '|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?=/|[\s"\x27]|$)'
+pattern=r'(?:(?<![A-Za-z0-9_./-])|(?<=:-))('+ '|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))+r')(?=/|[\s"\x27}]|$)'
 text=(root/'scripts'/kind/(app+'.sh')).read_text()
 (c/'source.sh').write_text(re.sub(pattern,lambda m:mapping[m[0]],text))
 # Native declare-f boundary preserves heredocs and source-declared defaults.
@@ -173,9 +337,16 @@ hooks+='\n'+tmpvar+'='+shlex.quote(str(c/'tmp'))+'\n'
 inventory=subprocess.check_output(['bash','-c','source "$1/misc/bundle.func"; _framework_library_inventory "$2"','inventory',str(root),kind],text=True)
 names=[line.split()[0] for line in inventory.splitlines()]
 for name in names:
- text=(root/'misc'/name).read_text().replace('/var/lib/scripts-underground/maintenance-locks',str(c/'maintenance-locks'))
- if name=='addon_lxc.func':text=text.replace('/var/lib/scripts-underground/addons',str(c/'addons'))
- (c/'framework'/name).write_text(text)
+    text=(root/'misc'/name).read_text().replace('/var/lib/scripts-underground/maintenance-locks',str(c/'maintenance-locks'))
+    if name=='addon_lxc.func':
+        text=text.replace('/var/lib/scripts-underground/addons',str(c/'addons'))
+        text=text.replace('/var/lib/scripts-underground/addon-service-actions',str(c/'addon-service-actions'))
+        text=text.replace('/var/lib/scripts-underground/addon-backup-actions',str(c/'addon-backup-actions'))
+        text=text.replace('/var/lib/scripts-underground/addon-teardowns',str(c/'addon-teardowns'))
+        text=text.replace('/var/lib/scripts-underground/addon-owned-files',str(c/'addon-owned-files'))
+        text=text.replace('/var/lib/scripts-underground/addon-install-attempts',str(c/'addon-install-attempts'))
+        text=text.replace('"/etc/', '"'+str(c/'etc')+'/')
+    (c/'framework'/name).write_text(text)
 # Install external-effect models after normal runtime initialization. The real
 # release, pending, locking and role owners remain inlined, not fixture copies.
 with (c/'framework'/names[-1]).open('a') as f:
@@ -191,12 +362,17 @@ PY
 }
 
 runtime_hooks_main() {
-  [[ "${RUNTIME_HOOKS_MODELS_ONLY:-0}" != 1 ]] || return 0
   case "${script_type:-}" in lxc | addon) ;; *)
     printf 'Declare script_type=lxc or addon\n' >&2
     return 65
     ;;
   esac
+  runtime_hooks_contract_read "${BASH_SOURCE[1]}" || return $?
+  if [[ "$runtime_hooks_contract_profile" != "$script_type" ]]; then
+    printf 'Runtime hooks: activation profile %s does not match caller %s\n' "$runtime_hooks_contract_profile" "$script_type" >&2
+    return 65
+  fi
+  [[ "${RUNTIME_HOOKS_MODELS_ONLY:-0}" != 1 ]] || return 0
   systemd-detect-virt --vm --quiet || exit 1
   : "${TMPDIR:?disk-backed TMPDIR required}" "${MAINTENANCE_REFERENCES:?immutable source metadata required}"
   case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac
@@ -261,15 +437,26 @@ PY
       fi
       if [[ "$rc" != 0 ]]; then runtime_hooks_failure_services_assert; fi
       runtime_hooks_assert
+      if [[ "$rc" == 0 ]]; then
+        runtime_hooks_deployment_assert
+        if [[ "${runtime_hooks_observe_recovery:-0}" == 1 && "$role" == update && "$variant" != *no-update ]]; then
+          retry_starts_before=0
+          runtime_hooks_retry_services_assert
+        fi
+      fi
       if [[ "$script_type" == addon && "$role" == uninstall ]]; then runtime_hooks_uninstall_assert; fi
       if runtime_hooks_retry_needed; then
         if [[ "$script_type" == addon ]]; then command_before=$(sha256sum "$c/local/sbin/update"); fi
         retry=0
+        retry_starts_before=0
+        [[ ! -f "$c/recovery-starts" ]] || retry_starts_before=$(wc -l < "$c/recovery-starts")
         runtime_hooks_invoke update none "$c/retry-output" "$c/retry.log" "$c/retry-errors.log" || retry=$?
         check "$retry" 0 "$app/$variant cold pending retry succeeds"
         check "$(test -f "$c/state/$pending_key" && printf present || printf absent)" absent "$app/$variant successful retry clears pending flag"
         check "$(cat "$c/external/database")" 'old PostgreSQL data' "$app/$variant retry preserves installed DB bytes"
         runtime_hooks_retry_assert
+        runtime_hooks_deployment_assert
+        runtime_hooks_retry_services_assert
         if [[ "$script_type" == addon ]]; then check "$(sha256sum "$c/local/sbin/update")" "$command_before" "$app/$variant pending retry uses the same frozen command"; fi
       fi
     done
@@ -293,6 +480,8 @@ runtime_hooks_uninstall_assert() {
 }
 runtime_hooks_retry_needed() { [[ "$role" == update && "$expected" != 0 ]]; }
 runtime_hooks_retry_assert() { :; }
+runtime_hooks_observed_commands=()
+runtime_hooks_deployment_assert() { :; }
 runtime_hooks_configuration_assert() {
   if [[ "$role" == update ]]; then
     after=$(sha256sum "$c/opt/$app/.env" 2> /dev/null) || after=missing

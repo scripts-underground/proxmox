@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual bundle writer, cold hook/config bytes and service-side config readback.
 # free, apk, OpenRC and surrounding framework lifecycle are explicit models.
 set -euo pipefail
@@ -110,7 +111,7 @@ MODELS
     # boundary as the existing Readarr fixture. No package/network bootstrapping.
     printf 'load_functions() { source "$CASE_ROOT/models.sh"; }\ncolor() { :; }\n' > "$c/cache/core.func"
     printf 'catch_errors() { :; }\n' > "$c/cache/error_handler.func"
-    printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
+    python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" > "$c/cache/install.func"
     printf 'setup_uv() { :; }\n' > "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
     creator=()

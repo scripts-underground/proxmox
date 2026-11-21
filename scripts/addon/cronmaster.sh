@@ -13,7 +13,7 @@ APP="CronMaster"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/cronmaster}"
-var_addon_config_path="${var_addon_config_path:-/opt/cronmaster/.env}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/.env}"
 var_addon_service_path="${var_addon_service_path:-/etc/systemd/system/cronmaster.service}"
 var_addon_service="${var_addon_service:-cronmaster}"
 var_addon_repo="${var_addon_repo:-fccview/cronmaster}"
@@ -51,14 +51,13 @@ function install_script() {
   AUTH_PASS="$(openssl rand -base64 18 | cut -c1-13)"
 
   msg_info "Creating configuration"
-  cat << EOF > "$var_addon_config_path"
+  addon_write_private_file "$var_addon_config_path" << EOF
 NODE_ENV=production
 AUTH_PASSWORD=${AUTH_PASS}
 PORT=${var_addon_default_port}
 HOSTNAME=0.0.0.0
 NEXT_TELEMETRY_DISABLED=1
 EOF
-  chmod 600 "$var_addon_config_path"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
@@ -83,14 +82,13 @@ EOF
   msg_ok "Created and started service"
 
   msg_info "Saving credentials"
-  cat << EOF > "$var_addon_creds_path"
+  addon_write_private_file "$var_addon_creds_path" << EOF
 CronMaster Credentials
 ======================
 Password: ${AUTH_PASS}
 
 Web UI: http://${LOCAL_IP}:${var_addon_default_port}
 EOF
-  chmod 600 "$var_addon_creds_path"
   msg_ok "Saved credentials to ${var_addon_creds_path}"
 }
 
@@ -104,19 +102,40 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "cronmaster" "$var_addon_repo" "${var_appversion:-}"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path" || return $?
+    local was_running=0 update_status=0 before after
+    # A failed publisher is not proof of a complete rollback. Include the whole
+    # Node runtime, configuration and effective unit before admitting recovery.
+    function cronmaster_state() (
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path" --unit "$var_addon_service"
+    )
+    before=$(cronmaster_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
-    systemctl stop "$var_addon_service" &> /dev/null || true
-    msg_ok "Stopped service"
-
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz"
-
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
-
-    msg_info "Starting service"
-    systemctl start "$var_addon_service"
-    msg_ok "Started service"
+    systemctl stop "$var_addon_service" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      addon_backup_create "$var_addon_backup_dir" "$var_addon_config_path" || update_status=$?
+      if [[ "$update_status" == 0 ]]; then
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "cronmaster" "$var_addon_repo" "prebuild" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_install_path" "cronmaster_*_prebuild.tar.gz" || update_status=$?
+      fi
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(cronmaster_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "$var_addon_service" || msg_warn "Unable to restart previous CronMaster service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous CronMaster installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "$var_addon_service" || return $?
+      msg_ok "Started service"
+    fi
+    addon_backup_complete "$var_addon_backup_dir" || return $?
     msg_ok "Updated successfully"
   else
     local release_status=$?

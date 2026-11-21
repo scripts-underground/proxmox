@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from framework_fixture import install_fixture
 
 ROOT = Path(sys.argv[1])
 WORK = Path(tempfile.mkdtemp(prefix='dragonfly-fixture.', dir=os.environ['TMPDIR']))
@@ -69,7 +70,7 @@ systemctl() {
   fi
 }
 curl() { python3 -B "$CASE_ROOT/http.py" "$@"; }
-curl_download() { printf '%s\n' "$2" >> "$CASE_ROOT/downloads"; printf package-model > "$1"; }
+curl_download() { printf '%s\n' "$2" >> "$CASE_ROOT/downloads"; command cp "$CASE_ROOT/package.deb" "$1"; }
 apt() {
   printf '%s\n' "$*" >> "$CASE_ROOT/packages"
   local arg
@@ -168,12 +169,16 @@ for arch in ('amd64', 'arm64'):
     write(c / 'dragonfly-cli.py', CLI, 0o755)
     write(c / 'capabilities.json', json.dumps(capabilities, sort_keys=True))
     write(c / 'http.py', HTTP)
+    # Package metadata and archive parsing are real framework inputs. Package
+    # installation/service effects remain the apt/systemctl models above.
+    write(c / 'package/DEBIAN/control', 'Package: su-dragonfly-probe\nVersion: 2.1\nArchitecture: ' + arch + '\nMaintainer: Fixture <fixture@example.invalid>\nDescription: Dragonfly package fixture\n')
+    subprocess.run(['dpkg-deb', '--build', str(c / 'package'), str(c / 'package.deb')], check=True, stdout=subprocess.DEVNULL)
     for name in ('core.func', 'error_handler.func', 'tools.func'):
         raw = (ROOT / 'misc' / name).read_text()
         if name == 'core.func':
             raw = raw.replace('/var/lib/scripts-underground/update-pending', str(c / 'pending')).replace('/var/lib/scripts-underground/maintenance-locks', str(c / 'locks'))
         write(c / 'stage' / name, raw)
-    write(c / 'stage/install.func', 'pkg_install() { :; }\nsetup_lxc() { :; }\n')
+    write(c / 'stage/install.func', install_fixture(ROOT))
     write(c / 'stage/github.func', 'clone_and_deploy_gh_commit() { :; }\nsource ' + shlex.quote(str(c / 'models.sh')) + '\n')
     compose = 'source ' + shlex.quote(str(ROOT / 'misc/bundle.func')) + '\nsource ' + shlex.quote(str(c / 'hooks.sh')) + '\n'
     compose += 'export APP=Dragonfly NSAPP=dragonfly REPO_BASE=https://fixture.invalid var_lxc_tmpdir=' + shlex.quote(str(c / 'tmp')) + '\n'

@@ -24,31 +24,48 @@ function install_script() {
     exit 1
   fi
 
+  # The packaged code-server@ unit runs as this account, not the installing
+  # shell's HOME. Resolve its native account before any package effects.
+  local passwd_entry svc_uid svc_gid svc_home config_path
+  passwd_entry=$(getent passwd "$var_addon_svc_user") || return $?
+  IFS=: read -r _ _ svc_uid svc_gid _ svc_home _ <<< "$passwd_entry"
+  if [[ "$svc_home" != /* || -z "$svc_uid" || -z "$svc_gid" ]]; then
+    msg_error "Could not resolve home and ownership for ${var_addon_svc_user}"
+    return 65
+  fi
+  config_path="${svc_home}/.config/code-server/config.yaml"
+  CODE_SERVER_CONFIG_PATH="$config_path"
+
   msg_info "Installing Dependencies"
   $STD apt update
   $STD apt install -y \
     curl \
-    git
+    git \
+    util-linux
   msg_ok "Installed Dependencies"
 
   msg_info "Installing ${APP}"
-  local config_path="${HOME}/.config/code-server/config.yaml"
-  local preexisting_config=false
-  if [[ -f "$config_path" ]]; then
-    preexisting_config=true
-  fi
-
   fetch_and_deploy_gh_release "$var_addon_app" "$var_addon_gh_repo" "binary" "latest" "/opt/coder-code-server" "code-server_*_$(get_system_arch).deb"
-  mkdir -p "${HOME}/.config/code-server/"
-
-  if [[ "$preexisting_config" == false ]]; then
-    cat << EOF > "$config_path"
-bind-addr: 0.0.0.0:${var_addon_default_port}
+  # Every traversal/write under an account-controlled home belongs to that
+  # account. Root must never follow its links and then chown a protected target.
+  runuser -u "$var_addon_svc_user" -- bash -s -- "$svc_home" "$var_addon_default_port" << 'ACCOUNT_CONFIG'
+set -euo pipefail
+home=$1 port=$2
+mkdir -p -- "$home/.config/code-server"
+config="$home/.config/code-server/config.yaml"
+if [[ -e "$config" || -L "$config" ]]; then
+  [[ -f "$config" ]] || { printf 'Invalid code-server configuration path: %s\n' "$config" >&2; exit 65; }
+else
+  umask 077
+  set -C
+  cat << EOF > "$config"
+bind-addr: 0.0.0.0:${port}
 auth: none
 password:
 cert: false
 EOF
-  fi
+fi
+ACCOUNT_CONFIG
   systemctl enable -q --now "code-server@${var_addon_svc_user}"
   systemctl restart "code-server@${var_addon_svc_user}"
   if ! systemctl is-active --quiet "code-server@${var_addon_svc_user}"; then
@@ -62,7 +79,7 @@ function post_install_script() {
   echo ""
   msg_ok "${APP} installed successfully"
   echo -e "${INFO}${YW}Web UI:${CL} ${BGN}http://${LOCAL_IP}:${var_addon_default_port}${CL}"
-  echo -e "${INFO}${YW}Config:${CL} ${HOME}/.config/code-server/config.yaml (auth: none by default)"
+  echo -e "${INFO}${YW}Config:${CL} ${CODE_SERVER_CONFIG_PATH} (auth: none by default)"
   echo -e "${INFO}${YW}Update:${CL} update-${APP_SLUG}   ${YW}Uninstall:${CL} uninstall-${APP_SLUG}"
 }
 

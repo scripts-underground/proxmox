@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # shellcheck disable=SC2034,SC2154
 # Callback inputs/outputs are supplied and consumed by the sourced harness.
 set -euo pipefail

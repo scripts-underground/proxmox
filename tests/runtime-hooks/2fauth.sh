@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # shellcheck disable=SC2034,SC2154
 # Cold hooks with real filesystem modes; PHP/package/service effects are modeled.
 set -euo pipefail

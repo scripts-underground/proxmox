@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual Fleet hooks and actual generated cold bundles (real _write_bundle, real tools.func
 # bytes inlined, no APPLICATION in the receiver) with the real setup_mysql_db and silent
 # wrapper. The MySQL engine, package, release, systemd and HTTP boundaries are explicit
@@ -91,7 +92,7 @@ MODELS
     # models that load these effect models after the real core wrapper.
     printf 'load_functions() { source "$CASE_ROOT/models.sh"; }\ncolor() { :; }\n' > "$c/cache/core.func"
     printf 'catch_errors() { :; }\n' > "$c/cache/error_handler.func"
-    printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
+    python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" > "$c/cache/install.func"
     cp "$ROOT/misc/tools.func" "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
     mkdir -p "$c/opt/fleet"

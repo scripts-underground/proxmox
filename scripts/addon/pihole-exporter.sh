@@ -117,29 +117,49 @@ function update_script() {
     exit 233
   fi
   if check_for_gh_release "pihole-exporter" "$var_addon_repo"; then
+    local was_running=0 update_status=0 before after
+    function pihole_exporter_state() (
+      local -a inputs=(--file "$var_addon_config_path")
+      [[ "$INIT_SYSTEM" != openrc ]] || inputs=(--optional "$var_addon_config_path")
+      addon_runtime_fingerprint --tree "$var_addon_install_path" "${inputs[@]}" --unit "$var_addon_service"
+    )
+    before=$(pihole_exporter_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service "$var_addon_service" stop &> /dev/null || true
+      rc-service "$var_addon_service" stop || update_status=$?
     else
-      systemctl stop "$var_addon_service" &> /dev/null || true
+      systemctl stop "$var_addon_service" || update_status=$?
     fi
-    msg_ok "Stopped service"
-
-    fetch_and_deploy_gh_release "pihole-exporter" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-    setup_go
-
-    msg_info "Building Pihole-Exporter"
-    cd "$var_addon_install_path" || exit
-    $STD /usr/local/bin/go build -o ./pihole-exporter
-    msg_ok "Built Pihole-Exporter"
-
-    msg_info "Starting service"
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service "$var_addon_service" start
-    else
-      systemctl start "$var_addon_service"
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        fetch_and_deploy_gh_release "pihole-exporter" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        setup_go || exit $?
+        msg_info "Building Pihole-Exporter"
+        cd "$var_addon_install_path" || exit $?
+        $STD /usr/local/bin/go build -o ./pihole-exporter || exit $?
+        msg_ok "Built Pihole-Exporter"
+      ) || update_status=$?
     fi
-    msg_ok "Started service"
+    if [[ "$update_status" != 0 ]]; then
+      after=$(pihole_exporter_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        if [[ "$INIT_SYSTEM" == openrc ]]; then
+          rc-service "$var_addon_service" start || msg_warn "Unable to restart previous Pi-hole exporter"
+        else
+          systemctl start "$var_addon_service" || msg_warn "Unable to restart previous Pi-hole exporter"
+        fi
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Pi-hole exporter is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "$var_addon_service" || return $?
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully!"
   else
     local release_status=$?

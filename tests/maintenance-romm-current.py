@@ -22,10 +22,7 @@ systemctl() {
   printf '%s\n' "$*" >> "$CASE_ROOT/service-calls"
   local action="$1" s; shift
   for s in "$@"; do
-    case "$action" in
-      stop) printf stopped > "$CASE_ROOT/service-$s" ;;
-      start|restart) printf running > "$CASE_ROOT/service-$s" ;;
-    esac
+    fixture_service_state "$action" "$CASE_ROOT/service-$s"
   done
 }
 curl_download() {
@@ -99,7 +96,7 @@ for verbose in ('no', 'yes'):
   core=(R/'misc/core.func').read_text().replace('/var/lib/scripts-underground/update-pending',str(c/'pending')).replace('/var/lib/scripts-underground/maintenance-locks',str(c/'locks'))
   write(c/'stage/core.func',core)
   for n in ('tools.func','error_handler.func'):write(c/'stage'/n,(R/'misc'/n).read_text())
-  write(c/'stage/install.func','pkg_install() { :; }\nsetup_lxc() { :; }\n')
+  write(c/'stage/install.func',install_fixture(R))
   write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
   text=(R/'scripts/lxc/romm.sh').read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
   hook=text[start:end].replace('/opt',str(c/'opt')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/angie',str(c/'angie')).replace('/etc/nginx',str(c/'nginx'))

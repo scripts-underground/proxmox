@@ -172,26 +172,54 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "filebrowser-quantum" "gtsteffaniak/filebrowser"; then
+    local was_running=0 update_status=0 cleanup_status=0 before after stage=''
+    function filebrowser_quantum_state() (
+      addon_runtime_fingerprint --file "$var_addon_bin_path" --file "$var_addon_conf_path" --unit filebrowser
+    )
+    before=$(filebrowser_quantum_state) || before=unverified
+    addon_service_begin filebrowser was_running || return $?
     msg_info "Stopping Service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service filebrowser stop &> /dev/null || true
+      rc-service filebrowser stop || update_status=$?
     else
-      systemctl stop filebrowser &> /dev/null || true
+      systemctl stop filebrowser || update_status=$?
     fi
-    msg_ok "Stopped Service"
-
-    msg_info "Updating ${APP}"
-    fetch_and_deploy_gh_release "filebrowser-quantum" "gtsteffaniak/filebrowser" "singlefile" "$CHECK_UPDATE_RELEASE" "/usr/local/bin" "linux-$(get_system_arch uname)-filebrowser"
-    mv -f /usr/local/bin/filebrowser-quantum "$var_addon_bin_path"
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped Service"
+      stage=$(mktemp -d "$(dirname "$var_addon_bin_path")/.filebrowser-quantum.XXXXXXXX") || update_status=$?
+      if [[ "$update_status" == 0 ]]; then
+        msg_info "Updating ${APP}"
+        (
+          fetch_and_deploy_gh_release "filebrowser-quantum" "gtsteffaniak/filebrowser" "singlefile" "$CHECK_UPDATE_RELEASE" "$stage" "linux-$(get_system_arch uname)-filebrowser" || exit $?
+          mv -f -- "$stage/filebrowser-quantum" "$var_addon_bin_path" || exit $?
+        ) || update_status=$?
+        rm -f -- "$stage/filebrowser-quantum" || cleanup_status=$?
+        rmdir -- "$stage" || cleanup_status=$?
+      fi
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(filebrowser_quantum_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        if [[ "$INIT_SYSTEM" == openrc ]]; then
+          rc-service filebrowser start || msg_warn "Unable to restart previous FileBrowser Quantum service"
+        else
+          systemctl start filebrowser || msg_warn "Unable to restart previous FileBrowser Quantum service"
+        fi
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous FileBrowser Quantum installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
     msg_ok "Updated ${APP}"
-
-    msg_info "Starting Service"
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service filebrowser start
-    else
-      systemctl start filebrowser
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting Service"
+      addon_service_complete filebrowser || return $?
+      msg_ok "Started Service"
     fi
-    msg_ok "Started Service"
+    if [[ "$cleanup_status" != 0 ]]; then
+      msg_warn "Updated runtime activated, but publication cleanup failed; inspect $stage"
+      return "$cleanup_status"
+    fi
     msg_ok "Updated successfully!"
   else
     local release_status=$?

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Cold Colanode hook and actual replacement helper; network, npm and services
 # are modeled. Run only through the VM-owned maintenance runtime suite.
 set -euo pipefail

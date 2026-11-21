@@ -109,48 +109,51 @@ function update_script() {
     exit 233
   fi
   if check_for_gh_release "qbittorrent-exporter" "$var_addon_repo"; then
-    # v2.0.0 breaking change: username/password login was replaced by an API key
-    if [[ "$(printf '%s\n' "2.0.0" "$CHECK_UPDATE_RELEASE" | sort -V | tail -n1)" == "$CHECK_UPDATE_RELEASE" ]] &&
-      ! grep -q "QBITTORRENT_API_KEY" "$var_addon_config_path" 2> /dev/null; then
-      echo ""
-      msg_warn "Version 2.0.0 introduces a breaking change: username/password login has been replaced by an API key."
-      echo -e "${TAB3}${INFO} You must create an API key in qBittorrent under Tools > Options > Web UI > API key"
-      echo ""
-      echo -n "${TAB3}Enter your qBittorrent API key (or press Enter to abort): "
-      read -r QBITTORRENT_API_KEY || true
-      if [[ -z "${QBITTORRENT_API_KEY:-}" ]]; then
-        msg_warn "No API key provided. Update aborted."
-        exit 0
-      fi
-      sed -i '/^QBITTORRENT_USERNAME=/d' "$var_addon_config_path"
-      sed -i '/^QBITTORRENT_PASSWORD=/d' "$var_addon_config_path"
-      echo "QBITTORRENT_API_KEY=\"${QBITTORRENT_API_KEY}\"" >> "$var_addon_config_path"
-      msg_ok "API key saved to configuration"
-    fi
-
+    # Upstream v2 retains legacy authentication. Preserve the operator's login
+    # method rather than forcing a credential migration unrelated to the server.
+    local was_running=0 update_status=0 before after
+    function qbittorrent_exporter_state() (
+      local -a inputs=(--file "$var_addon_config_path")
+      [[ "$INIT_SYSTEM" != openrc ]] || inputs=(--optional "$var_addon_config_path")
+      addon_runtime_fingerprint --tree "$var_addon_install_path" "${inputs[@]}" --unit "$var_addon_service"
+    )
+    before=$(qbittorrent_exporter_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service "$var_addon_service" stop &> /dev/null || true
+      rc-service "$var_addon_service" stop || update_status=$?
     else
-      systemctl stop "$var_addon_service" &> /dev/null || true
+      systemctl stop "$var_addon_service" || update_status=$?
     fi
-    msg_ok "Stopped service"
-
-    fetch_and_deploy_gh_release "qbittorrent-exporter" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-    setup_go
-
-    msg_info "Building qBittorrent-Exporter"
-    cd "$var_addon_install_path" || exit
-    $STD /usr/local/bin/go build -o ./qbittorrent-exporter
-    msg_ok "Built qBittorrent-Exporter"
-
-    msg_info "Starting service"
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service "$var_addon_service" start
-    else
-      systemctl start "$var_addon_service"
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        fetch_and_deploy_gh_release "qbittorrent-exporter" "$var_addon_repo" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        setup_go || exit $?
+        msg_info "Building qBittorrent-Exporter"
+        cd "$var_addon_install_path" || exit $?
+        $STD /usr/local/bin/go build -o ./qbittorrent-exporter || exit $?
+        msg_ok "Built qBittorrent-Exporter"
+      ) || update_status=$?
     fi
-    msg_ok "Started service"
+    if [[ "$update_status" != 0 ]]; then
+      after=$(qbittorrent_exporter_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        if [[ "$INIT_SYSTEM" == openrc ]]; then
+          rc-service "$var_addon_service" start || msg_warn "Unable to restart previous qBittorrent exporter"
+        else
+          systemctl start "$var_addon_service" || msg_warn "Unable to restart previous qBittorrent exporter"
+        fi
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous qBittorrent exporter is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "$var_addon_service" || return $?
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully!"
   else
     local release_status=$?
