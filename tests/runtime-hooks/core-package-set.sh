@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Real package helper; APT/dpkg are returning models, never host package effects.
 set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")

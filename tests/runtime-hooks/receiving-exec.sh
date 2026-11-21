@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual customization and repair regions of build_container with the actual receiving-context
 # owner. The CT is a model: pct exec keeps the creator environment (PVE keep-env default) and runs
 # the command with a distro PATH of shims/real tools; package managers are shims that use TMPDIR

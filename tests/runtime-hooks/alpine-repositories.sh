@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual creator fragment, package helpers and cold update runner. Package/network
 # commands and system paths are models; native CT proof is a separate gate.
 set -euo pipefail

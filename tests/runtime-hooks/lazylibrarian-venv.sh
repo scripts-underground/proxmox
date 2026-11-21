@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual cold hooks, uv/Python/venv/install/import and generated ExecStart consumer.
 # App source, OS packages, setup_uv provisioning and systemctl are models.
 set -euo pipefail

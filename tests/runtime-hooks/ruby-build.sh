@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Real setup_ruby and caller selection; package/network/compiler/rbenv are models.
 set -euo pipefail
 : "${TMPDIR:?disk-backed TMPDIR required}"

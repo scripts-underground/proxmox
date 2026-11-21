@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual release helper/cold hooks/checksum/tar/ELF and writer-generated bundles.
 # HTTP transport, architecture detection, APT and service effects are models.
 set -euo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Shared addon backup operation custody; real checked records and backup files.
 # shellcheck disable=SC2034
 set -euo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Cold actual lifecycle regions and writer; PVE, OS setup and diagnostics modeled.
 set -euo pipefail
 systemd-detect-virt --vm --quiet || exit 1
