@@ -19,6 +19,7 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
+  local CLEAN_INSTALL_KEEP="data ${CLEAN_INSTALL_KEEP:-}"
   msg_info "Installing Dependencies"
   $STD apt install -y libasound2 sox alsa-utils ffmpeg
   msg_ok "Installed Dependencies"
@@ -28,8 +29,8 @@ function install_script() {
   msg_info "Setting up BirdNET-Go"
   cp /opt/birdnet/birdnet-go /usr/local/bin/birdnet-go
   chmod +x /usr/local/bin/birdnet-go
-  cp -r /opt/birdnet/libtensorflowlite_c.so /usr/local/lib/ 2> /dev/null || true
-  cp -r /opt/birdnet/libonnxruntime.so /usr/local/lib/ 2> /dev/null || true
+  cp -r /opt/birdnet/libtensorflowlite_c.so /usr/local/lib/
+  cp -r /opt/birdnet/libonnxruntime.so /usr/local/lib/
   ldconfig
   mkdir -p /opt/birdnet/data/clips
   msg_ok "Set up BirdNET-Go"
@@ -63,27 +64,40 @@ function post_install_script() {
 }
 
 function update_script() {
+  local CLEAN_INSTALL_KEEP="data ${CLEAN_INSTALL_KEEP:-}"
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -f /usr/local/bin/birdnet-go ]]; then
+  if [[ ! -d /opt/birdnet ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    return 1
+  fi
+  if [[ "${UPDATE_FORCE:-0}" != 1 ]]; then
+    local runtime
+    for runtime in /usr/local/bin/birdnet-go /usr/local/lib/libtensorflowlite_c.so /usr/local/lib/libonnxruntime.so; do
+      if [[ ! -f "$runtime" || ! -s "$runtime" || ("$runtime" == /usr/local/bin/birdnet-go && ! -x "$runtime") ]]; then
+        msg_error "Incomplete ${APP} Installation: ${runtime}. Rerun update to repair."
+        return 1
+      fi
+    done
   fi
   if check_for_gh_release "birdnet" "tphakala/birdnet-go"; then
     msg_info "Stopping Service"
     systemctl stop birdnet
     msg_ok "Stopped Service"
-    fetch_and_deploy_gh_release "birdnet" "tphakala/birdnet-go" "prebuild" "latest" "/opt/birdnet" "birdnet-go-linux-$(get_system_arch)*.tar.gz"
+    fetch_and_deploy_gh_release "birdnet" "tphakala/birdnet-go" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/birdnet" "birdnet-go-linux-$(get_system_arch)*.tar.gz"
     cp /opt/birdnet/birdnet-go /usr/local/bin/birdnet-go
     chmod +x /usr/local/bin/birdnet-go
-    cp -r /opt/birdnet/libtensorflowlite_c.so /usr/local/lib/ 2> /dev/null || true
-    cp -r /opt/birdnet/libonnxruntime.so /usr/local/lib/ 2> /dev/null || true
+    cp -r /opt/birdnet/libtensorflowlite_c.so /usr/local/lib/
+    cp -r /opt/birdnet/libonnxruntime.so /usr/local/lib/
     ldconfig
     msg_info "Starting Service"
     systemctl start birdnet
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
