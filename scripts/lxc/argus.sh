@@ -59,6 +59,8 @@ service:
       web_url: https://github.com/release-argus/Argus/blob/master/CHANGELOG.md
 
   community-scripts/ProxmoxVE:
+    options:
+      semantic_versioning: false
     latest_version:
       type: github
       url: community-scripts/ProxmoxVE
@@ -112,12 +114,15 @@ function update_script() {
     systemctl stop argus
     msg_ok "Stopped Service"
 
-    fetch_and_deploy_gh_release "Argus" "release-argus/Argus" "singlefile" "latest" "/opt/argus" "Argus*linux-$(get_system_arch)"
+    fetch_and_deploy_gh_release "Argus" "release-argus/Argus" "singlefile" "$CHECK_UPDATE_RELEASE" "/opt/argus" "Argus*linux-$(get_system_arch)"
 
     msg_info "Starting Service"
     systemctl start argus
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

@@ -132,8 +132,17 @@ pct() {
       cp -- "$3" "$4"
       ;;
     exec)
+      [[ "$2" == "$CTID" && "$3" == -- ]] || return 99
       shift 3
-      case "$1" in mktemp | chmod | mv | rm) command "$@" ;; *) return 99 ;; esac
+      case "$1" in
+        mkdir)
+          # Both delivered bundles have this exact destination parent.
+          [[ $# == 4 && "$2" == -p && "$3" == -- && "$4" == "$work" ]] || return 99
+          command "$@"
+          ;;
+        mktemp | chmod | mv | rm) command "$@" ;;
+        *) return 99 ;;
+      esac
       ;;
     *) return 99 ;;
   esac
@@ -143,6 +152,22 @@ _addon_bundle_write() {
   printf '%s\n' "$3" > "$work/addon-stage"
   cp -- "$3/core.func" "$work/addon-bytes"
 }
+
+# Admit only the receiver's parent preparation, not arbitrary mkdir effects.
+for request in unrelated missing-p missing-separator extra-path extra-option other-command; do
+  args=(mkdir -p -- "$work")
+  case "$request" in
+    unrelated) args[3]="$work/forbidden-parent" ;;
+    missing-p) args=(mkdir -- "$work") ;;
+    missing-separator) args=(mkdir -p "$work") ;;
+    extra-path) args+=("$work/forbidden-extra") ;;
+    extra-option) args+=(--mode=0777) ;;
+    other-command) args=(touch "$work/forbidden-file") ;;
+  esac
+  rc=0
+  pct exec "$CTID" -- "${args[@]}" || rc=$?
+  check "$rc" 99 "transport refuses $request"
+done
 
 for seed in a b; do
   export TMPDIR="$work/root-$seed"
