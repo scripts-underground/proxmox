@@ -93,17 +93,39 @@ function update_script() {
     # Keep application state at its live paths even if deployment/build fails.
     # Read configured paths with the installed application's own parsers before
     # replacing its source. An active service's environment takes precedence.
-    local keep_file service_pid
+    local keep_file service_pid reader=/opt/bambuddy/.venv/bin/python reader_temp=''
     keep_file=$(mktemp) || return $?
     service_pid=$(systemctl show bambuddy --property=MainPID --value) || {
       local status=$?
       rm -f -- "$keep_file"
       return "$status"
     }
+    # A previous updater may have emptied .venv before a failed install. Repair
+    # the reader in a disposable environment, never the live application's env.
+    if ! "$reader" -c 'import pydantic, pydantic_settings, sqlalchemy' > /dev/null 2>&1; then
+      reader_temp=$(mktemp -d) || {
+        local status=$?
+        rm -f -- "$keep_file"
+        return "$status"
+      }
+      if (
+        cd /opt/bambuddy &&
+          $STD uv venv --python 3.13 "$reader_temp" &&
+          $STD uv pip install --python "$reader_temp/bin/python" -r requirements.txt
+      ); then
+        reader="$reader_temp/bin/python"
+      else
+        local status=$?
+        rm -f -- "$keep_file"
+        rm -rf -- "$reader_temp"
+        return "$status"
+      fi
+    fi
     (
       cd /opt/bambuddy || exit
-      .venv/bin/python - "$service_pid" > "$keep_file" << 'PY'
+      "$reader" - "$service_pid" > "$keep_file" << 'PY'
 import os, pathlib, shlex, subprocess, sys
+from urllib.parse import urlsplit, unquote_to_bytes
 root = pathlib.Path('/opt/bambuddy')
 pid = int(sys.argv[1])
 if pid:
@@ -114,6 +136,9 @@ if pid:
             if key != 'TMPDIR':
                 os.environ[key] = value
 else:
+    files = subprocess.check_output(['systemctl', 'show', 'bambuddy', '--property=EnvironmentFiles', '--value'], text=True)
+    if files.strip():
+        raise ValueError('Cannot discover a stopped service with EnvironmentFile entries; start Bambuddy and retry')
     environment = subprocess.check_output(['systemctl', 'show', 'bambuddy', '--property=Environment', '--value'], text=True)
     for entry in shlex.split(environment):
         key, value = entry.split('=', 1)
@@ -121,26 +146,38 @@ else:
             os.environ[key] = value
 from backend.app.core.config import settings
 from sqlalchemy.engine import make_url
+from sqlalchemy.util import asbool
 paths = [settings.archive_dir, settings.plate_calibration_dir, settings.log_dir]
 base = pathlib.Path(settings.base_dir)
 if base.absolute() != root:
     paths.append(base)
 url = make_url(settings.database_url)
 if url.get_backend_name() == 'sqlite' and url.database and url.database != ':memory:':
-    database = pathlib.Path(url.database)
+    filename = url.database
+    if asbool(url.query.get('uri', False)) and filename.startswith('file:'):
+        uri = urlsplit(filename)
+        if uri.netloc not in ('', 'localhost') or uri.fragment or uri.query or not uri.path:
+            raise ValueError('Cannot resolve configured SQLite file URI safely')
+        filename = os.fsdecode(unquote_to_bytes(uri.path))
+    database = pathlib.Path(filename)
     paths.extend(pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm', '-journal'))
 for path in paths:
     path = pathlib.Path(os.path.abspath(path))
     if path == root:
         raise ValueError('Configured data path overlaps the application source root')
     if root in path.parents:
-        sys.stdout.buffer.write(os.fsencode(str(path.relative_to(root))) + b'\0')
+        relative = str(path.relative_to(root))
+        if any(char in relative for char in '*?[]\0'):
+            raise ValueError('Configured data path is incompatible with deployment keep paths')
+        sys.stdout.buffer.write(os.fsencode(relative) + b'\0')
 PY
     ) || {
       local status=$?
       rm -f -- "$keep_file"
+      [[ -z "$reader_temp" ]] || rm -rf -- "$reader_temp"
       return "$status"
     }
+    [[ -z "$reader_temp" ]] || rm -rf -- "$reader_temp"
     local -a configured_paths=()
     mapfile -d '' -t configured_paths < "$keep_file"
     rm -f -- "$keep_file"
