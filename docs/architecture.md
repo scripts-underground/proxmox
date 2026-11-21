@@ -139,9 +139,26 @@ EXIT cleanup/pending retirement. No second global EXIT trap or explicit unlock i
 needed: the last kernel FD closure releases ownership. Productive children retain
 it after launcher death until their work ends. Only msg_info's actual background
 UI spawn closes the maintenance FD before spinner; foreground spinner calls and
-productive work do not. PID 1-started services do not inherit the hook's descriptor.
-A directly spawned persistent daemon that retains the descriptor keeps the app
-lock until it exits; later independent updates then report 75.
+productive work do not. Fresh acquisition also installs a framework-owned
+service-launch boundary first in PATH for installed executable `rc-service`,
+`openrc`, `supervise-daemon`, `start-stop-daemon`, `service`, `systemctl` and
+`systemd-run`. Private per-key `.KEY.services` directories under the validated
+lock namespace hold atomically published wrappers. A wrapper restores the prior
+PATH, validates the baked descriptor's device/inode, closes only that descriptor,
+then execs the resolved real tool with unchanged argv, stdin and status. Services
+therefore do not keep update ownership even when their manager spawns locally,
+as OpenRC's supervise-daemon does. Ordinary productive descendants still inherit
+the lock, including after launcher death. Same-key borrows reuse this boundary;
+independent nested owners chain inherited boundaries. Existing unsafe wrapper
+metadata or missing publication executables refuse69 before hook effects. Manager
+availability probes retain their meaning because absent tools get no shim.
+The per-key directory is reusable metadata, not an EXIT-cleaned stage: a
+productive descendant may need it after its launcher dies. Publication removes
+only its exact private incomplete file on failure. This is a name-resolution
+boundary, not interception of absolute executable paths, direct init scripts,
+shell functions or deliberately replaced PATH values; those consumers must be
+audited. Directly daemonizing productive commands outside a service manager still
+retain the descriptor and are not silently reclassified as detached services.
 This protocol covers participating generations only: drain old unguarded updaters
 before deploying/refreshing frozen bundles. Framework source-time bootstrap still
 precedes update ownership; this does not promise no effects from an old/missing

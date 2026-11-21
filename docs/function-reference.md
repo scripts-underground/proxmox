@@ -74,6 +74,14 @@ Each is called by `build.func` during `setup_script`:
 - **`run_update_script [--clean]`** — Runs the `update_script` hook and always exits. Pure argument/key validation precedes a fresh maintenance owner; in-lineage wrapper re-entry exits 70. Ownership covers pending admission, hook/recovery, outer `on_exit` cleanup and pending retirement, including explicit hook exit. Writes `/var/lib/scripts-underground/update-pending/<NSAPP|APP_SLUG>` before the hook; successful EXIT removes it. An existing flag or `--clean` exports `UPDATE_FORCE=1 FORCE_DEPLOY=1`; other options exit 65. Busy 75 runs no preparation/hook/cleanup or pending mutation. Refusals use non-spawning stderr diagnostics without stopping another owner's spinner. Called by `lxc_setup` and LXC update bundles.
 - **`_run_update_script <prepare-function-or-empty> [--clean]`** — Internal literal callback injection used by addon bundles with `addon_baseline`. Validates the declared preparation function, acquires a fresh owner, calls preparation normally **before** pending/FORCE admission, then follows the public update path. Preparation failure preserves its status and any prior pending bit without arming app cleanup. No public `--prepare` option or addon import in core.
 
+Fresh maintenance ownership also activates private PATH wrappers for installed
+rc-service/openrc/supervise-daemon/start-stop-daemon/service/systemctl/systemd-run
+executables. Each restores the prior PATH and closes only the matching held lock
+FD before exec; productive children retain ownership unchanged. Wrapper creation
+requires executable mktemp/chmod/mv/rm and refuses unsafe existing metadata with69.
+Absolute executable paths and deliberately replaced PATH bypass this boundary;
+audit service-launch consumers rather than asking hooks to close private FDs.
+
 The fresh owner clears its transient pending/cleanup variables after acquiring,
 before preparation; refusals do not clear an outer owner's state. Those variables
 remain non-exported after normal assignment even under set-a, so an exec'd
