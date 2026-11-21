@@ -22,7 +22,7 @@ function install_script() {
   ARCH=$(uname -m)
   fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "latest" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
 
-  read -r -p "${TAB3}Enter the public URL for Bichon (e.g., https://bichon.yourdomain.com) or leave empty to use container IP: " bichon_url
+  read -r -p "${TAB3}Enter the public URL for Bichon (e.g., https://bichon.yourdomain.com) or leave empty to use container IP: " bichon_url || true
   if [[ -z "$bichon_url" ]]; then
     BICHON_PUBLIC_URL="http://$LOCAL_IP:15630"
   else
@@ -32,13 +32,26 @@ function install_script() {
   msg_info "Setting up Bichon"
   mkdir -p /opt/bichon-data
   BICHON_ENC_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
-  cat << EOF > /opt/bichon/bichon.env
-BICHON_ROOT_DIR=/opt/bichon-data
-BICHON_LOG_LEVEL=info
-BICHON_ENCRYPT_PASSWORD=$BICHON_ENC_PASSWORD
-BICHON_PUBLIC_URL=$BICHON_PUBLIC_URL
-BICHON_CORS_ORIGINS=$BICHON_PUBLIC_URL
-EOF
+  local env_stage status
+  env_stage=$(mktemp /opt/bichon/.bichon.env.XXXXXX)
+  chmod 0600 "$env_stage"
+  chown root:root "$env_stage"
+  if printf '%s\n' \
+    'BICHON_ROOT_DIR=/opt/bichon-data' \
+    'BICHON_LOG_LEVEL=info' \
+    "BICHON_ENCRYPT_PASSWORD=$BICHON_ENC_PASSWORD" \
+    "BICHON_PUBLIC_URL=$BICHON_PUBLIC_URL" \
+    "BICHON_CORS_ORIGINS=$BICHON_PUBLIC_URL" > "$env_stage"; then
+    mv -fT -- "$env_stage" /opt/bichon/bichon.env || {
+      status=$?
+      rm -f -- "$env_stage"
+      return "$status"
+    }
+  else
+    status=$?
+    rm -f -- "$env_stage"
+    return "$status"
+  fi
   msg_ok "Setup Bichon"
 
   msg_info "Creating Service"
@@ -75,22 +88,26 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -d /opt/bichon ]]; then
+  if [[ ! -d /opt/bichon || ! -f /opt/bichon/bichon.env ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    return 1
   fi
+  chmod 0600 /opt/bichon/bichon.env
+  chown root:root /opt/bichon/bichon.env
   if check_for_gh_release "bichon" "rustmailer/bichon"; then
+    local CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:+${CLEAN_INSTALL_KEEP} }bichon.env"
     msg_info "Stopping Service"
     systemctl stop bichon
     msg_ok "Stopped Service"
-    create_backup /opt/bichon/bichon.env
     ARCH=$(uname -m)
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "latest" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
-    restore_backup
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bichon" "rustmailer/bichon" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/bichon" "bichon-*-${ARCH}-unknown-linux-gnu.tar.gz"
     msg_info "Starting Service"
     systemctl start bichon
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
