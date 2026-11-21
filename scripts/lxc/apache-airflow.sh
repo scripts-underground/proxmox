@@ -163,7 +163,7 @@ function update_script() {
   INSTALLED=$(cat ~/.airflow 2> /dev/null || echo "0")
   LATEST=$(curl -fsSL "https://pypi.org/pypi/apache-airflow/json" | jq -r '.info.version')
 
-  if [[ "$INSTALLED" == "$LATEST" ]]; then
+  if [[ "$INSTALLED" == "$LATEST" && "${FORCE_DEPLOY:-0}" != 1 ]]; then
     msg_ok "Already on the latest version (${LATEST})"
     exit
   fi
@@ -177,10 +177,12 @@ function update_script() {
   msg_ok "Backed up Configuration"
 
   msg_info "Updating Apache Airflow to ${LATEST}"
+  local -a reinstall=()
+  [[ "${FORCE_DEPLOY:-0}" != 1 ]] || reinstall=(--reinstall)
   $STD uv pip install --python /opt/airflow/.venv/bin/python \
+    "${reinstall[@]}" \
     "apache-airflow[postgres,fab]==${LATEST}" \
     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${LATEST}/constraints-3.12.txt"
-  echo "${LATEST}" > ~/.airflow
   msg_ok "Updated Apache Airflow to ${LATEST}"
 
   msg_info "Restoring Configuration"
@@ -196,6 +198,7 @@ function update_script() {
   msg_info "Starting Services"
   systemctl start airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer
   msg_ok "Started Services"
+  echo "${LATEST}" > ~/.airflow
   msg_ok "Updated successfully!"
   exit
 }
