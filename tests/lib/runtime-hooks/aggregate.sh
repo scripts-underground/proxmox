@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run sorted regular members in separate processes, validating their terminal result.
+source "$(dirname "${BASH_SOURCE[0]}")/contract.sh"
 runtime_hooks_aggregate() {
   local directory=$1 output member status summary count total=0 failures=0
   local -a members=()
@@ -12,7 +13,11 @@ runtime_hooks_aggregate() {
   for member in "${members[@]}"; do
     total=$((total + 1))
     status=0
-    bash "$member" > "$output" 2>&1 || status=$?
+    if runtime_hooks_contract_read "$member" > "$output" 2>&1; then
+      bash "$member" > "$output" 2>&1 || status=$?
+    else
+      status=$?
+    fi
     cat "$output"
     count=$(grep -Ec '^RUNTIME_HOOKS_RESULT failures=[0-9]+$' "$output" || true)
     summary=$(tail -n 1 "$output")

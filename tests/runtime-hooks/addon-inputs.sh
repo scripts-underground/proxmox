@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Shared addon persistence declaration, with the real checked replacement owner.
 # shellcheck disable=SC2034
 set -euo pipefail

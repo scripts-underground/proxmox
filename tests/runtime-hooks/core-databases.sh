@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual database owners; SQL, repository transport, packages and init are models.
 set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")

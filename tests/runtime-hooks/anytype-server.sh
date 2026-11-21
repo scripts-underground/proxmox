@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # shellcheck disable=SC2034,SC2154
 # Real cold bundles/replacement/filesystem; database/package/service effects modeled.
 set -euo pipefail

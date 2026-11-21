@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Shared addon activation owner: real records/locks, native-init effects modeled.
 # shellcheck disable=SC2034
 set -euo pipefail

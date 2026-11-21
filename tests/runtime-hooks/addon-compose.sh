@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Shared node prepass and demand-only parser admission; package/Docker effects modeled.
 # shellcheck disable=SC2034
 set -euo pipefail

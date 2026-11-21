@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual Fleet hooks and actual generated cold bundles (real _write_bundle, real tools.func
 # bytes inlined, no APPLICATION in the receiver) with the real setup_mysql_db and silent
 # wrapper. The MySQL engine, package, release, systemd and HTTP boundaries are explicit
