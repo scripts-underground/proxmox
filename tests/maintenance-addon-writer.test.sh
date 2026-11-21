@@ -20,7 +20,7 @@ rc=0
 _framework_library_contents unknown "$work" > "$work/unknown-profile" || rc=$?
 check "$rc" 65 'unknown library profile refuses before emission'
 check "$(stat -c %s "$work/unknown-profile")" 0 'unknown profile emits no partial library content'
-for fault in cat missing context write chmod link publish none; do
+for fault in cat missing context write chmod link publish none parent-absent parent-failure parent-file; do
   c="$work/$fault"
   mkdir -p "$c/stage" "$c/sbin" "$c/bin"
   printf 'load_functions() { :; }; color() { :; }; _run_update_script() { "$1"; shift; update_script "$@"; }\n' > "$c/stage/core.func"
@@ -32,6 +32,11 @@ for fault in cat missing context write chmod link publish none; do
   printf '#!/bin/bash\nprintf "PREVIOUS_VALID\\n"\n' > "$c/sbin/update_probe"
   chmod 0755 "$c/sbin/update_probe"
   cp -p "$c/sbin/update_probe" "$c/previous"
+  if [[ "$fault" == parent-* ]]; then
+    rm -- "$c/sbin/update_probe"
+    rmdir -- "$c/sbin"
+    [[ "$fault" != parent-file ]] || printf 'operator file\n' > "$c/sbin"
+  fi
   [[ "$fault" != missing ]] || rm "$c/stage/tools.func"
   sed -e "s|/usr/local/sbin|$c/sbin|g" -e "s|/usr/bin|$c/bin|g" "$ROOT/misc/addon_lxc.func" > "$c/subject.func"
   rc=0
@@ -54,6 +59,10 @@ for fault in cat missing context write chmod link publish none; do
       [[ "$fault" != chmod ]] || return 49
       command chmod "$@"
     }
+    mkdir() {
+      [[ "$fault" != parent-failure ]] || return 52
+      command mkdir "$@"
+    }
     ln() {
       [[ "$fault" != link ]] || return 50
       command ln "$@"
@@ -70,9 +79,12 @@ for fault in cat missing context write chmod link publish none; do
     }
     if _addon_bundle_write update update_script "$c/stage"; then exit 0; else exit $?; fi
   ) > "$c/output" 2>&1 || rc=$?
-  case "$fault" in cat) expected=47 ;; missing | write) expected=1 ;; context) expected=48 ;; chmod) expected=49 ;; link) expected=50 ;; publish) expected=51 ;; none) expected=0 ;; esac
+  case "$fault" in cat) expected=47 ;; missing | write | parent-file) expected=1 ;; context) expected=48 ;; chmod) expected=49 ;; link) expected=50 ;; publish) expected=51 ;; parent-failure) expected=52 ;; none | parent-absent) expected=0 ;; esac
   check "$rc" "$expected" "$fault exact addon producer/publication status"
-  if [[ "$fault" != none ]]; then
+  if [[ "$fault" == parent-failure || "$fault" == parent-file ]]; then
+    check "$(test -e "$c/owned-stages" && printf reached || printf absent)" absent "$fault refuses before stage allocation"
+    [[ "$fault" != parent-file ]] || check "$(cat "$c/sbin")" 'operator file' 'non-directory addon parent preserved'
+  elif [[ "$fault" != none && "$fault" != parent-absent ]]; then
     check "$(cmp -s "$c/previous" "$c/sbin/update_probe" && printf same || printf changed)" same "$fault previous valid bundle bytes preserved"
     check "$(stat -c %a "$c/sbin/update_probe")" 755 "$fault previous bundle mode preserved"
   else
