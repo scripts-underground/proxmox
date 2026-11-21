@@ -69,7 +69,7 @@ function update_script() {
 
   if [[ ! -d /var/lib/bazarr/ ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   if check_for_gh_release "bazarr" "morpheus65535/bazarr"; then
@@ -78,7 +78,7 @@ function update_script() {
     msg_ok "Stopped Service"
 
     PYTHON_VERSION="3.12" setup_uv
-    fetch_and_deploy_gh_release "bazarr" "morpheus65535/bazarr" "prebuild" "latest" "/opt/bazarr" "bazarr.zip"
+    fetch_and_deploy_gh_release "bazarr" "morpheus65535/bazarr" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/bazarr" "bazarr.zip"
 
     msg_info "Setup Bazarr"
     mkdir -p /var/lib/bazarr/
@@ -98,6 +98,9 @@ function update_script() {
     systemctl start bazarr
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

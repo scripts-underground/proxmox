@@ -22,7 +22,8 @@ var_unprivileged="${var_unprivileged:-1}"
 function install_script() {
   setup_mongodb
   msg_info "Configuring MongoDB Replica Set"
-  cat << EOF > /etc/mongod.conf
+  # Extend the packaged configuration without losing its data/log paths.
+  cat << EOF >> /etc/mongod.conf
 replication:
   replSetName: "rs0"
 EOF
@@ -92,8 +93,8 @@ EOF
 function post_install_script() {
   msg_ok "Completed Successfully!\n"
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
-  echo -e "${INFO}${YW} Access it using the following URL:${CL}"
-  echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:33010${CL}"
+  echo -e "${INFO}${YW} Import this client config into Anytype: /opt/anytype/data/client-config.yml${CL}"
+  echo -e "${TAB}${GATEWAY}${BGN}Sync server: ${IP} (33010/TCP, 33020/UDP; no web UI)${CL}"
 }
 
 function update_script() {
@@ -108,10 +109,11 @@ function update_script() {
     msg_info "Stopping Service"
     systemctl stop anytype
     msg_ok "Stopped Service"
-    create_backup /opt/anytype/data
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "anytype" "grishy/any-sync-bundle" "prebuild" "latest" "/opt/anytype" "any-sync-bundle_*_linux_$(get_system_arch).tar.gz"
+    # Bundle configuration/storage may be redirected by the saved environment.
+    # Replace release files only; never remove old-only operator state.
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" .env data)
+    CLEAN_INSTALL=0 fetch_and_deploy_gh_release "anytype" "grishy/any-sync-bundle" "prebuild" "latest" "/opt/anytype" "any-sync-bundle_*_linux_$(get_system_arch).tar.gz"
     chmod +x /opt/anytype/any-sync-bundle
-    restore_backup
     msg_info "Starting Service"
     systemctl start anytype
     msg_ok "Started Service"
