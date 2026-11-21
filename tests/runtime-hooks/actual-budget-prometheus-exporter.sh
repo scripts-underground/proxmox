@@ -3,13 +3,15 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=actual-budget-prometheus-exporter
+runtime_hooks_observed_commands=(npm systemctl)
+runtime_hooks_observe_recovery=1
 release_app=$app release_mode=tarball release_asset=unused.tar.gz
-variants+=(fresh download stopped-download stopped-selected runtime ci build copy copy-unrestored stop in-tree-config)
+variants+=(fresh download stopped-download stopped-selected runtime ci build copy copy-unrestored stop in-tree-config external-mode-download unit-query-download)
 runtime_hooks_variant() {
-  case "$variant" in checker | runtime | ci | copy | copy-unrestored | stop) fault=$variant ;; stopped-download) fault=download ;; esac
+  case "$variant" in checker | runtime | ci | copy | copy-unrestored | stop | external-mode-download | unit-query-download) fault=$variant ;; stopped-download) fault=download ;; esac
 }
 runtime_hooks_expected() {
-  case "$fault" in checker) expected=17 ;; ci) expected=53 ;; copy | copy-unrestored) expected=252 ;; stop) expected=47 ;; esac
+  case "$fault" in checker) expected=17 ;; ci) expected=53 ;; copy | copy-unrestored) expected=252 ;; stop) expected=47 ;; external-mode-download | unit-query-download) expected=250 ;; esac
 }
 addon_release_setup() {
   mkdir -p "$c/opt/actual-budget-custom"
@@ -23,6 +25,11 @@ addon_release_setup() {
     local initial=active
     [[ "$variant" != stopped-* ]] || initial=inactive
     runtime_hooks_recovery_setup "$app" "$initial" "$c/opt/actual-budget-custom" "$c/external/actual.env"
+    [[ "$variant" != unit-query-download ]] || : > "$c/recovery-unverified"
+    if [[ "$variant" == external-mode-download ]]; then
+      ln -s "$c/external/actual.env" "$c/selected-env"
+      printf 'var_addon_config_path=%q\n' "$c/selected-env" >> "$c/context.sh"
+    fi
     if [[ "$variant" == in-tree-config ]]; then
       printf 'var_addon_config_path=/opt/actual-budget-custom/operator\ env\n' >> "$c/context.sh"
       printf 'operator credential\n' > "$c/opt/actual-budget-custom/operator env"
@@ -34,6 +41,7 @@ addon_release_setup() {
 addon_release_consumer_assert() { check "$(cat "$c/opt/actual-budget-custom/code")" 'new code' "$app selected source uses saved install path"; }
 runtime_hooks_model() {
   addon_release_model
+  if [[ "$APP_FAULT" == unit-query-download ]]; then busctl() { return 47; }; fi
   apt() { :; }
   setup_nodejs() { [[ "$APP_FAULT" != runtime ]] || return 51; }
   npm() {
@@ -51,7 +59,11 @@ runtime_hooks_model() {
     else printf '%s\n' "$*" >> "$c/services"; fi
   }
   curl_download() {
-    [[ "$APP_FAULT" != download ]] || return 22
+    if [[ "$APP_FAULT" == external-mode-download ]]; then
+      chmod 0640 "$c/external/actual.env"
+      return 22
+    fi
+    [[ "$APP_FAULT" != download && "$APP_FAULT" != unit-query-download ]] || return 22
     addon_release_download "$@"
   }
   cp() {
@@ -78,7 +90,9 @@ runtime_hooks_assert() {
       check "$(stat -c %a "$c/opt/actual-budget-custom/operator env" 2> /dev/null || true)" 600 "$app in-tree credential retains private mode"
     fi
     check "$(cat "$c/external/actual.env")" 'operator credential' "$app/$variant credential retained"
-    check "$(stat -c %a "$c/external/actual.env")" 600 "$app/$variant credential stays private"
+    local expected_mode=600
+    [[ "$variant" != external-mode-download ]] || expected_mode=640
+    check "$(stat -c %a "$c/external/actual.env")" "$expected_mode" "$app/$variant selected credential metadata is not rewritten"
     if [[ "$variant" == stopped-selected ]]; then
       check "$(cat "$c/recovery-state")" inactive "$app successful update leaves initially stopped service stopped"
       check "$(wc -l < "$c/recovery-starts")" 0 "$app successful update never starts initially stopped service"
@@ -91,5 +105,11 @@ runtime_hooks_retry_assert() {
     check "$(cat "$c/recovery-state")" inactive "$app retry leaves initially stopped service stopped"
     check "$(wc -l < "$c/recovery-starts")" 0 "$app retry never starts initially stopped service"
   fi
+}
+runtime_hooks_deployment_assert() {
+  [[ "$variant" != no-update ]] || return 0
+  addon_release_consumer_assert
+  runtime_hooks_completed_assert npm /opt/actual-budget-custom ci
+  runtime_hooks_completed_assert npm /opt/actual-budget-custom run build
 }
 runtime_hooks_main "$@"

@@ -28,6 +28,15 @@ setup_lxc() { :; }
 '''
 
 
+def addon_fixture(root, state_root):
+    """Use the complete addon API, relocating only its fixture-owned state."""
+    text = (Path(root) / 'misc/addon_lxc.func').read_text()
+    for name in ('addons', 'addon-service-actions', 'addon-teardowns', 'addon-owned-files', 'addon-install-attempts'):
+        text = text.replace('/var/lib/scripts-underground/' + name,
+                            str(Path(state_root) / name))
+    return text
+
+
 def minimal_install_models(root):
     """Find ad-hoc install APIs, excluding intentional boundary-only probes.
 
@@ -47,7 +56,7 @@ def minimal_install_models(root):
         if path.suffix not in ('.sh', '.py', '.func'):
             continue
         text = path.read_text()
-        if 'install.func' in text and re.search(r'(?:setup_lxc|pkg_install|detect_os)\(\)\s*\{', text):
+        if 'install.func' in text and re.search(r'(?:\bfunction\s+(?:setup_lxc|pkg_install|detect_os)(?:\s*\(\s*\))?|\b(?:setup_lxc|pkg_install|detect_os)\s*\(\s*\))\s*\{', text):
             name = path.relative_to(Path(root) / 'tests').as_posix()
             if name not in exceptions:
                 found.append(name)
@@ -59,6 +68,8 @@ if __name__ == '__main__':
         unexpected = minimal_install_models(sys.argv[1])
         if unexpected:
             sys.exit('Ad-hoc app framework models: ' + ', '.join(unexpected))
+    elif len(sys.argv) == 4 and sys.argv[2] == '--addon':
+        print(addon_fixture(sys.argv[1], sys.argv[3]), end='')
     else:
         assert len(sys.argv) == 2 or sys.argv[2:] == ['--explicit-platform']
         print(install_fixture(sys.argv[1], explicit_platform=len(sys.argv) == 3), end='')

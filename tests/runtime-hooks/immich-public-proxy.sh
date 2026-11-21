@@ -3,6 +3,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=immich-public-proxy
+runtime_hooks_observed_commands=(npm systemctl)
+runtime_hooks_observe_recovery=1
 release_app='Immich Public Proxy' release_mode=tarball release_asset=unused.tar.gz
 variants+=(download stopped-download stopped-selected backup ci-intact ci-partial build stop)
 runtime_hooks_variant() {
@@ -71,13 +73,25 @@ runtime_hooks_assert() {
   fi
 }
 runtime_hooks_retry_assert() {
-  if [[ "$fault" != ci-* ]]; then addon_release_consumer_assert; fi
+  runtime_hooks_backup_assert "$c/opt/immich-public-proxy_backup" /opt/immich-public-proxy/app/.env 'operator env'
+  addon_release_consumer_assert
   check "$(cat "$c/opt/$app/app/.env")" 'operator env' "$app/$variant retry environment retained"
   check "$(cat "$c/opt/$app/app/config.json")" 'operator config' "$app/$variant retry configuration retained"
   check "$(stat -c '%i:%a' "$c/opt/$app/app/.env" "$c/opt/$app/app/config.json")" "$(cat "$c/config-metadata")" "$app/$variant retry configuration inodes and modes retained"
-  if [[ "$variant" == stopped-download || "$fault" == ci-partial || "$fault" == build ]]; then
+  if [[ "$variant" == stopped-download ]]; then
     check "$(cat "$c/recovery-state")" inactive "$app/$variant retry preserves stopped entry state"
   fi
 }
-addon_release_consumer_assert() { check "$(cat "$c/opt/$app/code")" 'new code' "$app selected source consumer"; }
+addon_release_consumer_assert() {
+  runtime_hooks_backup_assert "$c/opt/immich-public-proxy_backup" /opt/immich-public-proxy/app/.env 'operator env'
+  local expected_code='new code'
+  [[ "$variant" != ci-* ]] || expected_code='old code'
+  check "$(cat "$c/opt/$app/code")" "$expected_code" "$app selected source consumer"
+}
+runtime_hooks_deployment_assert() {
+  [[ "$variant" != no-update ]] || return 0
+  addon_release_consumer_assert
+  runtime_hooks_completed_assert npm /opt/immich-public-proxy/app ci
+  runtime_hooks_completed_assert npm /opt/immich-public-proxy/app run build
+}
 runtime_hooks_main "$@"

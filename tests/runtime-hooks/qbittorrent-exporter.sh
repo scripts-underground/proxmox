@@ -3,8 +3,10 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=qbittorrent-exporter
+runtime_hooks_observed_commands=(systemctl rc-service)
+runtime_hooks_observe_recovery=1
 release_app=$app release_mode=tarball release_asset=unused.tar.gz
-variants+=(download stopped-download build-intact build-partial runtime stop stopped-selected openrc-download openrc-stopped-download openrc-build-partial openrc-selected legacy-selected legacy-download)
+variants+=(download stopped-download build-intact build-partial runtime stop stopped-selected openrc-download openrc-stopped-download openrc-build-partial openrc-selected legacy-selected legacy-download openrc-absent-download openrc-absent-selected)
 eval "$(declare -f runtime_hooks_variant | sed '1s/runtime_hooks_variant/release_variant/')"
 runtime_hooks_variant() {
   release_variant
@@ -32,16 +34,27 @@ addon_release_setup() {
   local initial=active unit="$c/etc/systemd/system/custom-exporter.service"
   [[ "$variant" != *stopped-* ]] || initial=inactive
   [[ "$variant" != openrc-* ]] || unit="$c/etc/init.d/custom-exporter"
-  runtime_hooks_recovery_setup custom-exporter "$initial" "$c/opt/$app" "$c/config/config" "$unit"
+  local -a footprint=("$c/opt/$app" "$unit")
+  if [[ "$variant" == openrc-absent-* ]]; then
+    rm -f "$c/config/config"
+  else
+    footprint+=("$c/config/config")
+  fi
+  runtime_hooks_recovery_setup custom-exporter "$initial" "${footprint[@]}"
   if [[ "$fault" == build-* ]]; then
     printf 'old code\n' > "$c/payload/code"
     rm -f "$c/payload/consumer"
   fi
-  cat > "$c/local/bin/go" << 'GO'
-#!/usr/bin/env bash
+  printf '#!/usr/bin/env bash\n' > "$c/local/bin/go"
+  declare -f runtime_hooks_event >> "$c/local/bin/go"
+  cat >> "$c/local/bin/go" << 'GO'
+c=$APP_FIXTURE
+INIT_SYSTEM=$(cat "$c/fixture-init-system")
+runtime_hooks_event enter /usr/local/bin/go "$PWD" "$@"
 [[ "$APP_FAULT" != build-intact ]] || exit 52
 if [[ "$APP_FAULT" == build-partial ]]; then printf 'partial executable\n' > ./qbittorrent-exporter; exit 52; fi
 printf 'selected executable\n' > ./qbittorrent-exporter
+runtime_hooks_event complete /usr/local/bin/go "$PWD" "$@"
 GO
   chmod 0755 "$c/local/bin/go"
 }
@@ -65,7 +78,11 @@ runtime_hooks_model() {
 eval "$(declare -f runtime_hooks_assert | sed '1s/runtime_hooks_assert/release_assert/')"
 runtime_hooks_assert() {
   case "$variant" in checker | no-update | selected) release_assert ;; esac
-  check "$(cmp -s "$c/config/config" "$c/config-before" && printf equal || printf changed)" equal "$app/$variant existing authentication retained"
+  if [[ "$variant" == openrc-absent-* ]]; then
+    check "$(test -e "$c/config/config" && printf present || printf absent)" absent "$app/$variant optional absent config remains absent"
+  else
+    check "$(cmp -s "$c/config/config" "$c/config-before" && printf equal || printf changed)" equal "$app/$variant existing authentication retained"
+  fi
   if [[ "$variant" == legacy-selected ]]; then addon_release_consumer_assert; fi
   if [[ "$variant" == stopped-selected ]]; then
     check "$(cat "$c/recovery-state")" inactive "$app successful update leaves initially stopped service stopped"
@@ -74,12 +91,17 @@ runtime_hooks_assert() {
 }
 runtime_hooks_retry_assert() {
   addon_release_consumer_assert
-  if [[ "$variant" == *stopped-* || "$fault" == build-partial || "$fault" == runtime ]]; then
+  if [[ "$variant" == *stopped-* ]]; then
     check "$(cat "$c/recovery-state")" inactive "$app/$variant retry preserves stopped entry state"
   fi
 }
 addon_release_consumer_assert() {
   if [[ "$fault" != build-* ]]; then check "$(cat "$c/opt/$app/code")" 'new code' "$app selected source consumer"; fi
   check "$(cat "$c/opt/$app/qbittorrent-exporter")" 'selected executable' "$app/$variant compiled executable consumer"
+}
+runtime_hooks_deployment_assert() {
+  [[ "$variant" != no-update ]] || return 0
+  addon_release_consumer_assert
+  runtime_hooks_completed_assert /usr/local/bin/go /opt/qbittorrent-exporter build -o ./qbittorrent-exporter
 }
 runtime_hooks_main "$@"

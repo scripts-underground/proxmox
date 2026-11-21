@@ -126,13 +126,11 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "filebrowser" "filebrowser/filebrowser" "${var_appversion:-}"; then
+    local was_running=0
+    addon_service_begin filebrowser was_running || return $?
     msg_info "Updating ${APP}"
     _gh_deploy_archive_binary "filebrowser" "filebrowser/filebrowser" "${CHECK_UPDATE_RELEASE:-latest}" "$var_addon_bin_path" "linux-$(get_system_arch uname)-filebrowser.tar.gz" filebrowser || return $?
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service --ifstarted filebrowser restart
-    else
-      systemctl try-restart filebrowser
-    fi
+    if [[ "$was_running" == 1 ]]; then addon_service_complete filebrowser restart || return $?; fi
     msg_ok "Updated ${APP}"
   else
     local release_status=$?

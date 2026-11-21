@@ -44,12 +44,7 @@ function install_script() {
     msg_error "Docker Compose plugin is not available. Please install it before running this script. Exiting."
     exit 1
   fi
-  local compose_help
-  compose_help=$(docker compose config --help) || return $?
-  if ! grep -Eq -- '(^|[[:space:]])--no-env-resolution([[:space:]]|$)' <<< "$compose_help"; then
-    msg_error "Komodo requires Docker Compose config --no-env-resolution support (v2.35.0 or newer). Update the plugin before installation."
-    return 69
-  fi
+  addon_compose_require --no-interpolate --no-env-resolution --no-path-resolution || return $?
   msg_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available"
 
   if ! command -v openssl > /dev/null 2>&1; then
@@ -110,10 +105,10 @@ function install_script() {
     -e "s/^KOMODO_INIT_ADMIN_PASSWORD=.*/KOMODO_INIT_ADMIN_PASSWORD=${KOMODO_ADMIN_PASSWORD}/" \
     -e "s/^KOMODO_WEBHOOK_SECRET=.*/KOMODO_WEBHOOK_SECRET=${webhook_secret}/" \
     -e "s/^KOMODO_JWT_SECRET=.*/KOMODO_JWT_SECRET=${jwt_secret}/" "$env_stage/compose.env" &&
-    docker compose --project-directory "$var_addon_install_path" --env-file "$env_stage/compose.env" -f "$compose_stage/source.yaml" config --no-interpolate --no-env-resolution --format json > "$compose_stage/source.json" &&
+    addon_compose_source --project-directory "$var_addon_install_path" --env-file "$env_stage/compose.env" -f "$compose_stage/source.yaml" > "$compose_stage/source.json" &&
     jq -e --arg port "$var_addon_default_port" --arg env "$var_addon_compose_env" --arg original "$var_addon_install_path/compose.env" '
       .services.core.ports |= map(if .target == 9120 then .published = $port else . end) |
-      (.services[] | select(has("env_file")) | .env_file) |= map(if .path == $original then .path = $env else . end) |
+      (.services[] | select(has("env_file")) | .env_file) |= map(if .path == $original or .path == "compose.env" or .path == "./compose.env" then .path = $env else . end) |
       # Without interpolation Compose cannot classify these documented host
       # directories. Retain their expressions in explicit long-form binds.
       (.services[].volumes[]? | select(.source == "${COMPOSE_KOMODO_BACKUPS_PATH}" or .source == "${PERIPHERY_ROOT_DIRECTORY:-/etc/komodo}")) |=
@@ -128,7 +123,7 @@ function install_script() {
       umask 077
       printf '%s\n' "$DB_COMPOSE_FILE" > "$compose_stage/selection"
     ) &&
-    ln -T -- "$env_stage/compose.env" "$var_addon_compose_env" &&
+    addon_publish_owned_file "$env_stage/compose.env" "$var_addon_compose_env" &&
     ln -T -- "$compose_stage/compose.json" "${var_addon_install_path}/${DB_COMPOSE_FILE}" &&
     ln -T -- "$compose_stage/selection" "$var_addon_install_path/.komodo-compose"; then
     rm -rf -- "$compose_stage" "$env_stage"
@@ -138,6 +133,7 @@ function install_script() {
     if [[ "$var_addon_install_path/$DB_COMPOSE_FILE" -ef "$compose_stage/compose.json" ]]; then rm -f -- "$var_addon_install_path/$DB_COMPOSE_FILE"; fi
     if [[ "$var_addon_install_path/.komodo-compose" -ef "$compose_stage/selection" ]]; then rm -f -- "$var_addon_install_path/.komodo-compose"; fi
     rm -rf -- "$compose_stage" "$env_stage"
+    addon_remove_owned_file "$var_addon_compose_env" || msg_warn "Komodo environment custody retained for explicit recovery"
     return "$compose_status"
   fi
   msg_ok "Configured compose and environment"
@@ -222,6 +218,24 @@ function update_script() {
     umask 077
     cp "$var_addon_compose_env" "${var_addon_compose_env}.bak_$(date +%Y%m%d_%H%M%S)"
   )
+
+  # Only our own unchanged generated environment can advance its independent
+  # custody. Legacy/operator files keep their existing migration behavior without
+  # becoming uninstall-owned. Prepare owned edits off-line and refuse a changed
+  # live preimage instead of assigning operator bytes to the new receipt.
+  local live_env=$var_addon_compose_env owned_env_identity env_candidate='' env_copy_hash env_status
+  addon_owned_file_identity owned_env_identity "$live_env" || return $?
+  local var_addon_compose_env=$live_env
+  if [[ -n "$owned_env_identity" ]]; then
+    env_candidate=$(mktemp "${live_env%/*}/.komodo-env-update.XXXXXXXX") || return $?
+    if cp -p -- "$live_env" "$env_candidate" && env_copy_hash=$(sha256sum < "$env_candidate") &&
+      [[ "${env_copy_hash%% *}" == "${owned_env_identity##*:}" ]]; then :; else
+      env_status=$?
+      rm -f -- "$env_candidate" || msg_warn "Komodo environment preparation retained at $env_candidate"
+      return "$env_status"
+    fi
+    var_addon_compose_env=$env_candidate
+  fi
   if [[ ! -e "$var_addon_install_path/.komodo-compose" ]]; then
     (
       umask 077
@@ -236,15 +250,31 @@ function update_script() {
     msg_ok "Migrated image tag to :2"
   fi
 
-  # Retained operator Compose files may still interpolate the old names. Add
-  # missing v2 aliases as literal dotenv data without deleting legacy entries
-  # or replacing explicitly configured current credentials.
-  local credential legacy current aliases
+  # Native dotenv parsing owns effective key presence, including export/space,
+  # multiline and explicitly empty assignments. Probe presence only: never emit
+  # parsed credential values or invent a second dotenv serializer.
+  local credential legacy current aliases dotenv_stage dotenv_status
+  dotenv_stage=$(_tools_stage_dir komodo-dotenv) || return $?
+  if jq -n '{services:{probe:{image:"scratch",environment:{
+      KOMODO_DB_USERNAME:"${KOMODO_DB_USERNAME+present}",
+      KOMODO_DB_PASSWORD:"${KOMODO_DB_PASSWORD+present}",
+      KOMODO_DATABASE_USERNAME:"${KOMODO_DATABASE_USERNAME+present}",
+      KOMODO_DATABASE_PASSWORD:"${KOMODO_DATABASE_PASSWORD+present}"
+    }}}}' > "$dotenv_stage/probe.json" &&
+    docker compose --project-directory "$var_addon_install_path" --env-file "$var_addon_compose_env" -f "$dotenv_stage/probe.json" config --format json > "$dotenv_stage/parsed.json" &&
+    aliases=$(jq -ce '.services.probe.environment | select(length == 4 and all(.[]; . == "" or . == "present"))' "$dotenv_stage/parsed.json"); then :; else
+    dotenv_status=$?
+    rm -rf -- "$dotenv_stage"
+    [[ -z "$env_candidate" ]] || msg_warn "Komodo environment preparation retained at $env_candidate"
+    return "$dotenv_status"
+  fi
+  rm -rf -- "$dotenv_stage" || return $?
   for credential in USERNAME PASSWORD; do
     legacy="KOMODO_DB_${credential}" current="KOMODO_DATABASE_${credential}"
-    if ! grep -q "^${current}=" "$var_addon_compose_env" && grep -q "^${legacy}=" "$var_addon_compose_env"; then
-      aliases=$(sed -n "s/^${legacy}=/${current}=/p" "$var_addon_compose_env")
-      printf '\n%s\n' "$aliases" >> "$var_addon_compose_env"
+    if jq -e --arg current "$current" --arg legacy "$legacy" '.[$current] == "" and .[$legacy] == "present"' <<< "$aliases" > /dev/null; then
+      # Compose resolves this alias without re-parsing the credential as dotenv
+      # source, preserving literal dollar, backslash and newline bytes.
+      printf '\n%s=${%s}\n' "$current" "$legacy" >> "$var_addon_compose_env"
     fi
   done
 
@@ -262,6 +292,15 @@ function update_script() {
   # === ensure backups path is set ===
   if ! grep -q 'COMPOSE_KOMODO_BACKUPS_PATH=' "$var_addon_compose_env"; then
     echo 'COMPOSE_KOMODO_BACKUPS_PATH=/etc/komodo/backups' >> "$var_addon_compose_env"
+  fi
+
+  if [[ -n "$env_candidate" ]]; then
+    if addon_replace_owned_file "$env_candidate" "$live_env" "$owned_env_identity"; then :; else
+      env_status=$?
+      msg_warn "Komodo environment preparation retained at $env_candidate"
+      return "$env_status"
+    fi
+    var_addon_compose_env=$live_env
   fi
 
   (cd "$var_addon_install_path" && $STD docker compose -p komodo -f "$compose_file" --env-file "$var_addon_compose_env" pull)
@@ -303,6 +342,7 @@ function uninstall_script() {
   (cd "$var_addon_install_path" && $STD docker compose -p komodo -f "$compose_file" --env-file "$var_addon_compose_env" down --volumes --remove-orphans)
   msg_ok "Stopped and removed Docker containers"
 
+  addon_remove_owned_file "$var_addon_compose_env"
   rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
 }

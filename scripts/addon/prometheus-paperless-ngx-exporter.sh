@@ -90,25 +90,10 @@ function update_script() {
   if check_for_gh_release "$var_addon_gh_app" "$var_addon_gh_repo"; then
     local was_running=0 update_status=0 before after
     function paperless_exporter_state() (
-      set -o pipefail
-      local path
-      for path in "$var_addon_bin_path" "$var_addon_conf_path" "$var_addon_auth_token_file" "/etc/systemd/system/${var_addon_service}.service"; do
-        printf '%s\0' "$path" || exit $?
-        if [[ ! -e "$path" && ! -L "$path" ]]; then
-          printf 'absent\0'
-          continue
-        fi
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-          stat -Lc '%f:%u:%g' -- "$path" || exit $?
-        fi
-        [[ -f "$path" ]] || exit 65
-        sha256sum < "$path" || exit $?
-      done | sha256sum
+      addon_runtime_fingerprint --file "$var_addon_bin_path" --file "$var_addon_conf_path" --optional "$var_addon_auth_token_file" --unit "$var_addon_service"
     )
-    before=$(paperless_exporter_state) || return $?
-    if systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
+    before=$(paperless_exporter_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     systemctl stop "$var_addon_service" || update_status=$?
     if [[ "$update_status" == 0 ]]; then
@@ -117,7 +102,7 @@ function update_script() {
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(paperless_exporter_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         systemctl start "$var_addon_service" || msg_warn "Unable to restart previous Paperless exporter service"
       elif [[ "$after" != "$before" ]]; then
         msg_warn "Previous Paperless exporter installation is unverified; service stays stopped"
@@ -127,7 +112,7 @@ function update_script() {
 
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      systemctl start "$var_addon_service"
+      addon_service_complete "$var_addon_service" || return $?
       msg_ok "Started service"
     fi
     msg_ok "Updated successfully!"

@@ -46,13 +46,9 @@ apt() { printf 'modeled package search-v4\n' > "$CASE_ROOT/opt/wanderer/source/s
      write(c/'incoming'/app,'#!/usr/bin/env bash\nprintf selected-v2\n',0o755)
      model+=r'''
 systemctl() {
+ [[ "${!#}" == "$TEST_APP" || "${!#}" == "$TEST_APP.service" ]] || return 4
  printf '%s\n' "$*" >> "$CASE_ROOT/service-calls"
- # Match native conditional activation before the shared restart consumer.
- # The real-systemd parity probe separately covers active and stopped units.
- if [[ "$1" == try-restart ]]; then
-  [[ "$(cat "$CASE_ROOT/service-$TEST_APP")" == running ]] || return 0
-  set -- restart "${@:2}"
- fi
+ if [[ "$1" == show ]]; then fixture_service_properties "$CASE_ROOT/service-$TEST_APP"; return; fi
  fixture_service_state "$1" "$CASE_ROOT/service-$TEST_APP" "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/executable-consumer"
 }
 '''
@@ -115,7 +111,7 @@ if fmt:print('200',end='')
    for n in ('tools.func','error_handler.func'):write(c/'stage'/n,(R/'misc'/n).read_text())
    write(c/'stage/install.func',install_fixture(R))
    write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
-   write(c/'stage/addon_lxc.func','source '+shlex.quote(str(c/'models.sh'))+'\n')
+   write(c/'stage/addon_lxc.func',addon_fixture(R,c)+'\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
    kind='addon' if app in ('cronmaster','filebrowser') else 'lxc'
    text=(R/'scripts'/kind/(app+'.sh')).read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
    hook=text[start:end].replace('/opt',str(c/'opt')).replace('/usr/local/bin/qui',str(c/'bin/qui')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/autocaliweb/app.db',str(c/'config/app.db')).replace('/usr/bin/kepubify',str(c/'kepubify')).replace('/etc/angie',str(c/'angie')).replace('/etc/nginx',str(c/'nginx'))

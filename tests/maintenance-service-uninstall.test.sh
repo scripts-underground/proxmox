@@ -176,7 +176,8 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
         printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
         printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
         cat "$work/model.sh" >> "$c/stage/github.func"
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --addon "$c" > "$c/stage/addon_lxc.func"
+        printf '\naddon_baseline() { :; }\n' >> "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$script" |
           sed -e "s|/etc/systemd/system|$c/units|g" -e "s|/etc/init.d|$c/units|g" -e "s|/etc/lighttpd|$c/lighttpd|g" \
             -e "s|/opt/scanopy|$c/app|g" -e "s|/usr/bin/scanopy|$c/bin/scanopy|g" > "$c/hook.sh"

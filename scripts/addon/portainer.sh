@@ -41,6 +41,7 @@ function install_script() {
     msg_error "Docker Compose plugin is not available. Please install it before running this script. Exiting."
     exit 1
   fi
+  addon_compose_require --no-interpolate --no-env-resolution --no-path-resolution || return $?
   msg_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') and Docker Compose are available"
 
   if docker container inspect portainer &> /dev/null; then
@@ -56,9 +57,10 @@ function install_script() {
   mkdir -p "$(dirname "$var_addon_compose_file")"
   local compose_stage compose_status
   compose_stage=$(mktemp -d "$(dirname "$var_addon_compose_file")/.portainer-compose.XXXXXXXX")
-  # Compose resolves source YAML and relative paths; change only HTTPS publishing.
+  # Preserve editable expressions, env_file and project-relative paths. Resolve a
+  # separate model for validation; publish only the unresolved source model.
   if curl -fsSL "$var_addon_compose_url" -o "$compose_stage/source.yaml" &&
-    docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" config --format json > "$compose_stage/source.json" &&
+    addon_compose_source --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" > "$compose_stage/source.json" &&
     jq -e --arg port "$var_addon_default_port" '
       .services.portainer.ports |= map(if .target == 9443 then .published = $port else . end)
     ' "$compose_stage/source.json" > "$compose_stage/compose.json" &&
@@ -82,7 +84,7 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory="${var_addon_install_path}"
+WorkingDirectory=${var_addon_install_path}
 ExecStart=/usr/bin/docker compose --project-directory "${var_addon_install_path}" -f "${var_addon_compose_file}" up -d
 ExecStop=/usr/bin/docker compose --project-directory "${var_addon_install_path}" -f "${var_addon_compose_file}" down
 TimeoutStartSec=0
@@ -122,20 +124,25 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
-  if [[ ! -f "$var_addon_compose_file" ]]; then
-    msg_error "No ${APP} installation found (${var_addon_compose_file} missing)"
-    return 1
+  local teardown_state
+  local -a teardown_inputs=("$var_addon_install_path" portainer "$var_addon_compose_file" /etc/systemd/system/portainer.service)
+  addon_teardown_status teardown_state "${teardown_inputs[@]}" || return $?
+  if [[ "$teardown_state" != 'done' ]]; then
+    if [[ ! -f "$var_addon_compose_file" ]]; then
+      msg_error "No ${APP} installation found (${var_addon_compose_file} missing); restore the selected manifest for scoped teardown"
+      return 1
+    fi
+    addon_teardown_begin "${teardown_inputs[@]}" || return $?
+    msg_info "Stopping and removing Docker containers"
+    $STD docker compose --project-directory "$var_addon_install_path" -f "$var_addon_compose_file" down --volumes --remove-orphans
+    addon_teardown_complete "${teardown_inputs[@]}" || return $?
+    msg_ok "Stopped and removed Docker containers"
   fi
-  msg_info "Stopping and removing Docker containers"
-  $STD docker compose --project-directory "$var_addon_install_path" -f "$var_addon_compose_file" down --volumes --remove-orphans
-  msg_ok "Stopped and removed Docker containers"
 
   svc_prepare_uninstall portainer
-  rm -f /etc/systemd/system/portainer.service
+  addon_teardown_remove "${teardown_inputs[@]}" || return $?
   systemctl daemon-reload
 
-  rm -f -- "$var_addon_compose_file"
-  rm -rf "$var_addon_install_path"
   msg_ok "${APP} has been uninstalled"
 }
 

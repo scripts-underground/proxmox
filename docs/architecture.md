@@ -1364,11 +1364,212 @@ occupied names. Each file is staged on its destination filesystem, and a partial
 publication retires only the preparation's own matching inodes. Komodo retains
 legacy credential entries while adding missing current aliases, preserving the
 interpolation contract of retained operator Compose files. Actual Budget exporter
-passes in-tree configured credentials to the checked replacement owner as literal
-keep paths, including symlink targets. Code-server configuration creation runs
-as its resolved service account; root never writes or chowns through that home's
-paths. File Browser uses init-native conditional restart so inactive services stay
-inactive and active consumers load the replaced executable.
+passes configured inputs through the addon persistence owner, which supplies
+normalized lexical keeps and resolved in-tree targets to checked replacement.
+External targets are never replacement authority; existing inherited literal keeps
+remain intact. The same declaration covers AdGuardHome-Sync, CronMaster, Jellystat,
+Immich Public Proxy and Garmin. Code-server configuration creation runs as its
+resolved service account, without root privileges when that account is nonroot.
+
+Arcane, Portainer, Dockge and Komodo publish native unresolved Compose models, separate
+from the resolved validation model. Their capability admission checks every
+consumed representation flag without upgrading Compose. Unrelated image/env
+expressions, env_file entries and project-relative binds remain editable. Dockge
+changes a stacks bind only after resolved native topology proves one matching
+host bind; a named volume alone cannot establish a host directory. Arcane binds
+relative selected filenames to its project before staging and omits an absent
+optional legacy interpolation file on maintenance; manifest env_file requirements
+remain native Compose validation responsibilities. Before initial publication,
+Arcane derives runtime UID/GID from the resolved model, including env_file inputs,
+PUID/PGID defaults, explicit numeric Docker users and supplementary groups. A native
+setpriv access check evaluates the mounted directory itself under that identity,
+not root or host-only ancestors. New directories receive the selected identity;
+existing metadata is preserved. Unknown image account names and inaccessible binds
+refuse with a diagnostic before either live file is published or startup attempted.
+The setpriv package is admitted only when the command is missing.
+Komodo probes effective dotenv key presence with a minimal native model, including
+export/space and explicitly
+empty values. Only missing current names receive literal legacy alias expressions;
+original assignments and literal dollar/backslash/newline values remain intact.
+Shared preparation projects native list-form environment into an equivalent map
+before app projections, preserving bare-key inheritance and everything after the
+first equals. This is the Compose model representation, not a dotenv parser.
+Before native unresolved parsing, that same owner resolves short-bind syntax
+ambiguity without resolving expressions: a PyYAML compose/serialize node prepass
+turns only affected short binds with colon-operator interpolation into long form.
+Source/target strings, read-only and native bind options are preserved; other
+scalar text, tags, aliases and nodes stay unchanged. Native Compose still parses
+and validates the prepared unresolved model and the separate resolved consumer.
+Ports whose native grammar already accepts these expressions remain untouched.
+Only a fetched source matching the conservative colon-operator check admits the
+parser, reusing a positive installed capability or using the addon's existing
+dependency path for Debian python3-yaml / Alpine py3-yaml. Ordinary maintenance
+of a saved model does not acquire that dependency. The apps have no separate
+dependency-uninstall registry, so this adds none. Private stages are individually
+retired on success/failure; the fetched source is never edited in place.
+
+Nextcloud's separate custom executable uses the addon executable publication owner.
+Package inode aliases are left in place. Complete copy/mode preparation precedes
+same-filesystem rename; checked private data binds the selected pathname and
+candidate identity before exposure, retaining only a positively owned current
+preimage across a failed rename. Refresh does not create this custody. Uninstall
+removes only a matching published inode, bytes and metadata; legacy, replaced or
+edited files are retained with a manual-cleanup notice. Missing custom copies can
+be repaired from the installed package on a normal pending retry, including its
+unit and original service-activation obligation.
+
+MQTTX admits a new Nginx listener only after bounded local HTTP readback of its
+unique site marker; syntax validation and asynchronous reload signaling alone
+are not acceptance. Failed admission removes only the exact owned preparation
+and reloads the restored configuration, reporting rollback errors separately.
+Uninstall stages both the available file and canonical enabled link before native
+validation, so foreign second links cannot become dangling after successful
+teardown. Refusal restores those exact names and prior app activity after partial
+service-control failure. Shared Nginx and unowned HOME files are not uninstalled.
+
+Webmin's install-time listener transition keeps a private same-filesystem full
+config preimage. Its projection follows miniserv's whitespace/last-assignment
+reader, retains unrelated and independent/disabled discovery values, and preserves
+line boundaries when appending. Failed restart restores only the still-owned,
+unchanged candidate and recovers a previously running listener. Concurrent edits
+and failed recovery retain an exact recovery path and the original restart status.
+Updates and authentication/listener defaults are unchanged.
+
+Homebrew renders its selected prefix as literal POSIX shell words in both global
+and per-account integration. Account profile preparation and cleanup run as the
+resolved account, not root: regular singly linked targets must belong to that
+account, and a profile symlink remains a symlink while its validated target is
+published. Cleanup removes only an exact complete current or legacy generated
+block. Edited/incomplete blocks, unowned targets and foreign global profiles are
+retained with visible manual-cleanup notices; an unmatched block never consumes
+unrelated tail content. Installation first admits upstream's canonical Linux
+prefix, including byte length and invalid components, then downloads and checks
+the installer before account/group/prefix effects. A private read descriptor holds
+the accepted bytes after the exact download stage is removed. The existing
+install-attempt owner binds the admitted prefix before preparation and records the
+selected account before external installer exposure. Explicit cold uninstall can
+remove its newly created empty prefix even when no working brew exists; unknown
+installer/operator contents remain with an exact manual-cleanup path. Failed
+cleanup retains commands/custody for retry. New receipt-backed successful installs
+likewise do not adopt arbitrary prefix contents for recursive deletion. Existing
+legacy installs retain their original selected-prefix teardown behavior; neither
+route removes accounts or shared groups. This is bounded local-file recovery, not
+an upstream installer rollback or proof of a complete Homebrew installation.
+
+The addon teardown owner retains one private data-only receipt for the exact
+selected root, resource identity and lexical files. A started receipt does not
+certify teardown. Portainer publishes `done` only after its selected Compose down
+succeeds, before file removal. Cold retries can then finish without the removed
+manifest; changed roots/files, unsafe metadata and missing legacy evidence refuse.
+Only matching selected files and an empty root are removed. Symlink targets and
+unlisted root contents remain with a manual-cleanup notice. Unfinished teardown
+blocks install/update, not an automatic reinstall or a new pending engine. The
+addon footer checks custody before command retirement and retires it afterward;
+a failed hook retains both. This is separate from fresh-install custody below.
+
+The addon install-attempt owner records a freshly admitted selected root's
+device/inode and whether it created that directory, under the same private checked
+data and maintenance owner. It does not inventory or adopt arbitrary root files.
+Complete private selected files receive bounded removal custody before no-clobber
+publication. Explicitly created immediate child directories can receive inode-bound
+empty-directory custody; existing directories and their contents are never adopted.
+Cleanup removes leaves before those directories, never follows a replaced child
+link, and preserves nonempty or replaced children. Arcane uses this for its
+generated model/environment and records
+possible external exposure before native up. A pre-exposure failed attempt can
+be explicitly uninstalled without a manifest or Docker action. After exposure,
+Arcane requires a valid selected manifest and successful native down; a missing
+manifest retains commands/custody for explicit restoration, never guessed absence.
+The exposure receipt retains the native resolved project name. New-install up and
+receipt-backed maintenance pass that exact name explicitly, so an edited model's
+name cannot redirect teardown away from the exposed stack. Legacy commands with
+no receipt retain native configured project selection; refresh does not adopt one.
+Cold cleanup removes only unchanged singly linked publications and a newly created
+empty root. Edited, replaced, additionally linked and unlisted files remain with
+manual-cleanup diagnostics. Existing empty roots are not adopted. The addon footer
+checks cleanup before command retirement and retires its receipt afterward;
+failure retains both. The receipt alone blocks automatic reinstall, and incomplete
+attempts block update. Ready means the app hook completed its effects, not that a
+completion marker exists.
+
+Runtipi captures the admitted root, newly created state child and private initial
+settings before its accepted external installer runs. The configured port is
+present at installer entry. Its fixed native `runtipi` project is recorded before
+possible exposure. A missing model/environment can establish teardown only through
+successful exact-project container (including stopped), network and volume queries,
+all empty; query errors and surviving resources retain recovery commands. With a
+model, successful scoped down is recorded before bounded cleanup, so a cold retry
+after removal failure does not replay down. Externally generated or modified files,
+including installer-owned settings changes and the existing successful-install mode
+change, remain for explicit manual cleanup. Legacy teardown removes selected runtime
+files, not arbitrary root data or operator layers. CrowdSec records its complete
+private installer stage with the existing private-file owner before execution.
+The original installer failure wins over a simultaneous cleanup failure; cleanup
+failure alone is still fatal. Its cold uninstall removes only that unchanged
+stage before package teardown, retaining commands and custody on required cleanup
+failure without executing the installer again. Changed, linked or missing stages
+follow the same bounded preservation/removal contract as other owned files.
+
+The addon private-file publication owner records a selected destination and a
+complete root-owned0600 candidate's inode, bytes and metadata before no-clobber
+hard-link publication. The caller retires its same-filesystem preparation link.
+Komodo uses this independent data custody for its generated environment, including
+an external filename: successful scoped down precedes removal of the unchanged
+owned single-link file. Failed down retains both file and custody. Legacy, edited,
+replaced or additionally linked files remain with a manual-cleanup notice; refresh
+never adopts them. No surrounding directory, operator file or dependency becomes
+owned by this receipt. This does not qualify other incomplete-install paths.
+An explicitly recorded caller-created private stage uses that same data format
+without a hard-link publication. Cold removal may select the recorded normalized
+destination from checked private data, rather than depend on a lost shell local.
+For a currently matching generated env, Komodo prepares its own dotenv migrations
+on a private same-filesystem copy, checks copied bytes and advances custody only
+while the exact live owned preimage remains unchanged. Candidate and preimage are
+recorded before rename, preserving old custody on publication failure. A conflict
+retains the preparation for explicit recovery and does not publish over the edit.
+Legacy and already edited environments do not acquire ownership through migration.
+Unretired file custody also prevents automatic reinstall when other footprints
+have disappeared; it does not create a completion marker.
+
+The addon owner records owed service activation before stop/publication, under
+the existing app maintenance owner. Its private checked data binds the app key,
+init manager and selected unit. Positive running/starting state establishes an
+obligation; a pending marker alone does not. Cold retries retain that obligation
+after failed builds or failed native starts. Completion performs the owed native
+action and requires running-state readback before retiring it. Initially stopped
+services without a receipt remain stopped. A failed attempt's verified old-runtime
+recovery does not retire its obligation. File Browser uses this same owner and
+requests replacement activation only when owed. The addon-profile uninstall
+footer retires checked activation state only after the hook succeeds and before
+removing commands/marker; generic LXC footers are unchanged.
+
+Addon failure recovery uses a shared declared-input fingerprint owner. App
+adapters identify runtime trees, required/optional files and the selected unit;
+they do not each invent a partial symlink hash. The owner includes lexical link
+data, resolved regular-file bytes/mode/owner, tree membership and explicit optional
+absence. Systemd unit fragment and drop-in paths come from typed native D-Bus
+properties, without splitting printable path lists. OpenRC includes the init file
+and optional conf.d input. Unsupported or unavailable input is unknown, never a
+proof that the old runtime is safe. Unknown preimages do not prevent an admitted
+replacement package from repairing its own partial publication, but cannot admit
+old-runtime recovery even when a later observation is also unknown.
+
+Initial addon secret files use the same owner to stage bytes privately before
+publication, including when downloaded source supplied public defaults. Failed
+preparation or rename preserves the previous consumer; selected symlinks and
+special files refuse rather than receiving root writes. AdGuardHome-Sync,
+CronMaster, Jellystat and Immich Public Proxy use this for initial configuration,
+and CronMaster/Jellystat for saved credentials. Values and defaults are unchanged.
+
+Those four update adapters scope `create_backup` to a fresh private child of the
+configured backup directory. A checked private data receipt binds the existing
+maintenance owner, canonical root, child inode and declared lexical/resolved
+inputs. Cold retries retain the first snapshot; conflicting inputs or unsafe
+custody refuse. Successful deployment and owed activation retire only that active
+receipt. Completed recovery copies remain at their unique reported paths; the next
+operation allocates a fresh child and cannot reuse an older successful snapshot.
+Existing configured-store contents and unknown additions are never adopted or
+deleted. This is addon backup rotation, not a replacement backup or pending engine.
 
 Generic GitHub API, tag and release requests share a completed HTTP owner.
 `GITHUB_TOKEN` takes precedence over `var_github_token`, and either is used on
@@ -1576,6 +1777,24 @@ use source-declared settings and stable owner-bound identity, preserve the froze
 updater across retry and assert success-only command/alias/marker removal. The
 generated install-hook pipeline is not a full source-bootstrap/publication proof;
 the existing repository-backed producer-chain fixtures retain that responsibility.
+
+Opted-in external-effect models use the harness's shared JSON-lines observations.
+Each cold invocation receives a new attempt number; records retain the init
+manager, command, working directory, exact argv (including empty/newline values),
+entry and successful completion. Runtime-model reload reattaches observation to
+the refreshed model. App declarations choose observed commands, selected service
+and required successful work; the harness has no app-name dispatch. Service
+adapters reject a different manager or selected unit before modeled effects.
+Retry work assertions select only the current attempt, not an earlier partial
+package consumer or source publication. Ordinary active success requires fresh
+activation; operator-stopped deployments remain distinct from no-update paths.
+Compose maintenance assertions compare exact selected file/environment operands,
+and failed teardown retains selected manifest bytes. Dockge's model reads the
+generated unit's working directory/start command and the actual selected model at
+startup, observing pull/up/down and preserving the independent stacks directory.
+These are completed model events and modeled consumers, not proof of native
+compilation, package installation or actual running containers. Independent native
+consumer/install gates remain separate.
 
 The focused cold-hook tests execute actual helpers/files and native parser/module
 consumers with explicitly modeled compilers, model weights, database provisioning

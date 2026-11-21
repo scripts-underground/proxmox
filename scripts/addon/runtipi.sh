@@ -42,7 +42,7 @@ function install_script() {
   fi
 
   local installer installer_status=0 cleanup_status=0
-  installer=$(mktemp "${TMPDIR}/runtipi-installer.XXXXXXXX") || return $?
+  installer=$(mktemp "${TMPDIR:-/tmp}/runtipi-installer.XXXXXXXX") || return $?
   curl -fsSL "https://raw.githubusercontent.com/runtipi/runtipi/master/scripts/install.sh" -o "$installer" || installer_status=$?
   if [[ "$installer_status" == 0 && ! -s "$installer" ]]; then installer_status=251; fi
   if [[ "$installer_status" == 0 ]]; then bash -n "$installer" || installer_status=$?; fi
@@ -56,15 +56,29 @@ function install_script() {
       msg_ok "Installed Docker"
     fi
     docker compose version &> /dev/null || return $?
+    # A usable CLI/plugin does not establish a reachable daemon. Admit that
+    # consumer before creating state or invoking the external installer.
+    docker info > /dev/null || return $?
     $STD apt update || return $?
     $STD apt install -y openssl || return $?
-    mkdir -p "$var_addon_install_path/state" || return $?
+    addon_install_begin "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+    addon_install_create_directory "$var_addon_install_path/state" "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
     # The CLI's native SettingsSchema reads port before GenerateEnvFile/start.
-    printf '{"port":%s}\n' "$((10#$var_addon_default_port))" > "$var_addon_install_path/state/settings.json" || return $?
+    local settings_stage settings_status=0 settings_cleanup=0
+    settings_stage=$(mktemp "$var_addon_install_path/state/.settings.XXXXXXXX") || return $?
+    printf '{"port":%s}\n' "$((10#$var_addon_default_port))" > "$settings_stage" || settings_status=$?
+    if [[ "$settings_status" == 0 ]]; then
+      addon_install_publish_file "$settings_stage" "$var_addon_install_path/state/settings.json" "$var_addon_install_path" "runtipi:$var_addon_install_path" || settings_status=$?
+    fi
+    rm -f -- "$settings_stage" || settings_cleanup=$?
+    [[ "$settings_status" != 0 ]] || settings_status=$settings_cleanup
+    [[ "$settings_status" == 0 ]] || return "$settings_status"
     # Upstream --update suppresses its fixed "mkdir runtipi; cd runtipi" step;
     # download/start remain the same, now rooted at the selected directory.
+    addon_install_expose "$var_addon_install_path" "runtipi:$var_addon_install_path" runtipi || return $?
     (cd "$var_addon_install_path" && $STD bash "$installer" --update) || return $?
     chmod 660 "$var_addon_install_path/state/settings.json" || return $?
+    addon_install_complete "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
   }
   msg_info "Installing ${APP} (this pulls Docker containers)"
   if [[ "$installer_status" == 0 ]]; then _runtipi_install_from_stage || installer_status=$?; fi
@@ -98,6 +112,37 @@ function update_script() {
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
 
+  local install_state resource inventory child
+  addon_install_status install_state "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+  if [[ "$install_state" == prepared || "$install_state" == safe || "$install_state" == cleaned ]]; then
+    addon_install_cleanup "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+    msg_ok "${APP} incomplete installation has been cleaned; unlisted data is retained"
+    return 0
+  fi
+  if [[ "$install_state" != absent ]]; then
+    addon_install_consumer_identity resource "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+    [[ "$resource" == runtipi ]] || return 65
+    if [[ ! -f "$var_addon_install_path/docker-compose.yml" || ! -f "$var_addon_install_path/.env" ]]; then
+      # An interrupted upstream installer may not have produced its model yet.
+      # Only successful inventory of every exact-project resource kind is absence.
+      local -a remaining=() inventory_args=()
+      for resource in container network volume; do
+        inventory_args=("$resource" ls -q --filter label=com.docker.compose.project=runtipi)
+        [[ "$resource" != container ]] || inventory_args+=(-a)
+        inventory=$(docker "${inventory_args[@]}") || return $?
+        [[ -z "$inventory" ]] || remaining+=("$resource")
+      done
+      if ((${#remaining[@]})); then
+        msg_error "Runtipi project resources remain (${remaining[*]}); restore its compose/environment before explicit uninstall"
+        return 1
+      fi
+      addon_install_teardown_complete "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+      addon_install_cleanup "$var_addon_install_path" "runtipi:$var_addon_install_path" || return $?
+      msg_ok "${APP} incomplete installation has been cleaned; unlisted data is retained"
+      return 0
+    fi
+  fi
+
   if ! command -v docker &> /dev/null || [[ ! -f "$var_addon_install_path/docker-compose.yml" || ! -f "$var_addon_install_path/.env" ]]; then
     msg_error "Docker or the installed Runtipi compose/environment is missing; retaining ${var_addon_install_path}"
     return 1
@@ -115,7 +160,17 @@ function uninstall_script() {
   $STD docker compose --project-name runtipi "${compose_files[@]}" --env-file "$var_addon_install_path/.env" down --remove-orphans
   msg_ok "Removed Docker containers"
 
-  rm -rf "$var_addon_install_path"
+  if [[ "$install_state" != absent ]]; then
+    addon_install_teardown_complete "$var_addon_install_path" "runtipi:$var_addon_install_path"
+    addon_install_cleanup "$var_addon_install_path" "runtipi:$var_addon_install_path"
+  else
+    # Legacy selected runtime files are distinct from arbitrary application data.
+    rm -f -- "$var_addon_install_path/docker-compose.yml" "$var_addon_install_path/.env" "$var_addon_install_path/runtipi-cli"
+    if [[ -d "$var_addon_install_path" && ! -L "$var_addon_install_path" ]]; then
+      child=$(find "$var_addon_install_path" -mindepth 1 -maxdepth 1 -print -quit)
+      if [[ -n "$child" ]]; then msg_warn "Unlisted Runtipi contents retained: $var_addon_install_path"; else rmdir -- "$var_addon_install_path"; fi
+    fi
+  fi
   msg_ok "${APP} has been uninstalled"
 }
 

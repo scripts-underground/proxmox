@@ -3,6 +3,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/addon-release.sh"
 app=prometheus-paperless-ngx-exporter
+runtime_hooks_observed_commands=(_deploy_release_deb systemctl)
+runtime_hooks_observe_recovery=1
 release_app=prom-paperless-exp release_mode=binary release_asset=prometheus-paperless-exporter_2_amd64.deb
 variants+=(uninstall download stopped-download package-intact package-partial stop stopped-selected stopped-no-update)
 eval "$(declare -f runtime_hooks_variant | sed '1s/runtime_hooks_variant/release_variant/')"
@@ -76,5 +78,12 @@ runtime_hooks_retry_assert() {
     check "$(cat "$c/recovery-state")" inactive "$app retry leaves initially stopped service stopped"
     check "$(wc -l < "$c/recovery-starts")" 0 "$app retry never starts initially stopped service"
   fi
+}
+runtime_hooks_deployment_assert() {
+  [[ "$role" == update && "$variant" != *no-update ]] || return 0
+  addon_release_consumer_assert
+  # Download stages vary, but the complete successful invocation must belong to
+  # this cold attempt, never the package-partial preimage of the previous one.
+  check "$(jq -s --argjson attempt "$observation_attempt" '[.[] | select(.attempt == $attempt and .phase == "complete" and .command == "_deploy_release_deb")] | length' "$c/events.jsonl")" 1 "$app/$variant current attempt completes package installation"
 }
 runtime_hooks_main "$@"
