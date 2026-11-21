@@ -44,13 +44,38 @@ function install_script() {
     msg_error "Docker or the Compose plugin is unavailable — install docker-ce + docker-compose-plugin and re-run"
     exit 1
   fi
+  addon_compose_require --no-interpolate --no-env-resolution --no-path-resolution || return $?
 
   msg_info "Creating install directories"
   mkdir -p "$var_addon_install_path" "$var_addon_stacks_path"
   msg_ok "Created ${var_addon_install_path} and ${var_addon_stacks_path}"
 
   msg_info "Downloading Docker Compose file"
-  curl -fsSL "$var_addon_compose_url" -o "${var_addon_install_path}/compose.yaml"
+  local compose_stage compose_status
+  compose_stage=$(mktemp -d "${var_addon_install_path}/.dockge-compose.XXXXXXXX")
+  curl -fsSL "$var_addon_compose_url" -o "$compose_stage/source.yaml"
+  # The saved model stays editable. Resolve a separate validation model to admit
+  # the actual stacks topology before changing that bind and its environment.
+  if addon_compose_source --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" > "$compose_stage/source.json" &&
+    docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/source.yaml" config --format json > "$compose_stage/resolved.json" &&
+    jq -e '.services.dockge as $app | ($app.environment.DOCKGE_STACKS_DIR // "/opt/stacks") as $dir | [$app.volumes[]? | select(.target == $dir)] | length == 1 and .[0].type == "bind"' "$compose_stage/resolved.json" > /dev/null; then :; else
+    compose_status=$?
+    rm -rf -- "$compose_stage"
+    [[ "$compose_status" != 1 ]] || compose_status=65
+    msg_error "Dockge stacks directory requires one matching host bind; preserve the existing mounts and select a supported manifest."
+    return "$compose_status"
+  fi
+  jq --arg port "$var_addon_default_port" --arg stacks "$var_addon_stacks_path" --slurpfile resolved "$compose_stage/resolved.json" '
+    .services.dockge as $app |
+    ($resolved[0].services.dockge.environment.DOCKGE_STACKS_DIR // "/opt/stacks") as $old_stacks |
+    ($resolved[0].services.dockge.volumes | to_entries[] | select(.value.target == $old_stacks) | .key) as $index |
+    .services.dockge.ports |= map(if .target == 5001 then .published = $port else . end) |
+    .services.dockge.volumes[$index] |= (.type = "bind" | .source = $stacks | .target = $stacks | del(.volume)) |
+    .services.dockge.environment.DOCKGE_STACKS_DIR = $stacks
+  ' "$compose_stage/source.json" > "$compose_stage/compose.json"
+  docker compose --project-directory "$var_addon_install_path" -f "$compose_stage/compose.json" config -q
+  mv -f "$compose_stage/compose.json" "${var_addon_install_path}/compose.yaml"
+  rm -rf "$compose_stage"
   msg_ok "Downloaded Docker Compose file"
 
   if [[ "$INIT_SYSTEM" == "systemd" ]]; then
@@ -98,7 +123,7 @@ function post_install_script() {
 function update_script() {
   if [[ ! -f "${var_addon_install_path}/compose.yaml" ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   msg_info "Pulling latest ${APP} image"

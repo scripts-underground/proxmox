@@ -194,15 +194,14 @@ function post_install_script() {
 function update_script() {
   local source_url="${var_addon_src_url:-https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py}"
   local managed_release=0 update_status=0 stage bin_dir marker_stage=""
-  local was_running=0 service_touched=0 retain_stage=0 old_executable='' old_marker='' current=''
+  local was_running=0 service_touched=0 retain_stage=0 old_executable='' old_marker='' current='' old_runtime=unverified
   # Only verified previous bytes/links, modes and owners admit failure recovery.
   function copyparty_file_state() {
     if [[ ! -e "$1" && ! -L "$1" ]]; then
       printf 'absent\n'
       return
     fi
-    stat -c '%f:%u:%g' -- "$1" || return $?
-    if [[ -L "$1" ]]; then readlink -- "$1"; else sha256sum < "$1"; fi
+    addon_runtime_fingerprint --file "$1"
   }
 
   # The stock source is release-managed. A saved custom URL remains the
@@ -256,15 +255,17 @@ function update_script() {
   fi
 
   if [[ "$update_status" == 0 ]]; then
-    if [[ "$INIT_SYSTEM" == openrc ]]; then
-      if rc-service copyparty status > /dev/null 2>&1; then was_running=1; fi
-    elif systemctl is-active --quiet copyparty; then was_running=1; fi
-    msg_info "Stopping Service"
-    service_touched=1
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service copyparty stop &> /dev/null || update_status=$?
+    old_runtime=$(addon_runtime_fingerprint --file "$var_addon_bin_path" --file "$var_addon_conf_path" --unit copyparty) || old_runtime=unverified
+    if addon_service_begin copyparty was_running; then
+      msg_info "Stopping Service"
+      service_touched=1
+      if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        rc-service copyparty stop &> /dev/null || update_status=$?
+      else
+        systemctl stop copyparty &> /dev/null || update_status=$?
+      fi
     else
-      systemctl stop copyparty &> /dev/null || update_status=$?
+      update_status=$?
     fi
   fi
   if [[ "$update_status" == 0 ]]; then
@@ -295,7 +296,8 @@ function update_script() {
       current=$(copyparty_file_state "$HOME/.copyparty-sfx.py") || current=unverified
       if [[ "$current" != "$old_marker" ]]; then retain_stage=1; fi
     fi
-    if [[ "$retain_stage" == 0 && "$was_running" == 1 ]]; then
+    current=$(addon_runtime_fingerprint --file "$var_addon_bin_path" --file "$var_addon_conf_path" --unit copyparty) || current=unverified
+    if [[ "$retain_stage" == 0 && "$old_runtime" != unverified && "$current" == "$old_runtime" && "$was_running" == 1 ]]; then
       if [[ "$INIT_SYSTEM" == openrc ]]; then
         rc-service copyparty start || msg_warn "Unable to restart previous Copyparty service"
       else
@@ -310,11 +312,7 @@ function update_script() {
 
   msg_info "Starting Service"
   if [[ "$was_running" == 1 ]]; then
-    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-      rc-service copyparty start
-    else
-      systemctl start copyparty
-    fi
+    addon_service_complete copyparty || return $?
     msg_ok "Started Service"
   fi
   msg_ok "Updated successfully!"

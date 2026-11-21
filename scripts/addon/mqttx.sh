@@ -23,6 +23,15 @@ function install_script() {
     exit 1
   }
 
+  # An existing CT can already own these names without an addon marker.
+  local site_path
+  for site_path in /etc/nginx/sites-available/mqttx-web /etc/nginx/sites-enabled/mqttx-web; do
+    if [[ -e "$site_path" || -L "$site_path" ]]; then
+      msg_error "Existing Nginx site ${site_path}; retaining it without installation"
+      return 65
+    fi
+  done
+
   echo ""
   read -erp "${TAB}Enter port for ${APP} [${var_addon_default_port}]: " MQTTX_PORT || true
   MQTTX_PORT=${MQTTX_PORT:-$var_addon_default_port}
@@ -44,21 +53,79 @@ function install_script() {
   fi
 
   msg_info "Configuring Nginx"
-  cat << EOF > /etc/nginx/sites-available/mqttx-web
+  local site_stage site_marker site_probe enabled_identity='' nginx_status=0
+  local available=/etc/nginx/sites-available/mqttx-web enabled=/etc/nginx/sites-enabled/mqttx-web
+  site_stage=$(mktemp -d /etc/nginx/sites-available/.mqttx-install.XXXXXXXX) || return $?
+  site_marker="mqttx-web-${site_stage##*.}"
+  site_probe="/.su-${site_marker}"
+  cat << EOF > "$site_stage/available"
 server {
     listen ${MQTTX_PORT};
 
     root ${var_addon_app_dir}/web/dist;
     index index.html;
 
+    location = ${site_probe} {
+        default_type text/plain;
+        return 200 "${site_marker}";
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
-  ln -sf /etc/nginx/sites-available/mqttx-web /etc/nginx/sites-enabled/mqttx-web
-  $STD nginx -t
-  systemctl reload nginx
+  cp -p -- "$site_stage/available" "$site_stage/expected" || nginx_status=$?
+  if [[ "$nginx_status" == 0 ]]; then ln -- "$site_stage/available" "$available" || nginx_status=$?; fi
+  if [[ "$nginx_status" == 0 ]]; then ln -s -- "$available" "$enabled" || nginx_status=$?; fi
+  if [[ "$nginx_status" == 0 ]]; then enabled_identity=$(stat -c '%d:%i' -- "$enabled") || nginx_status=$?; fi
+  if [[ "$nginx_status" == 0 ]]; then $STD nginx -t || nginx_status=$?; fi
+  if [[ "$nginx_status" == 0 ]]; then systemctl reload nginx || nginx_status=$?; fi
+  if [[ "$nginx_status" == 0 ]]; then
+    local listener_attempt listener_response listener_accepted=0
+    for ((listener_attempt = 0; listener_attempt < 30; listener_attempt++)); do
+      if listener_response=$(curl --noproxy '*' --fail --silent --show-error --max-time 1 "http://127.0.0.1:${MQTTX_PORT}${site_probe}" 2> /dev/null) &&
+        [[ "$listener_response" == "$site_marker" ]]; then
+        listener_accepted=1
+        break
+      fi
+      sleep 0.2
+    done
+    [[ "$listener_accepted" == 1 ]] || nginx_status=69
+  fi
+  if [[ "$nginx_status" != 0 ]]; then
+    # Only this preparation's exact files may be removed. A concurrent writer
+    # leaves an actionable recovery stage rather than receiving blind deletion.
+    if [[ -e "$available" || -L "$available" ]]; then
+      if [[ -L "$available" || ! "$available" -ef "$site_stage/available" ]] || ! cmp -s -- "$available" "$site_stage/expected"; then
+        msg_error "MQTTX site changed; recovery retained at ${site_stage}"
+        return "$nginx_status"
+      fi
+    fi
+    if [[ -e "$enabled" || -L "$enabled" ]]; then
+      if [[ ! -L "$enabled" || -z "$enabled_identity" || "$(stat -c '%d:%i' -- "$enabled")" != "$enabled_identity" || "$(readlink -- "$enabled")" != "$available" ]]; then
+        msg_error "MQTTX enabled link changed; recovery retained at ${site_stage}"
+        return "$nginx_status"
+      fi
+      rm -f -- "$enabled" || {
+        msg_error "MQTTX rollback failed; recovery retained at ${site_stage}"
+        return "$nginx_status"
+      }
+    fi
+    rm -f -- "$available" || {
+      msg_error "MQTTX rollback failed; recovery retained at ${site_stage}"
+      return "$nginx_status"
+    }
+    if $STD nginx -t; then
+      systemctl reload nginx || msg_error "Nginx reload of the restored configuration failed"
+    else msg_error "Nginx validation of the restored configuration failed"; fi
+    rm -f -- "$site_stage/available" "$site_stage/expected" || msg_error "MQTTX preparation retained at ${site_stage}"
+    rmdir -- "$site_stage" || msg_error "MQTTX preparation retained at ${site_stage}"
+    msg_error "Nginx did not accept the new MQTTX site; installation failed"
+    return "$nginx_status"
+  fi
+  rm -f -- "$site_stage/available" "$site_stage/expected"
+  rmdir -- "$site_stage"
   msg_ok "Configured Nginx"
 
   msg_info "Creating Service"
@@ -107,13 +174,60 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  svc_prepare_uninstall "$var_addon_service"
+  command -v nginx &> /dev/null || {
+    msg_error "Nginx is unavailable; retaining MQTTX"
+    return 69
+  }
+  local enabled=/etc/nginx/sites-enabled/mqttx-web available=/etc/nginx/sites-available/mqttx-web
+  local site_stage="" uninstall_status=0 reload_attempted=0 app_was_running=no
+  if [[ -e "$enabled" || -L "$enabled" ]]; then
+    if [[ ! -L "$enabled" || "$(readlink -- "$enabled")" != "$available" ]]; then
+      msg_error "Nginx site ${enabled} is not the addon-created link; retaining it"
+      return 65
+    fi
+  fi
+  if [[ -e "$available" || -L "$available" ]]; then
+    [[ -f "$available" && ! -L "$available" ]] || {
+      msg_error "Nginx site ${available} is not a regular addon configuration"
+      return 65
+    }
+  fi
+  site_stage=$(mktemp -d /etc/nginx/sites-available/.mqttx-uninstall.XXXXXXXX) || return $?
+  if [[ -e "$enabled" || -L "$enabled" ]]; then mv -T -- "$enabled" "$site_stage/enabled" || uninstall_status=$?; fi
+  if [[ "$uninstall_status" == 0 && -e "$available" ]]; then mv -T -- "$available" "$site_stage/available" || uninstall_status=$?; fi
+  if [[ "$uninstall_status" == 0 ]]; then $STD nginx -t || uninstall_status=$?; fi
+  if [[ "$uninstall_status" == 0 ]]; then
+    reload_attempted=1
+    systemctl reload nginx || uninstall_status=$?
+  fi
+  if [[ "$uninstall_status" == 0 ]]; then svc_prepare_uninstall "$var_addon_service" disable app_was_running || uninstall_status=$?; fi
+  if [[ "$uninstall_status" != 0 ]]; then
+    # Stage BOTH names before validation: a second foreign enabled link must
+    # expose its dangling target to nginx -t, not break after successful teardown.
+    local site_part site_dest
+    for site_part in available enabled; do
+      site_dest=$available
+      [[ "$site_part" != enabled ]] || site_dest=$enabled
+      if [[ -e "$site_stage/$site_part" || -L "$site_stage/$site_part" ]]; then
+        if [[ -e "$site_dest" || -L "$site_dest" ]] || ! mv -nT -- "$site_stage/$site_part" "$site_dest" || [[ -e "$site_stage/$site_part" || -L "$site_stage/$site_part" ]]; then
+          msg_error "Could not restore ${site_dest}; recovery retained at ${site_stage}"
+          return "$uninstall_status"
+        fi
+      fi
+    done
+    if [[ "$reload_attempted" == 1 ]]; then
+      if $STD nginx -t; then
+        systemctl reload nginx || msg_error "Nginx reload of the restored site failed"
+      else msg_error "Nginx validation of the restored site failed"; fi
+    fi
+    if [[ "$app_was_running" == yes ]]; then svc_start "$var_addon_service" || msg_error "MQTTX app activation recovery failed"; fi
+    if [[ -n "$site_stage" ]]; then rmdir -- "$site_stage" || msg_error "Could not remove empty recovery stage ${site_stage}"; fi
+    return "$uninstall_status"
+  fi
   rm -f "/etc/systemd/system/${var_addon_service}.service"
-  rm -f /etc/nginx/sites-enabled/mqttx-web
-  rm -f /etc/nginx/sites-available/mqttx-web
-  if command -v nginx &> /dev/null; then
-    $STD nginx -t || return $?
-    systemctl reload nginx || return $?
+  if [[ -n "$site_stage" ]]; then
+    rm -f -- "$site_stage/enabled" "$site_stage/available"
+    rmdir -- "$site_stage"
   fi
   rm -rf "$var_addon_app_dir"
   msg_ok "${APP} uninstalled"

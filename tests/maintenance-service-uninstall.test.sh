@@ -172,12 +172,12 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
         esac
         sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
         cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
-        sed -n '/^svc_enable() {/,/^# SECTION 4:/p' "$ROOT/misc/install.func" > "$c/stage/install.func"
-        printf '\npkg_install() { :; }; setup_lxc() { :; }\n' >> "$c/stage/install.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$c/stage/install.func"
         printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
         printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
         cat "$work/model.sh" >> "$c/stage/github.func"
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --addon "$c" > "$c/stage/addon_lxc.func"
+        printf '\naddon_baseline() { :; }\n' >> "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$script" |
           sed -e "s|/etc/systemd/system|$c/units|g" -e "s|/etc/init.d|$c/units|g" -e "s|/etc/lighttpd|$c/lighttpd|g" \
             -e "s|/opt/scanopy|$c/app|g" -e "s|/usr/bin/scanopy|$c/bin/scanopy|g" > "$c/hook.sh"
@@ -245,7 +245,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
   done
 done
 python3 - "$ROOT" << 'PY'
-import pathlib,re,subprocess,sys
+import json,pathlib,re,subprocess,sys
 p=pathlib.Path(sys.argv[1]);names=('actual-budget-prometheus-exporter adguardhome-sync coder-code-server copyparty cronmaster dockge filebrowser-quantum filebrowser glances immich-public-proxy jellystat mqttx nextcloud-exporter olivetin phpmyadmin pihole-exporter portainer prometheus-paperless-ngx-exporter qbittorrent-exporter sparkyfitness-garmin webmin').split()
 paths=[p/'scripts/addon'/f'{n}.sh' for n in names]+[p/'scripts/lxc/netvisor.sh']
 for f in paths:
@@ -259,10 +259,13 @@ for name in ('svc_enable','svc_disable','svc_start','svc_stop','svc_restart','sv
  pattern=rf'^{name}\(\) \{{\n.*?^\}}'
  assert re.search(pattern,current,re.M|re.S)[0]==re.search(pattern,old,re.M|re.S)[0],name
 for name in ('arcane','coolify','crowdsec','dokploy','homebrew','komodo','pyenv','runtipi'):
- file=f'scripts/addon/{name}.sh';old=subprocess.check_output(['git','show',f'HEAD:{file}'],cwd=p,text=True)
+ # These hooks do not adopt the service helper. Their app-owned changes are
+ # qualified by cold members, not frozen forever to this fixture's git base.
+ # Keep the source-custody check against the source-bound generated artifact.
+ file=f'scripts/addon/{name}.sh';old=json.loads((p/f'_ast/addon/{name}.json').read_text())['source']
  pattern=r'^function uninstall_script\(\) \{\n.*?^\}'
  assert re.search(pattern,(p/file).read_text(),re.M|re.S)[0]==re.search(pattern,old,re.M|re.S)[0],file
-print('L2_EXISTING_HELPERS_AND_OTHER_8_HOOKS_UNCHANGED=0')
+print('L2_EXISTING_HELPERS_UNCHANGED_AND_OTHER_8_HOOKS_SOURCE_BOUND=0')
 PY
 printf '%s failure(s); native helpers/hooks/bundles/files/statuses, service commands modeled\n' "$failures"
 [[ "$failures" == 0 ]]

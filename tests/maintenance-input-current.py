@@ -46,8 +46,10 @@ apt() { printf 'modeled package search-v4\n' > "$CASE_ROOT/opt/wanderer/source/s
      write(c/'incoming'/app,'#!/usr/bin/env bash\nprintf selected-v2\n',0o755)
      model+=r'''
 systemctl() {
+ [[ "${!#}" == "$TEST_APP" || "${!#}" == "$TEST_APP.service" ]] || return 4
  printf '%s\n' "$*" >> "$CASE_ROOT/service-calls"
- case "$1" in stop) printf stopped > "$CASE_ROOT/service-$TEST_APP" ;; start) "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/executable-consumer"; printf running > "$CASE_ROOT/service-$TEST_APP" ;; esac
+ if [[ "$1" == show ]]; then fixture_service_properties "$CASE_ROOT/service-$TEST_APP"; return; fi
+ fixture_service_state "$1" "$CASE_ROOT/service-$TEST_APP" "$CASE_ROOT/bin/$TEST_APP" > "$CASE_ROOT/executable-consumer"
 }
 '''
     else:
@@ -107,9 +109,9 @@ if fmt:print('200',end='')
    core=(R/'misc/core.func').read_text().replace('/var/lib/scripts-underground/update-pending',str(c/'pending')).replace('/var/lib/scripts-underground/maintenance-locks',str(c/'locks'))
    write(c/'stage/core.func',core)
    for n in ('tools.func','error_handler.func'):write(c/'stage'/n,(R/'misc'/n).read_text())
-   write(c/'stage/install.func','pkg_install() { :; }\nsetup_lxc() { :; }\n')
+   write(c/'stage/install.func',install_fixture(R))
    write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
-   write(c/'stage/addon_lxc.func','source '+shlex.quote(str(c/'models.sh'))+'\n')
+   write(c/'stage/addon_lxc.func',addon_fixture(R,c)+'\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
    kind='addon' if app in ('cronmaster','filebrowser') else 'lxc'
    text=(R/'scripts'/kind/(app+'.sh')).read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
    hook=text[start:end].replace('/opt',str(c/'opt')).replace('/usr/local/bin/qui',str(c/'bin/qui')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/autocaliweb/app.db',str(c/'config/app.db')).replace('/usr/bin/kepubify',str(c/'kepubify')).replace('/etc/angie',str(c/'angie')).replace('/etc/nginx',str(c/'nginx'))
@@ -143,6 +145,7 @@ if fmt:print('200',end='')
    elif app in ('filebrowser','qui'):
     check(name+'/executable consumer','selected-v2',subprocess.run(['bash',str(c/'bin'/app)],capture_output=True,text=True,check=True,timeout=5).stdout)
     check(name+'/final executable mode',0o755,(c/'bin'/app).stat().st_mode&0o777)
+    check(name+'/running executable consumer','selected-v2',read(c/'executable-consumer'))
    elif app=='wanderer':check(name+'/source consumer','2.0\n',read(live/'source/db/selected-version'))
    else:check(name+'/source consumer','2.0\n',read(live/'selected-version'))
    for p,(data,mode) in protected_input.items():
@@ -158,6 +161,7 @@ if fmt:print('200',end='')
     check(name+'/ordinary retry status',0,retry.returncode)
     check(name+'/retry pending retired',False,(c/'pending'/app).exists())
     check(name+'/retry selected marker','2.0\n',read(c/'home'/('.'+marker)))
+    if app in ('filebrowser','qui'):check(name+'/retry running executable consumer','selected-v2',read(c/'executable-consumer'))
     for p,(data,mode) in protected_input.items():
      q=pathlib.Path(p);check(name+'/retry bytes/'+str(q.relative_to(c)),data.hex(),q.read_bytes().hex() if q.is_file() else '<absent>');check(name+'/retry mode/'+str(q.relative_to(c)),mode,q.stat().st_mode&0o777 if q.exists() else -1)
     for s in service_names:check(name+'/retry service/'+s,'running',read(c/('service-'+s)))

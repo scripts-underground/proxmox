@@ -13,7 +13,7 @@ APP="AdGuardHome-Sync"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/adguardhome-sync}"
-var_addon_config_path="${var_addon_config_path:-/opt/adguardhome-sync/adguardhome-sync.yaml}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/adguardhome-sync.yaml}"
 var_addon_backup_dir="${var_addon_backup_dir:-/opt/adguardhome-sync_backup}"
 var_addon_service="${var_addon_service:-adguardhome-sync}"
 var_addon_repo="${var_addon_repo:-bakito/adguardhome-sync}"
@@ -62,7 +62,7 @@ function install_script() {
   echo ""
 
   msg_info "Creating configuration"
-  cat << EOF > "$var_addon_config_path"
+  addon_write_private_file "$var_addon_config_path" << EOF
 # AdGuardHome-Sync Configuration
 # Documentation: https://github.com/bakito/adguardhome-sync
 
@@ -117,7 +117,6 @@ features:
   filters: true
   theme: true
 EOF
-  chmod 600 "$var_addon_config_path"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
@@ -180,31 +179,16 @@ function update_script() {
     exit 233
   fi
   if check_for_gh_release "adguardhome-sync" "$var_addon_repo"; then
-    local was_running=0 update_status=0 restore_status=0 before after
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path" || return $?
+    local was_running=0 update_status=0 before after
     # Include names, bytes, symlinks, modes and owners, not mutable timestamps.
     # A deployer's error does not itself prove that its rollback completed.
     function adguardhome_sync_state() (
-      set -o pipefail
-      local path
-      {
-        printf '%s\0' "$var_addon_config_path" || exit $?
-        find "$var_addon_install_path/" -print0 || exit $?
-      } | LC_ALL=C sort -zu | while IFS= read -r -d '' path; do
-        printf '%s\0' "$path" || exit $?
-        stat -c '%f:%u:%g' -- "$path" || exit $?
-        if [[ -L "$path" ]]; then
-          readlink -- "$path" || exit $?
-        elif [[ -f "$path" ]]; then
-          sha256sum < "$path" || exit $?
-        elif [[ ! -d "$path" ]]; then
-          exit 65
-        fi
-      done | sha256sum
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path" --unit "$var_addon_service"
     )
-    before=$(adguardhome_sync_state) || return $?
-    if [[ "$INIT_SYSTEM" == openrc ]]; then
-      if rc-service "$var_addon_service" status > /dev/null 2>&1; then was_running=1; fi
-    elif systemctl is-active --quiet "$var_addon_service"; then was_running=1; fi
+    before=$(adguardhome_sync_state) || before=unverified
+    addon_service_begin "$var_addon_service" was_running || return $?
     msg_info "Stopping service"
     if [[ "$INIT_SYSTEM" == "openrc" ]]; then
       rc-service "$var_addon_service" stop &> /dev/null || update_status=$?
@@ -213,17 +197,14 @@ function update_script() {
     fi
     if [[ "$update_status" == 0 ]]; then
       msg_ok "Stopped service"
-      # The backup owner uses explicit exit paths; contain them so recovery runs.
-      (BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path") || update_status=$?
+      addon_backup_create "$var_addon_backup_dir" "$var_addon_config_path" || update_status=$?
       if [[ "$update_status" == 0 ]]; then
         CLEAN_INSTALL=1 fetch_and_deploy_gh_release "adguardhome-sync" "$var_addon_repo" "prebuild" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" "adguardhome-sync_*_linux_$(get_system_arch uname).tar.gz" || update_status=$?
-        BACKUP_DIR="$var_addon_backup_dir" restore_backup || restore_status=$?
-        if [[ "$update_status" == 0 ]]; then update_status=$restore_status; fi
       fi
     fi
     if [[ "$update_status" != 0 ]]; then
       after=$(adguardhome_sync_state) || after=unverified
-      if [[ "$after" == "$before" && "$was_running" == 1 ]]; then
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
         if [[ "$INIT_SYSTEM" == openrc ]]; then
           rc-service "$var_addon_service" start || msg_warn "Unable to restart previous AdGuardHome-Sync service"
         else
@@ -237,13 +218,10 @@ function update_script() {
 
     if [[ "$was_running" == 1 ]]; then
       msg_info "Starting service"
-      if [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        rc-service "$var_addon_service" start
-      else
-        systemctl start "$var_addon_service"
-      fi
+      addon_service_complete "$var_addon_service" || return $?
       msg_ok "Started service"
     fi
+    addon_backup_complete "$var_addon_backup_dir" || return $?
     msg_ok "Updated successfully!"
   else
     local release_status=$?

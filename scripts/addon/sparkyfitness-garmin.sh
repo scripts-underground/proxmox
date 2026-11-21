@@ -36,7 +36,7 @@ function install_script() {
   cp "${var_addon_install_path}/docker/.env.example" "$var_addon_config_path"
   cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit
   $STD uv venv --clear .venv
-  $STD uv pip install -r requirements.txt
+  $STD uv pip install --python "${var_addon_install_path}/SparkyFitnessGarmin/.venv/bin/python3" -r requirements.txt
   sed -i -e "s|^#\?GARMIN_MICROSERVICE_URL=.*|GARMIN_MICROSERVICE_URL=http://${LOCAL_IP}:${var_addon_default_port}|" "$var_addon_config_path"
   cat << EOF > "$var_addon_service_path"
 [Unit]
@@ -55,7 +55,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable -q --now sparkyfitness-garmin
+  systemctl enable -q --now "${var_addon_service_path##*/}"
   msg_ok "Set up ${APP}"
 }
 
@@ -71,20 +71,44 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" "SparkyFitnessGarmin/mock_data" "SparkyFitnessGarmin/.venv")
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path" || return $?
     PYTHON_VERSION="3.13" setup_uv
 
+    local was_running=0 update_status=0 before after
+    # The venv and its dependencies are part of the previous runtime, not
+    # merely the Python entry point. A failed pip operation is not rollback.
+    function sparkyfitness_garmin_state() (
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path" --unit "${var_addon_service_path##*/}"
+    )
+    before=$(sparkyfitness_garmin_state) || before=unverified
+    addon_service_begin "${var_addon_service_path##*/}" was_running || return $?
     msg_info "Stopping service"
-    systemctl stop sparkyfitness-garmin.service &> /dev/null || true
-    msg_ok "Stopped service"
+    systemctl stop "${var_addon_service_path##*/}" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit $?
+        if [[ ! -x .venv/bin/python3 ]]; then $STD uv venv .venv || exit $?; fi
+        $STD uv pip install --python "${var_addon_install_path}/SparkyFitnessGarmin/.venv/bin/python3" -r requirements.txt || exit $?
+      ) || update_status=$?
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(sparkyfitness_garmin_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "${var_addon_service_path##*/}" || msg_warn "Unable to restart previous Garmin service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Garmin installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "sparkyfitness-garmin" "CodeWithCJ/SparkyFitness" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-    cd "${var_addon_install_path}/SparkyFitnessGarmin" || exit
-    $STD uv venv --clear .venv
-    $STD uv pip install -r requirements.txt
-
-    msg_info "Starting service"
-    systemctl start sparkyfitness-garmin
-    msg_ok "Started service"
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "${var_addon_service_path##*/}" || return $?
+      msg_ok "Started service"
+    fi
     msg_ok "Updated successfully"
   else
     local release_status=$?
@@ -95,7 +119,7 @@ function update_script() {
 
 function uninstall_script() {
   msg_info "Uninstalling ${APP}"
-  svc_prepare_uninstall sparkyfitness-garmin.service
+  svc_prepare_uninstall "${var_addon_service_path##*/}"
   rm -rf "$var_addon_service_path" "$var_addon_config_path" "$var_addon_install_path" "$HOME/.sparkyfitness-garmin"
   msg_ok "${APP} has been uninstalled"
 }

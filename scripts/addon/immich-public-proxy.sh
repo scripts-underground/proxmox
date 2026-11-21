@@ -13,7 +13,7 @@ APP="Immich Public Proxy"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/immich-proxy}"
-var_addon_config_path="${var_addon_config_path:-/opt/immich-proxy/app}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/app}"
 var_addon_service_path="${var_addon_service_path:-/etc/systemd/system/immich-proxy.service}"
 var_addon_backup_dir="${var_addon_backup_dir:-/opt/immich-public-proxy_backup}"
 var_addon_default_port="${var_addon_default_port:-3000}"
@@ -79,11 +79,10 @@ function install_script() {
   done
 
   msg_info "Creating configuration"
-  cat << EOF > "$var_addon_config_path/.env"
+  addon_write_private_file "$var_addon_config_path/.env" << EOF
 NODE_ENV=production
 IMMICH_URL=http://${DOMAIN}:2283
 EOF
-  chmod 600 "$var_addon_config_path/.env"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
@@ -118,55 +117,51 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    local service was_running=0 update_status=0 before after
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || return $?
+    service=$(basename "$var_addon_service_path" .service)
+    function immich_proxy_state() (
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path/.env" --optional "$var_addon_config_path/config.json" --unit "$service"
+    )
+    before=$(immich_proxy_state) || before=unverified
+    addon_service_begin "$service" was_running || return $?
     msg_info "Stopping service"
-    systemctl stop immich-proxy.service &> /dev/null || true
-    msg_ok "Stopped service"
-
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path/.env" "$var_addon_config_path/config.json"
-
-    if command -v node &> /dev/null; then
-      msg_ok "Node.js already installed ($(node -v))"
-    else
-      NODE_VERSION="24" setup_nodejs
+    systemctl stop "$service" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        addon_backup_create "$var_addon_backup_dir" "$var_addon_config_path/.env" "$var_addon_config_path/config.json" || exit $?
+        if command -v node &> /dev/null; then
+          msg_ok "Node.js already installed ($(node -v))"
+        else
+          NODE_VERSION="24" setup_nodejs || exit $?
+        fi
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        msg_info "Installing dependencies"
+        cd "$var_addon_config_path" || exit $?
+        $STD npm ci || exit $?
+        msg_ok "Installed dependencies"
+        msg_info "Building ${APP}"
+        $STD npm run build || exit $?
+        msg_ok "Built ${APP}"
+      ) || update_status=$?
     fi
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "Immich Public Proxy" "alangrainger/immich-public-proxy" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
-
-    msg_info "Installing dependencies"
-    cd "$var_addon_config_path" || exit
-    $STD npm ci
-    msg_ok "Installed dependencies"
-
-    msg_info "Building ${APP}"
-    $STD npm run build
-    msg_ok "Built ${APP}"
-
-    msg_info "Updating service"
-    cat << EOF > "$var_addon_service_path"
-[Unit]
-Description=Immich Public Proxy
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${var_addon_install_path}/app
-EnvironmentFile=${var_addon_config_path}/.env
-ExecStart=/usr/bin/node ${var_addon_install_path}/app/dist/index.js
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    msg_ok "Updated service"
-
-    msg_info "Starting service"
-    systemctl start immich-proxy
-    msg_ok "Started service"
+    if [[ "$update_status" != 0 ]]; then
+      after=$(immich_proxy_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "$service" || msg_warn "Unable to restart previous Immich Public Proxy service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Immich Public Proxy installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "$service" || return $?
+      msg_ok "Started service"
+    fi
+    addon_backup_complete "$var_addon_backup_dir" || return $?
     msg_ok "Updated successfully"
   else
     local release_status=$?

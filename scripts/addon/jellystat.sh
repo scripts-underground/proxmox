@@ -13,7 +13,7 @@ APP="Jellystat"
 # Bundle-consumed configuration (var_addon_* is baked into update/uninstall
 # bundles at install time — hooks may reference these directly)
 var_addon_install_path="${var_addon_install_path:-/opt/jellystat}"
-var_addon_config_path="${var_addon_config_path:-/opt/jellystat/.env}"
+var_addon_config_path="${var_addon_config_path:-${var_addon_install_path}/.env}"
 var_addon_service_path="${var_addon_service_path:-/etc/systemd/system/jellystat.service}"
 var_addon_backup_dir="${var_addon_backup_dir:-/opt/jellystat_backup}"
 var_addon_creds_path="${var_addon_creds_path:-/root/jellystat.creds}"
@@ -118,7 +118,7 @@ function install_script() {
   msg_ok "Built ${APP}"
 
   msg_info "Creating configuration"
-  cat << EOF > "$var_addon_config_path"
+  addon_write_private_file "$var_addon_config_path" << EOF
 # Jellystat Configuration
 # Database
 POSTGRES_USER=${var_addon_db_user}
@@ -149,7 +149,6 @@ TZ=$(cat /etc/timezone 2> /dev/null || echo "UTC")
 # Optional: Self-signed certificates
 REJECT_SELF_SIGNED_CERTIFICATES=true
 EOF
-  chmod 600 "$var_addon_config_path"
   msg_ok "Created configuration"
 
   msg_info "Creating service"
@@ -174,7 +173,7 @@ EOF
   msg_ok "Created and started service"
 
   msg_info "Saving credentials"
-  cat << EOF > "$var_addon_creds_path"
+  addon_write_private_file "$var_addon_creds_path" << EOF
 Jellystat Credentials
 =====================
 Database User: ${var_addon_db_user}
@@ -184,7 +183,6 @@ JWT Secret: ${JWT_SECRET}
 
 Web UI: http://${LOCAL_IP}:${var_addon_default_port}
 EOF
-  chmod 600 "$var_addon_creds_path"
   msg_ok "Saved credentials to ${var_addon_creds_path}"
 }
 
@@ -199,28 +197,46 @@ function post_install_script() {
 
 function update_script() {
   if check_for_gh_release "jellystat" "CyferShepard/Jellystat"; then
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+    addon_keep_inputs CLEAN_INSTALL_KEEP_PATHS "$var_addon_install_path" "$var_addon_config_path" || return $?
+    local service was_running=0 update_status=0 before after
+    service=$(basename "$var_addon_service_path" .service)
+    function jellystat_state() (
+      addon_runtime_fingerprint --tree "$var_addon_install_path" --file "$var_addon_config_path" --unit "$service"
+    )
+    before=$(jellystat_state) || before=unverified
+    addon_service_begin "$service" was_running || return $?
     msg_info "Stopping service"
-    systemctl stop jellystat.service &> /dev/null || true
-    msg_ok "Stopped service"
-
-    BACKUP_DIR="$var_addon_backup_dir" create_backup "$var_addon_config_path"
-
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path"
-
-    BACKUP_DIR="$var_addon_backup_dir" restore_backup
-
-    msg_info "Installing dependencies"
-    cd "$var_addon_install_path" || exit
-    $STD npm install
-    msg_ok "Installed dependencies"
-
-    msg_info "Building ${APP}"
-    $STD npm run build
-    msg_ok "Built ${APP}"
-
-    msg_info "Starting service"
-    systemctl start jellystat
-    msg_ok "Started service"
+    systemctl stop "$service" || update_status=$?
+    if [[ "$update_status" == 0 ]]; then
+      msg_ok "Stopped service"
+      (
+        addon_backup_create "$var_addon_backup_dir" "$var_addon_config_path" || exit $?
+        CLEAN_INSTALL=1 fetch_and_deploy_gh_release "jellystat" "CyferShepard/Jellystat" "tarball" "$CHECK_UPDATE_RELEASE" "$var_addon_install_path" || exit $?
+        msg_info "Installing dependencies"
+        cd "$var_addon_install_path" || exit $?
+        $STD npm install || exit $?
+        msg_ok "Installed dependencies"
+        msg_info "Building ${APP}"
+        $STD npm run build || exit $?
+        msg_ok "Built ${APP}"
+      ) || update_status=$?
+    fi
+    if [[ "$update_status" != 0 ]]; then
+      after=$(jellystat_state) || after=unverified
+      if [[ "$before" != unverified && "$after" == "$before" && "$was_running" == 1 ]]; then
+        systemctl start "$service" || msg_warn "Unable to restart previous Jellystat service"
+      elif [[ "$after" != "$before" ]]; then
+        msg_warn "Previous Jellystat installation is unverified; service stays stopped"
+      fi
+      return "$update_status"
+    fi
+    if [[ "$was_running" == 1 ]]; then
+      msg_info "Starting service"
+      addon_service_complete "$service" || return $?
+      msg_ok "Started service"
+    fi
+    addon_backup_complete "$var_addon_backup_dir" || return $?
     msg_ok "Updated successfully"
   else
     local release_status=$?

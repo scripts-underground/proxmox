@@ -27,7 +27,7 @@ for owner in addon lxc; do
       : > "$c/markers/dockge"
       sed "s|/var/lib/scripts-underground/maintenance-locks|$c/locks|g" "$ROOT/misc/core.func" > "$c/stage/core.func"
       cp "$ROOT/misc/error_handler.func" "$c/stage/error_handler.func"
-      printf 'pkg_install() { :; }; setup_lxc() { :; }\n' > "$c/stage/install.func"
+      python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --explicit-platform > "$c/stage/install.func"
       printf 'setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n' > "$c/stage/tools.func"
       printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/stage/github.func"
       cat > "$c/model.sh" << 'MODEL'
@@ -38,7 +38,8 @@ docker() {
 }
 MODEL
       if [[ "$owner" == addon ]]; then
-        printf 'addon_baseline() { :; }\n' > "$c/stage/addon_lxc.func"
+        python3 -B "$ROOT/tests/lib/framework_fixture.py" "$ROOT" --addon "$c" > "$c/stage/addon_lxc.func"
+        printf '\naddon_baseline() { :; }\n' >> "$c/stage/addon_lxc.func"
         cat "$c/model.sh" >> "$c/stage/addon_lxc.func"
         sed -n '/^function uninstall_script() {/,/^}/p' "$ROOT/scripts/addon/dockge.sh" > "$c/hook.sh"
       else
