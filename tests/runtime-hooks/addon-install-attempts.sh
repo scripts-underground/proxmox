@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Bounded fresh-install custody, not ownership of arbitrary root contents.
 # shellcheck disable=SC2034
 set -euo pipefail

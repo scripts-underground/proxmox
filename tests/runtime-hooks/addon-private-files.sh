@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Source-generated install hooks; package, database, build and service effects
 # are modeled. Files and their mode at the first secret write are native.
 # shellcheck disable=SC2034,SC2154

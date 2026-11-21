@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # shellcheck disable=SC2034,SC2154
 # Real release/bundle/pending owners; HTTP and service control are modeled.
 set -euo pipefail

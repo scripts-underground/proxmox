@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc start-on-success
 # Actual bundle writer, cold hook/config bytes and service-side config readback.
 # free, apk, OpenRC and surrounding framework lifecycle are explicit models.
 set -euo pipefail

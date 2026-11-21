@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Checked no-clobber publication and exact private-file custody, in cold children.
 # shellcheck disable=SC2034
 set -euo pipefail

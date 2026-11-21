@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Exact-resource teardown custody, including cold interruption recovery.
 # shellcheck disable=SC2034
 set -euo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual pkg_update and the actual pre-bundle apt provisioning fragment of build.func.
 # apt-get, pct transport, mirror reachability, prompt input and the /etc, /var/lib/apt
 # locations are explicit models: no native Devuan template, CDN or deb822 claim.

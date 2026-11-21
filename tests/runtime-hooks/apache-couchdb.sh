@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: lxc package-managed
 # shellcheck disable=SC2034,SC2154
 # Real cold update bundles and file consumers; APT package effects are modeled.
 set -euo pipefail

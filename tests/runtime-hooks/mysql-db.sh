@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual setup_mysql_db from misc/tools.func with the real silent wrapper, under cold
 # env -i shells. Only mysql and (for failure legs) openssl are models: mysql records its
 # argv and stdin SQL. No native engine is involved; SQL parsing and grants need a real server.

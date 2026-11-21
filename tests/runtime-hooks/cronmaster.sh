@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: addon intent-preserving
 # External HTTP/package/service models; real release/backup/pending owners.
 # shellcheck disable=SC2034,SC2154
 set -euo pipefail

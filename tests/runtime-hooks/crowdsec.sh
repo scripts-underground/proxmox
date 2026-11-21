@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: addon intent-preserving
 # Completed external installer bytes, real cold commands, modeled package effects.
 # shellcheck disable=SC2034,SC2154
 set -euo pipefail

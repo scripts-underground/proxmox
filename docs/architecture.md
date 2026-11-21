@@ -1887,6 +1887,17 @@ edit a shared app switch or registry. The aggregator requires a zero exit and on
 terminal `RUNTIME_HOOKS_RESULT failures=0` per member, and refuses empty discovery.
 Discovery remains inside the existing context-bound suite/source tree and retains
 its declared `MAINTENANCE_REFERENCES` input and public runner contract.
+Each member declares one literal `# runtime-hooks-contract: <profile> <activation>`
+header. The shared data-only reader admits discovery and direct cold-hook entry;
+missing, duplicate, malformed, unknown and mismatched profiles fail before effects.
+Addon app members must declare `addon intent-preserving`; LXC members declare
+their existing `start-on-success`, `intent-preserving` or `package-managed` policy.
+Standalone helper/control members declare `fixture case-asserted` and retain their
+own assertions, not an app lifecycle. There is no inherited/default declaration.
+Modeled service retries enforce the declared outcome and fresh activation when
+active is required; initially stopped addon services remain stopped. Package and
+standalone models retain their explicit consumer assertions. Failure recovery
+still permits starting only a positively verified, originally active runtime.
 Harness members declare `script_type=lxc|addon`; install, update and uninstall
 execute cold commands emitted by the shared bundle producer with the actual
 profile inventory. Fixture state/path mappings and external-effect models do not

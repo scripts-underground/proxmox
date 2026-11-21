@@ -5,6 +5,7 @@
 # These inputs/outputs are consumed by the sourced producers and callbacks.
 # shellcheck disable=SC2034,SC2154
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
+source "$ROOT/tests/lib/runtime-hooks/contract.sh"
 
 check() {
   if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
@@ -227,8 +228,15 @@ runtime_hooks_backup_assert() {
 runtime_hooks_retry_services_assert() {
   [[ -f "$c/recovery-service" ]] || return 0
   local desired
-  desired=$(cat "$c/recovery-initial")
-  check "$(cat "$c/recovery-state")" "$desired" "$app/$variant successful retry restores original service activity"
+  case "${runtime_hooks_activation:-}" in
+    intent-preserving) desired=$(cat "$c/recovery-initial") ;;
+    start-on-success) desired=active ;;
+    *)
+      check "${runtime_hooks_activation:-undeclared}" 'intent-preserving or start-on-success' "$app/$variant service observer requires an explicit activation contract"
+      return 0
+      ;;
+  esac
+  check "$(cat "$c/recovery-state")" "$desired" "$app/$variant successful retry satisfies $runtime_hooks_activation activation"
   if [[ "$desired" == active ]]; then
     check "$(($(wc -l < "$c/recovery-starts") > retry_starts_before))" 1 "$app/$variant successful retry performs a fresh activation"
   else
@@ -354,12 +362,17 @@ PY
 }
 
 runtime_hooks_main() {
-  [[ "${RUNTIME_HOOKS_MODELS_ONLY:-0}" != 1 ]] || return 0
   case "${script_type:-}" in lxc | addon) ;; *)
     printf 'Declare script_type=lxc or addon\n' >&2
     return 65
     ;;
   esac
+  runtime_hooks_contract_read "${BASH_SOURCE[1]}" || return $?
+  if [[ "$runtime_hooks_contract_profile" != "$script_type" ]]; then
+    printf 'Runtime hooks: activation profile %s does not match caller %s\n' "$runtime_hooks_contract_profile" "$script_type" >&2
+    return 65
+  fi
+  [[ "${RUNTIME_HOOKS_MODELS_ONLY:-0}" != 1 ]] || return 0
   systemd-detect-virt --vm --quiet || exit 1
   : "${TMPDIR:?disk-backed TMPDIR required}" "${MAINTENANCE_REFERENCES:?immutable source metadata required}"
   case "$(findmnt -rn -T "$TMPDIR" -o FSTYPE)" in '' | tmpfs | ramfs) exit 1 ;; esac

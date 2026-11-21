@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Actual manage_tool_repository mysql branch from misc/tools.func with the real get_os_info
 # and cleanup_old_repo_files, in a private /etc/apt. The key transport, the fallback-suite
 # probe and (for fault legs) dpkg are models. No APT signature or package is involved here;

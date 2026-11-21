@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Exact documented procedure, real private files/FDs/ACLs; service controls modeled.
 set -euo pipefail
 ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")

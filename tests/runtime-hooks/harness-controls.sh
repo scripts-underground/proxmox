@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# runtime-hooks-contract: fixture case-asserted
 # Negative controls for the shared role/retirement owner, not app qualification.
 # shellcheck disable=SC2034
 set -euo pipefail
@@ -13,6 +14,23 @@ script_type=unknown
 status=0
 runtime_hooks_main > "$work/type-output" 2>&1 || status=$?
 check "$status" 65 'harness rejects undeclared script profiles'
+for declaration in missing wrong-profile addon-start invalid; do
+  printf '#!/usr/bin/env bash\n' > "$work/contract-probe.sh"
+  case "$declaration" in
+    wrong-profile) printf '# runtime-hooks-contract: fixture case-asserted\n' >> "$work/contract-probe.sh" ;;
+    addon-start) printf '# runtime-hooks-contract: addon start-on-success\n' >> "$work/contract-probe.sh" ;;
+    invalid) printf '# runtime-hooks-contract: addon unknown\n' >> "$work/contract-probe.sh" ;;
+  esac
+  cat >> "$work/contract-probe.sh" << 'PROBE'
+source "$1/tests/lib/runtime-hooks/harness.sh"
+app=fixture script_type=addon
+variants=() hook_paths=()
+runtime_hooks_main
+PROBE
+  status=0
+  bash "$work/contract-probe.sh" "$ROOT" > "$work/contract-$declaration-output" 2>&1 || status=$?
+  check "$status" 65 "direct harness rejects activation declaration/$declaration"
+done
 c="$work/case" app=fixture mode=no variant=dangling rc=0 pending_key=fixture
 status=0
 (
@@ -193,11 +211,33 @@ else
   mkdir "$c/app"
   runtime_hooks_recovery_setup fixture active "$c/app"
   retry_starts_before=0
+  runtime_hooks_activation=intent-preserving
   printf inactive > "$c/recovery-state"
   prior_failures=$failures
   runtime_hooks_retry_services_assert > "$work/stopped-retry" 2>&1
   observed=$((failures - prior_failures)) failures=$prior_failures
   check "$((observed > 0))" 1 'successful retry cannot leave originally active service stopped'
+  for policy in intent-preserving start-on-success; do
+    runtime_hooks_activation=$policy
+    for action in stopped started; do
+      runtime_hooks_recovery_setup fixture inactive "$c/app"
+      retry_starts_before=0 expected_bad=0
+      if [[ "$action" == started ]]; then runtime_hooks_recovery_service start fixture; fi
+      case "$policy/$action" in intent-preserving/started | start-on-success/stopped) expected_bad=1 ;; esac
+      prior_failures=$failures
+      runtime_hooks_retry_services_assert > "$work/$policy-$action" 2>&1
+      observed=$((failures - prior_failures)) failures=$prior_failures
+      check "$((observed > 0))" "$expected_bad" "declared retry activation/$policy/$action"
+    done
+    runtime_hooks_recovery_setup fixture active "$c/app"
+    retry_starts_before=0
+    prior_failures=$failures
+    runtime_hooks_retry_services_assert > "$work/$policy-stale-start" 2>&1
+    observed=$((failures - prior_failures)) failures=$prior_failures
+    check "$((observed > 0))" 1 "declared retry activation/$policy requires fresh activation"
+    runtime_hooks_recovery_service start fixture
+    runtime_hooks_retry_services_assert
+  done
   printf 'selected config\n' > "$c/selected-config"
   cp "$c/selected-config" "$c/config-before"
   runtime_hooks_retained_file_assert "$c/selected-config" "$c/config-before"
