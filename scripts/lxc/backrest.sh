@@ -60,11 +60,14 @@ function update_script() {
     msg_ok "Stopped Service"
     ARCH=$(uname -m)
     [[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
-    fetch_and_deploy_gh_release "backrest" "garethgeorge/backrest" "prebuild" "latest" "/opt/backrest/bin" "backrest_Linux_${ARCH}.tar.gz"
+    fetch_and_deploy_gh_release "backrest" "garethgeorge/backrest" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/backrest/bin" "backrest_Linux_${ARCH}.tar.gz"
     msg_info "Starting Service"
     systemctl start backrest
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
