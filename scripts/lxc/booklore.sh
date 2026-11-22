@@ -21,16 +21,21 @@ var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
   JAVA_VERSION="25" setup_java
-  NODE_VERSION="24" setup_nodejs
+  NODE_VERSION="24" NODE_MAX_OLD_SPACE_SIZE="${NODE_MAX_OLD_SPACE_SIZE:-1536}" setup_nodejs
   setup_mariadb
   setup_yq
   MARIADB_DB_NAME="booklore_db" MARIADB_DB_USER="booklore_user" MARIADB_DB_EXTRA_GRANTS="GRANT SELECT ON \`mysql\`.\`time_zone_name\`" setup_mariadb_db
-  fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball"
+  local release_file app_version
+  release_file=$(mktemp)
+  fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball" "latest" "/opt/booklore" "" "" "$release_file"
+  app_version=$(jq -er '.tag_name' "$release_file")
+  rm -f -- "$release_file"
 
   msg_info "Building Frontend"
   cd /opt/booklore/booklore-ui || exit
   $STD npm ci --force
-  $STD npm run build --configuration=production
+  # Angular's parallel TypeScript heaps exceed the default CT memory budget.
+  NG_BUILD_MAX_WORKERS=1 NG_BUILD_PARALLEL_TS=0 $STD npm run build -- --configuration=production
   msg_ok "Built Frontend"
 
   msg_info "Embedding Frontend into Backend"
@@ -40,7 +45,11 @@ function install_script() {
 
   msg_info "Creating Environment"
   mkdir -p /opt/booklore_storage/{data,books,bookdrop}
-  cat << EOF > /opt/booklore_storage/.env
+  local env_stage
+  env_stage=$(mktemp /opt/booklore_storage/.env.XXXXXXXX)
+  chown root:root "$env_stage"
+  chmod 0600 "$env_stage"
+  cat << EOF > "$env_stage"
 # Database Configuration
 DATABASE_URL=jdbc:mariadb://localhost:3306/${MARIADB_DB_NAME}
 DATABASE_USERNAME=${MARIADB_DB_USER}
@@ -51,12 +60,12 @@ APP_PATH_CONFIG=/opt/booklore_storage/data
 APP_BOOKDROP_FOLDER=/opt/booklore_storage/bookdrop
 BOOKLORE_PORT=80
 EOF
+  mv -f -- "$env_stage" /opt/booklore_storage/.env
   msg_ok "Created Environment"
 
   msg_info "Building Backend"
   cd /opt/booklore/booklore-api || exit
-  APP_VERSION=$(get_latest_github_release "booklore-app/BookLore")
-  yq eval ".app.version = \"${APP_VERSION}\"" -i src/main/resources/application.yaml
+  yq eval ".app.version = \"${app_version}\"" -i src/main/resources/application.yaml
   $STD ./gradlew clean build -x test --no-daemon
   mkdir -p /opt/booklore/dist
   JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name "booklore-api-*.jar" ! -name "*plain*" | head -n1)
@@ -64,7 +73,15 @@ EOF
     msg_error "Backend JAR not found"
     exit 1
   fi
-  cp "$JAR_PATH" /opt/booklore/dist/app.jar
+  local jar_stage
+  jar_stage=$(mktemp /opt/booklore/dist/.app.jar.XXXXXXXX)
+  if cp "$JAR_PATH" "$jar_stage" && chmod 0644 "$jar_stage" && mv -f -- "$jar_stage" /opt/booklore/dist/app.jar; then
+    :
+  else
+    local status=$?
+    rm -f -- "$jar_stage"
+    return "$status"
+  fi
   msg_ok "Built Backend"
 
   msg_info "Creating Service"
@@ -105,12 +122,22 @@ function update_script() {
 
   if [[ ! -d /opt/booklore ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
+  fi
+  if [[ ! -f /opt/booklore_storage/.env ]]; then
+    msg_error "BookLore environment is missing; restore the existing configuration before updating."
+    exit 1
+  fi
+  # PID 1 reads EnvironmentFile; the service needs no public secret access.
+  chown root:root /opt/booklore_storage/.env
+  chmod 0600 /opt/booklore_storage/.env
+  if [[ ! -s /opt/booklore/dist/app.jar ]]; then
+    export UPDATE_FORCE=1 FORCE_DEPLOY=1
   fi
 
   if check_for_gh_release "booklore" "booklore-app/BookLore"; then
     JAVA_VERSION="25" setup_java
-    NODE_VERSION="24" setup_nodejs
+    NODE_VERSION="24" NODE_MAX_OLD_SPACE_SIZE="${NODE_MAX_OLD_SPACE_SIZE:-1536}" setup_nodejs
     setup_mariadb
     setup_yq
 
@@ -118,25 +145,36 @@ function update_script() {
     systemctl stop booklore
     msg_ok "Stopped Service"
 
-    if grep -qE "^BOOKLORE_(DATA_PATH|BOOKDROP_PATH|BOOKS_PATH|PORT)=" /opt/booklore_storage/.env 2> /dev/null; then
-      msg_info "Migrating old environment variables"
-      sed -i 's/^BOOKLORE_DATA_PATH=/APP_PATH_CONFIG=/g' /opt/booklore_storage/.env
-      sed -i 's/^BOOKLORE_BOOKDROP_PATH=/APP_BOOKDROP_FOLDER=/g' /opt/booklore_storage/.env
-      sed -i '/^BOOKLORE_BOOKS_PATH=/d' /opt/booklore_storage/.env
-      sed -i '/^BOOKLORE_PORT=/d' /opt/booklore_storage/.env
-      msg_ok "Migrated old environment variables"
-    fi
+    # Retain operator values and the configured listener/proxy. Only add aliases
+    # for the old path names when their replacement has not been configured.
+    local old_key new_key line
+    for old_key in BOOKLORE_DATA_PATH BOOKLORE_BOOKDROP_PATH; do
+      case "$old_key" in
+        BOOKLORE_DATA_PATH) new_key=APP_PATH_CONFIG ;;
+        BOOKLORE_BOOKDROP_PATH) new_key=APP_BOOKDROP_FOLDER ;;
+      esac
+      if ! grep -Eq "^[[:space:]]*${new_key}[[:space:]]*=" /opt/booklore_storage/.env; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ "$line" =~ ^[[:space:]]*${old_key}[[:space:]]*=(.*)$ ]]; then
+            printf '\n%s=%s\n' "$new_key" "${BASH_REMATCH[1]}" >> /opt/booklore_storage/.env
+          fi
+        done < /opt/booklore_storage/.env
+      fi
+    done
 
-    msg_info "Backing up old installation"
-    mv /opt/booklore /opt/booklore_bak
-    msg_ok "Backed up old installation"
-
-    fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball"
+    # The checked replacement owner retains the live root and installed JAR.
+    # Failed builds stay failed/pending; a retry never nests an old backup.
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" dist)
+    local release_file app_version
+    release_file=$(mktemp)
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/booklore" "" "" "$release_file"
+    app_version=$(jq -er '.tag_name' "$release_file")
+    rm -f -- "$release_file"
 
     msg_info "Building Frontend"
     cd /opt/booklore/booklore-ui || exit
     $STD npm ci --force
-    $STD npm run build --configuration=production
+    NG_BUILD_MAX_WORKERS=1 NG_BUILD_PARALLEL_TS=0 $STD npm run build -- --configuration=production
     msg_ok "Built Frontend"
 
     msg_info "Embedding Frontend into Backend"
@@ -146,37 +184,32 @@ function update_script() {
 
     msg_info "Building Backend"
     cd /opt/booklore/booklore-api || exit
-    APP_VERSION=$(get_latest_github_release "booklore-app/BookLore")
-    yq eval ".app.version = \"${APP_VERSION}\"" -i src/main/resources/application.yaml
+    yq eval ".app.version = \"${app_version}\"" -i src/main/resources/application.yaml
     $STD ./gradlew clean build -x test --no-daemon
     mkdir -p /opt/booklore/dist
     JAR_PATH=$(find /opt/booklore/booklore-api/build/libs -maxdepth 1 -type f -name "booklore-api-*.jar" ! -name "*plain*" | head -n1)
     if [[ -z "$JAR_PATH" ]]; then
       msg_error "Backend JAR not found"
-      exit
+      exit 1
     fi
-    cp "$JAR_PATH" /opt/booklore/dist/app.jar
+    local jar_stage
+    jar_stage=$(mktemp /opt/booklore/dist/.app.jar.XXXXXXXX)
+    if cp "$JAR_PATH" "$jar_stage" && chmod 0644 "$jar_stage" && mv -f -- "$jar_stage" /opt/booklore/dist/app.jar; then
+      :
+    else
+      local status=$?
+      rm -f -- "$jar_stage"
+      return "$status"
+    fi
     msg_ok "Built Backend"
-
-    if systemctl is-active --quiet nginx 2> /dev/null; then
-      msg_info "Removing Nginx (no longer needed)"
-      systemctl disable --now nginx
-      $STD apt-get purge -y nginx nginx-common
-      msg_ok "Removed Nginx"
-    fi
-
-    if ! grep -q "^SERVER_PORT=" /opt/booklore_storage/.env 2> /dev/null; then
-      echo "BOOKLORE_PORT=80" >> /opt/booklore_storage/.env
-    fi
-
-    sed -i 's|ExecStart=/usr/bin/java -jar|ExecStart=/usr/bin/java -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+UseCompactObjectHeaders -jar|' /etc/systemd/system/booklore.service
-    systemctl daemon-reload
 
     msg_info "Starting Service"
     systemctl start booklore
-    rm -rf /opt/booklore_bak
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
