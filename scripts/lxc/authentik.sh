@@ -21,6 +21,15 @@ var_unprivileged="${var_unprivileged:-1}"
 var_lxc_git_repo="${var_lxc_git_repo:-goauthentik/authentik}"
 
 function install_script() {
+  authentik_private_file() {
+    local destination=$1 stage
+    stage=$(mktemp "${destination}.XXXXXXXX")
+    cat > "$stage"
+    chown root:root "$stage"
+    chmod 0600 "$stage"
+    mv -f -- "$stage" "$destination"
+  }
+
   msg_info "Installing Dependencies"
   $STD apt install -y \
     build-essential \
@@ -105,7 +114,7 @@ function install_script() {
   $STD go build -o /opt/authentik/radius ./cmd/radius
   msg_ok "Setup go proxy"
 
-  cat << EOF > /usr/local/etc/GeoIP.conf
+  authentik_private_file /usr/local/etc/GeoIP.conf << EOF
 AccountID ChangeME
 LicenseKey ChangeME
 EditionIDs GeoLite2-ASN GeoLite2-City GeoLite2-Country
@@ -137,17 +146,22 @@ EOF
 
   msg_info "Creating authentik config"
   mkdir -p /etc/authentik
-  mv /opt/authentik/authentik/lib/default.yml /etc/authentik/config.yml
-  yq -i ".secret_key = \"$(openssl rand -base64 128 | tr -dc 'a-zA-Z0-9' | head -c64)\"" /etc/authentik/config.yml
-  yq -i ".postgresql.password = \"${PG_DB_PASS}\"" /etc/authentik/config.yml
-  yq -i ".events.context_processors.geoip = \"/opt/authentik-data/geoip/GeoLite2-City.mmdb\"" /etc/authentik/config.yml
-  yq -i ".events.context_processors.asn = \"/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\"" /etc/authentik/config.yml
-  yq -i ".blueprints_dir = \"/opt/authentik/blueprints\"" /etc/authentik/config.yml
-  yq -i ".cert_discovery_dir = \"/opt/authentik-data/certs\"" /etc/authentik/config.yml
-  yq -i ".email.template_dir = \"/opt/authentik-data/templates\"" /etc/authentik/config.yml
-  yq -i ".storage.file.path = \"/opt/authentik-data\"" /etc/authentik/config.yml
-  yq -i ".disable_startup_analytics = \"true\"" /etc/authentik/config.yml
   $STD useradd -U -s /usr/sbin/nologin -r -M -d /opt/authentik authentik
+  local config_stage
+  config_stage=$(mktemp /etc/authentik/.config.XXXXXXXX)
+  cp /opt/authentik/authentik/lib/default.yml "$config_stage"
+  yq -i ".secret_key = \"$(openssl rand -base64 128 | tr -dc 'a-zA-Z0-9' | head -c64)\"" "$config_stage"
+  yq -i ".postgresql.password = \"${PG_DB_PASS}\"" "$config_stage"
+  yq -i ".events.context_processors.geoip = \"/opt/authentik-data/geoip/GeoLite2-City.mmdb\"" "$config_stage"
+  yq -i ".events.context_processors.asn = \"/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\"" "$config_stage"
+  yq -i ".blueprints_dir = \"/opt/authentik/blueprints\"" "$config_stage"
+  yq -i ".cert_discovery_dir = \"/opt/authentik-data/certs\"" "$config_stage"
+  yq -i ".email.template_dir = \"/opt/authentik-data/templates\"" "$config_stage"
+  yq -i ".storage.file.path = \"/opt/authentik-data\"" "$config_stage"
+  yq -i ".disable_startup_analytics = \"true\"" "$config_stage"
+  chown root:authentik "$config_stage"
+  chmod 0640 "$config_stage"
+  mv -f -- "$config_stage" /etc/authentik/config.yml
   chown -R authentik:authentik /opt/authentik
   cat << EOF > /etc/default/authentik-server
 TMPDIR=/dev/shm/
@@ -179,17 +193,17 @@ AUTHENTIK_LISTEN__HTTP="[::]:8000"
 AUTHENTIK_LISTEN__HTTPS="[::]:8443"
 AUTHENTIK_LISTEN__METRICS="[::]:8300"
 EOF
-  cat << EOF > /etc/default/authentik_ldap
+  authentik_private_file /etc/default/authentik_ldap << EOF
 AUTHENTIK_HOST="https://127.0.0.1:9443"
 AUTHENTIK_INSECURE="true"
 AUTHENTIK_TOKEN="token-generated-by-authentik"
 EOF
-  cat << EOF > /etc/default/authentik_rac
+  authentik_private_file /etc/default/authentik_rac << EOF
 AUTHENTIK_HOST="https://127.0.0.1:9443"
 AUTHENTIK_INSECURE="true"
 AUTHENTIK_TOKEN="token-generated-by-authentik"
 EOF
-  cat << EOF > /etc/default/authentik_radius
+  authentik_private_file /etc/default/authentik_radius << EOF
 AUTHENTIK_HOST="https://127.0.0.1:9443"
 AUTHENTIK_INSECURE="true"
 AUTHENTIK_TOKEN="token-generated-by-authentik"
@@ -311,9 +325,7 @@ function post_build_script() {
     pct status "$CTID" | grep -q "status: running" && break
     sleep 1
   done
-  $STD pct exec "$CTID" -- bash -c "mkdir -p /opt/authentik-data/{certs,media,geoip,templates}; \
-    cp /opt/authentik/tests/GeoLite2-ASN-Test.mmdb /opt/authentik-data/geoip/GeoLite2-ASN.mmdb; \
-    cp /opt/authentik/tests/GeoLite2-City-Test.mmdb /opt/authentik-data/geoip/GeoLite2-City.mmdb; \
+  $STD pct exec "$CTID" -- bash -e -c "mkdir -p /opt/authentik-data/{certs,media,geoip,templates}; \
     chown authentik:authentik /opt/authentik-data; \
     chown -R authentik:authentik /opt/authentik-data/{certs,media,geoip,templates}"
   msg_ok "Attached data storage volume"
@@ -328,6 +340,8 @@ function post_install_script() {
   echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
   echo -e "${INFO}${YW} Access it using the following URL:${CL}"
   echo -e "${TAB}${GATEWAY}${BGN}https://${IP}:9443${CL}"
+  msg_info "GeoIP/ASN policies need real MaxMind databases; no test databases are installed."
+  echo "Setup: https://docs.goauthentik.io/install-config/geoip/"
 }
 
 function update_script() {
@@ -337,8 +351,73 @@ function update_script() {
 
   if [[ ! -d /opt/authentik ]]; then
     msg_error "No authentik Installation Found!"
-    exit
+    exit 1
   fi
+
+  if [[ ! -f /etc/authentik/config.yml ]]; then
+    msg_error "No authentik configuration found; refusing to regenerate secrets."
+    exit 1
+  fi
+  local file
+  for file in /etc/authentik/config.yml /etc/authentik/config.bak; do
+    [[ ! -f "$file" ]] || {
+      chown root:authentik "$file"
+      chmod 0640 "$file"
+    }
+  done
+  for file in /usr/local/etc/GeoIP.conf /etc/default/authentik_{ldap,rac,radius} /etc/default/authentik.bak; do
+    [[ ! -f "$file" ]] || {
+      chown root:root "$file"
+      chmod 0600 "$file"
+    }
+  done
+
+  # Inspect only: policy data is operator-owned, including known test databases.
+  setup_yq
+  local city_database asn_database database digest remaining component resolved link
+  local -A inspected_databases=()
+  local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
+  city_database=$(yq -r '.events.context_processors.geoip // ""' /etc/authentik/config.yml)
+  asn_database=$(yq -r '.events.context_processors.asn // ""' /etc/authentik/config.yml)
+  for database in "$city_database" "$asn_database" /opt/authentik-data/geoip/GeoLite2-City.mmdb /opt/authentik-data/geoip/GeoLite2-ASN.mmdb; do
+    [[ -n "$database" ]] || continue
+    # Relative configuration is consumed from the service's application cwd.
+    [[ "$database" == /* ]] || database="/opt/authentik/$database"
+    [[ -f "$database" ]] || continue
+    [[ ! ${inspected_databases["$database"]+present} ]] || continue
+    inspected_databases["$database"]=1
+    # Walk the consumer's path, preserving every link and the final file. Resolve
+    # dot components after links, just as the kernel does, not lexically first.
+    remaining=${database#/} resolved=''
+    while [[ -n "$remaining" ]]; do
+      component=${remaining%%/*}
+      if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+      case "$component" in
+        '' | .) continue ;;
+        ..)
+          # The consumer must still traverse this directory before going up.
+          case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
+          resolved=${resolved%/*}
+          continue
+          ;;
+      esac
+      resolved+="/$component"
+      if [[ -L "$resolved" ]]; then
+        case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
+        link=$(readlink -- "$resolved") || return $?
+        resolved=${resolved%/*}
+        [[ "$link" != /* ]] || resolved=''
+        remaining="$link${remaining:+/$remaining}"
+      fi
+    done
+    case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
+    digest=$(sha256sum < "$database")
+    case "${digest%% *}" in
+      f936702b51dcb6c94b286d77a6f182c31a1601baf4b27e8e896934deb41f49f2 | 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a)
+        msg_warn "MaxMind test database at $database is not production policy data; retained unchanged. Replace it with real MaxMind data: https://docs.goauthentik.io/install-config/geoip/"
+        ;;
+    esac
+  done
 
   read -r MAJOR MINOR PATCH <<< "$(sed 's/^version\///; s/\./ /g' "$HOME/.authentik")"
 
@@ -350,17 +429,36 @@ function update_script() {
   setup_go
   UV_PYTHON_INSTALL_DIR="/usr/local/bin" PYTHON_VERSION="3.14.3" setup_uv
   RUST_PROFILE="minimal" RUST_TOOLCHAIN="stable" setup_rust
-  setup_yq
 
   AUTHENTIK_VERSION="version/2026.5.2"
   XMLSEC_VERSION="1.3.11"
 
+  local geoip_release='' xmlsec_release='' authentik_release='' status
   if check_for_gh_release "geoipupdate" "maxmind/geoipupdate"; then
-    fetch_and_deploy_gh_release "geoipupdate" "maxmind/geoipupdate" "binary"
+    geoip_release=$CHECK_UPDATE_RELEASE
+  else
+    status=$?
+    [[ "$status" == 1 ]] || return "$status"
+  fi
+  if check_for_gh_release "xmlsec" "lsh123/xmlsec" "${XMLSEC_VERSION}"; then
+    xmlsec_release=$CHECK_UPDATE_RELEASE
+  else
+    status=$?
+    [[ "$status" == 1 ]] || return "$status"
+  fi
+  if check_for_gh_release "authentik" "$var_lxc_git_repo" "${AUTHENTIK_VERSION}"; then
+    authentik_release=$CHECK_UPDATE_RELEASE
+  else
+    status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
 
-  if check_for_gh_release "xmlsec" "lsh123/xmlsec" "${XMLSEC_VERSION}"; then
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "xmlsec" "lsh123/xmlsec" "tarball" "${XMLSEC_VERSION}" "/opt/xmlsec"
+  if [[ -n "$geoip_release" ]]; then
+    fetch_and_deploy_gh_release "geoipupdate" "maxmind/geoipupdate" "binary" "$geoip_release"
+  fi
+
+  if [[ -n "$xmlsec_release" ]]; then
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "xmlsec" "lsh123/xmlsec" "tarball" "$xmlsec_release" "/opt/xmlsec"
 
     msg_info "Updating xmlsec"
     cd /opt/xmlsec || exit
@@ -372,7 +470,7 @@ function update_script() {
     msg_ok "Updated xmlsec"
   fi
 
-  if check_for_gh_release "authentik" "$var_lxc_git_repo" "${AUTHENTIK_VERSION}"; then
+  if [[ -n "$authentik_release" ]]; then
     msg_info "Stopping Services"
     systemctl stop authentik-server authentik-worker
     if [[ $(systemctl is-active authentik-ldap) == active ]]; then
@@ -386,7 +484,7 @@ function update_script() {
     fi
     msg_ok "Stopped Services"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "authentik" "$var_lxc_git_repo" "tarball" "${AUTHENTIK_VERSION}" "/opt/authentik"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "authentik" "$var_lxc_git_repo" "tarball" "$authentik_release" "/opt/authentik"
 
     msg_info "Configuring rust"
     cd /opt/authentik || exit
@@ -434,7 +532,7 @@ function update_script() {
 
     if [[ $MAJOR == 2026 && $MINOR -lt 5 ]]; then
       msg_info "Updating Worker and Server config"
-      cp /etc/authentik/config.yml /etc/authentik/config.bak
+      cp --preserve=mode,ownership /etc/authentik/config.yml /etc/authentik/config.bak
       yq -i ".postgresql.conn_max_age = 0" /etc/authentik/config.yml
       yq -i ".postgresql.conn_health_checks = false" /etc/authentik/config.yml
       yq -i ".listen.debug_tokio = \"[::]:6669\"" /etc/authentik/config.yml
@@ -451,6 +549,8 @@ function update_script() {
       yq -i ".log.rust_log.tokio = \"info\"" /etc/authentik/config.yml
       yq -i ".log.rust_log.tungstenite = \"info\"" /etc/authentik/config.yml
       yq -i ".web.workers = 2" /etc/authentik/config.yml
+      chown root:root /etc/default/authentik
+      chmod 0600 /etc/default/authentik
       mv /etc/default/authentik /etc/default/authentik.bak
       cat << EOF > /etc/default/authentik-server
 TMPDIR=/dev/shm/
