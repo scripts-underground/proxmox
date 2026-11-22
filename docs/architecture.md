@@ -139,9 +139,26 @@ EXIT cleanup/pending retirement. No second global EXIT trap or explicit unlock i
 needed: the last kernel FD closure releases ownership. Productive children retain
 it after launcher death until their work ends. Only msg_info's actual background
 UI spawn closes the maintenance FD before spinner; foreground spinner calls and
-productive work do not. PID 1-started services do not inherit the hook's descriptor.
-A directly spawned persistent daemon that retains the descriptor keeps the app
-lock until it exits; later independent updates then report 75.
+productive work do not. Fresh acquisition also installs a framework-owned
+service-launch boundary first in PATH for installed executable `rc-service`,
+`openrc`, `supervise-daemon`, `start-stop-daemon`, `service`, `systemctl` and
+`systemd-run`. Private per-key `.KEY.services` directories under the validated
+lock namespace hold atomically published wrappers. A wrapper restores the prior
+PATH, validates the baked descriptor's device/inode, closes only that descriptor,
+then execs the resolved real tool with unchanged argv, stdin and status. Services
+therefore do not keep update ownership even when their manager spawns locally,
+as OpenRC's supervise-daemon does. Ordinary productive descendants still inherit
+the lock, including after launcher death. Same-key borrows reuse this boundary;
+independent nested owners chain inherited boundaries. Existing unsafe wrapper
+metadata or missing publication executables refuse69 before hook effects. Manager
+availability probes retain their meaning because absent tools get no shim.
+The per-key directory is reusable metadata, not an EXIT-cleaned stage: a
+productive descendant may need it after its launcher dies. Publication removes
+only its exact private incomplete file on failure. This is a name-resolution
+boundary, not interception of absolute executable paths, direct init scripts,
+shell functions or deliberately replaced PATH values; those consumers must be
+audited. Directly daemonizing productive commands outside a service manager still
+retain the descriptor and are not silently reclassified as detached services.
 This protocol covers participating generations only: drain old unguarded updaters
 before deploying/refreshing frozen bundles. Framework source-time bootstrap still
 precedes update ownership; this does not promise no effects from an old/missing
@@ -777,8 +794,92 @@ classification to the remote payload, so its exhausted-mirrors status 2 stays
 distinct. The existing `debian.sources`/`sources.list` rewrite scope is
 unchanged; other source layouts are not claimed.
 
+Alpine's repository branch comes from the receiving template's native
+`VERSION_ID`, never from a moving distribution alias. Core owns one POSIX-shell
+policy and checked emitter, shared by the creator's pre-Bash setup, package
+helpers and frozen update runner. Fresh setup writes `v<major>.<minor>` main and
+community sources. Mirror fallback changes only the URL host in literal active
+declarations whose every component is a native index, retaining all other source
+bytes, including scheme, port, branch, components, tags and final-newline state.
+Set lines and non-native declarations are untouched. A declaration containing any
+dollar byte or mixing native and non-native indexes is never rewritten. If it
+carries a native index, the mirror attempt refuses with its file and line before
+any publication; it cannot report a successful fallback over unchanged sources.
+Before package updates/upgrades or app update admission, a configured native
+branch different from the installed branch (including `latest-stable` or `edge`)
+refuses with the installed/configured state, without changing repositories or
+pending bytes. Direct-apk app hooks cannot bypass the terminal runner's check.
+No release migration is selected implicitly, including on already-drifted CTs.
+Existing frozen commands are not refreshed by a framework source update.
+
+The same parser owns the effective apk inventory: main file first, then the
+sorted union of non-hidden `.list` names in `/etc/apk/repositories.d` and
+`/lib/apk/repositories.d`. `/etc` wins equal names, including empty files and
+`/dev/null` masks. Variables cross file boundaries in this order. Only `${...}`
+substitutes; other dollar bytes remain literal. Assignments expand before the
+`set -default` decision. Optional types/tags, original-token index inference,
+space-only component splitting and index deduplication follow native apk.
+Inline `#` tokens are components, not comments. Mirror fallback never materializes
+expanded records back into source syntax, preserving non-recursive expansion and
+per-component authority instead of trying to serialize those semantics.
+
+All shell-provided policy values enter awk through invocation-scoped environment
+assignments and ENVIRON, never escape-decoded `-v` values. File operands are
+asserted absolute or `./` prefixed, so equals and leading-minus basenames remain
+data. Newline-bearing inventory filenames refuse before line-delimited discovery
+or any fresh/publication write; backslashes are preserved. Each mirror writer
+checks target operand membership and exact consumed/emitted record counts, closes
+its owned stage, then emits a completion receipt. The caller requires that exact
+receipt and refuses an empty stage for a non-empty source before publication.
+Producer status0 alone cannot certify complete output. No new executable
+dependency or multi-file transaction is introduced.
+
+The private `project` action observes that native inventory without admission or
+rewrites, including native partial-file parse behavior. Product admission is
+deliberately stricter: a malformed/unresolved file refuses65 instead of treating
+native partial consumption as the intended configuration. Native source paths
+must select the installed branch both lexically and after percent decoding and
+origin-style dot-segment resolution. Escaping the Alpine path or selecting a
+different branch refuses65 before package, hook or pending effects. Safe dot
+segments and unrelated vendor sources remain admitted; accepted path bytes are
+never normalized during fallback.
+
+`tests/native-alpine-repositories.test.py --ctid 3201 --workspace
+/home/builder/work/core-alpine/native-oracle --source <frozen-source>` runs
+explicitly inside DO VM `scripts-underground-proxmox-core-alpine` (SFO3), with
+disk-backed TMPDIR. It compares the emitted ash/BusyBox-awk parser against the
+installed native apk in its owned Alpine CT, checking explicit index identities,
+actual HTTP requests and the origin-resolved paths. It also checks exact written
+files and native requests after mirror success or refusal. It retains per-case JSON;
+native exit0 alone is not proof of a complete inventory. Ordinary fixture suites
+do not require pct or that CT. The oracle currently records apk3.0.9; reference
+source provenance (v3.0.0 and master) is not a claim of identical binary sources.
+
 `pre_build_script` and `post_build_script` are the only user hooks
 called from inside `build_container`.
+
+`create_lxc_container` owns creation only, never after-install hook dispatch.
+Normal install and successful in-place package repair converge on
+`_finish_container_build`, which restores strict error handling and calls the
+optional post-build hook normally before finalization. Recursive verbose, OOM
+and DNS rebuilds return immediately after the inner build completes: only that
+successful inner owner dispatches the hook. Failed install/preparation paths do
+not dispatch it. Creator and hook stage calls must not be conditional operands:
+Bash would suppress errexit through their bodies and could turn a failed required
+operation into later success. Hook failures retain the existing ERR boundary and
+prevent description/post-install completion.
+
+`complete_install` establishes address readiness again after the hook, since a
+legitimate hook can restart the CT. It shares the initial startup path's exact
+address-wait implementation, 20 attempts, one-second sleeps and timeout exit1.
+Only a ready address reaches description and access-URL publication; timeout
+prints the existing startup diagnostics, never a partial URL or success.
+Failed address probes are retryable observations within that same wait, not
+fatal stage calls. Both families clear failed probe output; IPv6 addresses still
+under DAD or marked dadfailed are not ready. Exhaustion retains the existing
+timeout diagnostics and exit1. Repair emits no installation completion before
+this finalization boundary. Optional verbose create diagnostics restore tracing
+and retain their owning failure branch's exit209 even when the diagnostic fails.
 
 #### 4.1.5 Bundle composition
 
@@ -825,6 +926,10 @@ prevents publication. No compound-block errexit assumption or new trap owner is
 used. Successful publication and push/chmod failures also remove the sender file.
 The LXC receiver also allocates an owned same-filesystem stage: push writes there,
 mode is checked there, and atomic rename publishes the complete command. Failed
+parent creation prevents receiving allocation and preserves its native status.
+Both LXC and addon publishers create the command's missing destination parents
+before staging; existing directory metadata is not changed. Minimal templates
+therefore need not provide `/usr/local/sbin` before command publication. Failed
 partial transport, mode-setting or rename preserves the previous receiving bundle
 and removes the owned receiver stage. Persistent aliases are checked before their
 corresponding bundle publication. This is per-command publication, not a transaction

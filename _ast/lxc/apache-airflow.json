@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "apache-airflow",
   "type": "lxc",
-  "total_lines": 207,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/apache/airflow\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Apache-Airflow\"\nvar_tags=\"${var_tags:-workflow;scheduler;automation}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libpq-dev \\\n    libssl-dev \\\n    libffi-dev \\\n    python3-dev\n  msg_ok \"Installed Dependencies\"\n\n  UV_PYTHON=\"3.12\" setup_uv\n  PG_VERSION=\"16\" setup_postgresql\n  PG_DB_NAME=\"airflow\" PG_DB_USER=\"airflow\" setup_postgresql_db\n\n  msg_info \"Installing Apache Airflow\"\n  AIRFLOW_VERSION=\"3.2.1\"\n  mkdir -p /opt/airflow/{dags,logs,plugins}\n  cd /opt/airflow || exit\n  $STD uv venv --python 3.12\n  $STD uv pip install --python /opt/airflow/.venv/bin/python \\\n    \"apache-airflow[postgres,fab]==${AIRFLOW_VERSION}\" \\\n    --constraint \"https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt\"\n  echo \"${AIRFLOW_VERSION}\" \u003e ~/.airflow\n  msg_ok \"Installed Apache Airflow\"\n\n  msg_info \"Configuring Application\"\n  FERNET_KEY=$(/opt/airflow/.venv/bin/python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")\n  SECRET_KEY=$(openssl rand -hex 32)\n  ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | cut -c1-12)\n  cat \u003c\u003c EOF \u003e /opt/airflow/.env\nAIRFLOW_HOME=/opt/airflow\nAIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nAIRFLOW__CORE__EXECUTOR=LocalExecutor\nAIRFLOW__CORE__FERNET_KEY=${FERNET_KEY}\nAIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags\nAIRFLOW__CORE__LOAD_EXAMPLES=false\nAIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager\nAIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session\nAIRFLOW__WEBSERVER__SECRET_KEY=${SECRET_KEY}\nAIRFLOW__WEBSERVER__BASE_URL=http://${LOCAL_IP}:8080\nAIRFLOW_ADMIN_PASSWORD=${ADMIN_PASS}\nEOF\n  set -a \u0026\u0026 source /opt/airflow/.env \u0026\u0026 set +a\n  $STD /opt/airflow/.venv/bin/airflow db migrate\n  $STD /opt/airflow/.venv/bin/airflow users create \\\n    --username admin \\\n    --firstname Admin \\\n    --lastname User \\\n    --role Admin \\\n    --email admin@example.com \\\n    --password \"${ADMIN_PASS}\"\n  msg_ok \"Configured Application\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-api-server.service\n[Unit]\nDescription=Apache Airflow API Server\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow api-server --port 8080\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-scheduler.service\n[Unit]\nDescription=Apache Airflow Scheduler\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow scheduler\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-dag-processor.service\n[Unit]\nDescription=Apache Airflow DAG Processor\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow dag-processor\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-triggerer.service\n[Unit]\nDescription=Apache Airflow Triggerer\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow triggerer\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/airflow ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  INSTALLED=$(cat ~/.airflow 2\u003e /dev/null || echo \"0\")\n  LATEST=$(curl -fsSL \"https://pypi.org/pypi/apache-airflow/json\" | jq -r '.info.version')\n\n  if [[ \"$INSTALLED\" == \"$LATEST\" ]]; then\n    msg_ok \"Already on the latest version (${LATEST})\"\n    exit\n  fi\n\n  msg_info \"Stopping Services\"\n  systemctl stop airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Stopped Services\"\n\n  msg_info \"Backing up Configuration\"\n  cp /opt/airflow/.env /opt/airflow.env.bak\n  msg_ok \"Backed up Configuration\"\n\n  msg_info \"Updating Apache Airflow to ${LATEST}\"\n  $STD uv pip install --python /opt/airflow/.venv/bin/python \\\n    \"apache-airflow[postgres,fab]==${LATEST}\" \\\n    --constraint \"https://raw.githubusercontent.com/apache/airflow/constraints-${LATEST}/constraints-3.12.txt\"\n  echo \"${LATEST}\" \u003e ~/.airflow\n  msg_ok \"Updated Apache Airflow to ${LATEST}\"\n\n  msg_info \"Restoring Configuration\"\n  cp /opt/airflow.env.bak /opt/airflow/.env\n  rm -f /opt/airflow.env.bak\n  msg_ok \"Restored Configuration\"\n\n  msg_info \"Running Database Migrations\"\n  set -a \u0026\u0026 source /opt/airflow/.env \u0026\u0026 set +a\n  $STD /opt/airflow/.venv/bin/airflow db migrate\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Starting Services\"\n  systemctl start airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Started Services\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"apache-airflow\" -- \"$@\"\n",
+  "total_lines": 210,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: MickLesk (CanbiZ)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/apache/airflow\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"Apache-Airflow\"\nvar_tags=\"${var_tags:-workflow;scheduler;automation}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n\nfunction install_script() {\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    libpq-dev \\\n    libssl-dev \\\n    libffi-dev \\\n    python3-dev\n  msg_ok \"Installed Dependencies\"\n\n  UV_PYTHON=\"3.12\" setup_uv\n  PG_VERSION=\"16\" setup_postgresql\n  PG_DB_NAME=\"airflow\" PG_DB_USER=\"airflow\" setup_postgresql_db\n\n  msg_info \"Installing Apache Airflow\"\n  AIRFLOW_VERSION=\"3.2.1\"\n  mkdir -p /opt/airflow/{dags,logs,plugins}\n  cd /opt/airflow || exit\n  $STD uv venv --python 3.12\n  $STD uv pip install --python /opt/airflow/.venv/bin/python \\\n    \"apache-airflow[postgres,fab]==${AIRFLOW_VERSION}\" \\\n    --constraint \"https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt\"\n  echo \"${AIRFLOW_VERSION}\" \u003e ~/.airflow\n  msg_ok \"Installed Apache Airflow\"\n\n  msg_info \"Configuring Application\"\n  FERNET_KEY=$(/opt/airflow/.venv/bin/python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\")\n  SECRET_KEY=$(openssl rand -hex 32)\n  ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | cut -c1-12)\n  cat \u003c\u003c EOF \u003e /opt/airflow/.env\nAIRFLOW_HOME=/opt/airflow\nAIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${PG_DB_USER}:${PG_DB_PASS}@localhost:5432/${PG_DB_NAME}\nAIRFLOW__CORE__EXECUTOR=LocalExecutor\nAIRFLOW__CORE__FERNET_KEY=${FERNET_KEY}\nAIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags\nAIRFLOW__CORE__LOAD_EXAMPLES=false\nAIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager\nAIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session\nAIRFLOW__WEBSERVER__SECRET_KEY=${SECRET_KEY}\nAIRFLOW__WEBSERVER__BASE_URL=http://${LOCAL_IP}:8080\nAIRFLOW_ADMIN_PASSWORD=${ADMIN_PASS}\nEOF\n  set -a \u0026\u0026 source /opt/airflow/.env \u0026\u0026 set +a\n  $STD /opt/airflow/.venv/bin/airflow db migrate\n  $STD /opt/airflow/.venv/bin/airflow users create \\\n    --username admin \\\n    --firstname Admin \\\n    --lastname User \\\n    --role Admin \\\n    --email admin@example.com \\\n    --password \"${ADMIN_PASS}\"\n  msg_ok \"Configured Application\"\n\n  msg_info \"Creating Services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-api-server.service\n[Unit]\nDescription=Apache Airflow API Server\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow api-server --port 8080\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-scheduler.service\n[Unit]\nDescription=Apache Airflow Scheduler\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow scheduler\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-dag-processor.service\n[Unit]\nDescription=Apache Airflow DAG Processor\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow dag-processor\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/airflow-triggerer.service\n[Unit]\nDescription=Apache Airflow Triggerer\nAfter=network.target postgresql.service\n\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/opt/airflow/.env\nExecStart=/opt/airflow/.venv/bin/airflow triggerer\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  systemctl enable -q --now airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Created Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}http://${IP}:8080${CL}\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/airflow ]]; then\n    msg_error \"No ${APP} Installation Found!\"\n    exit\n  fi\n\n  INSTALLED=$(cat ~/.airflow 2\u003e /dev/null || echo \"0\")\n  LATEST=$(curl -fsSL \"https://pypi.org/pypi/apache-airflow/json\" | jq -r '.info.version')\n\n  if [[ \"$INSTALLED\" == \"$LATEST\" \u0026\u0026 \"${FORCE_DEPLOY:-0}\" != 1 ]]; then\n    msg_ok \"Already on the latest version (${LATEST})\"\n    exit\n  fi\n\n  msg_info \"Stopping Services\"\n  systemctl stop airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Stopped Services\"\n\n  msg_info \"Backing up Configuration\"\n  cp /opt/airflow/.env /opt/airflow.env.bak\n  msg_ok \"Backed up Configuration\"\n\n  msg_info \"Updating Apache Airflow to ${LATEST}\"\n  local -a reinstall=()\n  [[ \"${FORCE_DEPLOY:-0}\" != 1 ]] || reinstall=(--reinstall)\n  $STD uv pip install --python /opt/airflow/.venv/bin/python \\\n    \"${reinstall[@]}\" \\\n    \"apache-airflow[postgres,fab]==${LATEST}\" \\\n    --constraint \"https://raw.githubusercontent.com/apache/airflow/constraints-${LATEST}/constraints-3.12.txt\"\n  msg_ok \"Updated Apache Airflow to ${LATEST}\"\n\n  msg_info \"Restoring Configuration\"\n  cp /opt/airflow.env.bak /opt/airflow/.env\n  rm -f /opt/airflow.env.bak\n  msg_ok \"Restored Configuration\"\n\n  msg_info \"Running Database Migrations\"\n  set -a \u0026\u0026 source /opt/airflow/.env \u0026\u0026 set +a\n  $STD /opt/airflow/.venv/bin/airflow db migrate\n  msg_ok \"Ran Database Migrations\"\n\n  msg_info \"Starting Services\"\n  systemctl start airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer\n  msg_ok \"Started Services\"\n  echo \"${LATEST}\" \u003e ~/.airflow\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"apache-airflow\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -170,7 +170,7 @@
     "  INSTALLED=$(cat ~/.airflow 2\u003e /dev/null || echo \"0\")",
     "  LATEST=$(curl -fsSL \"https://pypi.org/pypi/apache-airflow/json\" | jq -r '.info.version')",
     "",
-    "  if [[ \"$INSTALLED\" == \"$LATEST\" ]]; then",
+    "  if [[ \"$INSTALLED\" == \"$LATEST\" \u0026\u0026 \"${FORCE_DEPLOY:-0}\" != 1 ]]; then",
     "    msg_ok \"Already on the latest version (${LATEST})\"",
     "    exit",
     "  fi",
@@ -184,10 +184,12 @@
     "  msg_ok \"Backed up Configuration\"",
     "",
     "  msg_info \"Updating Apache Airflow to ${LATEST}\"",
+    "  local -a reinstall=()",
+    "  [[ \"${FORCE_DEPLOY:-0}\" != 1 ]] || reinstall=(--reinstall)",
     "  $STD uv pip install --python /opt/airflow/.venv/bin/python \\",
+    "    \"${reinstall[@]}\" \\",
     "    \"apache-airflow[postgres,fab]==${LATEST}\" \\",
     "    --constraint \"https://raw.githubusercontent.com/apache/airflow/constraints-${LATEST}/constraints-3.12.txt\"",
-    "  echo \"${LATEST}\" \u003e ~/.airflow",
     "  msg_ok \"Updated Apache Airflow to ${LATEST}\"",
     "",
     "  msg_info \"Restoring Configuration\"",
@@ -203,6 +205,7 @@
     "  msg_info \"Starting Services\"",
     "  systemctl start airflow-api-server airflow-scheduler airflow-dag-processor airflow-triggerer",
     "  msg_ok \"Started Services\"",
+    "  echo \"${LATEST}\" \u003e ~/.airflow",
     "  msg_ok \"Updated successfully!\"",
     "  exit",
     "}",
@@ -241,7 +244,7 @@
     {
       "name": "update_script",
       "start_line": 153,
-      "end_line": 201,
+      "end_line": 204,
       "name_span": {
         "start_line": 153,
         "start_col": 10,
@@ -2173,28 +2176,58 @@
       "end_col": 33
     },
     {
-      "kind": "operator",
-      "op": "]]",
+      "kind": "test-operator",
+      "op": "\u0026\u0026",
       "start_line": 166,
       "start_col": 35,
       "end_line": 166,
       "end_col": 37
     },
     {
+      "kind": "string-dq",
+      "start_line": 166,
+      "start_col": 38,
+      "end_line": 166,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 166,
+      "start_col": 39,
+      "end_line": 166,
+      "end_col": 57
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 166,
+      "start_col": 59,
+      "end_line": 166,
+      "end_col": 61
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 166,
+      "start_col": 64,
+      "end_line": 166,
+      "end_col": 66
+    },
+    {
       "kind": "operator",
       "op": ";",
       "start_line": 166,
-      "start_col": 37,
+      "start_col": 66,
       "end_line": 166,
-      "end_col": 38
+      "end_col": 67
     },
     {
       "kind": "keyword",
       "op": "then",
       "start_line": 166,
-      "start_col": 39,
+      "start_col": 68,
       "end_line": 166,
-      "end_col": 43
+      "end_col": 72
     },
     {
       "kind": "command",
@@ -2324,361 +2357,459 @@
       "end_col": 49
     },
     {
-      "kind": "param-exp",
+      "kind": "keyword",
+      "op": "local",
       "start_line": 180,
       "start_col": 3,
       "end_line": 180,
-      "end_col": 7
+      "end_col": 8
     },
     {
-      "kind": "command",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 180,
-      "start_col": 8,
+      "start_col": 12,
       "end_line": 180,
-      "end_col": 10
+      "end_col": 24
     },
     {
-      "kind": "string-dq",
-      "start_line": 181,
-      "start_col": 5,
-      "end_line": 181,
-      "end_col": 46
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 181,
-      "start_col": 36,
-      "end_line": 181,
-      "end_col": 45
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 182,
-      "start_col": 18,
-      "end_line": 182,
-      "end_col": 111
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 182,
-      "start_col": 80,
-      "end_line": 182,
-      "end_col": 89
-    },
-    {
-      "kind": "command",
-      "start_line": 183,
-      "start_col": 3,
-      "end_line": 183,
-      "end_col": 7
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 183,
-      "start_col": 8,
-      "end_line": 183,
-      "end_col": 19
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 183,
-      "start_col": 9,
-      "end_line": 183,
-      "end_col": 18
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 183,
-      "start_col": 20,
-      "end_line": 183,
+      "kind": "var-name",
+      "start_line": 180,
+      "start_col": 12,
+      "end_line": 180,
       "end_col": 21
     },
     {
-      "kind": "command",
-      "start_line": 184,
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 181,
       "start_col": 3,
-      "end_line": 184,
-      "end_col": 9
+      "end_line": 181,
+      "end_col": 5
     },
     {
       "kind": "string-dq",
-      "start_line": 184,
-      "start_col": 10,
-      "end_line": 184,
+      "start_line": 181,
+      "start_col": 6,
+      "end_line": 181,
+      "end_col": 26
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 181,
+      "start_col": 7,
+      "end_line": 181,
+      "end_col": 25
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 181,
+      "start_col": 27,
+      "end_line": 181,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 181,
+      "start_col": 32,
+      "end_line": 181,
+      "end_col": 34
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 181,
+      "start_col": 35,
+      "end_line": 181,
+      "end_col": 37
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 181,
+      "start_col": 38,
+      "end_line": 181,
+      "end_col": 61
+    },
+    {
+      "kind": "var-name",
+      "start_line": 181,
+      "start_col": 38,
+      "end_line": 181,
       "end_col": 47
     },
     {
       "kind": "param-exp",
+      "start_line": 182,
+      "start_col": 3,
+      "end_line": 182,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 182,
+      "start_col": 8,
+      "end_line": 182,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 183,
+      "start_col": 5,
+      "end_line": 183,
+      "end_col": 22
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 183,
+      "start_col": 6,
+      "end_line": 183,
+      "end_col": 21
+    },
+    {
+      "kind": "string-dq",
       "start_line": 184,
-      "start_col": 37,
+      "start_col": 5,
       "end_line": 184,
       "end_col": 46
     },
     {
+      "kind": "param-exp",
+      "start_line": 184,
+      "start_col": 36,
+      "end_line": 184,
+      "end_col": 45
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 185,
+      "start_col": 18,
+      "end_line": 185,
+      "end_col": 111
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 185,
+      "start_col": 80,
+      "end_line": 185,
+      "end_col": 89
+    },
+    {
       "kind": "command",
       "start_line": 186,
       "start_col": 3,
       "end_line": 186,
-      "end_col": 11
+      "end_col": 9
     },
     {
       "kind": "string-dq",
       "start_line": 186,
-      "start_col": 12,
+      "start_col": 10,
       "end_line": 186,
-      "end_col": 37
+      "end_col": 47
     },
     {
-      "kind": "command",
-      "start_line": 187,
-      "start_col": 3,
-      "end_line": 187,
-      "end_col": 5
+      "kind": "param-exp",
+      "start_line": 186,
+      "start_col": 37,
+      "end_line": 186,
+      "end_col": 46
     },
     {
       "kind": "command",
       "start_line": 188,
       "start_col": 3,
       "end_line": 188,
-      "end_col": 5
-    },
-    {
-      "kind": "command",
-      "start_line": 189,
-      "start_col": 3,
-      "end_line": 189,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 189,
-      "start_col": 10,
-      "end_line": 189,
-      "end_col": 34
-    },
-    {
-      "kind": "command",
-      "start_line": 191,
-      "start_col": 3,
-      "end_line": 191,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 191,
+      "start_line": 188,
       "start_col": 12,
+      "end_line": 188,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 189,
+      "start_col": 3,
+      "end_line": 189,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 190,
+      "start_col": 3,
+      "end_line": 190,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 191,
+      "start_col": 3,
       "end_line": 191,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 191,
+      "start_col": 10,
+      "end_line": 191,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 193,
+      "start_col": 3,
+      "end_line": 193,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 193,
+      "start_col": 12,
+      "end_line": 193,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 192,
+      "start_line": 194,
       "start_col": 3,
-      "end_line": 192,
+      "end_line": 194,
       "end_col": 6
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 192,
+      "start_line": 194,
       "start_col": 10,
-      "end_line": 192,
+      "end_line": 194,
       "end_col": 12
     },
     {
       "kind": "command",
-      "start_line": 192,
+      "start_line": 194,
       "start_col": 13,
-      "end_line": 192,
+      "end_line": 194,
       "end_col": 19
     },
     {
       "kind": "operator",
       "op": "\u0026\u0026",
-      "start_line": 192,
+      "start_line": 194,
       "start_col": 38,
-      "end_line": 192,
+      "end_line": 194,
       "end_col": 40
     },
     {
       "kind": "command",
-      "start_line": 192,
+      "start_line": 194,
       "start_col": 41,
-      "end_line": 192,
+      "end_line": 194,
       "end_col": 44
     },
     {
       "kind": "param-exp",
-      "start_line": 193,
+      "start_line": 195,
       "start_col": 3,
-      "end_line": 193,
+      "end_line": 195,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 193,
+      "start_line": 195,
       "start_col": 8,
-      "end_line": 193,
+      "end_line": 195,
       "end_col": 38
     },
     {
       "kind": "command",
-      "start_line": 194,
+      "start_line": 196,
       "start_col": 3,
-      "end_line": 194,
+      "end_line": 196,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 194,
+      "start_line": 196,
       "start_col": 10,
-      "end_line": 194,
+      "end_line": 196,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 196,
+      "start_line": 198,
       "start_col": 3,
-      "end_line": 196,
+      "end_line": 198,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 196,
+      "start_line": 198,
       "start_col": 12,
-      "end_line": 196,
+      "end_line": 198,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 197,
+      "start_line": 199,
       "start_col": 3,
-      "end_line": 197,
+      "end_line": 199,
       "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 198,
-      "start_col": 3,
-      "end_line": 198,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 198,
-      "start_col": 10,
-      "end_line": 198,
-      "end_col": 28
-    },
-    {
-      "kind": "command",
-      "start_line": 199,
-      "start_col": 3,
-      "end_line": 199,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 199,
-      "start_col": 10,
-      "end_line": 199,
-      "end_col": 33
     },
     {
       "kind": "command",
       "start_line": 200,
       "start_col": 3,
       "end_line": 200,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 200,
+      "start_col": 10,
+      "end_line": 200,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 201,
+      "start_col": 3,
+      "end_line": 201,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 201,
+      "start_col": 8,
+      "end_line": 201,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 9,
+      "end_line": 201,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 201,
+      "start_col": 20,
+      "end_line": 201,
+      "end_col": 21
+    },
+    {
+      "kind": "command",
+      "start_line": 202,
+      "start_col": 3,
+      "end_line": 202,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 202,
+      "start_col": 10,
+      "end_line": 202,
+      "end_col": 33
+    },
+    {
+      "kind": "command",
+      "start_line": 203,
+      "start_col": 3,
+      "end_line": 203,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 201,
+      "start_line": 204,
       "start_col": 1,
-      "end_line": 201,
+      "end_line": 204,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 203,
+      "start_line": 206,
       "start_col": 1,
-      "end_line": 203,
+      "end_line": 206,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 204,
+      "start_line": 207,
       "start_col": 1,
-      "end_line": 204,
+      "end_line": 207,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 205,
+      "start_line": 208,
       "start_col": 1,
-      "end_line": 205,
+      "end_line": 208,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 1,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 8,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 10,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 21,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 22,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 66,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 82
     },
     {
       "kind": "string-dq",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 86,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 90
     },
     {
       "kind": "param-exp",
-      "start_line": 206,
+      "start_line": 209,
       "start_col": 87,
-      "end_line": 206,
+      "end_line": 209,
       "end_col": 89
     }
   ],
-  "bootstrap_line": 206,
+  "bootstrap_line": 209,
   "hooks": {
     "header_info": false,
     "install_script": true,
