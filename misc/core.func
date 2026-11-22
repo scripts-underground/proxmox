@@ -908,6 +908,71 @@ _app_maintenance_import_guard() {
   done
 }
 
+# Detach only at service-manager exec, never at productive child creation. The
+# persistent per-key directory is private lock metadata, not a temporary root.
+_app_maintenance_service_boundary() {
+  local _am_fd=$1 _am_key=$2 _am_identity=$3
+  local _am_dir=/var/lib/scripts-underground/maintenance-locks/.$2.services
+  local _am_name _am_tool _am_stat _am_stage _am_status _am_metadata _am_part _am_remaining=${PATH-} _am_path=''
+  local -a _am_names=() _am_tools=()
+  # A stale inherited PATH must not resolve this key's previous wrapper to itself.
+  while :; do
+    _am_part=${_am_remaining%%:*}
+    if [[ "$_am_part" != "$_am_dir" ]]; then
+      _am_path+="${_am_path+:}$_am_part"
+    fi
+    [[ "$_am_remaining" == *:* ]] || break
+    _am_remaining=${_am_remaining#*:}
+  done
+  _am_path=${_am_path#:}
+  for _am_name in rc-service openrc supervise-daemon start-stop-daemon service systemctl systemd-run; do
+    _am_tool=$(PATH=$_am_path type -P "$_am_name") || continue
+    [[ "$_am_tool" == /* ]] || _am_tool=$PWD/$_am_tool
+    _am_names+=("$_am_name") _am_tools+=("$_am_tool")
+  done
+  ((${#_am_names[@]})) || return 0
+  type -P mktemp chmod mv rm > /dev/null || {
+    _app_maintenance_refuse 69 "$_am_key requires executable mktemp, chmod, mv and rm for service isolation"
+    return $?
+  }
+  _am_stat=$(type -P stat) || return 69
+  [[ "$_am_stat" == /* ]] || _am_stat=$PWD/$_am_stat
+  if [[ ! -e "$_am_dir" && ! -L "$_am_dir" ]]; then
+    command mkdir -m 0700 -- "$_am_dir" || return 69
+  fi
+  [[ ! -L "$_am_dir" && -d "$_am_dir" && "$(command stat -c '%u:%a' -- "$_am_dir")" == 0:700 ]] || {
+    _app_maintenance_refuse 69 "unsafe service-launch directory $_am_dir"
+    return $?
+  }
+  for _am_name in "${!_am_names[@]}"; do
+    _am_tool=${_am_tools[$_am_name]} _am_name=${_am_names[$_am_name]}
+    if [[ -e "$_am_dir/$_am_name" || -L "$_am_dir/$_am_name" ]]; then
+      _am_metadata=$(command stat -c '%u:%a:%h' -- "$_am_dir/$_am_name") || return 69
+      [[ ! -L "$_am_dir/$_am_name" && -f "$_am_dir/$_am_name" && "$_am_metadata" == 0:700:1 ]] || {
+        _app_maintenance_refuse 69 "unsafe service-launch executable $_am_dir/$_am_name"
+        return $?
+      }
+    fi
+    _am_stage=$(command mktemp "$_am_dir/.launch.XXXXXXXX") || return 69
+    _am_status=0
+    {
+      printf '#!/bin/bash\nPATH=%q\nexport PATH\n' "$_am_path" &&
+        printf '_am_fd=%q\n_am_identity=%q\n_am_stat=%q\n' "$_am_fd" "$_am_identity" "$_am_stat" &&
+        printf '%s\n' '[[ -d /proc/self/fd ]] || exit 69' 'if [[ -e "/proc/self/fd/$_am_fd" ]]; then' '  _am_actual=$(command "$_am_stat" -Lc '\''%d:%i'\'' -- "/proc/self/fd/$_am_fd") || exit 69' '  if [[ "$_am_actual" == "$_am_identity" ]]; then exec {_am_fd}>&-; fi' 'fi' &&
+        printf 'exec %q "$@"\n' "$_am_tool"
+    } > "$_am_stage" || _am_status=$?
+    if [[ "$_am_status" == 0 ]]; then command chmod 0700 -- "$_am_stage" || _am_status=$?; fi
+    if [[ "$_am_status" == 0 ]]; then command mv -f -- "$_am_stage" "$_am_dir/$_am_name" || _am_status=$?; fi
+    if [[ "$_am_status" != 0 ]]; then
+      command rm -f -- "$_am_stage"
+      _app_maintenance_refuse 69 "cannot publish service-launch executable $_am_dir/$_am_name"
+      return $?
+    fi
+  done
+  PATH="$_am_dir:$_am_path"
+  export PATH
+}
+
 _app_maintenance_lock() {
   local _am_key=${1:-} _am_policy=${2:-borrow}
   local _am_root=/var/lib/scripts-underground/maintenance-locks
@@ -1004,6 +1069,13 @@ _app_maintenance_lock() {
     fi
     return $?
   fi
+  if [[ "$_am_borrow" == 0 ]]; then
+    _am_metadata=${_am_before%:0:600:1:0}
+    _app_maintenance_service_boundary "$_am_fd" "$_am_key" "$_am_metadata" || {
+      exec {_am_fd}>&-
+      return 69
+    }
+  fi
   _APP_MAINTENANCE_FD=$_am_fd _APP_MAINTENANCE_KEY=$_am_key
   export -n _APP_MAINTENANCE_FD _APP_MAINTENANCE_KEY
 }
@@ -1026,7 +1098,7 @@ app_maintenance_begin() {
 # Emit only this component's acquisition definitions for cold offline consumers.
 # The owner, not each consumer, maintains the complete dependency closure.
 app_maintenance_contents() {
-  declare -f _app_maintenance_refuse _app_maintenance_import_guard _app_maintenance_lock app_maintenance_acquire || return $?
+  declare -f _app_maintenance_refuse _app_maintenance_import_guard _app_maintenance_service_boundary _app_maintenance_lock app_maintenance_acquire || return $?
 }
 
 # Only the actual background UI spawn calls this. Productive children retain the
@@ -1080,6 +1152,8 @@ _run_update_script() {
   unset _UPDATE_PENDING_FLAG _UPDATE_CLEANUP
   _UPDATE_CLEANUP=0
   export -n _UPDATE_CLEANUP
+  # App hooks may call apk directly rather than pkg_update/pkg_upgrade.
+  _alpine_repository_policy check || exit $?
   if [[ -n "$prepare" ]]; then
     "$prepare"
     local prepare_status=$?
@@ -1144,6 +1218,318 @@ ensure_tput() {
 # - Returns 0 if Alpine, 1 otherwise
 # - Used to adjust behavior for Alpine-specific commands
 # ------------------------------------------------------------------------------
+# One POSIX-shell repository policy, also emitted into fresh CTs before Bash
+# exists. Release identity comes from that CT, never the creator's environment.
+_alpine_repository_policy() (
+  _ar_action=${1:-check}
+  _ar_mirror=${2:-}
+  _ar_id=$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-release) || return $?
+  if [ "$_ar_id" != alpine ]; then
+    [ "$_ar_action" = check ] && return 0
+    printf 'Cannot configure Alpine repositories: native OS is not Alpine\n' >&2
+    return 65
+  fi
+  _ar_branch=$(awk -F= '$1 == "VERSION_ID" {
+    gsub(/"/, "", $2)
+    if ($2 ~ /^[0-9]+([.][0-9]+)+$/) {
+      split($2, v, "."); print "v" v[1] "." v[2]
+    }
+    exit
+  }' /etc/os-release) || return $?
+  if [ -z "$_ar_branch" ]; then
+    printf 'Cannot determine the installed Alpine release branch; repositories unchanged\n' >&2
+    return 65
+  fi
+  # The effective inventory below is line-delimited. Refuse ambiguous names
+  # before serialization or any fresh/publication write, never split them into
+  # relative awk operands (including assignment-looking or option-like text).
+  for _ar_file in /etc/apk/repositories.d/*.list /lib/apk/repositories.d/*.list; do
+    [ -e "$_ar_file" ] || [ -L "$_ar_file" ] || continue
+    case "$_ar_file" in
+      *'
+'*)
+        printf 'Cannot load Alpine repositories: newline in repository filename: %s; repositories unchanged\n' "$_ar_file" >&2
+        return 65
+        ;;
+    esac
+  done
+  case "$_ar_action" in
+    fresh)
+      printf 'http://dl-cdn.alpinelinux.org/alpine/%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/%s/community\n' "$_ar_branch" "$_ar_branch" > /etc/apk/repositories || return $?
+      ;;
+    check | mirror | project) ;;
+    *) return 65 ;;
+  esac
+  # apk loads the main file, then the sorted union of non-hidden *.list names.
+  # /etc wins equal names (including empty files and /dev/null masks).
+  _ar_files=$(
+    [ ! -e /etc/apk/repositories ] || printf '%s\n' /etc/apk/repositories
+    for _ar_file in /etc/apk/repositories.d/*.list /lib/apk/repositories.d/*.list; do
+      [ -e "$_ar_file" ] || [ -L "$_ar_file" ] || continue
+      printf '%s\n' "${_ar_file##*/}"
+    done | LC_ALL=C sort -u | while IFS= read -r _ar_name; do
+      if [ -e "/etc/apk/repositories.d/$_ar_name" ] || [ -L "/etc/apk/repositories.d/$_ar_name" ]; then
+        printf '%s\n' "/etc/apk/repositories.d/$_ar_name"
+      else
+        printf '%s\n' "/lib/apk/repositories.d/$_ar_name"
+      fi
+    done
+  ) || return $?
+  IFS='
+'
+  set -f
+  # Splitting only on newlines retains spaces and shell metacharacters in names.
+  # shellcheck disable=SC2086
+  set -- $_ar_files
+  [ "$#" != 0 ] || set -- /dev/null
+  for _ar_file; do
+    case "$_ar_file" in
+      /* | ./*) ;;
+      *)
+        printf 'Cannot load Alpine repositories: ambiguous file operand: %s\n' "$_ar_file" >&2
+        return 65
+        ;;
+    esac
+  done
+  _ar_program='
+    # Native parse errors abandon only this file. Projection retains that partial
+    # inventory; productive admission deliberately refuses an incomplete parse.
+    function fail(reason) {
+      bad[FILENAME] = 1
+      if (action != "project") { print "unresolved repository: " reason; exit 65 }
+      return ""
+    }
+    function expand(value,    out, key, n, p, spec) {
+      out = ""
+      while ((p = index(value, "${"))) {
+        out = out substr(value, 1, p - 1)
+        value = substr(value, p + 2)
+        if (!(n = index(value, "}"))) return fail("invalid variable")
+        spec = substr(value, 1, n - 1); key = spec
+        sub(/:.*/, "", key)
+        if (!(key in vars)) return fail("undefined variable " key)
+        if (length(out) + length(vars[key]) > 4096) return fail("variable buffer exceeded")
+        if (spec == key) out = out vars[key]
+        else {
+          spec = substr(spec, length(key) + 2)
+          if (spec !~ /^[0-9]*$/ || spec + 0 > 4096 - length(out)) return fail("invalid variable length")
+          out = out substr(vars[key], 1, spec + 0)
+        }
+        value = substr(value, n + 1)
+      }
+      if (length(out) + length(value) >= 4096) return fail("variable buffer exceeded")
+      return out value
+    }
+    function word(    value, n) {
+      match(rest, /^[^ \t]+/)
+      if (RLENGTH < 1) return ""
+      n = RLENGTH; value = substr(rest, 1, n)
+      start = offset + 1
+      offset += n; rest = substr(rest, n + 1)
+      match(rest, /^[ \t]*/)
+      offset += RLENGTH; rest = substr(rest, RLENGTH + 1)
+      return value
+    }
+    function is_url(value) { return value ~ /^\// || index(value, "://") > 1 }
+    function decode(path,    out, p, hex, digits) {
+      out = ""; digits = "0123456789abcdef"
+      while ((p = match(path, /%[0-9a-fA-F][0-9a-fA-F]/))) {
+        hex = tolower(substr(path, p + 1, 2))
+        out = out substr(path, 1, p - 1) sprintf("%c", (index(digits, substr(hex, 1, 1)) - 1) * 16 + index(digits, substr(hex, 2, 1)) - 1)
+        path = substr(path, p + 3)
+      }
+      return out path
+    }
+    function normalized(path,    parts, stack, n, top, j, out) {
+      n = split(path, parts, "/"); top = 0
+      for (j = 1; j <= n; j++) {
+        if (parts[j] == "" || parts[j] == ".") continue
+        if (parts[j] == "..") { if (top) top--; continue }
+        stack[++top] = parts[j]
+      }
+      out = ""
+      for (j = 1; j <= top; j++) out = out "/" stack[j]
+      return out
+    }
+    function release(path,    parts) {
+      if (!match(path, /\/alpine\//)) return ""
+      split(substr(path, RSTART + RLENGTH), parts, "/")
+      return parts[1]
+    }
+    function native(url,    path, raw, resolved) {
+      path = url
+      sub(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]*/, "", path)
+      # Inspect both native bytes and an origin-decoded/resolved path. Do not
+      # rewrite them: this is admission policy, not native grammar normalization.
+      path = decode(path); raw = release(path); resolved = release(normalized(path))
+      if (raw == "" && resolved == "") return 0
+      if ((raw != "" && raw != branch) || resolved != branch) {
+        print "unsafe path (configured branch " raw ", resolved branch " resolved ")"; exit 65
+      }
+      return 1
+    }
+    function repository(url,    base, index_url, identity) {
+      base = url
+      if (type != "ndx") {
+        sub(/\/+$/, "", base)
+        index_url = base "/" arch "/" (type == "v3" ? "Packages.adb" : "APKINDEX.tar.gz")
+      } else {
+        index_url = url
+        sub(/\/[^\/]*$/, "", base)
+      }
+      if (action == "project") {
+        identity = base SUBSEP index_url
+        if (!(identity in seen)) { print index_url; seen[identity] = 1 }
+        return 0
+      }
+      return native(index_url)
+    }
+    function mirrored_host(url,    prefix, authority, host, user_length) {
+      match(url, /^https?:\/\//); prefix = substr(url, 1, RLENGTH)
+      authority = substr(url, RLENGTH + 1); sub(/\/.*/, "", authority)
+      host = authority; sub(/^.*@/, "", host)
+      user_length = length(authority) - length(host)
+      if (host ~ /^\[/) { sub(/\].*/, "]", host) }
+      else sub(/:.*/, "", host)
+      return prefix substr(authority, 1, user_length) mirror substr(url, length(prefix) + user_length + length(host) + 1)
+    }
+    function emit(line) {
+      if (FILENAME == target) printf "%s%s", (emitted++ ? "\n" : ""), line > stage
+    }
+    BEGIN {
+      action = ENVIRON["_ar_action"]; branch = ENVIRON["_ar_branch"]
+      arch = ENVIRON["_ar_arch"]; mirror = ENVIRON["_ar_mirror"]
+      target = ENVIRON["_ar_target"]; stage = ENVIRON["_ar_stage"]
+      newline = ENVIRON["_ar_newline"]; expected = ENVIRON["_ar_lines"]
+      if (arch != "") vars["APK_ARCH"] = arch
+      for (operand = 1; operand < ARGC; operand++) if (ARGV[operand] == target) target_operand = 1
+    }
+    {
+      line = $0; rest = line; offset = 0
+      if (FILENAME == target) target_records++
+      if (bad[FILENAME]) next
+      if (line == "" || line ~ /^#/) {
+        emit(line)
+        next
+      }
+      token = word()
+      if (token == "") { fail("missing record"); next }
+      if (token == "set") {
+        default = 0
+        while (rest ~ /^-/) {
+          option = word()
+          if (option != "-default") { fail("invalid set option"); break }
+          default = 1
+        }
+        if (bad[FILENAME]) next
+        eq = index(rest, "="); key = substr(rest, 1, eq - 1)
+        if (!eq || key !~ /^[a-zA-Z][a-zA-Z0-9_]*$/ || key ~ /^APK_/) { fail("invalid assignment"); next }
+        value = expand(substr(rest, eq + 1))
+        if (bad[FILENAME]) next
+        if (!default || !(key in vars)) vars[key] = value
+      } else {
+        type = ""
+        if (token == "v2" || token == "v3" || token == "ndx") { type = token; token = word() }
+        else if (token !~ /^[@$]/ && !is_url(token)) { fail("unknown keyword"); next }
+        if (token ~ /^@/) token = word()
+        if (token == "") { fail("missing URL"); next }
+        if (type == "") type = token ~ /[.](adb|tar[.]gz)$/ ? "ndx" : "v2"
+        url_start = start; url_length = length(token); url = expand(token)
+        if (bad[FILENAME]) next
+        base_url = url; sub(/\/+$/, "", base_url)
+        if (!is_url(base_url)) { fail("invalid URL"); next }
+        had_components = rest != ""; components = expand(rest)
+        if (bad[FILENAME]) next
+        # apk_blob_foreach_word splits components on spaces only, unlike get_word.
+        count = split(components, comp, / +/); is_native = 0; non_native = 0
+        for (i = 1; i <= count; i++) if (comp[i] != "") {
+          if (repository(base_url "/" comp[i])) is_native = 1
+          else non_native = 1
+        }
+        if (!had_components) is_native = repository(base_url)
+        if (action == "mirror" && is_native && (index(line, "$") || non_native || url !~ /^https?:\/\//)) {
+          print "Cannot mirror " FILENAME ":" FNR ": native declaration is not a literal HTTP(S) source with only native indexes"
+          exit 65
+        }
+        if (target != "" && is_native) {
+          line = substr(line, 1, url_start - 1) mirrored_host(token) substr(line, url_start + url_length)
+        }
+      }
+      emit(line)
+    }
+    END {
+      if (target != "") {
+        if (!target_operand || target_records != expected + 0 || emitted != target_records) {
+          print "Incomplete Alpine repository writer: " target > "/dev/stderr"; exit 65
+        }
+        if (emitted && newline + 0) printf "\n" > stage
+        if (emitted && close(stage)) {
+          print "Incomplete Alpine repository writer close: " target > "/dev/stderr"; exit 65
+        }
+        print "complete:" (emitted + 0)
+      }
+    }
+  '
+  # Both admission and rewriting use the same effective, expanded source model.
+  # No repository bytes change until the complete inventory has been admitted.
+  _ar_arch=$(cat /etc/apk/arch 2> /dev/null) || _ar_arch=
+  if [ "$_ar_action" = project ]; then
+    _ar_action=project _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+      awk "$_ar_program" "$@"
+    return $?
+  fi
+  _ar_other=$(_ar_action=check _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+    awk "$_ar_program" "$@") || {
+    [ -n "$_ar_other" ] || _ar_other='unreadable inventory'
+  }
+  if [ -n "$_ar_other" ]; then
+    printf 'Alpine installed branch %s; repository branch %s differs. Explicit release selection is required; repositories unchanged.\n' "$_ar_branch" "$_ar_other" >&2
+    return 65
+  fi
+  [ "$_ar_action" = mirror ] || return 0
+  case "$_ar_mirror" in
+    '' | *[!a-zA-Z0-9.-]*)
+      printf 'Cannot mirror Alpine repositories: invalid mirror hostname; repositories unchanged\n' >&2
+      return 65
+      ;;
+  esac
+  # A native index does not authorize serializing its entire declaration. Check
+  # every declaration before publishing any file; variables and mixed components
+  # must retain their exact source bytes and make this mirror unavailable.
+  _ar_action=mirror _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror='' _ar_target='' _ar_stage='' _ar_newline='' _ar_lines='' \
+    awk "$_ar_program" "$@" >&2 || return $?
+  _ar_tmp=
+  trap 'rm -f -- "$_ar_tmp"' EXIT
+  for _ar_file; do
+    _ar_tmp=$(mktemp "$_ar_file.XXXXXX") || return $?
+    case "$_ar_tmp" in /* | ./*) ;; *) return 65 ;; esac
+    cp -p "$_ar_file" "$_ar_tmp" || return $?
+    # read retains an unterminated final record even when it returns EOF. Keep
+    # this pre-Bash closure within its existing executable dependency set.
+    _ar_newline=0 _ar_lines=0
+    while IFS= read -r _ar_last; do
+      _ar_newline=1 _ar_lines=$((_ar_lines + 1))
+    done < "$_ar_file"
+    if [ -n "$_ar_last" ]; then _ar_newline=0 _ar_lines=$((_ar_lines + 1)); fi
+    _ar_complete=$(_ar_action=mirror _ar_branch="$_ar_branch" _ar_arch="$_ar_arch" _ar_mirror="$_ar_mirror" \
+      _ar_target="$_ar_file" _ar_stage="$_ar_tmp" _ar_newline="$_ar_newline" _ar_lines="$_ar_lines" \
+      awk "$_ar_program" "$@") || return $?
+    if [ "$_ar_complete" != "complete:$_ar_lines" ] || { [ -s "$_ar_file" ] && [ ! -s "$_ar_tmp" ]; }; then
+      printf 'Incomplete Alpine repository writer: %s; file not published\n' "$_ar_file" >&2
+      return 65
+    fi
+    if cmp -s "$_ar_tmp" "$_ar_file"; then
+      rm -f -- "$_ar_tmp" || return $?
+    else
+      mv -f -- "$_ar_tmp" "$_ar_file" || return $?
+    fi
+  done
+)
+
+_alpine_repository_contents() {
+  declare -f _alpine_repository_policy || return $?
+}
+
 is_alpine() {
   local os_id="${var_os:-${PCT_OSTYPE:-}}"
 

@@ -95,7 +95,8 @@ EOF
   $STD make samples
   mkdir -p /etc/radiusclient-ng/
   ln /etc/radcli/radiusclient.conf /etc/radiusclient-ng/radiusclient.conf
-  systemctl enable -q --now asterisk
+  systemctl enable -q asterisk
+  systemctl start asterisk
   msg_ok "Installed Asterisk"
 }
 
