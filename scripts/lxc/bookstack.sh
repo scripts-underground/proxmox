@@ -32,18 +32,23 @@ function install_script() {
 
   msg_info "Configuring Bookstack"
   cd /opt/bookstack || exit
-  cp .env.example .env
-  sed -i "s|APP_URL=.*|APP_URL=http://$LOCAL_IP|g" /opt/bookstack/.env
-  sed -i "s/DB_DATABASE=.*/DB_DATABASE=$MARIADB_DB_NAME/" /opt/bookstack/.env
-  sed -i "s/DB_USERNAME=.*/DB_USERNAME=$MARIADB_DB_USER/" /opt/bookstack/.env
-  sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$MARIADB_DB_PASS/" /opt/bookstack/.env
+  local env_stage
+  env_stage=$(mktemp /opt/bookstack/.env.XXXXXX)
+  cp .env.example "$env_stage"
+  sed -i "s|APP_URL=.*|APP_URL=http://$LOCAL_IP|g" "$env_stage"
+  sed -i "s/DB_DATABASE=.*/DB_DATABASE=$MARIADB_DB_NAME/" "$env_stage"
+  sed -i "s/DB_USERNAME=.*/DB_USERNAME=$MARIADB_DB_USER/" "$env_stage"
+  sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$MARIADB_DB_PASS/" "$env_stage"
+  chown root:www-data "$env_stage"
+  chmod 0640 "$env_stage"
+  mv -T "$env_stage" /opt/bookstack/.env
+  export COMPOSER_ALLOW_SUPERUSER=1
   $STD composer install --no-dev --no-plugins --no-interaction
   $STD php artisan key:generate --no-interaction --force
   $STD php artisan migrate --no-interaction --force
-  chown www-data:www-data -R /opt/bookstack /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads /opt/bookstack/storage
-  chmod -R 755 /opt/bookstack /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads /opt/bookstack/storage
+  find /opt/bookstack -path /opt/bookstack/.env -prune -o -exec chown www-data:www-data {} +
+  find /opt/bookstack -path /opt/bookstack/.env -prune -o -exec chmod 755 {} +
   chmod -R 775 /opt/bookstack/storage /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads
-  chmod -R 640 /opt/bookstack/.env
   $STD a2enmod rewrite
   $STD a2enmod php8.3
   msg_ok "Configured Bookstack"
@@ -104,41 +109,41 @@ function update_script() {
   check_container_storage
   check_container_resources
 
-  if [[ ! -d /opt/bookstack ]]; then
+  if [[ ! -d /opt/bookstack || ! -f /opt/bookstack/.env ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
-  setup_mariadb
+  # The web process reads this file directly. Harden metadata without replacing
+  # its inode or changing existing database credentials, APP_KEY or settings.
+  chown root:www-data /opt/bookstack/.env
+  chmod 0640 /opt/bookstack/.env
   ensure_dependencies git
+  if [[ ! -f /opt/bookstack/public/index.php || ! -f /opt/bookstack/vendor/autoload.php ]]; then
+    export UPDATE_FORCE=1 FORCE_DEPLOY=1
+  fi
   if check_for_gh_release "bookstack" "BookStackApp/BookStack"; then
     msg_info "Stopping Apache2"
     systemctl stop apache2
     msg_ok "Services Stopped"
 
-    create_backup /opt/bookstack/.env \
-      /opt/bookstack/public/uploads \
-      /opt/bookstack/storage/uploads \
-      /opt/bookstack/themes
-    fetch_and_deploy_gh_release "bookstack" "BookStackApp/BookStack" "tarball"
-    PHP_VERSION="8.3" PHP_APACHE="YES" PHP_FPM="YES" PHP_MODULE="ldap,tidy,mysqli" setup_php
-    setup_composer
-    restore_backup
+    local CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:-} .env public/uploads storage themes"
+    fetch_and_deploy_gh_release "bookstack" "BookStackApp/BookStack" "tarball" "$CHECK_UPDATE_RELEASE"
 
     msg_info "Configuring BookStack"
     cd /opt/bookstack || exit
     export COMPOSER_ALLOW_SUPERUSER=1
-    $STD /usr/local/bin/composer install --no-dev
-    $STD php artisan migrate --force
-    chown www-data:www-data -R /opt/bookstack /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads /opt/bookstack/storage
-    chmod -R 755 /opt/bookstack /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads /opt/bookstack/storage
-    chmod -R 775 /opt/bookstack/storage /opt/bookstack/bootstrap/cache /opt/bookstack/public/uploads
-    chmod -R 640 /opt/bookstack/.env
+    $STD /usr/local/bin/composer install --no-dev --no-interaction
+    $STD php artisan migrate --no-interaction --force
+    find /opt/bookstack \( -path /opt/bookstack/.env -o -path /opt/bookstack/storage -o -path /opt/bookstack/public/uploads -o -path /opt/bookstack/themes \) -prune -o -exec chown www-data:www-data {} +
     msg_ok "Configured BookStack"
 
     msg_info "Starting Apache2"
     systemctl start apache2
     msg_ok "Started Apache2"
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }

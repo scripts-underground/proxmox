@@ -40,20 +40,21 @@ function install_script() {
   chmod +x bitmagnet
   msg_ok "Configured bitmagnet"
 
-  read -r -p "${TAB3}Enter your TMDB API key if you have one: " tmdbapikey
-
-  cat << EOF > /etc/bitmagnet.env
-POSTGRES_HOST=localhost
-POSTGRES_USER=${PG_DB_USER}
-POSTGRES_NAME=${PG_DB_NAME}
-POSTGRES_PASSWORD=${PG_DB_PASS}
-EOF
-
-  if [ -z "$tmdbapikey" ]; then
-    echo "TMDB_ENABLED=false" >> /etc/bitmagnet.env
+  local tmdbapikey="" tmdb_config="TMDB_ENABLED=false" configuration status
+  read -r -p "${TAB3}Enter your TMDB API key if you have one: " tmdbapikey || true
+  [[ -z "$tmdbapikey" ]] || tmdb_config="TMDB_API_KEY=$tmdbapikey"
+  configuration=$(mktemp /etc/.bitmagnet.env.XXXXXXXX)
+  chown root:root "$configuration"
+  chmod 0600 "$configuration"
+  if printf '%s\n' "POSTGRES_HOST=localhost" "POSTGRES_USER=${PG_DB_USER}" \
+    "POSTGRES_NAME=${PG_DB_NAME}" "POSTGRES_PASSWORD=${PG_DB_PASS}" "$tmdb_config" > "$configuration"; then
+    :
   else
-    echo "TMDB_API_KEY=$tmdbapikey" >> /etc/bitmagnet.env
+    status=$?
+    rm -f -- "$configuration"
+    return "$status"
   fi
+  mv -T -- "$configuration" /etc/bitmagnet.env
 
   msg_info "Creating Service"
   cat << EOF > /etc/systemd/system/bitmagnet-web.service
@@ -89,16 +90,25 @@ function update_script() {
   check_container_resources
   if [[ ! -d /opt/bitmagnet ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
+  if [[ ! -f /etc/bitmagnet.env ]]; then
+    msg_error "Missing /etc/bitmagnet.env; restore the existing database configuration before updating."
+    exit 1
+  fi
+  # PID 1 reads EnvironmentFile; harden in place without rewriting secrets.
+  chown root:root /etc/bitmagnet.env
+  chmod 0600 /etc/bitmagnet.env
   if check_for_gh_release "bitmagnet" "bitmagnet-io/bitmagnet"; then
     msg_info "Stopping Service"
     systemctl stop bitmagnet-web
     msg_ok "Stopped Service"
 
     msg_info "Backing up data"
-    rm -f /tmp/backup.sql
-    $STD su - postgres -c "pg_dump \
+    local backup_file status
+    backup_file=$(mktemp /opt/.bitmagnet-backup.XXXXXXXX)
+    # Keep dump stdout out of STD's log redirection, and off RAM-backed /tmp.
+    if runuser -u postgres -- pg_dump \
       --column-inserts \
       --data-only \
       --on-conflict-do-nothing \
@@ -116,21 +126,21 @@ function update_script() {
       --table=torrent_tags \
       --table=torrents_torrent_sources \
       --table=key_values \
-      bitmagnet \
-      >/tmp/backup.sql"
-    mv /tmp/backup.sql /opt/
-    [ -f /opt/bitmagnet/.env ] && cp /opt/bitmagnet/.env /opt/
-    [ -f /opt/bitmagnet/config.yml ] && cp /opt/bitmagnet/config.yml /opt/
+      bitmagnet > "$backup_file" && mv -T -- "$backup_file" /opt/backup.sql; then
+      :
+    else
+      status=$?
+      rm -f -- "$backup_file"
+      return "$status"
+    fi
     msg_ok "Data backed up"
 
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bitmagnet" "bitmagnet-io/bitmagnet" "tarball"
-    [ -f "/opt/.env" ] && cp "/opt/.env" /opt/bitmagnet/
-    [ -f "/opt/config.yml" ] && cp "/opt/config.yml" /opt/bitmagnet/
+    local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" ".env" "config.yml")
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bitmagnet" "bitmagnet-io/bitmagnet" "tarball" "$CHECK_UPDATE_RELEASE"
 
     msg_info "Configuring Bitmagnet"
     cd /opt/bitmagnet || exit
-    VREL=v$(curl -fsSL https://api.github.com/repos/bitmagnet-io/bitmagnet/releases/latest | grep "tag_name" | awk '{print substr($2, 3, length($2)-4) }')
-    $STD go build -ldflags "-s -w -X github.com/bitmagnet-io/bitmagnet/internal/version.GitTag=$VREL"
+    $STD go build -ldflags "-s -w -X github.com/bitmagnet-io/bitmagnet/internal/version.GitTag=$CHECK_UPDATE_RELEASE"
     chmod +x bitmagnet
     msg_ok "Configured Bitmagnet"
 
@@ -138,6 +148,9 @@ function update_script() {
     systemctl start bitmagnet-web
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }

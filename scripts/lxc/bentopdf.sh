@@ -144,7 +144,7 @@ function update_script() {
   check_container_resources
   if [[ ! -d /opt/bentopdf ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
 
   NODE_VERSION="24" setup_nodejs
@@ -154,9 +154,14 @@ function update_script() {
     systemctl stop bentopdf
     msg_ok "Stopped Service"
 
-    create_backup /opt/bentopdf/.env.production
-    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bentopdf" "alam00000/bentopdf" "tarball" "latest" "/opt/bentopdf"
-    restore_backup
+    # Vite copies public/config.json to dist after emptying its output directory.
+    # Carry the currently served policy into that source before replacing/building.
+    if [[ -f /opt/bentopdf/dist/config.json ]]; then
+      mkdir -p /opt/bentopdf/public
+      cp -p /opt/bentopdf/dist/config.json /opt/bentopdf/public/config.json
+    fi
+    local CLEAN_INSTALL_KEEP="${CLEAN_INSTALL_KEEP:-} .env.production public/config.json"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "bentopdf" "alam00000/bentopdf" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/bentopdf"
 
     msg_info "Configuring BentoPDF"
     cd /opt/bentopdf || exit
@@ -181,7 +186,8 @@ EOF
         -out /etc/ssl/certs/bentopdf-selfsigned.crt \
         -subj "/CN=${CERT_CN}"
     fi
-    cat << 'EOF' > /etc/nginx/sites-available/bentopdf
+    if [[ ! -f /etc/nginx/sites-available/bentopdf ]]; then
+      cat << 'EOF' > /etc/nginx/sites-available/bentopdf
 server {
     listen 8080;
     server_name _;
@@ -239,9 +245,12 @@ server {
     error_page 404 /404.html;
 }
 EOF
-    rm -f /etc/nginx/sites-enabled/default
-    ln -sf /etc/nginx/sites-available/bentopdf /etc/nginx/sites-enabled/bentopdf
-    cat << 'EOF' > /etc/systemd/system/bentopdf.service
+    fi
+    if [[ ! -e /etc/nginx/sites-enabled/bentopdf && ! -L /etc/nginx/sites-enabled/bentopdf ]]; then
+      ln -s /etc/nginx/sites-available/bentopdf /etc/nginx/sites-enabled/bentopdf
+    fi
+    if [[ ! -f /etc/systemd/system/bentopdf.service ]]; then
+      cat << 'EOF' > /etc/systemd/system/bentopdf.service
 [Unit]
 Description=BentoPDF Service
 After=network.target
@@ -255,10 +264,14 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
     systemctl daemon-reload
     systemctl start bentopdf
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }

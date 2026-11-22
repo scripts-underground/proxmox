@@ -19,6 +19,7 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
+  local CLEAN_INSTALL_KEEP="beszel_data ${CLEAN_INSTALL_KEEP:-}"
   msg_info "Installing Dependencies"
   $STD apt install -y curl sudo
   msg_ok "Installed Dependencies"
@@ -50,22 +51,26 @@ function post_install_script() {
 }
 
 function update_script() {
+  local CLEAN_INSTALL_KEEP="beszel_data ${CLEAN_INSTALL_KEEP:-}"
   header_info
   check_container_storage
   check_container_resources
   if [[ ! -d /opt/beszel ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    return 1
   fi
   if check_for_gh_release "beszel" "henrygd/beszel"; then
     msg_info "Stopping Service"
     systemctl stop beszel-hub
     msg_ok "Stopped Service"
-    fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "latest" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz"
+    fetch_and_deploy_gh_release "beszel" "henrygd/beszel" "prebuild" "$CHECK_UPDATE_RELEASE" "/opt/beszel" "beszel_linux_$(get_system_arch).tar.gz"
     msg_info "Starting Service"
     systemctl start beszel-hub
     msg_ok "Started Service"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
