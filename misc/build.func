@@ -3897,6 +3897,41 @@ _prepare_container_bundles() {
   fi
 }
 
+# Alpine's pre-Bash package stage keeps its emitted policy local to this owner,
+# independent of the creator's other OS/backend control flow.
+_alpine_base_packages() {
+  sleep 3
+  local _alpine_policy
+  _alpine_policy=$(_alpine_repository_contents) || exit $?
+  _receiving_exec /bin/sh -c "$_alpine_policy"'
+    _alpine_repository_policy fresh
+  '
+  _receiving_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
+    msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
+    local alpine_exit=0
+    _receiving_exec ash -c "$_alpine_policy"'
+      ALPINE_MIRRORS="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
+      for m in $(printf "%s\n" $ALPINE_MIRRORS | shuf); do
+        _alpine_repository_policy mirror "$m" || exit $?
+        if wget -q --spider --timeout=2 "http://$m/alpine/" 2>/dev/null; then
+          echo "  Attempting mirror: $m"
+          if apk update >/dev/null 2>&1 && apk add bash newt curl openssh nano mc ncurses jq >/dev/null 2>&1; then
+            echo "  CDN set to $m: tests passed"
+            exit 0
+          else
+            echo "  Mirror $m failed"
+          fi
+        fi
+      done
+      exit 2
+    ' && alpine_exit=0 || alpine_exit=$?
+    if [[ $alpine_exit -ne 0 ]]; then
+      msg_error "apk base packages installation failed"
+      exit 1
+    fi
+  }
+}
+
 # ------------------------------------------------------------------------------
 # build_container()
 #
@@ -4107,7 +4142,9 @@ $PCT_OPTIONS_STRING"
     msg_ok "Storage space validated"
   fi
 
-  create_lxc_container || exit $?
+  # Stage owners run normally: a conditional caller disables errexit throughout
+  # the creator and any hooks/helpers it invokes.
+  create_lxc_container
   # Transition to 'configuring' — container created, now setting up OS/userland
   LXC_CONFIG="/etc/pve/lxc/${CTID}.conf"
 
@@ -4306,31 +4343,8 @@ EOF
 
   # Wait for network (skip for Alpine initially)
   if [ "$var_os" != "alpine" ]; then
-    msg_info "Waiting for network in LXC container"
-
-    # Wait for IP assignment (IPv4 or IPv6)
     local ip_in_lxc=""
-    for i in {1..20}; do
-      # Try IPv4 first
-      ip_in_lxc=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2> /dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
-      # Fallback to IPv6 if IPv4 not available
-      if [ -z "$ip_in_lxc" ]; then
-        ip_in_lxc=$(pct exec "$CTID" -- ip -6 addr show dev eth0 scope global 2> /dev/null | awk '/inet6 / {print $2}' | cut -d/ -f1 | head -n1)
-      fi
-      [ -n "$ip_in_lxc" ] && break
-      sleep 1
-    done
-
-    if [ -z "$ip_in_lxc" ]; then
-      msg_error "No IP assigned to CT $CTID after 20s"
-      echo -e "${YW}Troubleshooting:${CL}"
-      echo "  • Verify bridge ${BRG} exists and has connectivity"
-      echo "  • Check if DHCP server is reachable (if using DHCP)"
-      echo "  • Verify static IP configuration (if using static IP)"
-      echo "  • Check Proxmox firewall rules"
-      echo "  • If using Tailscale: Disable MagicDNS temporarily"
-      exit 1
-    fi
+    _wait_for_container_network ip_in_lxc
 
     # Verify basic connectivity (ping test)
     local ping_success=false
@@ -4390,38 +4404,7 @@ EOF
   fi
   # Continue with standard container setup
   if [ "$var_os" == "alpine" ]; then
-    sleep 3
-    _receiving_exec /bin/sh -c 'cat <<EOF >/etc/apk/repositories
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
-EOF'
-    _receiving_exec ash -c "apk add bash newt curl openssh nano mc ncurses jq >/dev/null" || {
-      msg_warn "apk install failed (dl-cdn.alpinelinux.org), trying alternate mirrors..."
-      local alpine_exit=0
-      _receiving_exec ash -c '
-        ALPINE_MIRRORS="mirror.init7.net ftp.halifax.rwth-aachen.de mirrors.edge.kernel.org alpine.mirror.wearetriple.com mirror.leaseweb.com uk.alpinelinux.org dl-2.alpinelinux.org dl-4.alpinelinux.org"
-        for m in $(printf "%s\n" $ALPINE_MIRRORS | shuf); do
-          if wget -q --spider --timeout=2 "http://$m/alpine/latest-stable/main/" 2>/dev/null; then
-            echo "  Attempting mirror: $m"
-            cat <<EOF >/etc/apk/repositories
-http://$m/alpine/latest-stable/main
-http://$m/alpine/latest-stable/community
-EOF
-            if apk update >/dev/null 2>&1 && apk add bash newt curl openssh nano mc ncurses jq >/dev/null 2>&1; then
-              echo "  CDN set to $m: tests passed"
-              exit 0
-            else
-              echo "  Mirror $m failed"
-            fi
-          fi
-        done
-        exit 2
-      ' && alpine_exit=0 || alpine_exit=$?
-      if [[ $alpine_exit -ne 0 ]]; then
-        msg_error "apk base packages installation failed"
-        exit 1
-      fi
-    }
+    _alpine_base_packages
   elif [[ "$var_os" =~ ^(debian|ubuntu|devuan)$ ]]; then
     sleep 3
     LANG=${LANG:-en_US.UTF-8}
@@ -4990,7 +4973,7 @@ PROFILE
           echo ""
           msg_info "Restarting installation..."
           # Re-run build_container
-          build_container
+          build_container "$_bc_script_id" "$_bc_required_cpu" "$_bc_required_ram"
           return $?
           ;;
         *)
@@ -5068,7 +5051,7 @@ PROFILE
             fi
 
             if [[ $apt_retry_code -eq 0 ]]; then
-              msg_ok "Installation completed successfully after APT repair!"
+              _finish_container_build
 
               return 0
             else
@@ -5108,7 +5091,7 @@ PROFILE
             echo ""
             msg_info "Restarting installation..."
 
-            build_container
+            build_container "$_bc_script_id" "$_bc_required_cpu" "$_bc_required_ram"
             return $?
           fi
 
@@ -5133,7 +5116,7 @@ PROFILE
             echo -e "  Verbose: ${GN}enabled${CL}"
             echo ""
             msg_info "Restarting installation..."
-            build_container
+            build_container "$_bc_script_id" "$_bc_required_cpu" "$_bc_required_ram"
             return $?
           fi
 
@@ -5158,11 +5141,18 @@ PROFILE
   fi
 
   # Clean up host-side capture log (not needed on success, already in combined_log on failure)
-  rm -f "${TMPDIR:-/tmp}/.install-capture-${SESSION_ID}.log" 2> /dev/null
+  _finish_container_build
+}
 
-  # Re-enable error handling after successful install or recovery menu completion
+# Both a normal installation and an in-place repair finish here. Recursive
+# rebuilds return immediately after their inner owner, so dispatch is once only.
+_finish_container_build() {
+  # Never invoke a user hook inside a conditional/status-capture region.
   set -Eeuo pipefail
   trap 'error_handler' ERR
+  # The failed-stage diagnostic log is no longer needed after successful install.
+  rm -f "${TMPDIR:-/tmp}/.install-capture-${SESSION_ID}.log" 2> /dev/null
+  execute_optional_hook post_build_script
 }
 
 destroy_lxc() {
@@ -6170,8 +6160,8 @@ create_lxc_container() {
             echo
             echo "pct reported 'unsupported ... version' – your LXC stack might be too old for this template."
             echo "We can try to upgrade 'pve-container' and 'lxc-pve' now and retry automatically."
-            offer_lxc_stack_upgrade_and_maybe_retry "yes"
-            rc=$?
+            local rc=0
+            offer_lxc_stack_upgrade_and_maybe_retry "yes" || rc=$?
             case $rc in
               0) : ;; # success - container created, continue
               2)
@@ -6188,7 +6178,7 @@ create_lxc_container() {
             msg_error "Container creation failed. See $LOGFILE"
             if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
               set -x
-              pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
+              pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE" || true
               set +x
             fi
             exit 209
@@ -6202,8 +6192,8 @@ create_lxc_container() {
           echo
           echo "pct reported 'unsupported ... version' – your LXC stack might be too old for this template."
           echo "We can try to upgrade 'pve-container' and 'lxc-pve' now and retry automatically."
-          offer_lxc_stack_upgrade_and_maybe_retry "yes"
-          rc=$?
+          local rc=0
+          offer_lxc_stack_upgrade_and_maybe_retry "yes" || rc=$?
           case $rc in
             0) : ;; # success - container created, continue
             2)
@@ -6220,7 +6210,7 @@ create_lxc_container() {
           msg_error "Container creation failed. See $LOGFILE"
           if whiptail --yesno "pct create failed.\nDo you want to enable verbose debug mode and view detailed logs?" 12 70; then
             set -x
-            pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE"
+            pct create "$CTID" "local:vztmpl/${TEMPLATE}" $PCT_OPTIONS 2>&1 | tee -a "$LOGFILE" || true
             set +x
           fi
           exit 209
@@ -6244,12 +6234,43 @@ create_lxc_container() {
   }
 
   msg_ok "LXC Container ${BL}$CTID${CL} ${GN}was successfully created."
-  execute_optional_hook post_build_script
 }
 
 # ==============================================================================
 # SECTION 9: POST-INSTALLATION & FINALIZATION
 # ==============================================================================
+
+# Startup and post-hook finalization share the same address wait and timeout.
+_wait_for_container_network() {
+  local -n _wcn_address=$1
+  local _wcn_ip="" _wcn_attempt
+  _wcn_address=""
+  msg_info "Waiting for network in LXC container"
+
+  # Wait for IP assignment (IPv4 or IPv6)
+  for _wcn_attempt in {1..20}; do
+    # Try IPv4 first
+    _wcn_ip=$(pct exec "$CTID" -- ip -4 addr show dev eth0 2> /dev/null | awk '/inet / {print $2}' | cut -d/ -f1) || _wcn_ip=""
+    # Fallback to IPv6 if IPv4 not available
+    if [ -z "$_wcn_ip" ]; then
+      _wcn_ip=$(pct exec "$CTID" -- ip -6 addr show dev eth0 scope global 2> /dev/null | awk '/inet6 / && !/tentative|dadfailed/ {print $2}' | cut -d/ -f1 | head -n1) || _wcn_ip=""
+    fi
+    [ -n "$_wcn_ip" ] && break
+    sleep 1
+  done
+
+  if [ -z "$_wcn_ip" ]; then
+    msg_error "No IP assigned to CT $CTID after 20s"
+    echo -e "${YW}Troubleshooting:${CL}"
+    echo "  • Verify bridge ${BRG} exists and has connectivity"
+    echo "  • Check if DHCP server is reachable (if using DHCP)"
+    echo "  • Verify static IP configuration (if using static IP)"
+    echo "  • Check Proxmox firewall rules"
+    echo "  • If using Tailscale: Disable MagicDNS temporarily"
+    exit 1
+  fi
+  _wcn_address=$_wcn_ip
+}
 
 # ------------------------------------------------------------------------------
 # complete_install()
@@ -6260,7 +6281,8 @@ create_lxc_container() {
 # - Fires post_install_script hook
 # ------------------------------------------------------------------------------
 complete_install() {
-  IP=$(pct exec "$CTID" ip a s dev eth0 | awk '/inet / {print $2}' | cut -d/ -f1)
+  # A post-build hook may have restarted the CT; pre-install readiness is stale.
+  _wait_for_container_network IP
 
   # Generate LXC Description
   DESCRIPTION=$(
