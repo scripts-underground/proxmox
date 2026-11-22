@@ -153,10 +153,10 @@ function update_script() {
         BOOKLORE_DATA_PATH) new_key=APP_PATH_CONFIG ;;
         BOOKLORE_BOOKDROP_PATH) new_key=APP_BOOKDROP_FOLDER ;;
       esac
-      if ! grep -q "^${new_key}=" /opt/booklore_storage/.env; then
+      if ! grep -Eq "^[[:space:]]*${new_key}[[:space:]]*=" /opt/booklore_storage/.env; then
         while IFS= read -r line || [[ -n "$line" ]]; do
-          if [[ "$line" == "${old_key}="* ]]; then
-            printf '\n%s=%s\n' "$new_key" "${line#*=}" >> /opt/booklore_storage/.env
+          if [[ "$line" =~ ^[[:space:]]*${old_key}[[:space:]]*=(.*)$ ]]; then
+            printf '\n%s=%s\n' "$new_key" "${BASH_REMATCH[1]}" >> /opt/booklore_storage/.env
           fi
         done < /opt/booklore_storage/.env
       fi
@@ -167,7 +167,7 @@ function update_script() {
     local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}" dist)
     local release_file app_version
     release_file=$(mktemp)
-    fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/booklore" "" "" "$release_file"
+    CLEAN_INSTALL=1 fetch_and_deploy_gh_release "booklore" "booklore-app/BookLore" "tarball" "$CHECK_UPDATE_RELEASE" "/opt/booklore" "" "" "$release_file"
     app_version=$(jq -er '.tag_name' "$release_file")
     rm -f -- "$release_file"
 
