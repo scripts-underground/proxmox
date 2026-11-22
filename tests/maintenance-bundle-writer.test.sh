@@ -54,7 +54,7 @@ if [[ "${1:-}" == --child ]]; then
         ;;
       exec)
         shift 3
-        case "$1:$fault" in chmod:chmod) return 54 ;; mv:publish) return 55 ;; esac
+        case "$1:$fault" in mkdir:parent-failure) return 56 ;; chmod:chmod) return 54 ;; mv:publish) return 55 ;; esac
         if [[ "$1" == mktemp ]]; then
           local receiver
           receiver=$(command "$@") || return $?
@@ -67,6 +67,7 @@ if [[ "${1:-}" == --child ]]; then
     esac
   }
   args=(install install_script "$c/destination" 0700 install_script)
+  case "$fault" in parent-absent | parent-failure | parent-file) args[2]="$c/new parent/sbin/destination" ;; esac
   case "$fault" in
     identity | identity-printf) args=(update update_script "$c/destination" 0700 --script-id writer -- update_script) ;;
     identity-invalid) args=(update update_script "$c/destination" 0700 --script-id ../wrong -- update_script) ;;
@@ -125,7 +126,7 @@ for style in conditional plain; do
       check "$(cmp -s "$c/previous" "$c/destination" && printf same || printf changed)" same "$style/$fault receiving previous command preserved"
       check "$(stat -c %a "$c/destination")" "$(stat -c %a "$c/previous")" "$style/$fault receiving previous mode preserved"
     else
-      check "$(wc -l < "$c/published")" 4 'success stages, transports, sets mode and publishes'
+      check "$(wc -l < "$c/published")" 5 'success prepares parent, stages, transports, sets mode and publishes'
       if [[ "$fault" == identity ]]; then
         check "$(grep -c '^declare -- LXC_SCRIPT_ID=writer$' "$c/destination")" 1 "$style exact checked update identity"
         check "$(grep -c "^declare -- LXC_REQUIRED_CPU=''$" "$c/destination")" 1 "$style omitted pair clears ambient CPU"
@@ -140,6 +141,31 @@ for style in conditional plain; do
       check "$(test -e "$(cat "$c/receiver-stage")" && printf present || printf absent)" absent "$style/$fault owned receiving stage removed"
     fi
   done
+done
+for fault in parent-absent parent-failure parent-file; do
+  c="$work/$fault"
+  mkdir -p "$c/tmp/framework-writer"
+  for lib in core error_handler install tools github; do printf '# fixture library\n' > "$c/tmp/framework-writer/$lib.func"; done
+  [[ "$fault" != parent-file ]] || printf 'operator file\n' > "$c/new parent"
+  rc=0
+  TMPDIR="$c/tmp" CASE_ROOT="$c" bash "$0" --child "$fault" conditional > "$c/output" 2>&1 || rc=$?
+  case "$fault" in
+    parent-absent)
+      check "$rc" 0 'missing receiving parent is created before publication'
+      check "$(test -s "$c/new parent/sbin/destination" && printf present || printf absent)" present 'complete command published under new parent'
+      check "$(stat -c %a "$c/new parent/sbin/destination" 2> /dev/null || true)" 700 'new receiving command has requested mode'
+      ;;
+    parent-failure)
+      check "$rc" 56 'receiving parent creation keeps exact failure status'
+      check "$(test -e "$c/receiver-stage" && printf reached || printf absent)" absent 'failed parent creation precedes receiving allocation'
+      ;;
+    parent-file)
+      check "$(test "$rc" -ne 0 && printf failed || printf success)" failed 'non-directory parent refuses publication'
+      check "$(cat "$c/new parent")" 'operator file' 'non-directory parent bytes preserved'
+      ;;
+  esac
+  stage=$(cat "$c/stage-path")
+  check "$(test -e "$stage" && printf present || printf absent)" absent "$fault sender stage removed"
 done
 printf '%s failure(s); actual writer, missing cache and ENOSPC sink; pct modeled\n' "$failures"
 [[ "$failures" == 0 ]]
