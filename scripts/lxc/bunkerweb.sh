@@ -68,17 +68,45 @@ function update_script() {
 
   if check_for_gh_release "bunkerweb" "bunkerity/bunkerweb"; then
     msg_info "Updating BunkerWeb"
-    RELEASE=$(get_latest_github_release "bunkerity/bunkerweb")
+    local RELEASE="${CHECK_UPDATE_RELEASE#v}"
+    local -a reinstall=()
+    [[ "${FORCE_DEPLOY:-0}" != 1 ]] || reinstall=(--reinstall)
     cat << EOF > /etc/apt/preferences.d/bunkerweb
 Package: bunkerweb
 Pin: version ${RELEASE}
 Pin-Priority: 1001
 EOF
     $STD apt update
+    # BunkerWeb's Nginx modules require the exact ABI declared by this package,
+    # not nginx.org's newer candidate. Select both in one APT transaction.
+    local package_info line nginx_version='' dependency_version
+    local nginx_dependency='(^|,)[[:space:]]*nginx[[:space:]]+\(=[[:space:]]+([[:alnum:].+~:-]+)\)'
+    package_info=$(apt-cache show "bunkerweb=${RELEASE}")
+    while IFS= read -r line; do
+      [[ "$line" == Depends:* ]] || continue
+      line=${line#Depends:}
+      line=${line#"${line%%[![:space:]]*}"}
+      if [[ "$line" =~ $nginx_dependency ]]; then
+        dependency_version=${BASH_REMATCH[2]}
+        if [[ -n "$nginx_version" && "$nginx_version" != "$dependency_version" ]]; then
+          msg_error "Conflicting Nginx dependencies for BunkerWeb ${RELEASE}"
+          return 65
+        fi
+        nginx_version=$dependency_version
+      fi
+    done <<< "$package_info"
+    if [[ -z "$nginx_version" ]]; then
+      msg_error "No exact Nginx dependency found for BunkerWeb ${RELEASE}"
+      return 65
+    fi
     $STD apt-mark unhold bunkerweb nginx
-    $STD apt install -y --allow-downgrades bunkerweb="${RELEASE}"
+    $STD apt install -y --allow-downgrades "${reinstall[@]}" bunkerweb="${RELEASE}" nginx="${nginx_version}"
+    printf '%s\n' "$RELEASE" > "$HOME/.bunkerweb"
     msg_ok "Updated BunkerWeb"
     msg_ok "Updated successfully!"
+  else
+    local status=$?
+    [[ "$status" == 1 ]] || return "$status"
   fi
   exit
 }
