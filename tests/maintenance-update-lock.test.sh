@@ -122,6 +122,15 @@ if [[ "${1:-}" == --worker ]]; then
         ' &
         wait "$!"
         ;;
+      service-manager)
+        exec 9> "$CASE_ROOT/unrelated-fd"
+        if [[ "${MANAGER_STAT_REFUSAL:-0}" == 1 ]]; then export SERVICE_PROBE_STAT_FAIL=1; fi
+        if [[ "${MANAGER_CHILD_SHELL:-0}" == 1 ]]; then
+          bash -c 'command "$MANAGER_NAME" "space arg" "" --marker'
+        else
+          command "$MANAGER_NAME" 'space arg' '' --marker
+        fi
+        ;;
       nested) run_update_script ;;
       hook-borrow | hook-other-key)
         (
@@ -580,6 +589,46 @@ p=command(['/bin/bash',str(root/'scripts/pve/update-apps.sh')],env=env,cwd=c);tr
 check(p.returncode==65,'unknown actual baseline refuses preparation65')
 check('pct set' not in trace and 'bash -c' not in trace,'unknown baseline issues no resource set or updater')
 check((c/'resource-config').read_text()=='1 unknown\n','unknown baseline configuration retained')
+
+# Service-manager executables are not productive update descendants. These real
+# executable boundaries preserve argv/stdin/status and an unrelated descriptor;
+# only their service payload is modeled. Native OpenRC/systemd proof is separate.
+for manager in ('rc-service','openrc','supervise-daemon','start-stop-daemon','service','systemctl','systemd-run'):
+ c=case('service-boundary-'+manager);bp=c/'bin';bp.mkdir();tool=bp/manager
+ tool.write_text('''#!/bin/bash
+printf '<%s>\\n' "$@" > "$CASE_ROOT/manager-argv"
+printf 'unrelated-preserved\\n' >&9
+sleep 60 </dev/null >/dev/null 2>&1 &
+printf '%s\\n' "$!" > "$CASE_ROOT/manager-child"
+exit "${MANAGER_STATUS:-0}"
+''');tool.chmod(0o700)
+ extra={'PATH':str(bp)+':'+os.environ['PATH'],'MANAGER_NAME':manager}
+ status=run(c,'Launch',action='service-manager',extra=extra)
+ child=int((c/'manager-child').read_text());lock=locks/'lock-probe.lock'
+ def service_fds():
+  found=[]
+  for fd in (pathlib.Path('/proc')/str(child)/'fd').iterdir():
+   try:
+    if (fd.stat().st_dev,fd.stat().st_ino)==(lock.stat().st_dev,lock.stat().st_ino):found.append(fd.name)
+   except FileNotFoundError:pass
+  return found
+ try:
+  check(status==0,manager+' actual executable completes update')
+  check(not service_fds(),manager+' live service child has no maintenance inode')
+  check(run(c,'Next')==0,manager+' next independent update acquires while child lives')
+  check((c/'manager-argv').read_text()=='<space arg>\n<>\n<--marker>\n' and (c/'unrelated-fd').read_text()=='unrelated-preserved\n',manager+' exact argv and unrelated FD preserved')
+ finally:
+  os.kill(child,signal.SIGTERM)
+ check(run(c,'Failure',action='service-manager',extra=dict(extra,MANAGER_STATUS='43',MANAGER_CHILD_SHELL='1'))==43,manager+' child-shell manager failure status survives update')
+ child=int((c/'manager-child').read_text());os.kill(child,signal.SIGTERM)
+ check(run(c,'Retry')==0,manager+' failed launch retains recoverable pending')
+
+c=case('service-inspection-refusal');bp=c/'bin';bp.mkdir()
+tool=bp/'rc-service';tool.write_text('#!/bin/bash\nprintf unexpected-launch > "$CASE_ROOT/launched"\n');tool.chmod(0o700)
+tool=bp/'stat';tool.write_text('#!/bin/bash\n[[ "${SERVICE_PROBE_STAT_FAIL:-0}" != 1 ]] || exit 49\nexec /usr/bin/stat "$@"\n');tool.chmod(0o700)
+extra={'PATH':str(bp)+':'+os.environ['PATH'],'MANAGER_NAME':'rc-service','MANAGER_STAT_REFUSAL':'1'}
+check(run(c,action='service-manager',extra=extra)==69 and not (c/'launched').exists(),'service descriptor inspection failure refuses69 before manager exec')
+check(run(c,'Retry')==0,'service inspection failure releases owner for pending retry')
 
 # Launcher death does not expose a productive child; pending survives until retry.
 c=case('death');a=start(c,action='productive');child=int(line(a[1]).split()[1]);os.kill(a[0].pid,signal.SIGKILL);check(a[0].wait(timeout=10)==-9,'positively owned launcher SIGKILL')
