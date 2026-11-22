@@ -57,6 +57,9 @@ function update_script() {
   msg_info "Updating Audiobookshelf"
   $STD apt update
   $STD apt upgrade -y
+  if [[ "${FORCE_DEPLOY:-0}" == "1" ]]; then
+    $STD apt install -y --reinstall audiobookshelf
+  fi
   msg_ok "Updated Audiobookshelf"
   msg_ok "Updated successfully!"
   exit

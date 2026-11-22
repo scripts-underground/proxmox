@@ -35,7 +35,9 @@ function install_script() {
   read -rp "${TAB3}Do you want to allow registration of multiple accounts? [y/n]: " allowreg
 
   msg_info "Creating Services"
-  cat << EOF > /etc/systemd/system/bytestash-backend.service
+  local backend_unit
+  backend_unit=$(mktemp /etc/systemd/system/.bytestash-backend.XXXXXX)
+  cat << EOF > "$backend_unit"
 [Unit]
 Description=ByteStash Backend Service
 After=network.target
@@ -51,8 +53,9 @@ WantedBy=multi-user.target
 EOF
 
   if [[ "$allowreg" =~ ^[Yy]$ ]]; then
-    sed -i '8i\Environment=ALLOW_NEW_ACCOUNTS=true' /etc/systemd/system/bytestash-backend.service
+    sed -i '8i\Environment=ALLOW_NEW_ACCOUNTS=true' "$backend_unit"
   fi
+  mv -f -- "$backend_unit" /etc/systemd/system/bytestash-backend.service
 
   cat << EOF > /etc/systemd/system/bytestash-frontend.service
 [Unit]
@@ -86,8 +89,19 @@ function update_script() {
   check_container_resources
   if [[ ! -d /opt/bytestash ]]; then
     msg_error "No ${APP} Installation Found!"
-    exit
+    exit 1
   fi
+
+  # Keep existing secret/settings bytes and inode, including on a no-op update.
+  if [[ -f /etc/systemd/system/bytestash-backend.service ]]; then
+    chown root:root /etc/systemd/system/bytestash-backend.service
+    chmod 0600 /etc/systemd/system/bytestash-backend.service
+  fi
+
+  # A conditional advisory covers Environment=, EnvironmentFile= and wrappers
+  # without parsing or exposing an operator's secret-bearing environment.
+  msg_warn "If ADMIN_USERNAMES is configured, it is ignored by upstream v1.6.2 and later. No admin grants are migrated automatically."
+  msg_warn "To explicitly grant an intended account admin access: cd /opt/bytestash/server && node src/scripts/admin.js grant <username>"
 
   if check_for_gh_release "bytestash" "jordan-dalby/ByteStash"; then
     msg_info "Stopping Services"
@@ -96,7 +110,7 @@ function update_script() {
 
     # Current data stays in place. Legacy /opt/data is outside this deployment;
     # copying/restoring it would needlessly replace live files or a mounted path.
-    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="data ${CLEAN_INSTALL_KEEP:-}" fetch_and_deploy_gh_release "bytestash" "jordan-dalby/ByteStash" "tarball"
+    CLEAN_INSTALL=1 CLEAN_INSTALL_KEEP="data ${CLEAN_INSTALL_KEEP:-}" fetch_and_deploy_gh_release "bytestash" "jordan-dalby/ByteStash" "tarball" "$CHECK_UPDATE_RELEASE"
 
     msg_info "Configuring ByteStash"
     cd /opt/bytestash/server || exit
@@ -110,6 +124,9 @@ function update_script() {
     msg_ok "Started Services"
 
     msg_ok "Updated successfully!"
+  else
+    local release_status=$?
+    [[ "$release_status" == 1 ]] || return "$release_status"
   fi
   exit
 }
