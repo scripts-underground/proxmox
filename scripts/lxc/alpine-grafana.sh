@@ -23,6 +23,9 @@ function install_script() {
   msg_info "Installing Grafana"
   $STD apk add grafana
   msg_ok "Installed Grafana"
+  # Alpine's OpenRC options override grafana.ini with a loopback-only listener.
+  # Fresh installs must serve the CT-IP URL; updates retain operator settings.
+  sed -i 's/^cfg:server.http_addr=.*/cfg:server.http_addr=0.0.0.0/' /etc/conf.d/grafana
   msg_info "Starting Grafana"
   $STD rc-service grafana start
   msg_ok "Started Grafana"
