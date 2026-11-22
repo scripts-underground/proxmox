@@ -374,7 +374,7 @@ function update_script() {
 
   # Inspect only: policy data is operator-owned, including known test databases.
   setup_yq
-  local city_database asn_database database digest
+  local city_database asn_database database digest remaining component resolved link
   local -A inspected_databases=()
   local -a CLEAN_INSTALL_KEEP_PATHS=("${CLEAN_INSTALL_KEEP_PATHS[@]}")
   city_database=$(yq -r '.events.context_processors.geoip // ""' /etc/authentik/config.yml)
@@ -386,7 +386,31 @@ function update_script() {
     [[ -f "$database" ]] || continue
     [[ ! ${inspected_databases["$database"]+present} ]] || continue
     inspected_databases["$database"]=1
-    case "$database" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${database#/opt/authentik/}") ;; esac
+    # Walk the consumer's path, preserving every link and the final file. Resolve
+    # dot components after links, just as the kernel does, not lexically first.
+    remaining=${database#/} resolved=''
+    while [[ -n "$remaining" ]]; do
+      component=${remaining%%/*}
+      if [[ "$remaining" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi
+      case "$component" in
+        '' | .) continue ;;
+        ..)
+          # The consumer must still traverse this directory before going up.
+          case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
+          resolved=${resolved%/*}
+          continue
+          ;;
+      esac
+      resolved+="/$component"
+      if [[ -L "$resolved" ]]; then
+        case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
+        link=$(readlink -- "$resolved") || return $?
+        resolved=${resolved%/*}
+        [[ "$link" != /* ]] || resolved=''
+        remaining="$link${remaining:+/$remaining}"
+      fi
+    done
+    case "$resolved" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=("${resolved#/opt/authentik/}") ;; esac
     digest=$(sha256sum < "$database")
     case "${digest%% *}" in
       f936702b51dcb6c94b286d77a6f182c31a1601baf4b27e8e896934deb41f49f2 | 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a)

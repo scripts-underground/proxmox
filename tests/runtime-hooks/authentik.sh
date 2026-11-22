@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=authentik
 script_type=lxc
-variants=(fresh update legacy current clean pending test-city test-asn configured-test relative-test real-database geoip-check xmlsec-check app-check download build runtime)
+variants=(fresh update legacy current clean pending test-city test-asn configured-test relative-test dot-relative parent-relative file-link link-chain directory-link link-parent asn-link real-database geoip-check xmlsec-check app-check download build runtime)
 hook_paths=()
 runtime_hooks_variant() {
   case "$variant" in geoip-check | xmlsec-check | app-check) fault=$variant ;; esac
@@ -41,7 +41,7 @@ runtime_hooks_model() {
     if [[ "$1" == -r ]]; then
       case "$2" in
         *'.geoip'*) cat "$c/configured-city" ;;
-        *'.asn'*) printf '/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\n' ;;
+        *'.asn'*) cat "$c/configured-asn" ;;
       esac
       return 0
     fi
@@ -107,6 +107,7 @@ runtime_hooks_model() {
 runtime_hooks_setup() {
   for log in requests downloads exposures; do : > "$c/$log"; done
   printf '/opt/authentik-data/geoip/GeoLite2-City.mmdb\n' > "$c/configured-city"
+  printf '/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\n' > "$c/configured-asn"
   mkdir -p "$c/payload/"{web,authentik/lib,authentik/sources/kerberos,tests/geoip} "$c/etc/default" "$c/local/etc" "$c/opt/authentik-data"
   printf '#!/bin/sh\nexit 0\n' > "$c/payload/autogen.sh"
   chmod 0755 "$c/payload/autogen.sh"
@@ -149,6 +150,33 @@ runtime_hooks_setup() {
         sha256sum "$c/opt/authentik/data/custom city.mmdb" | cut -d' ' -f1 > "$c/inside-hash"
         stat -c %i "$c/opt/authentik/data/custom city.mmdb" > "$c/inside-inode"
         ;;
+      dot-relative | parent-relative | file-link | link-chain | directory-link | link-parent | asn-link)
+        local configured='data/custom city.mmdb'
+        mkdir -p "$c/opt/authentik/"{data,policy/nested,aliases}
+        printf 'saved policy database\n' > "$c/opt/authentik/policy/custom city.mmdb"
+        case "$variant" in
+          dot-relative) configured='./policy/custom city.mmdb' ;;
+          parent-relative) configured='data/../policy/custom city.mmdb' ;;
+          file-link | asn-link) ln -s '../policy/custom city.mmdb' "$c/opt/authentik/data/custom city.mmdb" ;;
+          link-chain)
+            ln -s '../policy/custom city.mmdb' "$c/opt/authentik/aliases/city.mmdb"
+            ln -s '../aliases/city.mmdb' "$c/opt/authentik/data/custom city.mmdb"
+            ;;
+          directory-link)
+            ln -s ../policy "$c/opt/authentik/data/db"
+            configured='data/db/custom city.mmdb'
+            ;;
+          link-parent)
+            ln -s ../policy/nested "$c/opt/authentik/data/db"
+            configured='data/db/../custom city.mmdb'
+            ;;
+        esac
+        if [[ "$variant" == asn-link ]]; then printf '%s\n' "$configured" > "$c/configured-asn"; else printf '%s\n' "$configured" > "$c/configured-city"; fi
+        printf '%s\n' "$configured" > "$c/policy-configured"
+        stat -c %i "$c/opt/authentik/policy/custom city.mmdb" > "$c/policy-inode"
+        find "$c/opt/authentik" -type l -printf '%P %i %l\n' | sort > "$c/policy-links"
+        check "$(cat "$c/opt/authentik/$configured")" 'saved policy database' "$app/$variant configured consumer before update"
+        ;;
       real-database) printf 'operator database bytes\n' > "$c/opt/authentik-data/geoip/GeoLite2-City.mmdb" ;;
     esac
     find "$c/opt/authentik-data" -type f -print0 | sort -z | xargs -0 sha256sum > "$c/data-before"
@@ -158,6 +186,11 @@ runtime_hooks_setup() {
 runtime_hooks_assert() {
   check "$(cat "$c/opt/authentik-data/canary")" 'saved data' "$app/$variant external data retained"
   if [[ "$role" == update ]]; then
+    if [[ -f "$c/policy-configured" ]]; then
+      check "$(cat "$c/opt/authentik/$(cat "$c/policy-configured")" 2> /dev/null || true)" 'saved policy database' "$app/$variant configured consumer after update"
+      check "$(stat -c %i "$c/opt/authentik/policy/custom city.mmdb" 2> /dev/null || true)" "$(cat "$c/policy-inode")" "$app/$variant resolved database inode retained"
+      check "$(find "$c/opt/authentik" -type l -printf '%P %i %l\n' | sort)" "$(cat "$c/policy-links")" "$app/$variant every configured link retained"
+    fi
     check "$(find "$c/opt/authentik-data" -type f -print0 | sort -z | xargs -0 sha256sum)" "$(cat "$c/data-before")" "$app/$variant all existing database bytes retained"
     check "$(find "$c/opt/authentik-data" -type f -printf '%p %i\n' | sort)" "$(cat "$c/data-inodes")" "$app/$variant database inodes retained"
     case "$variant" in

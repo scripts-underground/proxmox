@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "authentik",
   "type": "lxc",
-  "total_lines": 629,
-  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Thieneret\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/goauthentik/authentik\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"authentik\"\nvar_tags=\"${var_tags:-auth}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_lxc_git_repo=\"${var_lxc_git_repo:-goauthentik/authentik}\"\n\nfunction install_script() {\n  authentik_private_file() {\n    local destination=$1 stage\n    stage=$(mktemp \"${destination}.XXXXXXXX\")\n    cat \u003e \"$stage\"\n    chown root:root \"$stage\"\n    chmod 0600 \"$stage\"\n    mv -f -- \"$stage\" \"$destination\"\n  }\n\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    pkg-config \\\n    libffi-dev \\\n    libxslt-dev \\\n    zlib1g-dev \\\n    libpq-dev \\\n    krb5-multidev \\\n    libkrb5-dev \\\n    heimdal-multidev \\\n    libclang-dev \\\n    libltdl-dev \\\n    libpq5 \\\n    libmaxminddb0 \\\n    libkadm5clnt-mit12 \\\n    libkadm5clnt7t64-heimdal \\\n    libltdl7 \\\n    libxslt1.1 \\\n    python3-dev \\\n    libxml2-dev \\\n    libxml2 \\\n    libxslt1-dev \\\n    automake \\\n    autoconf \\\n    libtool \\\n    libtool-bin \\\n    gcc \\\n    crossbuild-essential-amd64 \\\n    gcc-x86-64-linux-gnu \\\n    cmake \\\n    clang \\\n    libunwind-18-dev \\\n    git\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" setup_nodejs\n  setup_yq\n  setup_go\n  RUST_PROFILE=\"minimal\" RUST_TOOLCHAIN=\"stable\" setup_rust\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.14.3\" setup_uv\n  PG_VERSION=\"17\" setup_postgresql\n  PG_DB_NAME=\"authentik\" PG_DB_USER=\"authentik\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  XMLSEC_VERSION=\"1.3.11\"\n  AUTHENTIK_VERSION=\"version/2026.5.2\"\n  fetch_and_deploy_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"tarball\" \"${XMLSEC_VERSION}\" \"/opt/xmlsec\"\n  fetch_and_deploy_gh_release \"authentik\" \"$var_lxc_git_repo\" \"tarball\" \"${AUTHENTIK_VERSION}\" \"/opt/authentik\"\n  fetch_and_deploy_gh_release \"geoipupdate\" \"maxmind/geoipupdate\" \"binary\"\n\n  msg_info \"Setting up xmlsec\"\n  cd /opt/xmlsec || exit\n  $STD ./autogen.sh\n  $STD make -j $(nproc)\n  $STD make check\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Setup xmlsec\"\n\n  msg_info \"Configuring rust\"\n  cd /opt/authentik || exit\n  $STD rustup install\n  $STD rustup default \"$(sed -n 's/channel = \"\\(.*\\)\"/\\1/p' rust-toolchain.toml)\"\n  msg_ok \"Configured rust\"\n\n  msg_info \"Setting up web\"\n  cd /opt/authentik/web || exit\n  export NODE_ENV=\"production\"\n  $STD npm install\n  $STD npm run build\n  $STD npm run build:sfe\n  msg_ok \"Setup web\"\n\n  msg_info \"Setting up go proxy\"\n  cd /opt/authentik || exit\n  export CGO_ENABLED=\"1\"\n  export CC=\"x86_64-linux-gnu-gcc\"\n  $STD go mod download\n  $STD go build -o /opt/authentik/authentik-server ./cmd/server\n  $STD go build -o /opt/authentik/ldap ./cmd/ldap\n  $STD go build -o /opt/authentik/rac ./cmd/rac\n  $STD go build -o /opt/authentik/radius ./cmd/radius\n  msg_ok \"Setup go proxy\"\n\n  authentik_private_file /usr/local/etc/GeoIP.conf \u003c\u003c EOF\nAccountID ChangeME\nLicenseKey ChangeME\nEditionIDs GeoLite2-ASN GeoLite2-City GeoLite2-Country\nDatabaseDirectory /opt/authentik-data/geoip\nRetryFor 5m\nParallelism 1\nEOF\n\n  echo \"#39 19 * * 6,4 /usr/bin/geoipupdate -f /usr/local/etc/GeoIP.conf\" | crontab -\n\n  msg_info \"Building worker\"\n  export AWS_LC_FIPS_SYS_CC=\"clang\"\n  cd /opt/authentik || exit\n  $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1\n  cp ./target/release/authentik /opt/authentik/authentik-worker\n  rm -r ./target\n  msg_ok \"Built worker\"\n\n  msg_info \"Setting up python server\"\n  export UV_NO_BINARY_PACKAGE=\"cryptography lxml python-kadmin-rs xmlsec\"\n  export UV_COMPILE_BYTECODE=\"1\"\n  export UV_LINK_MODE=\"copy\"\n  export UV_NATIVE_TLS=\"1\"\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  cd /opt/authentik || exit\n  $STD uv sync --frozen --no-install-project --no-dev\n  cp /opt/authentik/authentik/sources/kerberos/krb5.conf /etc/krb5.conf\n  msg_ok \"Setup python server\"\n\n  msg_info \"Creating authentik config\"\n  mkdir -p /etc/authentik\n  $STD useradd -U -s /usr/sbin/nologin -r -M -d /opt/authentik authentik\n  local config_stage\n  config_stage=$(mktemp /etc/authentik/.config.XXXXXXXX)\n  cp /opt/authentik/authentik/lib/default.yml \"$config_stage\"\n  yq -i \".secret_key = \\\"$(openssl rand -base64 128 | tr -dc 'a-zA-Z0-9' | head -c64)\\\"\" \"$config_stage\"\n  yq -i \".postgresql.password = \\\"${PG_DB_PASS}\\\"\" \"$config_stage\"\n  yq -i \".events.context_processors.geoip = \\\"/opt/authentik-data/geoip/GeoLite2-City.mmdb\\\"\" \"$config_stage\"\n  yq -i \".events.context_processors.asn = \\\"/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\\\"\" \"$config_stage\"\n  yq -i \".blueprints_dir = \\\"/opt/authentik/blueprints\\\"\" \"$config_stage\"\n  yq -i \".cert_discovery_dir = \\\"/opt/authentik-data/certs\\\"\" \"$config_stage\"\n  yq -i \".email.template_dir = \\\"/opt/authentik-data/templates\\\"\" \"$config_stage\"\n  yq -i \".storage.file.path = \\\"/opt/authentik-data\\\"\" \"$config_stage\"\n  yq -i \".disable_startup_analytics = \\\"true\\\"\" \"$config_stage\"\n  chown root:authentik \"$config_stage\"\n  chmod 0640 \"$config_stage\"\n  mv -f -- \"$config_stage\" /etc/authentik/config.yml\n  chown -R authentik:authentik /opt/authentik\n  cat \u003c\u003c EOF \u003e /etc/default/authentik-server\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:9000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:9443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:9300\"\nEOF\n  cat \u003c\u003c EOF \u003e /etc/default/authentik-worker\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:8000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:8443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:8300\"\nEOF\n  authentik_private_file /etc/default/authentik_ldap \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  authentik_private_file /etc/default/authentik_rac \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  authentik_private_file /etc/default/authentik_radius \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  msg_ok \"Created authentik config\"\n\n  msg_info \"Creating services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-server.service\n[Unit]\nDescription=authentik Go Server (API Gateway)\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nEnvironmentFile=/etc/default/authentik-server\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-server\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-worker.service\n[Unit]\nDescription=authentik Worker\nAfter=network.target postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nType=simple\nEnvironmentFile=/etc/default/authentik-worker\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-worker worker\nWorkingDirectory=/opt/authentik\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-ldap.service\n[Unit]\nDescription=authentik LDAP Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/ldap\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_ldap\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-rac.service\n[Unit]\nDescription=authentik RAC Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/rac\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_rac\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-radius.service\n[Unit]\nDescription=authentik Radius Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/radius\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_radius\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  msg_ok \"Created services\"\n}\n\nfunction post_build_script() {\n  msg_info \"Attaching data storage volume\"\n  $STD pct stop \"$CTID\"\n  if [ \"${PROTECT_CT:-}\" == \"1\" ] || [ \"${PROTECT_CT:-}\" == \"yes\" ]; then\n    $STD pct set \"$CTID\" --protection 0\n    $STD pct set \"$CTID\" -mp0 \"${CONTAINER_STORAGE}\":1,mp=/opt/authentik-data,backup=1\n    $STD pct set \"$CTID\" --protection 1\n  else\n    $STD pct set \"$CTID\" -mp0 \"${CONTAINER_STORAGE}\":1,mp=/opt/authentik-data,backup=1\n  fi\n  $STD pct start \"$CTID\"\n  for i in {1..10}; do\n    pct status \"$CTID\" | grep -q \"status: running\" \u0026\u0026 break\n    sleep 1\n  done\n  $STD pct exec \"$CTID\" -- bash -e -c \"mkdir -p /opt/authentik-data/{certs,media,geoip,templates}; \\\n    chown authentik:authentik /opt/authentik-data; \\\n    chown -R authentik:authentik /opt/authentik-data/{certs,media,geoip,templates}\"\n  msg_ok \"Attached data storage volume\"\n\n  msg_info \"Starting Services\"\n  pct exec \"$CTID\" -- systemctl enable -q --now authentik-server authentik-worker\n  msg_ok \"Started Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:9443${CL}\"\n  msg_info \"GeoIP/ASN policies need real MaxMind databases; no test databases are installed.\"\n  echo \"Setup: https://docs.goauthentik.io/install-config/geoip/\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/authentik ]]; then\n    msg_error \"No authentik Installation Found!\"\n    exit 1\n  fi\n\n  if [[ ! -f /etc/authentik/config.yml ]]; then\n    msg_error \"No authentik configuration found; refusing to regenerate secrets.\"\n    exit 1\n  fi\n  local file\n  for file in /etc/authentik/config.yml /etc/authentik/config.bak; do\n    [[ ! -f \"$file\" ]] || {\n      chown root:authentik \"$file\"\n      chmod 0640 \"$file\"\n    }\n  done\n  for file in /usr/local/etc/GeoIP.conf /etc/default/authentik_{ldap,rac,radius} /etc/default/authentik.bak; do\n    [[ ! -f \"$file\" ]] || {\n      chown root:root \"$file\"\n      chmod 0600 \"$file\"\n    }\n  done\n\n  # Inspect only: policy data is operator-owned, including known test databases.\n  setup_yq\n  local city_database asn_database database digest\n  local -A inspected_databases=()\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")\n  city_database=$(yq -r '.events.context_processors.geoip // \"\"' /etc/authentik/config.yml)\n  asn_database=$(yq -r '.events.context_processors.asn // \"\"' /etc/authentik/config.yml)\n  for database in \"$city_database\" \"$asn_database\" /opt/authentik-data/geoip/GeoLite2-City.mmdb /opt/authentik-data/geoip/GeoLite2-ASN.mmdb; do\n    [[ -n \"$database\" ]] || continue\n    # Relative configuration is consumed from the service's application cwd.\n    [[ \"$database\" == /* ]] || database=\"/opt/authentik/$database\"\n    [[ -f \"$database\" ]] || continue\n    [[ ! ${inspected_databases[\"$database\"]+present} ]] || continue\n    inspected_databases[\"$database\"]=1\n    case \"$database\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${database#/opt/authentik/}\") ;; esac\n    digest=$(sha256sum \u003c \"$database\")\n    case \"${digest%% *}\" in\n      f936702b51dcb6c94b286d77a6f182c31a1601baf4b27e8e896934deb41f49f2 | 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a)\n        msg_warn \"MaxMind test database at $database is not production policy data; retained unchanged. Replace it with real MaxMind data: https://docs.goauthentik.io/install-config/geoip/\"\n        ;;\n    esac\n  done\n\n  read -r MAJOR MINOR PATCH \u003c\u003c\u003c \"$(sed 's/^version\\///; s/\\./ /g' \"$HOME/.authentik\")\"\n\n  msg_info \"Update dependencies\"\n  ensure_dependencies crossbuild-essential-amd64 gcc-x86-64-linux-gnu cmake clang libunwind-18-dev\n  msg_ok \"Update dependencies\"\n\n  NODE_VERSION=\"24\" setup_nodejs\n  setup_go\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.14.3\" setup_uv\n  RUST_PROFILE=\"minimal\" RUST_TOOLCHAIN=\"stable\" setup_rust\n\n  AUTHENTIK_VERSION=\"version/2026.5.2\"\n  XMLSEC_VERSION=\"1.3.11\"\n\n  local geoip_release='' xmlsec_release='' authentik_release='' status\n  if check_for_gh_release \"geoipupdate\" \"maxmind/geoipupdate\"; then\n    geoip_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n  if check_for_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"${XMLSEC_VERSION}\"; then\n    xmlsec_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n  if check_for_gh_release \"authentik\" \"$var_lxc_git_repo\" \"${AUTHENTIK_VERSION}\"; then\n    authentik_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n\n  if [[ -n \"$geoip_release\" ]]; then\n    fetch_and_deploy_gh_release \"geoipupdate\" \"maxmind/geoipupdate\" \"binary\" \"$geoip_release\"\n  fi\n\n  if [[ -n \"$xmlsec_release\" ]]; then\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"tarball\" \"$xmlsec_release\" \"/opt/xmlsec\"\n\n    msg_info \"Updating xmlsec\"\n    cd /opt/xmlsec || exit\n    $STD ./autogen.sh\n    $STD make -j $(nproc)\n    $STD make check\n    $STD make install\n    $STD ldconfig\n    msg_ok \"Updated xmlsec\"\n  fi\n\n  if [[ -n \"$authentik_release\" ]]; then\n    msg_info \"Stopping Services\"\n    systemctl stop authentik-server authentik-worker\n    if [[ $(systemctl is-active authentik-ldap) == active ]]; then\n      systemctl stop authentik-ldap\n    fi\n    if [[ $(systemctl is-active authentik-rac) == active ]]; then\n      systemctl stop authentik-rac\n    fi\n    if [[ $(systemctl is-active authentik-radius) == active ]]; then\n      systemctl stop authentik-radius\n    fi\n    msg_ok \"Stopped Services\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"authentik\" \"$var_lxc_git_repo\" \"tarball\" \"$authentik_release\" \"/opt/authentik\"\n\n    msg_info \"Configuring rust\"\n    cd /opt/authentik || exit\n    $STD rustup install\n    $STD rustup default \"$(sed -n 's/channel = \"\\(.*\\)\"/\\1/p' rust-toolchain.toml)\"\n    msg_ok \"Configured rust\"\n\n    msg_info \"Updating web\"\n    cd /opt/authentik/web || exit\n    export NODE_ENV=\"production\"\n    $STD npm install\n    $STD npm run build\n    $STD npm run build:sfe\n    msg_ok \"Updated web\"\n\n    msg_info \"Updating go proxy\"\n    cd /opt/authentik || exit\n    export CGO_ENABLED=\"1\"\n    $STD go mod download\n    $STD go build -o /opt/authentik/authentik-server ./cmd/server\n    $STD go build -o /opt/authentik/ldap ./cmd/ldap\n    $STD go build -o /opt/authentik/rac ./cmd/rac\n    $STD go build -o /opt/authentik/radius ./cmd/radius\n    msg_ok \"Updated go proxy\"\n\n    msg_info \"Building worker\"\n    export AWS_LC_FIPS_SYS_CC=\"clang\"\n    cd /opt/authentik || exit\n    $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1\n    cp ./target/release/authentik /opt/authentik/authentik-worker\n    rm -r ./target\n    msg_ok \"Built worker\"\n\n    msg_info \"Updating python server\"\n    export UV_NO_BINARY_PACKAGE=\"cryptography lxml python-kadmin-rs xmlsec\"\n    export UV_COMPILE_BYTECODE=\"1\"\n    export UV_LINK_MODE=\"copy\"\n    export UV_NATIVE_TLS=\"1\"\n    export RUSTUP_PERMIT_COPY_RENAME=\"true\"\n    export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n    cd /opt/authentik || exit\n    $STD uv sync --frozen --no-install-project --no-dev\n    chown -R authentik:authentik /opt/authentik\n    msg_ok \"Updated python server\"\n\n    if [[ $MAJOR == 2026 \u0026\u0026 $MINOR -lt 5 ]]; then\n      msg_info \"Updating Worker and Server config\"\n      cp --preserve=mode,ownership /etc/authentik/config.yml /etc/authentik/config.bak\n      yq -i \".postgresql.conn_max_age = 0\" /etc/authentik/config.yml\n      yq -i \".postgresql.conn_health_checks = false\" /etc/authentik/config.yml\n      yq -i \".listen.debug_tokio = \\\"[::]:6669\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.console_subscriber = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.h2 = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.hyper_util = \\\"warn\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.mio = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.notify = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.reqwest = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.runtime = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.rustls = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.sqlx = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.sqlx_postgres = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.tokio = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.tungstenite = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".web.workers = 2\" /etc/authentik/config.yml\n      chown root:root /etc/default/authentik\n      chmod 0600 /etc/default/authentik\n      mv /etc/default/authentik /etc/default/authentik.bak\n      cat \u003c\u003c EOF \u003e /etc/default/authentik-server\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:9000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:9443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:9300\"\nEOF\n      cat \u003c\u003c EOF \u003e /etc/default/authentik-worker\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:8000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:8443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:8300\"\nEOF\n      msg_ok \"Updated Worker and Server config!\"\n      msg_warn \"Please check /etc/default/authentik-worker and /etc/default/authentik-server config files for port configurations!\"\n\n      msg_info \"Updating services\"\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-server.service\n[Unit]\nDescription=authentik Go Server (API Gateway)\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-server\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik-server\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-worker.service\n[Unit]\nDescription=authentik Worker\nAfter=network.target postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nType=simple\nEnvironmentFile=/etc/default/authentik-worker\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-worker worker\nWorkingDirectory=/opt/authentik\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n      systemctl daemon-reload\n      msg_ok \"Updated services\"\n    fi\n  fi\n\n  msg_info \"Starting Services\"\n  systemctl start authentik-server authentik-worker\n  if [[ $(systemctl is-enabled authentik-ldap) == enabled ]]; then\n    systemctl start authentik-ldap\n  fi\n  if [[ $(systemctl is-enabled authentik-rac) == enabled ]]; then\n    systemctl start authentik-rac\n  fi\n  if [[ $(systemctl is-enabled authentik-radius) == enabled ]]; then\n    systemctl start authentik-radius\n  fi\n  msg_ok \"Started Services\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"authentik\" -- \"$@\"\n",
+  "total_lines": 653,
+  "source": "#!/usr/bin/env bash\n# shellcheck disable=SC2034,SC2046\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2021-2026 community-scripts ORG\n# Author: Thieneret\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/goauthentik/authentik\n\n# shellcheck disable=SC2034\n# Read by the framework - shellcheck cannot see the caller\nAPP=\"authentik\"\nvar_tags=\"${var_tags:-auth}\"\nvar_cpu=\"${var_cpu:-4}\"\nvar_ram=\"${var_ram:-8192}\"\nvar_disk=\"${var_disk:-16}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_arm64=\"${var_arm64:-no}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_lxc_git_repo=\"${var_lxc_git_repo:-goauthentik/authentik}\"\n\nfunction install_script() {\n  authentik_private_file() {\n    local destination=$1 stage\n    stage=$(mktemp \"${destination}.XXXXXXXX\")\n    cat \u003e \"$stage\"\n    chown root:root \"$stage\"\n    chmod 0600 \"$stage\"\n    mv -f -- \"$stage\" \"$destination\"\n  }\n\n  msg_info \"Installing Dependencies\"\n  $STD apt install -y \\\n    build-essential \\\n    pkg-config \\\n    libffi-dev \\\n    libxslt-dev \\\n    zlib1g-dev \\\n    libpq-dev \\\n    krb5-multidev \\\n    libkrb5-dev \\\n    heimdal-multidev \\\n    libclang-dev \\\n    libltdl-dev \\\n    libpq5 \\\n    libmaxminddb0 \\\n    libkadm5clnt-mit12 \\\n    libkadm5clnt7t64-heimdal \\\n    libltdl7 \\\n    libxslt1.1 \\\n    python3-dev \\\n    libxml2-dev \\\n    libxml2 \\\n    libxslt1-dev \\\n    automake \\\n    autoconf \\\n    libtool \\\n    libtool-bin \\\n    gcc \\\n    crossbuild-essential-amd64 \\\n    gcc-x86-64-linux-gnu \\\n    cmake \\\n    clang \\\n    libunwind-18-dev \\\n    git\n  msg_ok \"Installed Dependencies\"\n\n  NODE_VERSION=\"24\" setup_nodejs\n  setup_yq\n  setup_go\n  RUST_PROFILE=\"minimal\" RUST_TOOLCHAIN=\"stable\" setup_rust\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.14.3\" setup_uv\n  PG_VERSION=\"17\" setup_postgresql\n  PG_DB_NAME=\"authentik\" PG_DB_USER=\"authentik\" PG_DB_GRANT_SUPERUSER=\"true\" setup_postgresql_db\n\n  XMLSEC_VERSION=\"1.3.11\"\n  AUTHENTIK_VERSION=\"version/2026.5.2\"\n  fetch_and_deploy_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"tarball\" \"${XMLSEC_VERSION}\" \"/opt/xmlsec\"\n  fetch_and_deploy_gh_release \"authentik\" \"$var_lxc_git_repo\" \"tarball\" \"${AUTHENTIK_VERSION}\" \"/opt/authentik\"\n  fetch_and_deploy_gh_release \"geoipupdate\" \"maxmind/geoipupdate\" \"binary\"\n\n  msg_info \"Setting up xmlsec\"\n  cd /opt/xmlsec || exit\n  $STD ./autogen.sh\n  $STD make -j $(nproc)\n  $STD make check\n  $STD make install\n  $STD ldconfig\n  msg_ok \"Setup xmlsec\"\n\n  msg_info \"Configuring rust\"\n  cd /opt/authentik || exit\n  $STD rustup install\n  $STD rustup default \"$(sed -n 's/channel = \"\\(.*\\)\"/\\1/p' rust-toolchain.toml)\"\n  msg_ok \"Configured rust\"\n\n  msg_info \"Setting up web\"\n  cd /opt/authentik/web || exit\n  export NODE_ENV=\"production\"\n  $STD npm install\n  $STD npm run build\n  $STD npm run build:sfe\n  msg_ok \"Setup web\"\n\n  msg_info \"Setting up go proxy\"\n  cd /opt/authentik || exit\n  export CGO_ENABLED=\"1\"\n  export CC=\"x86_64-linux-gnu-gcc\"\n  $STD go mod download\n  $STD go build -o /opt/authentik/authentik-server ./cmd/server\n  $STD go build -o /opt/authentik/ldap ./cmd/ldap\n  $STD go build -o /opt/authentik/rac ./cmd/rac\n  $STD go build -o /opt/authentik/radius ./cmd/radius\n  msg_ok \"Setup go proxy\"\n\n  authentik_private_file /usr/local/etc/GeoIP.conf \u003c\u003c EOF\nAccountID ChangeME\nLicenseKey ChangeME\nEditionIDs GeoLite2-ASN GeoLite2-City GeoLite2-Country\nDatabaseDirectory /opt/authentik-data/geoip\nRetryFor 5m\nParallelism 1\nEOF\n\n  echo \"#39 19 * * 6,4 /usr/bin/geoipupdate -f /usr/local/etc/GeoIP.conf\" | crontab -\n\n  msg_info \"Building worker\"\n  export AWS_LC_FIPS_SYS_CC=\"clang\"\n  cd /opt/authentik || exit\n  $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1\n  cp ./target/release/authentik /opt/authentik/authentik-worker\n  rm -r ./target\n  msg_ok \"Built worker\"\n\n  msg_info \"Setting up python server\"\n  export UV_NO_BINARY_PACKAGE=\"cryptography lxml python-kadmin-rs xmlsec\"\n  export UV_COMPILE_BYTECODE=\"1\"\n  export UV_LINK_MODE=\"copy\"\n  export UV_NATIVE_TLS=\"1\"\n  export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n  cd /opt/authentik || exit\n  $STD uv sync --frozen --no-install-project --no-dev\n  cp /opt/authentik/authentik/sources/kerberos/krb5.conf /etc/krb5.conf\n  msg_ok \"Setup python server\"\n\n  msg_info \"Creating authentik config\"\n  mkdir -p /etc/authentik\n  $STD useradd -U -s /usr/sbin/nologin -r -M -d /opt/authentik authentik\n  local config_stage\n  config_stage=$(mktemp /etc/authentik/.config.XXXXXXXX)\n  cp /opt/authentik/authentik/lib/default.yml \"$config_stage\"\n  yq -i \".secret_key = \\\"$(openssl rand -base64 128 | tr -dc 'a-zA-Z0-9' | head -c64)\\\"\" \"$config_stage\"\n  yq -i \".postgresql.password = \\\"${PG_DB_PASS}\\\"\" \"$config_stage\"\n  yq -i \".events.context_processors.geoip = \\\"/opt/authentik-data/geoip/GeoLite2-City.mmdb\\\"\" \"$config_stage\"\n  yq -i \".events.context_processors.asn = \\\"/opt/authentik-data/geoip/GeoLite2-ASN.mmdb\\\"\" \"$config_stage\"\n  yq -i \".blueprints_dir = \\\"/opt/authentik/blueprints\\\"\" \"$config_stage\"\n  yq -i \".cert_discovery_dir = \\\"/opt/authentik-data/certs\\\"\" \"$config_stage\"\n  yq -i \".email.template_dir = \\\"/opt/authentik-data/templates\\\"\" \"$config_stage\"\n  yq -i \".storage.file.path = \\\"/opt/authentik-data\\\"\" \"$config_stage\"\n  yq -i \".disable_startup_analytics = \\\"true\\\"\" \"$config_stage\"\n  chown root:authentik \"$config_stage\"\n  chmod 0640 \"$config_stage\"\n  mv -f -- \"$config_stage\" /etc/authentik/config.yml\n  chown -R authentik:authentik /opt/authentik\n  cat \u003c\u003c EOF \u003e /etc/default/authentik-server\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:9000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:9443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:9300\"\nEOF\n  cat \u003c\u003c EOF \u003e /etc/default/authentik-worker\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:8000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:8443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:8300\"\nEOF\n  authentik_private_file /etc/default/authentik_ldap \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  authentik_private_file /etc/default/authentik_rac \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  authentik_private_file /etc/default/authentik_radius \u003c\u003c EOF\nAUTHENTIK_HOST=\"https://127.0.0.1:9443\"\nAUTHENTIK_INSECURE=\"true\"\nAUTHENTIK_TOKEN=\"token-generated-by-authentik\"\nEOF\n  msg_ok \"Created authentik config\"\n\n  msg_info \"Creating services\"\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-server.service\n[Unit]\nDescription=authentik Go Server (API Gateway)\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nEnvironmentFile=/etc/default/authentik-server\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-server\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-worker.service\n[Unit]\nDescription=authentik Worker\nAfter=network.target postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nType=simple\nEnvironmentFile=/etc/default/authentik-worker\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-worker worker\nWorkingDirectory=/opt/authentik\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-ldap.service\n[Unit]\nDescription=authentik LDAP Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/ldap\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_ldap\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-rac.service\n[Unit]\nDescription=authentik RAC Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/rac\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_rac\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-radius.service\n[Unit]\nDescription=authentik Radius Outpost\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStart=/opt/authentik/radius\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik_radius\n\n[Install]\nWantedBy=multi-user.target\nEOF\n  msg_ok \"Created services\"\n}\n\nfunction post_build_script() {\n  msg_info \"Attaching data storage volume\"\n  $STD pct stop \"$CTID\"\n  if [ \"${PROTECT_CT:-}\" == \"1\" ] || [ \"${PROTECT_CT:-}\" == \"yes\" ]; then\n    $STD pct set \"$CTID\" --protection 0\n    $STD pct set \"$CTID\" -mp0 \"${CONTAINER_STORAGE}\":1,mp=/opt/authentik-data,backup=1\n    $STD pct set \"$CTID\" --protection 1\n  else\n    $STD pct set \"$CTID\" -mp0 \"${CONTAINER_STORAGE}\":1,mp=/opt/authentik-data,backup=1\n  fi\n  $STD pct start \"$CTID\"\n  for i in {1..10}; do\n    pct status \"$CTID\" | grep -q \"status: running\" \u0026\u0026 break\n    sleep 1\n  done\n  $STD pct exec \"$CTID\" -- bash -e -c \"mkdir -p /opt/authentik-data/{certs,media,geoip,templates}; \\\n    chown authentik:authentik /opt/authentik-data; \\\n    chown -R authentik:authentik /opt/authentik-data/{certs,media,geoip,templates}\"\n  msg_ok \"Attached data storage volume\"\n\n  msg_info \"Starting Services\"\n  pct exec \"$CTID\" -- systemctl enable -q --now authentik-server authentik-worker\n  msg_ok \"Started Services\"\n}\n\nfunction post_install_script() {\n  msg_ok \"Completed Successfully!\\n\"\n  echo -e \"${CREATING}${GN}${APP} setup has been successfully initialized!${CL}\"\n  echo -e \"${INFO}${YW} Access it using the following URL:${CL}\"\n  echo -e \"${TAB}${GATEWAY}${BGN}https://${IP}:9443${CL}\"\n  msg_info \"GeoIP/ASN policies need real MaxMind databases; no test databases are installed.\"\n  echo \"Setup: https://docs.goauthentik.io/install-config/geoip/\"\n}\n\nfunction update_script() {\n  header_info\n  check_container_storage\n  check_container_resources\n\n  if [[ ! -d /opt/authentik ]]; then\n    msg_error \"No authentik Installation Found!\"\n    exit 1\n  fi\n\n  if [[ ! -f /etc/authentik/config.yml ]]; then\n    msg_error \"No authentik configuration found; refusing to regenerate secrets.\"\n    exit 1\n  fi\n  local file\n  for file in /etc/authentik/config.yml /etc/authentik/config.bak; do\n    [[ ! -f \"$file\" ]] || {\n      chown root:authentik \"$file\"\n      chmod 0640 \"$file\"\n    }\n  done\n  for file in /usr/local/etc/GeoIP.conf /etc/default/authentik_{ldap,rac,radius} /etc/default/authentik.bak; do\n    [[ ! -f \"$file\" ]] || {\n      chown root:root \"$file\"\n      chmod 0600 \"$file\"\n    }\n  done\n\n  # Inspect only: policy data is operator-owned, including known test databases.\n  setup_yq\n  local city_database asn_database database digest remaining component resolved link\n  local -A inspected_databases=()\n  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")\n  city_database=$(yq -r '.events.context_processors.geoip // \"\"' /etc/authentik/config.yml)\n  asn_database=$(yq -r '.events.context_processors.asn // \"\"' /etc/authentik/config.yml)\n  for database in \"$city_database\" \"$asn_database\" /opt/authentik-data/geoip/GeoLite2-City.mmdb /opt/authentik-data/geoip/GeoLite2-ASN.mmdb; do\n    [[ -n \"$database\" ]] || continue\n    # Relative configuration is consumed from the service's application cwd.\n    [[ \"$database\" == /* ]] || database=\"/opt/authentik/$database\"\n    [[ -f \"$database\" ]] || continue\n    [[ ! ${inspected_databases[\"$database\"]+present} ]] || continue\n    inspected_databases[\"$database\"]=1\n    # Walk the consumer's path, preserving every link and the final file. Resolve\n    # dot components after links, just as the kernel does, not lexically first.\n    remaining=${database#/} resolved=''\n    while [[ -n \"$remaining\" ]]; do\n      component=${remaining%%/*}\n      if [[ \"$remaining\" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi\n      case \"$component\" in\n        '' | .) continue ;;\n        ..)\n          # The consumer must still traverse this directory before going up.\n          case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac\n          resolved=${resolved%/*}\n          continue\n          ;;\n      esac\n      resolved+=\"/$component\"\n      if [[ -L \"$resolved\" ]]; then\n        case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac\n        link=$(readlink -- \"$resolved\") || return $?\n        resolved=${resolved%/*}\n        [[ \"$link\" != /* ]] || resolved=''\n        remaining=\"$link${remaining:+/$remaining}\"\n      fi\n    done\n    case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac\n    digest=$(sha256sum \u003c \"$database\")\n    case \"${digest%% *}\" in\n      f936702b51dcb6c94b286d77a6f182c31a1601baf4b27e8e896934deb41f49f2 | 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a)\n        msg_warn \"MaxMind test database at $database is not production policy data; retained unchanged. Replace it with real MaxMind data: https://docs.goauthentik.io/install-config/geoip/\"\n        ;;\n    esac\n  done\n\n  read -r MAJOR MINOR PATCH \u003c\u003c\u003c \"$(sed 's/^version\\///; s/\\./ /g' \"$HOME/.authentik\")\"\n\n  msg_info \"Update dependencies\"\n  ensure_dependencies crossbuild-essential-amd64 gcc-x86-64-linux-gnu cmake clang libunwind-18-dev\n  msg_ok \"Update dependencies\"\n\n  NODE_VERSION=\"24\" setup_nodejs\n  setup_go\n  UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\" PYTHON_VERSION=\"3.14.3\" setup_uv\n  RUST_PROFILE=\"minimal\" RUST_TOOLCHAIN=\"stable\" setup_rust\n\n  AUTHENTIK_VERSION=\"version/2026.5.2\"\n  XMLSEC_VERSION=\"1.3.11\"\n\n  local geoip_release='' xmlsec_release='' authentik_release='' status\n  if check_for_gh_release \"geoipupdate\" \"maxmind/geoipupdate\"; then\n    geoip_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n  if check_for_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"${XMLSEC_VERSION}\"; then\n    xmlsec_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n  if check_for_gh_release \"authentik\" \"$var_lxc_git_repo\" \"${AUTHENTIK_VERSION}\"; then\n    authentik_release=$CHECK_UPDATE_RELEASE\n  else\n    status=$?\n    [[ \"$status\" == 1 ]] || return \"$status\"\n  fi\n\n  if [[ -n \"$geoip_release\" ]]; then\n    fetch_and_deploy_gh_release \"geoipupdate\" \"maxmind/geoipupdate\" \"binary\" \"$geoip_release\"\n  fi\n\n  if [[ -n \"$xmlsec_release\" ]]; then\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"xmlsec\" \"lsh123/xmlsec\" \"tarball\" \"$xmlsec_release\" \"/opt/xmlsec\"\n\n    msg_info \"Updating xmlsec\"\n    cd /opt/xmlsec || exit\n    $STD ./autogen.sh\n    $STD make -j $(nproc)\n    $STD make check\n    $STD make install\n    $STD ldconfig\n    msg_ok \"Updated xmlsec\"\n  fi\n\n  if [[ -n \"$authentik_release\" ]]; then\n    msg_info \"Stopping Services\"\n    systemctl stop authentik-server authentik-worker\n    if [[ $(systemctl is-active authentik-ldap) == active ]]; then\n      systemctl stop authentik-ldap\n    fi\n    if [[ $(systemctl is-active authentik-rac) == active ]]; then\n      systemctl stop authentik-rac\n    fi\n    if [[ $(systemctl is-active authentik-radius) == active ]]; then\n      systemctl stop authentik-radius\n    fi\n    msg_ok \"Stopped Services\"\n\n    CLEAN_INSTALL=1 fetch_and_deploy_gh_release \"authentik\" \"$var_lxc_git_repo\" \"tarball\" \"$authentik_release\" \"/opt/authentik\"\n\n    msg_info \"Configuring rust\"\n    cd /opt/authentik || exit\n    $STD rustup install\n    $STD rustup default \"$(sed -n 's/channel = \"\\(.*\\)\"/\\1/p' rust-toolchain.toml)\"\n    msg_ok \"Configured rust\"\n\n    msg_info \"Updating web\"\n    cd /opt/authentik/web || exit\n    export NODE_ENV=\"production\"\n    $STD npm install\n    $STD npm run build\n    $STD npm run build:sfe\n    msg_ok \"Updated web\"\n\n    msg_info \"Updating go proxy\"\n    cd /opt/authentik || exit\n    export CGO_ENABLED=\"1\"\n    $STD go mod download\n    $STD go build -o /opt/authentik/authentik-server ./cmd/server\n    $STD go build -o /opt/authentik/ldap ./cmd/ldap\n    $STD go build -o /opt/authentik/rac ./cmd/rac\n    $STD go build -o /opt/authentik/radius ./cmd/radius\n    msg_ok \"Updated go proxy\"\n\n    msg_info \"Building worker\"\n    export AWS_LC_FIPS_SYS_CC=\"clang\"\n    cd /opt/authentik || exit\n    $STD cargo build --package authentik --no-default-features --features core --locked --release --jobs 1\n    cp ./target/release/authentik /opt/authentik/authentik-worker\n    rm -r ./target\n    msg_ok \"Built worker\"\n\n    msg_info \"Updating python server\"\n    export UV_NO_BINARY_PACKAGE=\"cryptography lxml python-kadmin-rs xmlsec\"\n    export UV_COMPILE_BYTECODE=\"1\"\n    export UV_LINK_MODE=\"copy\"\n    export UV_NATIVE_TLS=\"1\"\n    export RUSTUP_PERMIT_COPY_RENAME=\"true\"\n    export UV_PYTHON_INSTALL_DIR=\"/usr/local/bin\"\n    cd /opt/authentik || exit\n    $STD uv sync --frozen --no-install-project --no-dev\n    chown -R authentik:authentik /opt/authentik\n    msg_ok \"Updated python server\"\n\n    if [[ $MAJOR == 2026 \u0026\u0026 $MINOR -lt 5 ]]; then\n      msg_info \"Updating Worker and Server config\"\n      cp --preserve=mode,ownership /etc/authentik/config.yml /etc/authentik/config.bak\n      yq -i \".postgresql.conn_max_age = 0\" /etc/authentik/config.yml\n      yq -i \".postgresql.conn_health_checks = false\" /etc/authentik/config.yml\n      yq -i \".listen.debug_tokio = \\\"[::]:6669\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.console_subscriber = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.h2 = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.hyper_util = \\\"warn\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.mio = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.notify = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.reqwest = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.runtime = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.rustls = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.sqlx = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.sqlx_postgres = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.tokio = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".log.rust_log.tungstenite = \\\"info\\\"\" /etc/authentik/config.yml\n      yq -i \".web.workers = 2\" /etc/authentik/config.yml\n      chown root:root /etc/default/authentik\n      chmod 0600 /etc/default/authentik\n      mv /etc/default/authentik /etc/default/authentik.bak\n      cat \u003c\u003c EOF \u003e /etc/default/authentik-server\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:9000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:9443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:9300\"\nEOF\n      cat \u003c\u003c EOF \u003e /etc/default/authentik-worker\nTMPDIR=/dev/shm/\nUV_LINK_MODE=copy\nUV_PYTHON_DOWNLOADS=0\nUV_NATIVE_TLS=1\nVENV_PATH=/opt/authentik/.venv\nPYTHONDONTWRITEBYTECODE=1\nPYTHONUNBUFFERED=1\nPATH=/opt/authentik/lifecycle:/opt/authentik/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nDJANGO_SETTINGS_MODULE=authentik.root.settings\nPROMETHEUS_MULTIPROC_DIR=\"/tmp/authentik_prometheus_tmp\"\nAUTHENTIK_LISTEN__HTTP=\"[::]:8000\"\nAUTHENTIK_LISTEN__HTTPS=\"[::]:8443\"\nAUTHENTIK_LISTEN__METRICS=\"[::]:8300\"\nEOF\n      msg_ok \"Updated Worker and Server config!\"\n      msg_warn \"Please check /etc/default/authentik-worker and /etc/default/authentik-server config files for port configurations!\"\n\n      msg_info \"Updating services\"\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-server.service\n[Unit]\nDescription=authentik Go Server (API Gateway)\nAfter=network.target\nWants=postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-server\nWorkingDirectory=/opt/authentik/\nRestart=always\nRestartSec=5\nEnvironmentFile=/etc/default/authentik-server\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n      cat \u003c\u003c EOF \u003e /etc/systemd/system/authentik-worker.service\n[Unit]\nDescription=authentik Worker\nAfter=network.target postgresql.service\n\n[Service]\nUser=authentik\nGroup=authentik\nType=simple\nEnvironmentFile=/etc/default/authentik-worker\nExecStartPre=/usr/bin/mkdir -p \"\\${PROMETHEUS_MULTIPROC_DIR}\"\nExecStart=/opt/authentik/authentik-worker worker\nWorkingDirectory=/opt/authentik\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\nEOF\n      systemctl daemon-reload\n      msg_ok \"Updated services\"\n    fi\n  fi\n\n  msg_info \"Starting Services\"\n  systemctl start authentik-server authentik-worker\n  if [[ $(systemctl is-enabled authentik-ldap) == enabled ]]; then\n    systemctl start authentik-ldap\n  fi\n  if [[ $(systemctl is-enabled authentik-rac) == enabled ]]; then\n    systemctl start authentik-rac\n  fi\n  if [[ $(systemctl is-enabled authentik-radius) == enabled ]]; then\n    systemctl start authentik-radius\n  fi\n  msg_ok \"Started Services\"\n  msg_ok \"Updated successfully!\"\n  exit\n}\n\n# framework bootstrap\n# shellcheck disable=SC1090\n# Dynamic URL resolved at runtime - shellcheck cannot follow\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id \"authentik\" -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "# shellcheck disable=SC2034,SC2046",
@@ -381,7 +381,7 @@
     "",
     "  # Inspect only: policy data is operator-owned, including known test databases.",
     "  setup_yq",
-    "  local city_database asn_database database digest",
+    "  local city_database asn_database database digest remaining component resolved link",
     "  local -A inspected_databases=()",
     "  local -a CLEAN_INSTALL_KEEP_PATHS=(\"${CLEAN_INSTALL_KEEP_PATHS[@]}\")",
     "  city_database=$(yq -r '.events.context_processors.geoip // \"\"' /etc/authentik/config.yml)",
@@ -393,7 +393,31 @@
     "    [[ -f \"$database\" ]] || continue",
     "    [[ ! ${inspected_databases[\"$database\"]+present} ]] || continue",
     "    inspected_databases[\"$database\"]=1",
-    "    case \"$database\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${database#/opt/authentik/}\") ;; esac",
+    "    # Walk the consumer's path, preserving every link and the final file. Resolve",
+    "    # dot components after links, just as the kernel does, not lexically first.",
+    "    remaining=${database#/} resolved=''",
+    "    while [[ -n \"$remaining\" ]]; do",
+    "      component=${remaining%%/*}",
+    "      if [[ \"$remaining\" == */* ]]; then remaining=${remaining#*/}; else remaining=''; fi",
+    "      case \"$component\" in",
+    "        '' | .) continue ;;",
+    "        ..)",
+    "          # The consumer must still traverse this directory before going up.",
+    "          case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac",
+    "          resolved=${resolved%/*}",
+    "          continue",
+    "          ;;",
+    "      esac",
+    "      resolved+=\"/$component\"",
+    "      if [[ -L \"$resolved\" ]]; then",
+    "        case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac",
+    "        link=$(readlink -- \"$resolved\") || return $?",
+    "        resolved=${resolved%/*}",
+    "        [[ \"$link\" != /* ]] || resolved=''",
+    "        remaining=\"$link${remaining:+/$remaining}\"",
+    "      fi",
+    "    done",
+    "    case \"$resolved\" in /opt/authentik/*) CLEAN_INSTALL_KEEP_PATHS+=(\"${resolved#/opt/authentik/}\") ;; esac",
     "    digest=$(sha256sum \u003c \"$database\")",
     "    case \"${digest%% *}\" in",
     "      f936702b51dcb6c94b286d77a6f182c31a1601baf4b27e8e896934deb41f49f2 | 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a)",
@@ -687,7 +711,7 @@
     {
       "name": "update_script",
       "start_line": 347,
-      "end_line": 623,
+      "end_line": 647,
       "name_span": {
         "start_line": 347,
         "start_col": 10,
@@ -1088,100 +1112,100 @@
     },
     {
       "op": {
-        "line": 531,
+        "line": 555,
         "col": 11,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 531,
+        "line": 555,
         "start_col": 14,
         "end_col": 17,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 545,
+        "line": 569,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 532,
-        "end_line": 544
+        "start_line": 556,
+        "end_line": 568
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 546,
+        "line": 570,
         "col": 11,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 546,
+        "line": 570,
         "start_col": 14,
         "end_col": 17,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 560,
+        "line": 584,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 547,
-        "end_line": 559
+        "start_line": 571,
+        "end_line": 583
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 565,
+        "line": 589,
         "col": 11,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 565,
+        "line": 589,
         "start_col": 14,
         "end_col": 17,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 583,
+        "line": 607,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 566,
-        "end_line": 582
+        "start_line": 590,
+        "end_line": 606
       },
       "expand": true,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 585,
+        "line": 609,
         "col": 11,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 585,
+        "line": 609,
         "start_col": 14,
         "end_col": 17,
         "text": "EOF"
       },
       "marker_end": {
-        "line": 603,
+        "line": 627,
         "start_col": 1,
         "end_col": 4,
         "text": "EOF"
       },
       "body": {
-        "start_line": 586,
-        "end_line": 602
+        "start_line": 610,
+        "end_line": 626
       },
       "expand": true,
       "strip_tabs": false
@@ -5069,15 +5093,15 @@
       "end_col": 8
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "var-name",
       "start_line": 361,
       "start_col": 9,
       "end_line": 361,
       "end_col": 13
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 361,
       "start_col": 9,
       "end_line": 361,
@@ -5408,14 +5432,6 @@
       "end_col": 8
     },
     {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 377,
-      "start_col": 9,
-      "end_line": 377,
-      "end_col": 22
-    },
-    {
       "kind": "var-name",
       "start_line": 377,
       "start_col": 9,
@@ -5425,13 +5441,21 @@
     {
       "kind": "var-assign",
       "op": "=",
+      "start_line": 377,
+      "start_col": 9,
+      "end_line": 377,
+      "end_col": 22
+    },
+    {
+      "kind": "var-name",
       "start_line": 377,
       "start_col": 23,
       "end_line": 377,
       "end_col": 35
     },
     {
-      "kind": "var-name",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 377,
       "start_col": 23,
       "end_line": 377,
@@ -5466,6 +5490,66 @@
       "start_col": 45,
       "end_line": 377,
       "end_col": 51
+    },
+    {
+      "kind": "var-name",
+      "start_line": 377,
+      "start_col": 52,
+      "end_line": 377,
+      "end_col": 61
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 377,
+      "start_col": 52,
+      "end_line": 377,
+      "end_col": 61
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 377,
+      "start_col": 62,
+      "end_line": 377,
+      "end_col": 71
+    },
+    {
+      "kind": "var-name",
+      "start_line": 377,
+      "start_col": 62,
+      "end_line": 377,
+      "end_col": 71
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 377,
+      "start_col": 72,
+      "end_line": 377,
+      "end_col": 80
+    },
+    {
+      "kind": "var-name",
+      "start_line": 377,
+      "start_col": 72,
+      "end_line": 377,
+      "end_col": 80
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 377,
+      "start_col": 81,
+      "end_line": 377,
+      "end_col": 85
+    },
+    {
+      "kind": "var-name",
+      "start_line": 377,
+      "start_col": 81,
+      "end_line": 377,
+      "end_col": 85
     },
     {
       "kind": "keyword",
@@ -5936,2578 +6020,2979 @@
       "end_col": 35
     },
     {
-      "kind": "keyword",
-      "op": "case",
+      "kind": "comment",
       "start_line": 389,
       "start_col": 5,
       "end_line": 389,
-      "end_col": 9
+      "end_col": 82
     },
     {
-      "kind": "string-dq",
-      "start_line": 389,
-      "start_col": 10,
-      "end_line": 389,
-      "end_col": 21
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 389,
-      "start_col": 11,
-      "end_line": 389,
-      "end_col": 20
-    },
-    {
-      "kind": "keyword",
-      "op": "in",
-      "start_line": 389,
-      "start_col": 22,
-      "end_line": 389,
-      "end_col": 24
-    },
-    {
-      "kind": "var-assign",
-      "op": "+=",
-      "start_line": 389,
-      "start_col": 43,
-      "end_line": 389,
-      "end_col": 100
-    },
-    {
-      "kind": "var-name",
-      "start_line": 389,
-      "start_col": 43,
-      "end_line": 389,
-      "end_col": 67
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 389,
-      "start_col": 70,
-      "end_line": 389,
-      "end_col": 99
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 389,
-      "start_col": 71,
-      "end_line": 389,
-      "end_col": 98
-    },
-    {
-      "kind": "operator",
-      "op": ";;",
-      "start_line": 389,
-      "start_col": 101,
-      "end_line": 389,
-      "end_col": 103
-    },
-    {
-      "kind": "keyword",
-      "op": "esac",
-      "start_line": 389,
-      "start_col": 104,
-      "end_line": 389,
-      "end_col": 108
+      "kind": "comment",
+      "start_line": 390,
+      "start_col": 5,
+      "end_line": 390,
+      "end_col": 80
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 390,
+      "start_line": 391,
       "start_col": 5,
-      "end_line": 390,
-      "end_col": 38
+      "end_line": 391,
+      "end_col": 28
     },
     {
       "kind": "var-name",
-      "start_line": 390,
+      "start_line": 391,
       "start_col": 5,
-      "end_line": 390,
-      "end_col": 11
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 390,
-      "start_col": 12,
-      "end_line": 390,
-      "end_col": 38
-    },
-    {
-      "kind": "command",
-      "start_line": 390,
-      "start_col": 14,
-      "end_line": 390,
-      "end_col": 23
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c",
-      "start_line": 390,
-      "start_col": 24,
-      "end_line": 390,
-      "end_col": 25
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 390,
-      "start_col": 26,
-      "end_line": 390,
-      "end_col": 37
+      "end_line": 391,
+      "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 390,
-      "start_col": 27,
-      "end_line": 390,
+      "start_line": 391,
+      "start_col": 15,
+      "end_line": 391,
+      "end_col": 28
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 391,
+      "start_col": 29,
+      "end_line": 391,
+      "end_col": 40
+    },
+    {
+      "kind": "var-name",
+      "start_line": 391,
+      "start_col": 29,
+      "end_line": 391,
+      "end_col": 37
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 391,
+      "start_col": 38,
+      "end_line": 391,
+      "end_col": 40
+    },
+    {
+      "kind": "keyword",
+      "op": "while",
+      "start_line": 392,
+      "start_col": 5,
+      "end_line": 392,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 392,
+      "start_col": 11,
+      "end_line": 392,
+      "end_col": 13
+    },
+    {
+      "kind": "test-operator",
+      "op": "-n",
+      "start_line": 392,
+      "start_col": 14,
+      "end_line": 392,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 392,
+      "start_col": 17,
+      "end_line": 392,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 392,
+      "start_col": 18,
+      "end_line": 392,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 392,
+      "start_col": 30,
+      "end_line": 392,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 392,
+      "start_col": 32,
+      "end_line": 392,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "do",
+      "start_line": 392,
+      "start_col": 34,
+      "end_line": 392,
+      "end_col": 36
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 393,
+      "start_col": 7,
+      "end_line": 393,
+      "end_col": 33
+    },
+    {
+      "kind": "var-name",
+      "start_line": 393,
+      "start_col": 7,
+      "end_line": 393,
+      "end_col": 16
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 393,
+      "start_col": 17,
+      "end_line": 393,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 394,
+      "start_col": 7,
+      "end_line": 394,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 394,
+      "start_col": 10,
+      "end_line": 394,
+      "end_col": 12
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 394,
+      "start_col": 13,
+      "end_line": 394,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 394,
+      "start_col": 14,
+      "end_line": 394,
+      "end_col": 24
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 394,
+      "start_col": 26,
+      "end_line": 394,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 394,
+      "start_col": 33,
+      "end_line": 394,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 394,
+      "start_col": 35,
+      "end_line": 394,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 394,
+      "start_col": 37,
+      "end_line": 394,
+      "end_col": 41
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 394,
+      "start_col": 42,
+      "end_line": 394,
+      "end_col": 67
+    },
+    {
+      "kind": "var-name",
+      "start_line": 394,
+      "start_col": 42,
+      "end_line": 394,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 394,
+      "start_col": 52,
+      "end_line": 394,
+      "end_col": 67
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 394,
+      "start_col": 67,
+      "end_line": 394,
+      "end_col": 68
+    },
+    {
+      "kind": "keyword",
+      "op": "else",
+      "start_line": 394,
+      "start_col": 69,
+      "end_line": 394,
+      "end_col": 73
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 394,
+      "start_col": 74,
+      "end_line": 394,
+      "end_col": 86
+    },
+    {
+      "kind": "var-name",
+      "start_line": 394,
+      "start_col": 74,
+      "end_line": 394,
+      "end_col": 83
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 394,
+      "start_col": 84,
+      "end_line": 394,
+      "end_col": 86
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 394,
+      "start_col": 86,
+      "end_line": 394,
+      "end_col": 87
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 394,
+      "start_col": 88,
+      "end_line": 394,
+      "end_col": 90
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 395,
+      "start_col": 7,
+      "end_line": 395,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 395,
+      "start_col": 12,
+      "end_line": 395,
+      "end_col": 24
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 395,
+      "start_col": 13,
+      "end_line": 395,
+      "end_col": 23
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 395,
+      "start_col": 25,
+      "end_line": 395,
+      "end_col": 27
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 396,
+      "start_col": 9,
+      "end_line": 396,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 396,
+      "start_col": 17,
+      "end_line": 396,
+      "end_col": 25
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 396,
+      "start_col": 26,
+      "end_line": 396,
+      "end_col": 28
+    },
+    {
+      "kind": "comment",
+      "start_line": 398,
+      "start_col": 11,
+      "end_line": 398,
+      "end_col": 77
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 399,
+      "start_col": 11,
+      "end_line": 399,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 399,
+      "start_col": 16,
+      "end_line": 399,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 399,
+      "start_col": 17,
+      "end_line": 399,
+      "end_col": 26
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 399,
+      "start_col": 28,
+      "end_line": 399,
+      "end_col": 30
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 399,
+      "start_col": 49,
+      "end_line": 399,
+      "end_col": 106
+    },
+    {
+      "kind": "var-name",
+      "start_line": 399,
+      "start_col": 49,
+      "end_line": 399,
+      "end_col": 73
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 399,
+      "start_col": 76,
+      "end_line": 399,
+      "end_col": 105
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 399,
+      "start_col": 77,
+      "end_line": 399,
+      "end_col": 104
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 399,
+      "start_col": 107,
+      "end_line": 399,
+      "end_col": 109
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 399,
+      "start_col": 110,
+      "end_line": 399,
+      "end_col": 114
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 400,
+      "start_col": 11,
+      "end_line": 400,
+      "end_col": 34
+    },
+    {
+      "kind": "var-name",
+      "start_line": 400,
+      "start_col": 11,
+      "end_line": 400,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 400,
+      "start_col": 20,
+      "end_line": 400,
+      "end_col": 34
+    },
+    {
+      "kind": "command",
+      "start_line": 401,
+      "start_col": 11,
+      "end_line": 401,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 402,
+      "start_col": 11,
+      "end_line": 402,
+      "end_col": 13
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 403,
+      "start_col": 7,
+      "end_line": 403,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 404,
+      "start_col": 7,
+      "end_line": 404,
+      "end_col": 30
+    },
+    {
+      "kind": "var-name",
+      "start_line": 404,
+      "start_col": 7,
+      "end_line": 404,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 404,
+      "start_col": 17,
+      "end_line": 404,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 404,
+      "start_col": 19,
+      "end_line": 404,
+      "end_col": 29
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 405,
+      "start_col": 7,
+      "end_line": 405,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 405,
+      "start_col": 10,
+      "end_line": 405,
+      "end_col": 12
+    },
+    {
+      "kind": "test-operator",
+      "op": "-L",
+      "start_line": 405,
+      "start_col": 13,
+      "end_line": 405,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 405,
+      "start_col": 16,
+      "end_line": 405,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 405,
+      "start_col": 17,
+      "end_line": 405,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 405,
+      "start_col": 28,
+      "end_line": 405,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 405,
+      "start_col": 30,
+      "end_line": 405,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 405,
+      "start_col": 32,
+      "end_line": 405,
       "end_col": 36
     },
     {
       "kind": "keyword",
       "op": "case",
-      "start_line": 391,
-      "start_col": 5,
-      "end_line": 391,
-      "end_col": 9
+      "start_line": 406,
+      "start_col": 9,
+      "end_line": 406,
+      "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 391,
-      "start_col": 10,
-      "end_line": 391,
+      "start_line": 406,
+      "start_col": 14,
+      "end_line": 406,
       "end_col": 25
     },
     {
       "kind": "param-exp",
-      "start_line": 391,
-      "start_col": 11,
-      "end_line": 391,
+      "start_line": 406,
+      "start_col": 15,
+      "end_line": 406,
       "end_col": 24
     },
     {
       "kind": "keyword",
       "op": "in",
-      "start_line": 391,
+      "start_line": 406,
       "start_col": 26,
-      "end_line": 391,
+      "end_line": 406,
       "end_col": 28
     },
     {
-      "kind": "command",
-      "start_line": 393,
-      "start_col": 9,
-      "end_line": 393,
-      "end_col": 17
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 406,
+      "start_col": 47,
+      "end_line": 406,
+      "end_col": 104
+    },
+    {
+      "kind": "var-name",
+      "start_line": 406,
+      "start_col": 47,
+      "end_line": 406,
+      "end_col": 71
     },
     {
       "kind": "string-dq",
-      "start_line": 393,
-      "start_col": 18,
-      "end_line": 393,
-      "end_col": 190
+      "start_line": 406,
+      "start_col": 74,
+      "end_line": 406,
+      "end_col": 103
     },
     {
       "kind": "param-exp",
-      "start_line": 393,
-      "start_col": 44,
-      "end_line": 393,
-      "end_col": 53
+      "start_line": 406,
+      "start_col": 75,
+      "end_line": 406,
+      "end_col": 102
     },
     {
       "kind": "operator",
       "op": ";;",
-      "start_line": 394,
-      "start_col": 9,
-      "end_line": 394,
-      "end_col": 11
+      "start_line": 406,
+      "start_col": 105,
+      "end_line": 406,
+      "end_col": 107
     },
     {
       "kind": "keyword",
       "op": "esac",
-      "start_line": 395,
-      "start_col": 5,
-      "end_line": 395,
+      "start_line": 406,
+      "start_col": 108,
+      "end_line": 406,
+      "end_col": 112
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 407,
+      "start_col": 9,
+      "end_line": 407,
+      "end_col": 40
+    },
+    {
+      "kind": "var-name",
+      "start_line": 407,
+      "start_col": 9,
+      "end_line": 407,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 407,
+      "start_col": 14,
+      "end_line": 407,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 407,
+      "start_col": 16,
+      "end_line": 407,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 407,
+      "start_col": 28,
+      "end_line": 407,
+      "end_col": 39
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 407,
+      "start_col": 29,
+      "end_line": 407,
+      "end_col": 38
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 407,
+      "start_col": 41,
+      "end_line": 407,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 407,
+      "start_col": 44,
+      "end_line": 407,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 407,
+      "start_col": 51,
+      "end_line": 407,
+      "end_col": 53
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 408,
+      "start_col": 9,
+      "end_line": 408,
+      "end_col": 32
+    },
+    {
+      "kind": "var-name",
+      "start_line": 408,
+      "start_col": 9,
+      "end_line": 408,
+      "end_col": 17
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 408,
+      "start_col": 18,
+      "end_line": 408,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 409,
+      "start_col": 9,
+      "end_line": 409,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 409,
+      "start_col": 12,
+      "end_line": 409,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 409,
+      "start_col": 13,
+      "end_line": 409,
+      "end_col": 18
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 409,
+      "start_col": 20,
+      "end_line": 409,
+      "end_col": 22
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 409,
+      "start_col": 26,
+      "end_line": 409,
+      "end_col": 28
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 409,
+      "start_col": 29,
+      "end_line": 409,
+      "end_col": 31
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 409,
+      "start_col": 32,
+      "end_line": 409,
+      "end_col": 43
+    },
+    {
+      "kind": "var-name",
+      "start_line": 409,
+      "start_col": 32,
+      "end_line": 409,
+      "end_col": 40
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 409,
+      "start_col": 41,
+      "end_line": 409,
+      "end_col": 43
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 410,
+      "start_col": 9,
+      "end_line": 410,
+      "end_col": 51
+    },
+    {
+      "kind": "var-name",
+      "start_line": 410,
+      "start_col": 9,
+      "end_line": 410,
+      "end_col": 18
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 410,
+      "start_col": 19,
+      "end_line": 410,
+      "end_col": 51
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 410,
+      "start_col": 20,
+      "end_line": 410,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 410,
+      "start_col": 25,
+      "end_line": 410,
+      "end_col": 50
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 410,
+      "start_col": 39,
+      "end_line": 410,
+      "end_col": 49
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 411,
+      "start_col": 7,
+      "end_line": 411,
       "end_col": 9
     },
     {
       "kind": "keyword",
       "op": "done",
-      "start_line": 396,
+      "start_line": 412,
+      "start_col": 5,
+      "end_line": 412,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 413,
+      "start_col": 5,
+      "end_line": 413,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 413,
+      "start_col": 10,
+      "end_line": 413,
+      "end_col": 21
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 413,
+      "start_col": 11,
+      "end_line": 413,
+      "end_col": 20
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 413,
+      "start_col": 22,
+      "end_line": 413,
+      "end_col": 24
+    },
+    {
+      "kind": "var-assign",
+      "op": "+=",
+      "start_line": 413,
+      "start_col": 43,
+      "end_line": 413,
+      "end_col": 100
+    },
+    {
+      "kind": "var-name",
+      "start_line": 413,
+      "start_col": 43,
+      "end_line": 413,
+      "end_col": 67
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 413,
+      "start_col": 70,
+      "end_line": 413,
+      "end_col": 99
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 413,
+      "start_col": 71,
+      "end_line": 413,
+      "end_col": 98
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 413,
+      "start_col": 101,
+      "end_line": 413,
+      "end_col": 103
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 413,
+      "start_col": 104,
+      "end_line": 413,
+      "end_col": 108
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 414,
+      "start_col": 5,
+      "end_line": 414,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 414,
+      "start_col": 5,
+      "end_line": 414,
+      "end_col": 11
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 414,
+      "start_col": 12,
+      "end_line": 414,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 414,
+      "start_col": 14,
+      "end_line": 414,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c",
+      "start_line": 414,
+      "start_col": 24,
+      "end_line": 414,
+      "end_col": 25
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 414,
+      "start_col": 26,
+      "end_line": 414,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 414,
+      "start_col": 27,
+      "end_line": 414,
+      "end_col": 36
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 415,
+      "start_col": 5,
+      "end_line": 415,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 415,
+      "start_col": 10,
+      "end_line": 415,
+      "end_col": 25
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 415,
+      "start_col": 11,
+      "end_line": 415,
+      "end_col": 24
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 415,
+      "start_col": 26,
+      "end_line": 415,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 417,
+      "start_col": 9,
+      "end_line": 417,
+      "end_col": 17
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 417,
+      "start_col": 18,
+      "end_line": 417,
+      "end_col": 190
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 417,
+      "start_col": 44,
+      "end_line": 417,
+      "end_col": 53
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 418,
+      "start_col": 9,
+      "end_line": 418,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "esac",
+      "start_line": 419,
+      "start_col": 5,
+      "end_line": 419,
+      "end_col": 9
+    },
+    {
+      "kind": "keyword",
+      "op": "done",
+      "start_line": 420,
       "start_col": 3,
-      "end_line": 396,
+      "end_line": 420,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 3,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c\u003c",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 29,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 33,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 87
     },
     {
       "kind": "cmd-subst",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 34,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 86
     },
     {
       "kind": "command",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 36,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 39
     },
     {
       "kind": "string-sq",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 40,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 66
     },
     {
       "kind": "string-dq",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 67,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 85
     },
     {
       "kind": "param-exp",
-      "start_line": 398,
+      "start_line": 422,
       "start_col": 68,
-      "end_line": 398,
+      "end_line": 422,
       "end_col": 73
     },
     {
       "kind": "command",
-      "start_line": 400,
+      "start_line": 424,
       "start_col": 3,
-      "end_line": 400,
+      "end_line": 424,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 400,
+      "start_line": 424,
       "start_col": 12,
-      "end_line": 400,
+      "end_line": 424,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 401,
+      "start_line": 425,
       "start_col": 3,
-      "end_line": 401,
+      "end_line": 425,
       "end_col": 22
     },
     {
       "kind": "command",
-      "start_line": 402,
+      "start_line": 426,
       "start_col": 3,
-      "end_line": 402,
+      "end_line": 426,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 402,
+      "start_line": 426,
       "start_col": 10,
-      "end_line": 402,
+      "end_line": 426,
       "end_col": 31
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 404,
+      "start_line": 428,
       "start_col": 3,
-      "end_line": 404,
+      "end_line": 428,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 404,
+      "start_line": 428,
       "start_col": 3,
-      "end_line": 404,
+      "end_line": 428,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 404,
+      "start_line": 428,
       "start_col": 16,
-      "end_line": 404,
+      "end_line": 428,
       "end_col": 20
     },
     {
       "kind": "command",
-      "start_line": 404,
+      "start_line": 428,
       "start_col": 21,
-      "end_line": 404,
+      "end_line": 428,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 405,
+      "start_line": 429,
       "start_col": 3,
-      "end_line": 405,
+      "end_line": 429,
       "end_col": 11
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 3,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 41
     },
     {
       "kind": "var-name",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 3,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 25,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 41
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 42,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 65
     },
     {
       "kind": "var-name",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 42,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 56
     },
     {
       "kind": "string-dq",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 57,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 65
     },
     {
       "kind": "command",
-      "start_line": 406,
+      "start_line": 430,
       "start_col": 66,
-      "end_line": 406,
+      "end_line": 430,
       "end_col": 74
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 3,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 25
     },
     {
       "kind": "var-name",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 3,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 16,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 25
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 26,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 49
     },
     {
       "kind": "var-name",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 26,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 40
     },
     {
       "kind": "string-dq",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 41,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 49
     },
     {
       "kind": "command",
-      "start_line": 407,
+      "start_line": 431,
       "start_col": 50,
-      "end_line": 407,
+      "end_line": 431,
       "end_col": 60
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 409,
+      "start_line": 433,
       "start_col": 3,
-      "end_line": 409,
+      "end_line": 433,
       "end_col": 39
     },
     {
       "kind": "var-name",
-      "start_line": 409,
+      "start_line": 433,
       "start_col": 3,
-      "end_line": 409,
+      "end_line": 433,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 409,
+      "start_line": 433,
       "start_col": 21,
-      "end_line": 409,
+      "end_line": 433,
       "end_col": 39
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 410,
+      "start_line": 434,
       "start_col": 3,
-      "end_line": 410,
+      "end_line": 434,
       "end_col": 26
     },
     {
       "kind": "var-name",
-      "start_line": 410,
+      "start_line": 434,
       "start_col": 3,
-      "end_line": 410,
+      "end_line": 434,
       "end_col": 17
     },
     {
       "kind": "string-dq",
-      "start_line": 410,
+      "start_line": 434,
       "start_col": 18,
-      "end_line": 410,
+      "end_line": 434,
       "end_col": 26
     },
     {
       "kind": "keyword",
       "op": "local",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 3,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 8
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 9,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 25
     },
     {
       "kind": "var-name",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 9,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 22
     },
     {
       "kind": "string-sq",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 23,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 25
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 26,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 43
     },
     {
       "kind": "var-name",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 26,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 40
     },
     {
       "kind": "string-sq",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 41,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 43
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 44,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 64
     },
     {
       "kind": "var-name",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 44,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 61
     },
     {
       "kind": "string-sq",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 62,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 64
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 65,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 71
     },
     {
       "kind": "var-name",
-      "start_line": 412,
+      "start_line": 436,
       "start_col": 65,
-      "end_line": 412,
+      "end_line": 436,
       "end_col": 71
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 3,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 6,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 27,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 40
     },
     {
       "kind": "string-dq",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 41,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 62
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 62,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 63
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 413,
+      "start_line": 437,
       "start_col": 64,
-      "end_line": 413,
+      "end_line": 437,
       "end_col": 68
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 414,
+      "start_line": 438,
       "start_col": 5,
-      "end_line": 414,
+      "end_line": 438,
       "end_col": 40
     },
     {
       "kind": "var-name",
-      "start_line": 414,
+      "start_line": 438,
       "start_col": 5,
-      "end_line": 414,
+      "end_line": 438,
       "end_col": 18
     },
     {
       "kind": "param-exp",
-      "start_line": 414,
+      "start_line": 438,
       "start_col": 19,
-      "end_line": 414,
+      "end_line": 438,
       "end_col": 40
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 415,
+      "start_line": 439,
       "start_col": 3,
-      "end_line": 415,
+      "end_line": 439,
       "end_col": 7
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 416,
+      "start_line": 440,
       "start_col": 5,
-      "end_line": 416,
+      "end_line": 440,
       "end_col": 14
     },
     {
       "kind": "var-name",
-      "start_line": 416,
+      "start_line": 440,
       "start_col": 5,
-      "end_line": 416,
+      "end_line": 440,
       "end_col": 11
     },
     {
       "kind": "param-exp",
-      "start_line": 416,
+      "start_line": 440,
       "start_col": 12,
-      "end_line": 416,
+      "end_line": 440,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 5,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 8,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 17
     },
     {
       "kind": "param-exp",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 9,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 16
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 18,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 20
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 23,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 25
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 26,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 29,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 36,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 417,
+      "start_line": 441,
       "start_col": 37,
-      "end_line": 417,
+      "end_line": 441,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 418,
+      "start_line": 442,
       "start_col": 3,
-      "end_line": 418,
+      "end_line": 442,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 3,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 6,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 27,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 36,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 51
     },
     {
       "kind": "string-dq",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 52,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 71
     },
     {
       "kind": "param-exp",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 53,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 70
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 71,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 72
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 419,
+      "start_line": 443,
       "start_col": 73,
-      "end_line": 419,
+      "end_line": 443,
       "end_col": 77
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 420,
+      "start_line": 444,
       "start_col": 5,
-      "end_line": 420,
+      "end_line": 444,
       "end_col": 41
     },
     {
       "kind": "var-name",
-      "start_line": 420,
+      "start_line": 444,
       "start_col": 5,
-      "end_line": 420,
+      "end_line": 444,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 420,
+      "start_line": 444,
       "start_col": 20,
-      "end_line": 420,
+      "end_line": 444,
       "end_col": 41
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 421,
+      "start_line": 445,
       "start_col": 3,
-      "end_line": 421,
+      "end_line": 445,
       "end_col": 7
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 422,
+      "start_line": 446,
       "start_col": 5,
-      "end_line": 422,
+      "end_line": 446,
       "end_col": 14
     },
     {
       "kind": "var-name",
-      "start_line": 422,
+      "start_line": 446,
       "start_col": 5,
-      "end_line": 422,
+      "end_line": 446,
       "end_col": 11
     },
     {
       "kind": "param-exp",
-      "start_line": 422,
+      "start_line": 446,
       "start_col": 12,
-      "end_line": 422,
+      "end_line": 446,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 5,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 8,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 17
     },
     {
       "kind": "param-exp",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 9,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 16
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 18,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 20
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 23,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 25
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 26,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 29,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 36,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 423,
+      "start_line": 447,
       "start_col": 37,
-      "end_line": 423,
+      "end_line": 447,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 424,
+      "start_line": 448,
       "start_col": 3,
-      "end_line": 424,
+      "end_line": 448,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 3,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 6,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 26
     },
     {
       "kind": "string-dq",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 27,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 38
     },
     {
       "kind": "string-dq",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 39,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 58
     },
     {
       "kind": "param-exp",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 40,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 57
     },
     {
       "kind": "string-dq",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 59,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 81
     },
     {
       "kind": "param-exp",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 60,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 80
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 81,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 82
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 425,
+      "start_line": 449,
       "start_col": 83,
-      "end_line": 425,
+      "end_line": 449,
       "end_col": 87
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 426,
+      "start_line": 450,
       "start_col": 5,
-      "end_line": 426,
+      "end_line": 450,
       "end_col": 44
     },
     {
       "kind": "var-name",
-      "start_line": 426,
+      "start_line": 450,
       "start_col": 5,
-      "end_line": 426,
+      "end_line": 450,
       "end_col": 22
     },
     {
       "kind": "param-exp",
-      "start_line": 426,
+      "start_line": 450,
       "start_col": 23,
-      "end_line": 426,
+      "end_line": 450,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "else",
-      "start_line": 427,
+      "start_line": 451,
       "start_col": 3,
-      "end_line": 427,
+      "end_line": 451,
       "end_col": 7
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 428,
+      "start_line": 452,
       "start_col": 5,
-      "end_line": 428,
+      "end_line": 452,
       "end_col": 14
     },
     {
       "kind": "var-name",
-      "start_line": 428,
+      "start_line": 452,
       "start_col": 5,
-      "end_line": 428,
+      "end_line": 452,
       "end_col": 11
     },
     {
       "kind": "param-exp",
-      "start_line": 428,
+      "start_line": 452,
       "start_col": 12,
-      "end_line": 428,
+      "end_line": 452,
       "end_col": 14
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 5,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 8,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 17
     },
     {
       "kind": "param-exp",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 9,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 16
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 18,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 20
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 23,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 25
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 26,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 29,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 35
     },
     {
       "kind": "string-dq",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 36,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 45
     },
     {
       "kind": "param-exp",
-      "start_line": 429,
+      "start_line": 453,
       "start_col": 37,
-      "end_line": 429,
+      "end_line": 453,
       "end_col": 44
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 430,
+      "start_line": 454,
       "start_col": 3,
-      "end_line": 430,
+      "end_line": 454,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 3,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 6,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 9,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 12,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 28
     },
     {
       "kind": "param-exp",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 13,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 27
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 29,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 31
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 31,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 32
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 432,
+      "start_line": 456,
       "start_col": 33,
-      "end_line": 432,
+      "end_line": 456,
       "end_col": 37
     },
     {
       "kind": "command",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 5,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 33,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 46
     },
     {
       "kind": "string-dq",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 47,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 68
     },
     {
       "kind": "string-dq",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 69,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 77
     },
     {
       "kind": "string-dq",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 78,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 94
     },
     {
       "kind": "param-exp",
-      "start_line": 433,
+      "start_line": 457,
       "start_col": 79,
-      "end_line": 433,
+      "end_line": 457,
       "end_col": 93
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 434,
+      "start_line": 458,
       "start_col": 3,
-      "end_line": 434,
+      "end_line": 458,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 3,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 6,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 9,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 12,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 29
     },
     {
       "kind": "param-exp",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 13,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 28
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 30,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 32
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 32,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 33
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 436,
+      "start_line": 460,
       "start_col": 34,
-      "end_line": 436,
+      "end_line": 460,
       "end_col": 38
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 5,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 5,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 21,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 48
     },
     {
       "kind": "string-dq",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 49,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 57
     },
     {
       "kind": "string-dq",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 58,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 73
     },
     {
       "kind": "string-dq",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 74,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 83
     },
     {
       "kind": "string-dq",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 84,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 101
     },
     {
       "kind": "param-exp",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 85,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 100
     },
     {
       "kind": "string-dq",
-      "start_line": 437,
+      "start_line": 461,
       "start_col": 102,
-      "end_line": 437,
+      "end_line": 461,
       "end_col": 115
     },
     {
       "kind": "command",
-      "start_line": 439,
+      "start_line": 463,
       "start_col": 5,
-      "end_line": 439,
+      "end_line": 463,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 439,
+      "start_line": 463,
       "start_col": 14,
-      "end_line": 439,
+      "end_line": 463,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 440,
+      "start_line": 464,
       "start_col": 5,
-      "end_line": 440,
+      "end_line": 464,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 440,
+      "start_line": 464,
       "start_col": 20,
-      "end_line": 440,
+      "end_line": 464,
       "end_col": 22
     },
     {
       "kind": "command",
-      "start_line": 440,
+      "start_line": 464,
       "start_col": 23,
-      "end_line": 440,
+      "end_line": 464,
       "end_col": 27
     },
     {
       "kind": "param-exp",
-      "start_line": 441,
+      "start_line": 465,
       "start_col": 5,
-      "end_line": 441,
+      "end_line": 465,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 441,
+      "start_line": 465,
       "start_col": 10,
-      "end_line": 441,
+      "end_line": 465,
       "end_col": 22
     },
     {
       "kind": "param-exp",
-      "start_line": 442,
+      "start_line": 466,
       "start_col": 5,
-      "end_line": 442,
+      "end_line": 466,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 442,
+      "start_line": 466,
       "start_col": 10,
-      "end_line": 442,
+      "end_line": 466,
       "end_col": 14
     },
     {
       "kind": "cmd-subst",
-      "start_line": 442,
+      "start_line": 466,
       "start_col": 18,
-      "end_line": 442,
+      "end_line": 466,
       "end_col": 26
     },
     {
       "kind": "command",
-      "start_line": 442,
+      "start_line": 466,
       "start_col": 20,
-      "end_line": 442,
+      "end_line": 466,
       "end_col": 25
     },
     {
       "kind": "param-exp",
-      "start_line": 443,
+      "start_line": 467,
       "start_col": 5,
-      "end_line": 443,
+      "end_line": 467,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 443,
+      "start_line": 467,
       "start_col": 10,
-      "end_line": 443,
+      "end_line": 467,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 444,
+      "start_line": 468,
       "start_col": 5,
-      "end_line": 444,
+      "end_line": 468,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 444,
+      "start_line": 468,
       "start_col": 10,
-      "end_line": 444,
+      "end_line": 468,
       "end_col": 14
     },
     {
       "kind": "param-exp",
-      "start_line": 445,
+      "start_line": 469,
       "start_col": 5,
-      "end_line": 445,
+      "end_line": 469,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 445,
+      "start_line": 469,
       "start_col": 10,
-      "end_line": 445,
+      "end_line": 469,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 446,
+      "start_line": 470,
       "start_col": 5,
-      "end_line": 446,
+      "end_line": 470,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 446,
+      "start_line": 470,
       "start_col": 12,
-      "end_line": 446,
+      "end_line": 470,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 447,
+      "start_line": 471,
       "start_col": 3,
-      "end_line": 447,
+      "end_line": 471,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 3,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 6,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 8
     },
     {
       "kind": "test-operator",
       "op": "-n",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 9,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 12,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 32
     },
     {
       "kind": "param-exp",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 13,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 31
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 33,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 35
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 35,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 36
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 449,
+      "start_line": 473,
       "start_col": 37,
-      "end_line": 449,
+      "end_line": 473,
       "end_col": 41
     },
     {
       "kind": "command",
-      "start_line": 450,
+      "start_line": 474,
       "start_col": 5,
-      "end_line": 450,
+      "end_line": 474,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 450,
+      "start_line": 474,
       "start_col": 14,
-      "end_line": 450,
+      "end_line": 474,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 451,
+      "start_line": 475,
       "start_col": 5,
-      "end_line": 451,
+      "end_line": 475,
       "end_col": 14
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 5,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 8,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 10
     },
     {
       "kind": "cmd-subst",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 11,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 48
     },
     {
       "kind": "command",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 13,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 49,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 51
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 59,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 61
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 61,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 452,
+      "start_line": 476,
       "start_col": 63,
-      "end_line": 452,
+      "end_line": 476,
       "end_col": 67
     },
     {
       "kind": "command",
-      "start_line": 453,
+      "start_line": 477,
       "start_col": 7,
-      "end_line": 453,
+      "end_line": 477,
       "end_col": 16
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 454,
+      "start_line": 478,
       "start_col": 5,
-      "end_line": 454,
+      "end_line": 478,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 5,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 8,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 10
     },
     {
       "kind": "cmd-subst",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 11,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 47
     },
     {
       "kind": "command",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 13,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 48,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 50
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 58,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 60,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 61
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 455,
+      "start_line": 479,
       "start_col": 62,
-      "end_line": 455,
+      "end_line": 479,
       "end_col": 66
     },
     {
       "kind": "command",
-      "start_line": 456,
+      "start_line": 480,
       "start_col": 7,
-      "end_line": 456,
+      "end_line": 480,
       "end_col": 16
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 457,
+      "start_line": 481,
       "start_col": 5,
-      "end_line": 457,
+      "end_line": 481,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 5,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 8,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 10
     },
     {
       "kind": "cmd-subst",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 11,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 50
     },
     {
       "kind": "command",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 13,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 51,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 53
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 61,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 63
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 63,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 64
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 458,
+      "start_line": 482,
       "start_col": 65,
-      "end_line": 458,
+      "end_line": 482,
       "end_col": 69
     },
     {
       "kind": "command",
-      "start_line": 459,
+      "start_line": 483,
       "start_col": 7,
-      "end_line": 459,
+      "end_line": 483,
       "end_col": 16
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 460,
+      "start_line": 484,
       "start_col": 5,
-      "end_line": 460,
+      "end_line": 484,
       "end_col": 7
     },
     {
       "kind": "command",
-      "start_line": 461,
+      "start_line": 485,
       "start_col": 5,
-      "end_line": 461,
+      "end_line": 485,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 461,
+      "start_line": 485,
       "start_col": 12,
-      "end_line": 461,
+      "end_line": 485,
       "end_col": 30
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 5,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 20
     },
     {
       "kind": "var-name",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 5,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 18
     },
     {
       "kind": "command",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 21,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 48
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 49,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 60
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 61,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 80
     },
     {
       "kind": "param-exp",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 62,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 79
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 81,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 90
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 91,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 111
     },
     {
       "kind": "param-exp",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 92,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 110
     },
     {
       "kind": "string-dq",
-      "start_line": 463,
+      "start_line": 487,
       "start_col": 112,
-      "end_line": 463,
+      "end_line": 487,
       "end_col": 128
     },
     {
       "kind": "command",
-      "start_line": 465,
+      "start_line": 489,
       "start_col": 5,
-      "end_line": 465,
+      "end_line": 489,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 465,
+      "start_line": 489,
       "start_col": 14,
-      "end_line": 465,
+      "end_line": 489,
       "end_col": 32
     },
     {
       "kind": "command",
-      "start_line": 466,
+      "start_line": 490,
       "start_col": 5,
-      "end_line": 466,
+      "end_line": 490,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "||",
-      "start_line": 466,
+      "start_line": 490,
       "start_col": 23,
-      "end_line": 466,
+      "end_line": 490,
       "end_col": 25
     },
     {
       "kind": "command",
-      "start_line": 466,
+      "start_line": 490,
       "start_col": 26,
-      "end_line": 466,
+      "end_line": 490,
       "end_col": 30
     },
     {
       "kind": "param-exp",
-      "start_line": 467,
+      "start_line": 491,
       "start_col": 5,
-      "end_line": 467,
+      "end_line": 491,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 467,
+      "start_line": 491,
       "start_col": 10,
-      "end_line": 467,
+      "end_line": 491,
       "end_col": 16
     },
     {
       "kind": "param-exp",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 5,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 10,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 16
     },
     {
       "kind": "string-dq",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 25,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 84
     },
     {
       "kind": "cmd-subst",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 26,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 83
     },
     {
       "kind": "command",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 28,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 31
     },
     {
       "kind": "string-sq",
-      "start_line": 468,
+      "start_line": 492,
       "start_col": 35,
-      "end_line": 468,
+      "end_line": 492,
       "end_col": 62
-    },
-    {
-      "kind": "command",
-      "start_line": 469,
-      "start_col": 5,
-      "end_line": 469,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 469,
-      "start_col": 12,
-      "end_line": 469,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 471,
-      "start_col": 5,
-      "end_line": 471,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 471,
-      "start_col": 14,
-      "end_line": 471,
-      "end_col": 28
-    },
-    {
-      "kind": "command",
-      "start_line": 472,
-      "start_col": 5,
-      "end_line": 472,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 472,
-      "start_col": 27,
-      "end_line": 472,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 472,
-      "start_col": 30,
-      "end_line": 472,
-      "end_col": 34
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 473,
-      "start_col": 5,
-      "end_line": 473,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 473,
-      "start_col": 12,
-      "end_line": 473,
-      "end_col": 33
-    },
-    {
-      "kind": "var-name",
-      "start_line": 473,
-      "start_col": 12,
-      "end_line": 473,
-      "end_col": 20
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 473,
-      "start_col": 21,
-      "end_line": 473,
-      "end_col": 33
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 474,
-      "start_col": 5,
-      "end_line": 474,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 474,
-      "start_col": 10,
-      "end_line": 474,
-      "end_col": 13
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 475,
-      "start_col": 5,
-      "end_line": 475,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 475,
-      "start_col": 10,
-      "end_line": 475,
-      "end_col": 13
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 476,
-      "start_col": 5,
-      "end_line": 476,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 476,
-      "start_col": 10,
-      "end_line": 476,
-      "end_col": 13
-    },
-    {
-      "kind": "command",
-      "start_line": 477,
-      "start_col": 5,
-      "end_line": 477,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 477,
-      "start_col": 12,
-      "end_line": 477,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 479,
-      "start_col": 5,
-      "end_line": 479,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 479,
-      "start_col": 14,
-      "end_line": 479,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 480,
-      "start_col": 5,
-      "end_line": 480,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 480,
-      "start_col": 23,
-      "end_line": 480,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 480,
-      "start_col": 26,
-      "end_line": 480,
-      "end_col": 30
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 481,
-      "start_col": 5,
-      "end_line": 481,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 481,
-      "start_col": 12,
-      "end_line": 481,
-      "end_col": 27
-    },
-    {
-      "kind": "var-name",
-      "start_line": 481,
-      "start_col": 12,
-      "end_line": 481,
-      "end_col": 23
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 481,
-      "start_col": 24,
-      "end_line": 481,
-      "end_col": 27
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 482,
-      "start_col": 5,
-      "end_line": 482,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 482,
-      "start_col": 10,
-      "end_line": 482,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 483,
-      "start_col": 5,
-      "end_line": 483,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 483,
-      "start_col": 10,
-      "end_line": 483,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 484,
-      "start_col": 5,
-      "end_line": 484,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 484,
-      "start_col": 10,
-      "end_line": 484,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 485,
-      "start_col": 5,
-      "end_line": 485,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 485,
-      "start_col": 10,
-      "end_line": 485,
-      "end_col": 12
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 486,
-      "start_col": 5,
-      "end_line": 486,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 486,
-      "start_col": 10,
-      "end_line": 486,
-      "end_col": 12
-    },
-    {
-      "kind": "command",
-      "start_line": 487,
-      "start_col": 5,
-      "end_line": 487,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 487,
-      "start_col": 12,
-      "end_line": 487,
-      "end_col": 30
-    },
-    {
-      "kind": "command",
-      "start_line": 489,
-      "start_col": 5,
-      "end_line": 489,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 489,
-      "start_col": 14,
-      "end_line": 489,
-      "end_col": 31
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 490,
-      "start_col": 5,
-      "end_line": 490,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 490,
-      "start_col": 12,
-      "end_line": 490,
-      "end_col": 38
-    },
-    {
-      "kind": "var-name",
-      "start_line": 490,
-      "start_col": 12,
-      "end_line": 490,
-      "end_col": 30
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 490,
-      "start_col": 31,
-      "end_line": 490,
-      "end_col": 38
-    },
-    {
-      "kind": "command",
-      "start_line": 491,
-      "start_col": 5,
-      "end_line": 491,
-      "end_col": 7
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 491,
-      "start_col": 23,
-      "end_line": 491,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 491,
-      "start_col": 26,
-      "end_line": 491,
-      "end_col": 30
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 492,
-      "start_col": 5,
-      "end_line": 492,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 492,
-      "start_col": 10,
-      "end_line": 492,
-      "end_col": 15
     },
     {
       "kind": "command",
       "start_line": 493,
       "start_col": 5,
       "end_line": 493,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 494,
-      "start_col": 5,
-      "end_line": 494,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 495,
-      "start_col": 5,
-      "end_line": 495,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 495,
+      "start_line": 493,
       "start_col": 12,
-      "end_line": 495,
-      "end_col": 26
+      "end_line": 493,
+      "end_col": 29
     },
     {
       "kind": "command",
-      "start_line": 497,
+      "start_line": 495,
       "start_col": 5,
-      "end_line": 497,
+      "end_line": 495,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 497,
+      "start_line": 495,
       "start_col": 14,
-      "end_line": 497,
-      "end_col": 38
+      "end_line": 495,
+      "end_col": 28
     },
     {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 498,
+      "kind": "command",
+      "start_line": 496,
       "start_col": 5,
-      "end_line": 498,
-      "end_col": 11
+      "end_line": 496,
+      "end_col": 7
     },
     {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 498,
-      "start_col": 12,
-      "end_line": 498,
-      "end_col": 76
-    },
-    {
-      "kind": "var-name",
-      "start_line": 498,
-      "start_col": 12,
-      "end_line": 498,
-      "end_col": 32
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 498,
-      "start_col": 33,
-      "end_line": 498,
-      "end_col": 76
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 499,
-      "start_col": 5,
-      "end_line": 499,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 499,
-      "start_col": 12,
-      "end_line": 499,
-      "end_col": 35
-    },
-    {
-      "kind": "var-name",
-      "start_line": 499,
-      "start_col": 12,
-      "end_line": 499,
-      "end_col": 31
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 499,
-      "start_col": 32,
-      "end_line": 499,
-      "end_col": 35
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 500,
-      "start_col": 5,
-      "end_line": 500,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 500,
-      "start_col": 12,
-      "end_line": 500,
-      "end_col": 31
-    },
-    {
-      "kind": "var-name",
-      "start_line": 500,
-      "start_col": 12,
-      "end_line": 500,
-      "end_col": 24
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 500,
-      "start_col": 25,
-      "end_line": 500,
-      "end_col": 31
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 501,
-      "start_col": 5,
-      "end_line": 501,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 501,
-      "start_col": 12,
-      "end_line": 501,
+      "kind": "operator",
+      "op": "||",
+      "start_line": 496,
+      "start_col": 27,
+      "end_line": 496,
       "end_col": 29
     },
     {
+      "kind": "command",
+      "start_line": 496,
+      "start_col": 30,
+      "end_line": 496,
+      "end_col": 34
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 497,
+      "start_col": 5,
+      "end_line": 497,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 497,
+      "start_col": 12,
+      "end_line": 497,
+      "end_col": 33
+    },
+    {
       "kind": "var-name",
+      "start_line": 497,
+      "start_col": 12,
+      "end_line": 497,
+      "end_col": 20
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 497,
+      "start_col": 21,
+      "end_line": 497,
+      "end_col": 33
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 498,
+      "start_col": 5,
+      "end_line": 498,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 498,
+      "start_col": 10,
+      "end_line": 498,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 499,
+      "start_col": 5,
+      "end_line": 499,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 499,
+      "start_col": 10,
+      "end_line": 499,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 500,
+      "start_col": 5,
+      "end_line": 500,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 500,
+      "start_col": 10,
+      "end_line": 500,
+      "end_col": 13
+    },
+    {
+      "kind": "command",
+      "start_line": 501,
+      "start_col": 5,
+      "end_line": 501,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
       "start_line": 501,
       "start_col": 12,
       "end_line": 501,
       "end_col": 25
     },
     {
-      "kind": "string-dq",
-      "start_line": 501,
-      "start_col": 26,
-      "end_line": 501,
-      "end_col": 29
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
-      "start_line": 502,
-      "start_col": 5,
-      "end_line": 502,
-      "end_col": 11
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 502,
-      "start_col": 12,
-      "end_line": 502,
-      "end_col": 44
-    },
-    {
-      "kind": "var-name",
-      "start_line": 502,
-      "start_col": 12,
-      "end_line": 502,
-      "end_col": 37
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 502,
-      "start_col": 38,
-      "end_line": 502,
-      "end_col": 44
-    },
-    {
-      "kind": "keyword",
-      "op": "export",
+      "kind": "command",
       "start_line": 503,
       "start_col": 5,
       "end_line": 503,
-      "end_col": 11
+      "end_col": 13
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "string-dq",
       "start_line": 503,
-      "start_col": 12,
-      "end_line": 503,
-      "end_col": 50
-    },
-    {
-      "kind": "var-name",
-      "start_line": 503,
-      "start_col": 12,
+      "start_col": 14,
       "end_line": 503,
       "end_col": 33
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 503,
-      "start_col": 34,
-      "end_line": 503,
-      "end_col": 50
     },
     {
       "kind": "command",
@@ -8532,993 +9017,1431 @@
       "end_col": 30
     },
     {
-      "kind": "param-exp",
+      "kind": "keyword",
+      "op": "export",
       "start_line": 505,
       "start_col": 5,
       "end_line": 505,
-      "end_col": 9
+      "end_col": 11
     },
     {
-      "kind": "command",
+      "kind": "var-assign",
+      "op": "=",
       "start_line": 505,
-      "start_col": 10,
+      "start_col": 12,
       "end_line": 505,
-      "end_col": 12
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 505,
+      "start_col": 12,
+      "end_line": 505,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 505,
+      "start_col": 24,
+      "end_line": 505,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 506,
+      "start_col": 5,
+      "end_line": 506,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 506,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 506,
-      "end_col": 10
+      "end_col": 12
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 507,
+      "start_col": 5,
+      "end_line": 507,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 507,
-      "start_col": 5,
+      "start_col": 10,
       "end_line": 507,
-      "end_col": 11
+      "end_col": 12
     },
     {
-      "kind": "string-dq",
-      "start_line": 507,
-      "start_col": 12,
-      "end_line": 507,
-      "end_col": 35
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 509,
+      "kind": "param-exp",
+      "start_line": 508,
       "start_col": 5,
-      "end_line": 509,
-      "end_col": 7
+      "end_line": 508,
+      "end_col": 9
     },
     {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 509,
-      "start_col": 8,
-      "end_line": 509,
-      "end_col": 10
+      "kind": "command",
+      "start_line": 508,
+      "start_col": 10,
+      "end_line": 508,
+      "end_col": 12
     },
     {
       "kind": "param-exp",
       "start_line": 509,
-      "start_col": 11,
+      "start_col": 5,
       "end_line": 509,
-      "end_col": 17
+      "end_col": 9
     },
     {
-      "kind": "test-operator",
-      "op": "==",
+      "kind": "command",
       "start_line": 509,
-      "start_col": 18,
+      "start_col": 10,
       "end_line": 509,
-      "end_col": 20
-    },
-    {
-      "kind": "test-operator",
-      "op": "\u0026\u0026",
-      "start_line": 509,
-      "start_col": 26,
-      "end_line": 509,
-      "end_col": 28
+      "end_col": 12
     },
     {
       "kind": "param-exp",
-      "start_line": 509,
-      "start_col": 29,
-      "end_line": 509,
-      "end_col": 35
-    },
-    {
-      "kind": "test-operator",
-      "op": "-lt",
-      "start_line": 509,
-      "start_col": 36,
-      "end_line": 509,
-      "end_col": 39
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 509,
-      "start_col": 42,
-      "end_line": 509,
-      "end_col": 44
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 509,
-      "start_col": 44,
-      "end_line": 509,
-      "end_col": 45
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 509,
-      "start_col": 46,
-      "end_line": 509,
-      "end_col": 50
+      "start_line": 510,
+      "start_col": 5,
+      "end_line": 510,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 510,
-      "start_col": 7,
+      "start_col": 10,
       "end_line": 510,
-      "end_col": 15
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 510,
-      "start_col": 16,
-      "end_line": 510,
-      "end_col": 51
-    },
-    {
-      "kind": "command",
-      "start_line": 511,
-      "start_col": 7,
-      "end_line": 511,
-      "end_col": 9
-    },
-    {
-      "kind": "command",
-      "start_line": 512,
-      "start_col": 7,
-      "end_line": 512,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 512,
-      "start_col": 13,
-      "end_line": 512,
-      "end_col": 43
-    },
-    {
-      "kind": "command",
-      "start_line": 513,
-      "start_col": 7,
-      "end_line": 513,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 513,
-      "start_col": 13,
-      "end_line": 513,
-      "end_col": 53
-    },
-    {
-      "kind": "command",
-      "start_line": 514,
-      "start_col": 7,
-      "end_line": 514,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 514,
-      "start_col": 13,
-      "end_line": 514,
-      "end_col": 50
-    },
-    {
-      "kind": "command",
-      "start_line": 515,
-      "start_col": 7,
-      "end_line": 515,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 515,
-      "start_col": 13,
-      "end_line": 515,
-      "end_col": 58
-    },
-    {
-      "kind": "command",
-      "start_line": 516,
-      "start_col": 7,
-      "end_line": 516,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 516,
-      "start_col": 13,
-      "end_line": 516,
-      "end_col": 42
-    },
-    {
-      "kind": "command",
-      "start_line": 517,
-      "start_col": 7,
-      "end_line": 517,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 517,
-      "start_col": 13,
-      "end_line": 517,
-      "end_col": 50
-    },
-    {
-      "kind": "command",
-      "start_line": 518,
-      "start_col": 7,
-      "end_line": 518,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 518,
-      "start_col": 13,
-      "end_line": 518,
-      "end_col": 43
-    },
-    {
-      "kind": "command",
-      "start_line": 519,
-      "start_col": 7,
-      "end_line": 519,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 519,
-      "start_col": 13,
-      "end_line": 519,
-      "end_col": 46
-    },
-    {
-      "kind": "command",
-      "start_line": 520,
-      "start_col": 7,
-      "end_line": 520,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 520,
-      "start_col": 13,
-      "end_line": 520,
-      "end_col": 47
-    },
-    {
-      "kind": "command",
-      "start_line": 521,
-      "start_col": 7,
-      "end_line": 521,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 521,
-      "start_col": 13,
-      "end_line": 521,
-      "end_col": 47
-    },
-    {
-      "kind": "command",
-      "start_line": 522,
-      "start_col": 7,
-      "end_line": 522,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 522,
-      "start_col": 13,
-      "end_line": 522,
-      "end_col": 46
-    },
-    {
-      "kind": "command",
-      "start_line": 523,
-      "start_col": 7,
-      "end_line": 523,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 523,
-      "start_col": 13,
-      "end_line": 523,
-      "end_col": 44
-    },
-    {
-      "kind": "command",
-      "start_line": 524,
-      "start_col": 7,
-      "end_line": 524,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 524,
-      "start_col": 13,
-      "end_line": 524,
-      "end_col": 53
-    },
-    {
-      "kind": "command",
-      "start_line": 525,
-      "start_col": 7,
-      "end_line": 525,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 525,
-      "start_col": 13,
-      "end_line": 525,
-      "end_col": 45
-    },
-    {
-      "kind": "command",
-      "start_line": 526,
-      "start_col": 7,
-      "end_line": 526,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 526,
-      "start_col": 13,
-      "end_line": 526,
-      "end_col": 51
-    },
-    {
-      "kind": "command",
-      "start_line": 527,
-      "start_col": 7,
-      "end_line": 527,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 527,
-      "start_col": 13,
-      "end_line": 527,
-      "end_col": 31
-    },
-    {
-      "kind": "command",
-      "start_line": 528,
-      "start_col": 7,
-      "end_line": 528,
       "end_col": 12
     },
     {
       "kind": "command",
+      "start_line": 511,
+      "start_col": 5,
+      "end_line": 511,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 511,
+      "start_col": 12,
+      "end_line": 511,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 513,
+      "start_col": 5,
+      "end_line": 513,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 513,
+      "start_col": 14,
+      "end_line": 513,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 514,
+      "start_col": 5,
+      "end_line": 514,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 514,
+      "start_col": 12,
+      "end_line": 514,
+      "end_col": 38
+    },
+    {
+      "kind": "var-name",
+      "start_line": 514,
+      "start_col": 12,
+      "end_line": 514,
+      "end_col": 30
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 514,
+      "start_col": 31,
+      "end_line": 514,
+      "end_col": 38
+    },
+    {
+      "kind": "command",
+      "start_line": 515,
+      "start_col": 5,
+      "end_line": 515,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 515,
+      "start_col": 23,
+      "end_line": 515,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 515,
+      "start_col": 26,
+      "end_line": 515,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 516,
+      "start_col": 5,
+      "end_line": 516,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 516,
+      "start_col": 10,
+      "end_line": 516,
+      "end_col": 15
+    },
+    {
+      "kind": "command",
+      "start_line": 517,
+      "start_col": 5,
+      "end_line": 517,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 518,
+      "start_col": 5,
+      "end_line": 518,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 519,
+      "start_col": 5,
+      "end_line": 519,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 519,
+      "start_col": 12,
+      "end_line": 519,
+      "end_col": 26
+    },
+    {
+      "kind": "command",
+      "start_line": 521,
+      "start_col": 5,
+      "end_line": 521,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 521,
+      "start_col": 14,
+      "end_line": 521,
+      "end_col": 38
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 522,
+      "start_col": 5,
+      "end_line": 522,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 522,
+      "start_col": 12,
+      "end_line": 522,
+      "end_col": 76
+    },
+    {
+      "kind": "var-name",
+      "start_line": 522,
+      "start_col": 12,
+      "end_line": 522,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 522,
+      "start_col": 33,
+      "end_line": 522,
+      "end_col": 76
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 523,
+      "start_col": 5,
+      "end_line": 523,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 523,
+      "start_col": 12,
+      "end_line": 523,
+      "end_col": 35
+    },
+    {
+      "kind": "var-name",
+      "start_line": 523,
+      "start_col": 12,
+      "end_line": 523,
+      "end_col": 31
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 523,
+      "start_col": 32,
+      "end_line": 523,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 524,
+      "start_col": 5,
+      "end_line": 524,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 524,
+      "start_col": 12,
+      "end_line": 524,
+      "end_col": 31
+    },
+    {
+      "kind": "var-name",
+      "start_line": 524,
+      "start_col": 12,
+      "end_line": 524,
+      "end_col": 24
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 524,
+      "start_col": 25,
+      "end_line": 524,
+      "end_col": 31
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 525,
+      "start_col": 5,
+      "end_line": 525,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 525,
+      "start_col": 12,
+      "end_line": 525,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 525,
+      "start_col": 12,
+      "end_line": 525,
+      "end_col": 25
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 525,
+      "start_col": 26,
+      "end_line": 525,
+      "end_col": 29
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 526,
+      "start_col": 5,
+      "end_line": 526,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 526,
+      "start_col": 12,
+      "end_line": 526,
+      "end_col": 44
+    },
+    {
+      "kind": "var-name",
+      "start_line": 526,
+      "start_col": 12,
+      "end_line": 526,
+      "end_col": 37
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 526,
+      "start_col": 38,
+      "end_line": 526,
+      "end_col": 44
+    },
+    {
+      "kind": "keyword",
+      "op": "export",
+      "start_line": 527,
+      "start_col": 5,
+      "end_line": 527,
+      "end_col": 11
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 527,
+      "start_col": 12,
+      "end_line": 527,
+      "end_col": 50
+    },
+    {
+      "kind": "var-name",
+      "start_line": 527,
+      "start_col": 12,
+      "end_line": 527,
+      "end_col": 33
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 527,
+      "start_col": 34,
+      "end_line": 527,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 528,
+      "start_col": 5,
+      "end_line": 528,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 528,
+      "start_col": 23,
+      "end_line": 528,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 528,
+      "start_col": 26,
+      "end_line": 528,
+      "end_col": 30
+    },
+    {
+      "kind": "param-exp",
       "start_line": 529,
-      "start_col": 7,
+      "start_col": 5,
+      "end_line": 529,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 529,
+      "start_col": 10,
       "end_line": 529,
       "end_col": 12
     },
     {
       "kind": "command",
       "start_line": 530,
-      "start_col": 7,
+      "start_col": 5,
       "end_line": 530,
+      "end_col": 10
+    },
+    {
+      "kind": "command",
+      "start_line": 531,
+      "start_col": 5,
+      "end_line": 531,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 531,
+      "start_col": 12,
+      "end_line": 531,
+      "end_col": 35
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 533,
+      "start_col": 5,
+      "end_line": 533,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 533,
+      "start_col": 8,
+      "end_line": 533,
+      "end_col": 10
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 533,
+      "start_col": 11,
+      "end_line": 533,
+      "end_col": 17
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 533,
+      "start_col": 18,
+      "end_line": 533,
+      "end_col": 20
+    },
+    {
+      "kind": "test-operator",
+      "op": "\u0026\u0026",
+      "start_line": 533,
+      "start_col": 26,
+      "end_line": 533,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 533,
+      "start_col": 29,
+      "end_line": 533,
+      "end_col": 35
+    },
+    {
+      "kind": "test-operator",
+      "op": "-lt",
+      "start_line": 533,
+      "start_col": 36,
+      "end_line": 533,
+      "end_col": 39
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 533,
+      "start_col": 42,
+      "end_line": 533,
+      "end_col": 44
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 533,
+      "start_col": 44,
+      "end_line": 533,
+      "end_col": 45
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 533,
+      "start_col": 46,
+      "end_line": 533,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 534,
+      "start_col": 7,
+      "end_line": 534,
+      "end_col": 15
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 534,
+      "start_col": 16,
+      "end_line": 534,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 535,
+      "start_col": 7,
+      "end_line": 535,
       "end_col": 9
     },
     {
       "kind": "command",
-      "start_line": 531,
+      "start_line": 536,
       "start_col": 7,
-      "end_line": 531,
-      "end_col": 10
+      "end_line": 536,
+      "end_col": 9
     },
     {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 531,
-      "start_col": 11,
-      "end_line": 531,
-      "end_col": 13
+      "kind": "string-dq",
+      "start_line": 536,
+      "start_col": 13,
+      "end_line": 536,
+      "end_col": 43
     },
     {
-      "kind": "heredoc-delim",
-      "start_line": 531,
-      "start_col": 14,
-      "end_line": 531,
-      "end_col": 17,
-      "expand": true
+      "kind": "command",
+      "start_line": 537,
+      "start_col": 7,
+      "end_line": 537,
+      "end_col": 9
     },
     {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 531,
-      "start_col": 18,
-      "end_line": 531,
-      "end_col": 19
+      "kind": "string-dq",
+      "start_line": 537,
+      "start_col": 13,
+      "end_line": 537,
+      "end_col": 53
     },
     {
-      "kind": "heredoc-delim",
+      "kind": "command",
+      "start_line": 538,
+      "start_col": 7,
+      "end_line": 538,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 538,
+      "start_col": 13,
+      "end_line": 538,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 539,
+      "start_col": 7,
+      "end_line": 539,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 539,
+      "start_col": 13,
+      "end_line": 539,
+      "end_col": 58
+    },
+    {
+      "kind": "command",
+      "start_line": 540,
+      "start_col": 7,
+      "end_line": 540,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 540,
+      "start_col": 13,
+      "end_line": 540,
+      "end_col": 42
+    },
+    {
+      "kind": "command",
+      "start_line": 541,
+      "start_col": 7,
+      "end_line": 541,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 541,
+      "start_col": 13,
+      "end_line": 541,
+      "end_col": 50
+    },
+    {
+      "kind": "command",
+      "start_line": 542,
+      "start_col": 7,
+      "end_line": 542,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 542,
+      "start_col": 13,
+      "end_line": 542,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 543,
+      "start_col": 7,
+      "end_line": 543,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 543,
+      "start_col": 13,
+      "end_line": 543,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 544,
+      "start_col": 7,
+      "end_line": 544,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 544,
+      "start_col": 13,
+      "end_line": 544,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
       "start_line": 545,
-      "start_col": 1,
+      "start_col": 7,
       "end_line": 545,
-      "end_col": 4,
-      "expand": true
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 545,
+      "start_col": 13,
+      "end_line": 545,
+      "end_col": 47
     },
     {
       "kind": "command",
       "start_line": 546,
       "start_col": 7,
       "end_line": 546,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 546,
+      "start_col": 13,
+      "end_line": 546,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 547,
+      "start_col": 7,
+      "end_line": 547,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 547,
+      "start_col": 13,
+      "end_line": 547,
+      "end_col": 44
+    },
+    {
+      "kind": "command",
+      "start_line": 548,
+      "start_col": 7,
+      "end_line": 548,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 548,
+      "start_col": 13,
+      "end_line": 548,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 549,
+      "start_col": 7,
+      "end_line": 549,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 549,
+      "start_col": 13,
+      "end_line": 549,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 550,
+      "start_col": 7,
+      "end_line": 550,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 550,
+      "start_col": 13,
+      "end_line": 550,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 551,
+      "start_col": 7,
+      "end_line": 551,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 551,
+      "start_col": 13,
+      "end_line": 551,
+      "end_col": 31
+    },
+    {
+      "kind": "command",
+      "start_line": 552,
+      "start_col": 7,
+      "end_line": 552,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 553,
+      "start_col": 7,
+      "end_line": 553,
+      "end_col": 12
+    },
+    {
+      "kind": "command",
+      "start_line": 554,
+      "start_col": 7,
+      "end_line": 554,
+      "end_col": 9
+    },
+    {
+      "kind": "command",
+      "start_line": 555,
+      "start_col": 7,
+      "end_line": 555,
       "end_col": 10
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c",
-      "start_line": 546,
+      "start_line": 555,
       "start_col": 11,
-      "end_line": 546,
+      "end_line": 555,
       "end_col": 13
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 546,
+      "start_line": 555,
       "start_col": 14,
-      "end_line": 546,
+      "end_line": 555,
       "end_col": 17,
       "expand": true
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 546,
+      "start_line": 555,
       "start_col": 18,
-      "end_line": 546,
+      "end_line": 555,
       "end_col": 19
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 560,
+      "start_line": 569,
       "start_col": 1,
-      "end_line": 560,
+      "end_line": 569,
       "end_col": 4,
       "expand": true
     },
     {
       "kind": "command",
-      "start_line": 561,
+      "start_line": 570,
       "start_col": 7,
-      "end_line": 561,
+      "end_line": 570,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 570,
+      "start_col": 11,
+      "end_line": 570,
+      "end_col": 13
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 570,
+      "start_col": 14,
+      "end_line": 570,
+      "end_col": 17,
+      "expand": true
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 570,
+      "start_col": 18,
+      "end_line": 570,
+      "end_col": 19
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 584,
+      "start_col": 1,
+      "end_line": 584,
+      "end_col": 4,
+      "expand": true
+    },
+    {
+      "kind": "command",
+      "start_line": 585,
+      "start_col": 7,
+      "end_line": 585,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 561,
+      "start_line": 585,
       "start_col": 14,
-      "end_line": 561,
+      "end_line": 585,
       "end_col": 49
     },
     {
       "kind": "command",
-      "start_line": 562,
+      "start_line": 586,
       "start_col": 7,
-      "end_line": 562,
+      "end_line": 586,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 562,
+      "start_line": 586,
       "start_col": 16,
-      "end_line": 562,
+      "end_line": 586,
       "end_col": 132
     },
     {
       "kind": "command",
-      "start_line": 564,
+      "start_line": 588,
       "start_col": 7,
-      "end_line": 564,
+      "end_line": 588,
       "end_col": 15
     },
     {
       "kind": "string-dq",
-      "start_line": 564,
+      "start_line": 588,
       "start_col": 16,
-      "end_line": 564,
+      "end_line": 588,
       "end_col": 35
     },
     {
       "kind": "command",
-      "start_line": 565,
+      "start_line": 589,
       "start_col": 7,
-      "end_line": 565,
+      "end_line": 589,
       "end_col": 10
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c",
-      "start_line": 565,
+      "start_line": 589,
       "start_col": 11,
-      "end_line": 565,
+      "end_line": 589,
       "end_col": 13
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 565,
+      "start_line": 589,
       "start_col": 14,
-      "end_line": 565,
+      "end_line": 589,
       "end_col": 17,
       "expand": true
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 565,
+      "start_line": 589,
       "start_col": 18,
-      "end_line": 565,
+      "end_line": 589,
       "end_col": 19
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 583,
+      "start_line": 607,
       "start_col": 1,
-      "end_line": 583,
+      "end_line": 607,
       "end_col": 4,
       "expand": true
     },
     {
       "kind": "command",
-      "start_line": 585,
+      "start_line": 609,
       "start_col": 7,
-      "end_line": 585,
+      "end_line": 609,
       "end_col": 10
     },
     {
       "kind": "operator",
       "op": "\u003c\u003c",
-      "start_line": 585,
+      "start_line": 609,
       "start_col": 11,
-      "end_line": 585,
+      "end_line": 609,
       "end_col": 13
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 585,
+      "start_line": 609,
       "start_col": 14,
-      "end_line": 585,
+      "end_line": 609,
       "end_col": 17,
       "expand": true
     },
     {
       "kind": "operator",
       "op": "\u003e",
-      "start_line": 585,
+      "start_line": 609,
       "start_col": 18,
-      "end_line": 585,
+      "end_line": 609,
       "end_col": 19
     },
     {
       "kind": "heredoc-delim",
-      "start_line": 603,
+      "start_line": 627,
       "start_col": 1,
-      "end_line": 603,
+      "end_line": 627,
       "end_col": 4,
       "expand": true
     },
     {
       "kind": "command",
-      "start_line": 604,
+      "start_line": 628,
       "start_col": 7,
-      "end_line": 604,
+      "end_line": 628,
       "end_col": 16
     },
     {
       "kind": "command",
-      "start_line": 605,
+      "start_line": 629,
       "start_col": 7,
-      "end_line": 605,
+      "end_line": 629,
       "end_col": 13
     },
     {
       "kind": "string-dq",
-      "start_line": 605,
+      "start_line": 629,
       "start_col": 14,
-      "end_line": 605,
+      "end_line": 629,
       "end_col": 32
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 606,
+      "start_line": 630,
       "start_col": 5,
-      "end_line": 606,
+      "end_line": 630,
       "end_col": 7
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 607,
+      "start_line": 631,
       "start_col": 3,
-      "end_line": 607,
+      "end_line": 631,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 609,
+      "start_line": 633,
       "start_col": 3,
-      "end_line": 609,
+      "end_line": 633,
       "end_col": 11
     },
     {
       "kind": "string-dq",
-      "start_line": 609,
+      "start_line": 633,
       "start_col": 12,
-      "end_line": 609,
+      "end_line": 633,
       "end_col": 31
     },
     {
       "kind": "command",
-      "start_line": 610,
+      "start_line": 634,
       "start_col": 3,
-      "end_line": 610,
+      "end_line": 634,
       "end_col": 12
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 3,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 6,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 8
     },
     {
       "kind": "cmd-subst",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 9,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 47
     },
     {
       "kind": "command",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 11,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 20
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 48,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 50
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 59,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 61
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 61,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 62
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 611,
+      "start_line": 635,
       "start_col": 63,
-      "end_line": 611,
+      "end_line": 635,
       "end_col": 67
     },
     {
       "kind": "command",
-      "start_line": 612,
+      "start_line": 636,
       "start_col": 5,
-      "end_line": 612,
+      "end_line": 636,
       "end_col": 14
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 613,
+      "start_line": 637,
       "start_col": 3,
-      "end_line": 613,
+      "end_line": 637,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 3,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 6,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 8
     },
     {
       "kind": "cmd-subst",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 9,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 46
     },
     {
       "kind": "command",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 11,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 20
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 47,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 49
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 58,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 60
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 60,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 61
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 614,
+      "start_line": 638,
       "start_col": 62,
-      "end_line": 614,
+      "end_line": 638,
       "end_col": 66
     },
     {
       "kind": "command",
-      "start_line": 615,
+      "start_line": 639,
       "start_col": 5,
-      "end_line": 615,
+      "end_line": 639,
       "end_col": 14
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 616,
+      "start_line": 640,
       "start_col": 3,
-      "end_line": 616,
+      "end_line": 640,
       "end_col": 5
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 3,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 5
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 6,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 8
     },
     {
       "kind": "cmd-subst",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 9,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 49
     },
     {
       "kind": "command",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 11,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 20
     },
     {
       "kind": "test-operator",
       "op": "==",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 50,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 52
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 61,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 63
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 63,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 64
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 617,
+      "start_line": 641,
       "start_col": 65,
-      "end_line": 617,
+      "end_line": 641,
       "end_col": 69
     },
     {
       "kind": "command",
-      "start_line": 618,
+      "start_line": 642,
       "start_col": 5,
-      "end_line": 618,
+      "end_line": 642,
       "end_col": 14
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 619,
+      "start_line": 643,
       "start_col": 3,
-      "end_line": 619,
+      "end_line": 643,
       "end_col": 5
     },
     {
       "kind": "command",
-      "start_line": 620,
+      "start_line": 644,
       "start_col": 3,
-      "end_line": 620,
+      "end_line": 644,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 620,
+      "start_line": 644,
       "start_col": 10,
-      "end_line": 620,
+      "end_line": 644,
       "end_col": 28
     },
     {
       "kind": "command",
-      "start_line": 621,
+      "start_line": 645,
       "start_col": 3,
-      "end_line": 621,
+      "end_line": 645,
       "end_col": 9
     },
     {
       "kind": "string-dq",
-      "start_line": 621,
+      "start_line": 645,
       "start_col": 10,
-      "end_line": 621,
+      "end_line": 645,
       "end_col": 33
     },
     {
       "kind": "command",
-      "start_line": 622,
+      "start_line": 646,
       "start_col": 3,
-      "end_line": 622,
+      "end_line": 646,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "}",
-      "start_line": 623,
+      "start_line": 647,
       "start_col": 1,
-      "end_line": 623,
+      "end_line": 647,
       "end_col": 2
     },
     {
       "kind": "comment",
-      "start_line": 625,
+      "start_line": 649,
       "start_col": 1,
-      "end_line": 625,
+      "end_line": 649,
       "end_col": 22
     },
     {
       "kind": "comment",
-      "start_line": 626,
+      "start_line": 650,
       "start_col": 1,
-      "end_line": 626,
+      "end_line": 650,
       "end_col": 28
     },
     {
       "kind": "comment",
-      "start_line": 627,
+      "start_line": 651,
       "start_col": 1,
-      "end_line": 627,
+      "end_line": 651,
       "end_col": 61
     },
     {
       "kind": "command",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 1,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 7
     },
     {
       "kind": "proc-subst",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 8,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 10,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 14
     },
     {
       "kind": "string-dq",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 21,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 22,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 66,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 77
     },
     {
       "kind": "string-dq",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 81,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 85
     },
     {
       "kind": "param-exp",
-      "start_line": 628,
+      "start_line": 652,
       "start_col": 82,
-      "end_line": 628,
+      "end_line": 652,
       "end_col": 84
     }
   ],
-  "bootstrap_line": 628,
+  "bootstrap_line": 652,
   "hooks": {
     "header_info": false,
     "install_script": true,
