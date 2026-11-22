@@ -64,7 +64,9 @@ function install_script() {
   cd /opt/Byparr || exit
   $STD uv sync --link-mode copy
   $STD uv run playwright install-deps firefox
-  $STD uv run python -m invisible_playwright fetch
+  local browser_module
+  browser_module=$(uv run python -c 'import importlib.util; print("invisible_playwright" if importlib.util.find_spec("invisible_playwright") is not None else "camoufox")')
+  $STD uv run python -m "$browser_module" fetch
   msg_ok "Configured Byparr"
 
   msg_info "Creating Service"
@@ -105,8 +107,8 @@ function update_script() {
   fi
 
   if [[ -f /opt/Byparr/.env ]]; then
-    chown root:root /opt/Byparr/.env
-    chmod 0600 /opt/Byparr/.env
+    [[ "$(stat -c %u:%g /opt/Byparr/.env)" == 0:0 ]] || chown root:root /opt/Byparr/.env
+    [[ "$(stat -c %a /opt/Byparr/.env)" == 600 ]] || chmod 0600 /opt/Byparr/.env
   fi
 
   if check_for_gh_release "Byparr" "ThePhaseless/Byparr"; then
@@ -163,7 +165,9 @@ function update_script() {
     cd /opt/Byparr || exit
     $STD uv sync --link-mode copy
     $STD uv run playwright install-deps firefox
-    $STD uv run python -m invisible_playwright fetch
+    local browser_module
+    browser_module=$(uv run python -c 'import importlib.util; print("invisible_playwright" if importlib.util.find_spec("invisible_playwright") is not None else "camoufox")')
+    $STD uv run python -m "$browser_module" fetch
     msg_ok "Configured Byparr"
 
     msg_info "Starting Service"
