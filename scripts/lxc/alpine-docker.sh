@@ -20,8 +20,6 @@ var_arm64="${var_arm64:-yes}"
 var_unprivileged="${var_unprivileged:-1}"
 
 function install_script() {
-  ARCH=$(uname -m)
-
   msg_info "Installing Dependencies"
   $STD apk add tzdata openssl
   msg_ok "Installed Dependencies"
@@ -32,10 +30,10 @@ function install_script() {
   msg_ok "Installed Docker"
 
   msg_info "Installing Docker Compose"
-  DOCKER_COMPOSE_LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-  mkdir -p ~/.docker/cli-plugins
-  curl -fsSL "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_LATEST_VERSION/docker-compose-linux-${ARCH}" -o ~/.docker/cli-plugins/docker-compose
-  chmod +x ~/.docker/cli-plugins/docker-compose
+  local arch
+  arch=$(get_system_arch uname x86_64 aarch64)
+  fetch_and_deploy_gh_release "docker-compose" "docker/compose" "singlefile" "latest" "$HOME/.docker/cli-plugins" "docker-compose-linux-${arch}"
+  $STD docker compose version
   msg_ok "Installed Docker Compose"
 
   msg_info "Starting Docker"
@@ -61,10 +59,13 @@ function update_script() {
   msg_ok "Updated $APP LXC"
 
   msg_info "Updating Docker Compose"
-  DOCKER_COMPOSE_LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-  ARCH=$(uname -m)
-  curl -fsSL "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_LATEST_VERSION/docker-compose-linux-${ARCH}" -o ~/.docker/cli-plugins/docker-compose
-  chmod +x ~/.docker/cli-plugins/docker-compose
+  local arch
+  arch=$(get_system_arch uname x86_64 aarch64)
+  if ! docker compose version > /dev/null 2>&1; then
+    export FORCE_DEPLOY=1
+  fi
+  fetch_and_deploy_gh_release "docker-compose" "docker/compose" "singlefile" "latest" "$HOME/.docker/cli-plugins" "docker-compose-linux-${arch}"
+  $STD docker compose version
   msg_ok "Updated Docker Compose"
   msg_ok "Updated successfully!"
   exit 0
