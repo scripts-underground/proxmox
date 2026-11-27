@@ -2,7 +2,7 @@
 slug: rea
 title: REA
 tags: [reverse-engineering, tools]
-logo: https://raw.githubusercontent.com/morluto/rea/ded199abcde611a0ba4739ecb536e0ede0075670/website/public/assets/favicon.svg
+logo: /assets/logos/rea.webp
 by: alexindigo
 repo: https://github.com/morluto/rea
 site: https://github.com/morluto/rea
