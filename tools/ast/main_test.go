@@ -4,9 +4,51 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestUserCreationCommands(t *testing.T) {
+	cases := []struct {
+		name, src string
+		want      []ScriptUser
+	}{
+		{"or", `useradd --system rea || return "$?"`, []ScriptUser{{Name: "rea", Source: "useradd", Line: 1}}},
+		{"and", `useradd first&&echo meanwhile`, []ScriptUser{{Name: "first", Source: "useradd", Line: 1}}},
+		{"semicolon", `useradd beta; adduser -D alpha`, []ScriptUser{{Name: "alpha", Source: "adduser", Line: 1}, {Name: "beta", Source: "useradd", Line: 1}}},
+		{"pipe", `useradd piped | tee log`, []ScriptUser{{Name: "piped", Source: "useradd", Line: 1}}},
+		{"multiline", "# setup\n$STD useradd --system \\\n  --comment 'Worker account' \\\n  \"worker\" 2>log", []ScriptUser{{Name: "worker", Source: "useradd", Line: 2}}},
+		{"redirection", `useradd -r logged 2>report`, []ScriptUser{{Name: "logged", Source: "useradd", Line: 1}}},
+		{"literal wrapper and quotes", `silent adduser --system --gecos 'A system user' 'worker'`, []ScriptUser{{Name: "worker", Source: "adduser", Line: 1}}},
+		{"trailing options", `useradd service -g worker -s "$(which bash)"`, []ScriptUser{{Name: "service", Source: "useradd", Line: 1}}},
+		{"attached values", `"useradd" -rgworkers --shell="$SHELL" -- build_user`, []ScriptUser{{Name: "build_user", Source: "useradd", Line: 1}}},
+		{"system flag in operand", `adduser --gecos --system not_created`, nil},
+		{"command word as identity", `useradd return && echo done`, []ScriptUser{{Name: "return", Source: "useradd", Line: 1}}},
+		{"duplicate", "$STD adduser -D shared\nuseradd shared", []ScriptUser{{Name: "shared", Source: "adduser", Line: 1}}},
+		{"dynamic identity", `useradd -g unrelated "$SERVICE_USER"`, nil},
+		{"dynamic command", `useradd${suffix} --system invented`, nil},
+		{"adduser group membership", `adduser existing group; echo --system`, nil},
+		{"noncommand text", `# useradd comment
+echo "example useradd quoted ignored"
+printf '%s\n' useradd argument
+cat <<'EOF'
+useradd heredoc
+EOF`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var violations []string
+			got := analyzeScript(tc.src, TypePVE, "test", &violations).Users
+			if len(violations) > 0 {
+				t.Fatalf("unexpected violations: %v", violations)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("users = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestAddonReleaseCheckPolicy(t *testing.T) {
 	good := `if check_for_gh_release app owner/repo; then :; else

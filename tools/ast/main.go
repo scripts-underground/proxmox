@@ -1103,70 +1103,109 @@ func extractOpenRCServices(heredocs []Heredoc, lines []string) []OpenRCService {
 	return services
 }
 
-func extractUserCreations(lines []string) map[string]ScriptUser {
-	users := map[string]ScriptUser{}
-	for li, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		fields := strings.Fields(trimmed)
-
-		for fi, f := range fields {
-			if f != "useradd" && f != "adduser" {
-				continue
-			}
-			// Skip Debian interactive adduser (no flags, first-arg-is-username mode) when it's
-			// clearly the system variant (has --system flag elsewhere)
-			if f == "adduser" {
-				hasSystem := false
-				for _, af := range fields {
-					if af == "--system" || af == "--group" || af == "-D" || af == "-H" {
-						hasSystem = true
-						break
-					}
-				}
-				if !hasSystem {
-					continue
-				}
-			}
-			// Find the username: for useradd/adduser --system, the
-			// username is the last positional argument. Scan from the end
-			// to skip flags/values/quoted-strings that may be split by spaces.
-			userName := ""
-			for ai := len(fields) - 1; ai > fi; ai-- {
-				arg := fields[ai]
-				userName = ""
-				if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "$") || arg == "STDL" {
-					continue
-				}
-				// Skip shell operators (continue past them in reverse)
-				if arg == "||" || arg == "&&" || arg == ";" || arg == "|" {
-					continue
-				}
-				// Skip quote fragments from split quoted strings
-				if strings.HasPrefix(arg, "'") || strings.HasPrefix(arg, "\"") {
-					continue
-				}
-				// Skip shell builtins and path-like tokens
-				if arg == "true" || arg == "false" {
-					continue
-				}
-				userName = strings.Trim(arg, `"'`)
-				userName = strings.TrimSuffix(userName, "`")
-				if userName != "" && !strings.Contains(userName, "/") {
-					break
-				}
-			}
-			if userName != "" {
-				if _, exists := users[userName]; !exists {
-					users[userName] = ScriptUser{
-						Name:   userName,
-						Source: f,
-						Line:   li + 1,
-					}
-				}
-			}
-			break
+func accountOptionTakesValue(command, option string) bool {
+	if command == "useradd" {
+		switch option {
+		case "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-k", "-K", "-p", "-P", "-R", "-s", "-u", "-Z",
+			"--base-dir", "--comment", "--home", "--home-dir", "--expiredate", "--inactive", "--gid", "--groups",
+			"--skel", "--key", "--password", "--prefix", "--root", "--shell", "--uid", "--selinux-user", "--selinux-range":
+			return true
+		}
+	} else {
+		// Debian adduser and Alpine's BusyBox adduser use different options.
+		switch option {
+		case "-g", "-G", "-h", "-k", "-s", "-u", "--comment", "--conf", "--firstgid", "--firstuid", "--gecos",
+			"--gid", "--home", "--ingroup", "--lastgid", "--lastuid", "--shell", "--skel", "--uid":
+			return true
 		}
 	}
+	return false
+}
+
+func accountCreationName(command string, args []*syntax.Word) string {
+	var name string
+	options, system := true, false
+	for i := 0; i < len(args); i++ {
+		arg, literal := sourceIdentityLiteral(args[i])
+		if !literal && options {
+			// A long option can own an expansion in the same word: --shell="$SHELL".
+			if prefix, ok := args[i].Parts[0].(*syntax.Lit); ok && strings.HasPrefix(prefix.Value, "--") && strings.Contains(prefix.Value, "=") {
+				continue
+			}
+		}
+		switch {
+		case !literal:
+			return ""
+		case options && arg == "--":
+			options = false
+		case options && strings.HasPrefix(arg, "--"):
+			flag, _, attached := strings.Cut(arg, "=")
+			if !attached {
+				system = system || flag == "--system" || flag == "--group"
+				if accountOptionTakesValue(command, flag) {
+					i++
+					if i == len(args) {
+						return ""
+					}
+				}
+			}
+		case options && strings.HasPrefix(arg, "-") && len(arg) > 1:
+			for j := 1; j < len(arg); j++ {
+				flag := arg[j]
+				if accountOptionTakesValue(command, "-"+string(flag)) {
+					if j == len(arg)-1 {
+						i++
+						if i == len(args) {
+							return ""
+						}
+					}
+					break // The remainder of a short-option cluster is its operand.
+				}
+				system = system || flag == 'D' || flag == 'H'
+			}
+		default:
+			if name != "" || arg == "" || strings.ContainsRune(arg, '/') {
+				return ""
+			}
+			name = arg
+		}
+	}
+	if command == "adduser" && !system {
+		return ""
+	}
+	return name
+}
+
+func extractUserCreations(file *syntax.File) map[string]ScriptUser {
+	users := map[string]ScriptUser{}
+	first := map[string]uint{}
+	syntax.Walk(file, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		args := call.Args
+		command, literal := sourceIdentityLiteral(args[0])
+		if parameter, ok := args[0].Parts[0].(*syntax.ParamExp); (literal && command == "silent") ||
+			(ok && len(args[0].Parts) == 1 && parameter.Short && parameter.Param.Value == "STD") {
+			args = args[1:]
+			if len(args) == 0 {
+				return true
+			}
+			command, literal = sourceIdentityLiteral(args[0])
+		}
+		if !literal || (command != "useradd" && command != "adduser") {
+			return true
+		}
+		if name := accountCreationName(command, args[1:]); name != "" {
+			pos := args[0].Pos()
+			if offset, exists := first[name]; !exists || pos.Offset() < offset {
+				first[name] = pos.Offset()
+				users[name] = ScriptUser{Name: name, Source: command, Line: int(pos.Line())}
+			}
+		}
+		return true
+	})
 	return users
 }
 
@@ -1178,6 +1217,9 @@ func resolveUsers(userCreations map[string]ScriptUser, systemdSvcs []SystemdServ
 		result = append(result, u)
 		seen[name] = true
 	}
+	// A compound command can discover multiple accounts on one line.
+	// Do not let map iteration order leak into their generated records.
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 
 	for _, svc := range systemdSvcs {
 		if svc.User == "" || svc.User == "root" || seen[svc.User] {
@@ -1528,7 +1570,7 @@ func analyzeScript(src string, scriptType ScriptType, slug string, violations *[
 
 	systemdSvcs := extractSystemdServices(w.heredocs, lines)
 	openrcSvcs := extractOpenRCServices(w.heredocs, lines)
-	userCreations := extractUserCreations(lines)
+	userCreations := extractUserCreations(astFile)
 	users := resolveUsers(userCreations, systemdSvcs, openrcSvcs)
 	prompts := extractInteractivePrompts(lines)
 
