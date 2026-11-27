@@ -6,13 +6,14 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-hooks/harness.sh"
 app=rea
 script_type=lxc
-variants=(fresh dependencies current update pending broken missing download checksum runtime)
+variants=(fresh dependencies current update pending broken missing download checksum runtime install-unpublished install-published update-unpublished update-published)
 hook_paths=(/srv/rea rea /home/rea account /usr/local/lib local/lib)
 
 runtime_hooks_variant() {
   case "$variant" in
     dependencies) role=install fault=dependencies ;;
     checksum) fault=checksum ;;
+    install-* | update-*) role=${variant%-*} fault=${variant##*-} ;;
   esac
 }
 
@@ -28,7 +29,7 @@ runtime_hooks_setup() {
   if [[ "$role" == update ]]; then
     mkdir -p "$c/rea/"{bin,jobs,releases/old/bin}
     printf 'saved job\n' > "$c/rea/jobs/job"
-    printf 'operator environment\n' > "$c/rea/environment.sh"
+    printf 'export REA_FIXTURE_SETTING=operator\n' > "$c/rea/environment.sh"
     printf 'operator key fixture\n' > "$c/account/.ssh/authorized_keys"
     chmod 0600 "$c/account/.ssh/authorized_keys"
     install -m 0755 /bin/true "$c/rea/releases/old/bin/rea"
@@ -40,6 +41,11 @@ runtime_hooks_setup() {
     if [[ "$variant" == pending || "$variant" == broken ]]; then printf 'normal\n' > "$c/state/$app"; fi
     if [[ "$variant" == broken ]]; then rm -- "$c/rea/current" "$c/rea/bin/rea" "$c/rea/bin/apktool"; fi
     if [[ "$variant" == missing ]]; then rm -- "$c/rea/current"; fi
+  fi
+  if [[ "$fault" == unpublished || "$fault" == published ]]; then
+    mkdir -p "$c/launcher-bin"
+    printf '#!/bin/sh\nprintf "rea\\n"\n' > "$c/launcher-bin/id"
+    chmod 0755 "$c/launcher-bin/id"
   fi
 }
 
@@ -74,11 +80,30 @@ runtime_hooks_model() {
   }
   tar() { printf 'node unpack\n' >> "$c/build-steps"; }
   unzip() { printf 'ghidra unpack\n' >> "$c/build-steps"; }
+  mv() {
+    if [[ "$APP_FAULT" == unpublished || "$APP_FAULT" == published ]] &&
+      [[ $# == 4 && "$1 $2" == '-Tf --' && "$3" == "$c/rea/releases/"*/next && "$4" == "$c/rea/current" ]]; then
+      readlink -- "$3" > "$c/candidate" || return "$?"
+      if [[ "$APP_FAULT" == published ]]; then command mv "$@" || return "$?"; fi
+      # Exit the deploy subshell at the rename boundary, before its caller can
+      # execute another statement. The real EXIT trap owns the cleanup.
+      exit 99
+    fi
+    command mv "$@"
+  }
   runuser() {
     [[ "$1 $2 $3" == '-u rea --' ]] || return 70
     shift 3
     if [[ "$1" == env ]]; then
       printf 'build\n' >> "$c/build-steps"
+      if [[ "$APP_FAULT" == unpublished || "$APP_FAULT" == published ]]; then
+        local node_bin="${!#}/tools/node-v${var_lxc_node_version}-linux-x64/bin"
+        local scripts="${!#}/runtime/node_modules/rea-agents/scripts"
+        mkdir -p "$node_bin" "$scripts"
+        printf '%s\n' '#!/bin/sh' 'test -f "$1" && test "$2" = --help && printf "new REA: %s\n" "${REA_FIXTURE_SETTING:-default}"' > "$node_bin/node"
+        chmod 0755 "$node_bin/node"
+        : > "$scripts/rea.mjs"
+      fi
       return
     fi
     [[ -x "$1" ]] || return 127
@@ -109,13 +134,14 @@ runtime_hooks_expected() {
     dependencies) expected=42 ;;
     missing | checksum | runtime) expected=1 ;;
     download) expected=22 ;;
+    *-unpublished | *-published) expected=99 ;;
   esac
 }
 
 runtime_hooks_assert() {
   if [[ "$role" == update ]]; then
     check "$(cat "$c/rea/jobs/job")" 'saved job' "$app/$variant job bytes"
-    check "$(cat "$c/rea/environment.sh")" 'operator environment' "$app/$variant environment bytes"
+    check "$(cat "$c/rea/environment.sh")" 'export REA_FIXTURE_SETTING=operator' "$app/$variant environment bytes"
     check "$(cat "$c/account/.ssh/authorized_keys")" 'operator key fixture' "$app/$variant key bytes"
     check "$(stat -c %a "$c/account/.ssh/authorized_keys")" 600 "$app/$variant key mode"
   fi
@@ -140,6 +166,30 @@ runtime_hooks_assert() {
       check "$(find "$c/rea/releases" -mindepth 1 -maxdepth 1 -printf '%f\n')" old "$app/$variant only failed stage removed"
       if [[ "$variant" != runtime ]]; then
         check "$(test ! -e "$c/build-steps" && printf yes || printf no)" yes "$app/$variant failed download never unpacked"
+      fi
+      ;;
+    *-unpublished | *-published)
+      local label="$app/$mode/$variant" candidate prior='' output rc=0 setting=default
+      candidate=$(cat "$c/candidate" 2> /dev/null || true)
+      check "${candidate%/*}" releases "$label reached publication with a candidate"
+      if [[ "$role" == update ]]; then
+        prior=releases/old setting=operator
+        check "$("$c/rea/releases/old/bin/rea" && printf yes || printf no)" yes "$label previous release remains usable"
+      fi
+      if [[ "$fault" == published ]]; then
+        check "$(readlink "$c/rea/current" || true)" "$candidate" "$label current points to the published candidate"
+        check "$(test -s "$c/rea/current/pins" && printf yes || printf no)" yes "$label published candidate retained"
+        output=$(REA_FIXTURE_SETTING=default PATH="$c/launcher-bin:$PATH" "$c/rea/bin/rea" --help 2>&1) || rc=$?
+        check "$rc:$output" "0:new REA: $setting" "$label published launcher works"
+      else
+        check "$(readlink "$c/rea/current" || true)" "$prior" "$label current unchanged before publication"
+        check "$(test ! -e "$c/rea/$candidate" && printf yes || printf no)" yes "$label unpublished candidate removed"
+        if [[ "$role" == update ]]; then
+          output=$("$c/rea/bin/rea" 2>&1) || rc=$?
+          check "$rc:$output" '0:' "$label prior public launcher works"
+        else
+          check "$(test ! -e "$c/rea/bin/rea" && printf yes || printf no)" yes "$label no usable launcher before first publication"
+        fi
       fi
       ;;
     missing | dependencies)

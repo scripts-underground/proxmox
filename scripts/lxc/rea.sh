@@ -81,8 +81,8 @@ rea_deploy() (
   # status in a conditional, where Bash disables errexit inside functions.
   install -d -m 0755 "$base/releases" "$base/bin" || return "$?"
   stage=$(mktemp -d "$base/releases/rea.XXXXXXXX") || return "$?"
-  # Before activation, only the exact directory allocated above belongs to cleanup.
-  trap 'if [[ -n "$stage" ]]; then rm -rf -- "$stage"; fi' EXIT
+  # Once current points to this directory, cleanup no longer owns it.
+  trap 'if [[ ! "$base/current" -ef "$stage" ]]; then rm -rf -- "$stage"; fi' EXIT
   chmod 0755 "$stage" || return "$?"
   src="$stage/source"
   node="node-v${var_lxc_node_version}-linux-x64"
@@ -188,7 +188,6 @@ LAUNCH_APKTOOL
   ln -sfnT ../current/bin/rea "$base/bin/rea" || return "$?"
   ln -sfnT ../current/bin/apktool "$base/bin/apktool" || return "$?"
   mv -Tf -- "$stage/next" "$base/current" || return "$?"
-  stage=''
   msg_ok "Installed REA $var_lxc_rea_version and pinned engines"
 )
 DEPLOY
