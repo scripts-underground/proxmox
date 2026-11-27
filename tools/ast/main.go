@@ -1122,11 +1122,29 @@ func accountOptionTakesValue(command, option string) bool {
 	return false
 }
 
+// A short option and its quoted operand can be parts of the same word.
+// Join only literal parts here, without extending bootstrap identity syntax.
+func accountShortOptionLiteral(word *syntax.Word) (string, bool) {
+	var value strings.Builder
+	for i := range word.Parts {
+		part, literal := sourceIdentityLiteral(&syntax.Word{Parts: word.Parts[i : i+1]})
+		if !literal {
+			return "", false
+		}
+		value.WriteString(part)
+	}
+	arg := value.String()
+	return arg, len(arg) > 1 && arg[0] == '-' && arg[1] != '-'
+}
+
 func accountCreationName(command string, args []*syntax.Word) string {
 	var name string
-	options, system := true, false
+	options, createsUser := true, false
 	for i := 0; i < len(args); i++ {
 		arg, literal := sourceIdentityLiteral(args[i])
+		if !literal && options {
+			arg, literal = accountShortOptionLiteral(args[i])
+		}
 		if !literal && options {
 			// A long option can own an expansion in the same word: --shell="$SHELL".
 			if prefix, ok := args[i].Parts[0].(*syntax.Lit); ok && strings.HasPrefix(prefix.Value, "--") && strings.Contains(prefix.Value, "=") {
@@ -1141,7 +1159,8 @@ func accountCreationName(command string, args []*syntax.Word) string {
 		case options && strings.HasPrefix(arg, "--"):
 			flag, _, attached := strings.Cut(arg, "=")
 			if !attached {
-				system = system || flag == "--system" || flag == "--group"
+				// Debian's --group alone creates a group, not a user.
+				createsUser = createsUser || flag == "--system"
 				if accountOptionTakesValue(command, flag) {
 					i++
 					if i == len(args) {
@@ -1161,7 +1180,7 @@ func accountCreationName(command string, args []*syntax.Word) string {
 					}
 					break // The remainder of a short-option cluster is its operand.
 				}
-				system = system || flag == 'D' || flag == 'H'
+				createsUser = createsUser || flag == 'D' || flag == 'H' || flag == 'S'
 			}
 		default:
 			if name != "" || arg == "" || strings.ContainsRune(arg, '/') {
@@ -1170,7 +1189,7 @@ func accountCreationName(command string, args []*syntax.Word) string {
 			name = arg
 		}
 	}
-	if command == "adduser" && !system {
+	if command == "adduser" && !createsUser {
 		return ""
 	}
 	return name
