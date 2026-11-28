@@ -49,18 +49,37 @@ Your computer                   Proxmox host / Debian 13 LXC
 
 REA starts and manages the analysis engines; requests and results travel over the same SSH connection. Copy input files into the container before requesting analysis. The heap sizes shown are defaults, configurable in `/srv/rea/environment.sh`.
 
-## Access
+## Setup and access
 
-The `rea` account has no sudo access and no usable password. As root inside the container, add your own public key to `/home/rea/.ssh/authorized_keys`; give `rea` ownership and set mode `0600`. The `.ssh` directory is created with mode `0700`. Verify the SSH host key fingerprint from the container console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) and pin the corresponding key on the client before connecting.
+Interactive installation adds two stages after the usual container settings:
 
-Use this stdio MCP command, replacing `<container-address>` with your container's address:
+1. **Access method:** choose an SSH key, a password, or both. Both lets you sign in with either method; it is not two-factor authentication. Choose key or both for unattended MCP. Password-only access is for interactive SSH clients.
+2. **Credentials:** depending on the method, select a public key, enter and confirm a separate REA password, or do both. If you selected keys for root, you can explicitly reuse those public keys for REA. Private keys stay on your client or in its SSH agent. The `rea` account has no sudo access, and its login is separate from root SSH and the container console.
+
+Noninteractive installs without explicit access inputs leave REA SSH access pending. As root in the container, run `configure-ssh-access rea` in a terminal to finish setup or change it later. If an existing install does not have that command, run the current installer source inside the container as root to install it without changing authentication or rebuilding REA:
 
 ```sh
-ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@<container-address> /srv/rea/bin/rea mcp
+rea_source=$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/proxmox/main/scripts/lxc/rea.sh) &&
+  PHS_SILENT=1 REA_INSTALL_SSH_SETUP=1 bash -c "$rea_source" &&
+  configure-ssh-access rea
+```
+
+Before connecting, verify the SSH host key fingerprint from the container console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). Pin the matching public host key in your client's `known_hosts` for the address you use. Replace `rea.example.net` below with your container's address. For a manual CLI session:
+
+```sh
+ssh -o StrictHostKeyChecking=yes rea@rea.example.net
+# Then, inside the SSH session:
+/srv/rea/bin/rea --help
+```
+
+For a key-enabled account, use this stdio MCP command with the key available from your local SSH configuration or agent:
+
+```sh
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@rea.example.net /srv/rea/bin/rea mcp
 ```
 
 There is no web UI or HTTP MCP endpoint. Copy inputs to `/srv/rea/jobs/` and pass container-local paths to REA. Temporary files and caches use `/srv/rea/tmp/` and `/srv/rea/cache/`. Java heap settings are in `/srv/rea/environment.sh`; raise the container memory before increasing them for larger jobs.
 
-Run `update` as root to check the installed pins, or `update --clean` to rebuild the same stack. Updates preserve jobs, environment settings and SSH keys. Previous runtime releases are kept under `/srv/rea/releases/` for active sessions; they can be removed after those sessions end. Do not remove the release referenced by `/srv/rea/current`.
+Run `update` as root to check the installed pins, or `update --clean` to rebuild the same stack. Updates preserve jobs, environment settings, SSH credentials, and operator keys. They do not run SSH setup. Previous runtime releases are kept under `/srv/rea/releases/` for active sessions; they can be removed after those sessions end. Do not remove the release referenced by `/srv/rea/current`.
 
 This container is not a sandbox. Do not execute unknown or untrusted samples in it.

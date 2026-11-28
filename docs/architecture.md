@@ -959,6 +959,9 @@ input; no input without a terminal or in silent mode defers access. The installe
 root-run `configure-ssh-access ACCOUNT` is emitted without credentials and installed
 through the opt-in install pipeline after app setup. Normal updates do not apply
 access policy. No opt-in means no app dialogs, command installation or policy effects.
+On host completion, `post_install_script` can read the scoped, non-secret
+`LXC_SSH_ACCESS_MODE` (`key`, `password`, `both`, or `pending`). It does not need
+to inspect credentials or SSH configuration to describe the result.
 
 Access application runs after a successful install, before the post-build hook.
 At that boundary the creator disarms broken-install CT removal. Access failure
