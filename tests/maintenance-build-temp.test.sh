@@ -40,6 +40,7 @@ if [[ "${1:-}" == --child ]]; then
           ;;
         tools.func) printf 'setup_uv() { :; }\n' ;;
         github.func) printf 'clone_and_deploy_gh_commit() { :; }\n' ;;
+        ssh-access.func) cat "$ROOT/misc/ssh-access.func" ;;
       esac
     } > "$path"
   }

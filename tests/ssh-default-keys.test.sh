@@ -7,8 +7,8 @@ trap 'rm -rf "$work"' EXIT
 export TMPDIR="$work"
 
 # Keep the production discovery/selection flow, redirecting only filesystem roots.
-sed -n '/^ssh_extract_keys_from_file() {/,/^}/p; /^ssh_build_choices_from_files() {/,/^}/p; /^ssh_discover_default_files() {/,/^}/p; /^configure_ssh_settings() {/,/^}/p' \
-  "$ROOT/misc/build.func" | sed "s|/root/.ssh|$work/root/.ssh|g; s|/etc/ssh|$work/etc/ssh|g" > "$work/ssh.sh"
+sed "s|/root/.ssh|$work/root/.ssh|g; s|/etc/ssh|$work/etc/ssh|g" "$ROOT/misc/ssh-access.func" > "$work/ssh.sh"
+sed -n '/^_load_ssh_access() {/,/^}/p; /^configure_ssh_settings() {/,/^}/p' "$ROOT/misc/build.func" >> "$work/ssh.sh"
 source "$work/ssh.sh"
 mkdir -p "$work/root/.ssh" "$work/etc/ssh/authorized_keys.d"
 ssh-keygen -q -t ed25519 -N '' -f "$work/fixture"
@@ -86,3 +86,46 @@ if [[ -e "$work/checklist" ]]; then
 fi
 rm "$SSH_MAP_FILE" "$SSH_KEYS_FILE"
 printf 'PASS missing default files retain the no-keys flow\n'
+
+# Exercise the real Step 17, setup dispatcher and bootstrap. Shorten the
+# wizard to that step only; preceding selections are not under test here.
+sed -n '/^advanced_settings() {/,/^}/p; /^setup_script() {/,/^}/p; /^_lxc_setup() {/,/^}/p; /^_lxc_bootstrap() {/,/^}/p' \
+  "$ROOT/misc/build.func" | sed 's/local STEP=1$/local STEP=17/;s/local MAX_STEP=28$/local MAX_STEP=17/' > "$work/setup.sh"
+export ROOT work
+failed=0
+for fault in loader write cancel; do
+  for caller in ordinary conditional; do
+    rc=0
+    fault=$fault caller=$caller bash -c '
+      cd "$work"
+      source "$ROOT/misc/core.func"
+      source "$work/ssh.sh"
+      source "$work/setup.sh"
+      pveversion() { :; }; pvesh() { printf "9876\n"; }; systemctl() { return 1; }
+      pve_check() { :; }; shell_check() { :; }; root_check() { :; }; arch_check() { :; }; ssh_check() { :; }
+      variables() { APP=fixture NSAPP=fixture var_os=debian var_version=13 REPO_BASE=fixture; }
+      color() { :; }; render_header() { :; }; catch_errors() { set -Ee -o pipefail; }
+      header_info_fallback() { :; }; run_preflight() { :; }; get_app_defaults_path() { echo nonexisting; }
+      base_settings() { :; }; log_section() { :; }; log_msg() { :; }; terminal_clear() { :; }
+      ensure_global_default_vars_file() { :; }; maybe_offer_save_app_defaults() { :; }
+      curl() { :; }; _lxc_script_identity_args() { :; }
+      _load_ssh_access() { [[ "$fault" != loader ]] || return 68; }
+      mktemp() { [[ "$fault" != write ]] || return 73; command mktemp "$@"; }
+      whiptail() { return 255; }
+      build_container() { echo CREATE_REACHED; }
+      complete_install() { :; }
+      mode=advanced
+      if [[ $caller == conditional ]]; then _lxc_bootstrap || exit "$?"; else _lxc_bootstrap; fi
+    ' > "$work/setup.log" 2>&1 || rc=$?
+    case $fault in loader) expected=68 ;; write) expected=73 ;; cancel) expected=0 ;; esac
+    if [[ $rc == "$expected" ]] && ! grep -Fq 'CREATE_REACHED' "$work/setup.log" &&
+      { { [[ $fault == cancel ]] && grep -Fq 'User exited script' "$work/setup.log"; } ||
+        { [[ $fault != cancel ]] && ! grep -Fq 'User exited script' "$work/setup.log"; }; }; then
+      printf 'PASS root picker %s (%s) status %s; no create\n' "$fault" "$caller" "$rc"
+    else
+      printf 'FAIL root picker %s (%s) status %s expected %s\n' "$fault" "$caller" "$rc" "$expected" >&2
+      failed=1
+    fi
+  done
+done
+exit "$failed"

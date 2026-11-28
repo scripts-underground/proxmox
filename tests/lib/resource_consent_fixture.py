@@ -295,6 +295,7 @@ for old, new in [('/var/lib/scripts-underground/update-pending', str(W / 'pendin
     core = core.replace(old, new)
 (cache / 'core.func').write_text(core)
 (cache / 'error_handler.func').write_bytes((S / 'misc/error_handler.func').read_bytes())
+(cache / 'ssh-access.func').write_bytes((S / 'misc/ssh-access.func').read_bytes())
 for name, body in [('install', 'setup_lxc() { :; }'), ('tools', 'setup_uv() { :; }'),
                    ('github', 'clone_and_deploy_gh_commit() { :; }')]:
     (cache / (name + '.func')).write_text(body + '\n')

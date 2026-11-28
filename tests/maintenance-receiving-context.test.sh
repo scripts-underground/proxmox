@@ -37,6 +37,8 @@ pct() {
 cat > "$TMPDIR/framework-context/core.func" << 'LIB'
 load_functions() { :; }
 color() { :; }
+# This prelude probe models maintenance admission, never touches live locks.
+app_maintenance_begin() { [[ "$1" == context ]]; }
 LIB
 printf 'catch_errors() { :; }\n' > "$TMPDIR/framework-context/error_handler.func"
 cat > "$TMPDIR/framework-context/install.func" << 'LIB'
@@ -47,6 +49,7 @@ setup_lxc() { :; }
 LIB
 printf 'setup_uv() { :; }\n' > "$TMPDIR/framework-context/tools.func"
 printf 'clone_and_deploy_gh_commit() { :; }\n' > "$TMPDIR/framework-context/github.func"
+cp "$ROOT/misc/ssh-access.func" "$TMPDIR/framework-context/"
 install_script() { :; }
 update_script() { :; }
 uninstall_script() { return 37; }

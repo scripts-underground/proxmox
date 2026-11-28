@@ -95,6 +95,7 @@ write(cache / 'error_handler.func', (SOURCE / 'misc/error_handler.func').read_te
 write(cache / 'install.func', 'setup_lxc() { :; }\n')
 write(cache / 'tools.func', 'setup_uv() { :; }\n')
 write(cache / 'github.func', 'clone_and_deploy_gh_commit() { :; }\n')
+write(cache / 'ssh-access.func', (SOURCE / 'misc/ssh-access.func').read_text())
 (WORK / 'home').mkdir()
 bundle = WORK / 'update'
 generate = f'''

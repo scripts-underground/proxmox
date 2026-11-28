@@ -94,6 +94,7 @@ MODELS
     printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
     cp "$ROOT/misc/tools.func" "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
+    cp "$ROOT/misc/ssh-access.func" "$c/cache/"
     mkdir -p "$c/opt/fleet"
     if [[ "$variant" == update || "$variant" == current ]]; then
       cat > "$c/opt/fleet/.env" << 'ENV'

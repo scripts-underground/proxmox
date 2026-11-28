@@ -101,6 +101,7 @@ for verbose in ('no', 'yes'):
   for n in ('tools.func','error_handler.func'):write(c/'stage'/n,(R/'misc'/n).read_text())
   write(c/'stage/install.func','pkg_install() { :; }\nsetup_lxc() { :; }\n')
   write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
+  write(c/'stage/ssh-access.func',(R/'misc/ssh-access.func').read_text())
   text=(R/'scripts/lxc/romm.sh').read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
   hook=text[start:end].replace('/opt',str(c/'opt')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/angie',str(c/'angie')).replace('/etc/nginx',str(c/'nginx'))
   write(c/'hook.sh',hook)

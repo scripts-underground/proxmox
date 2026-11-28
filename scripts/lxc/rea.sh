@@ -16,6 +16,9 @@ var_disk="${var_disk:-64}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
+# Creator-side SSH setup targets the account created by the install hook.
+# shellcheck disable=SC2034 # Consumed by the bootstrap on the creator only.
+var_ssh_access_account=rea
 var_lxc_rea_commit="${var_lxc_rea_commit:-ded199abcde611a0ba4739ecb536e0ede0075670}"
 var_lxc_rea_version="${var_lxc_rea_version:-6.4.0}"
 var_lxc_node_version="${var_lxc_node_version:-24.18.0}"
@@ -36,7 +39,7 @@ function install_script() {
   fi
 
   msg_info "Installing Dependencies"
-  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server procps python3 file git build-essential || return "$?"
+  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server whiptail procps python3 file git build-essential || return "$?"
   msg_ok "Installed Dependencies"
 
   if ! id rea > /dev/null 2>&1; then
@@ -199,9 +202,41 @@ DEPLOY
 }
 
 function post_install_script() {
-  printf 'Add your SSH public key to /home/rea/.ssh/authorized_keys and verify the container host key.\n'
-  printf 'MCP over SSH: ssh -T rea@<container-address> /srv/rea/bin/rea mcp\n'
+  local mode=${LXC_SSH_ACCESS_MODE:-pending}
+  case "$mode" in
+    key | password | both) printf 'SSH access for rea@%s configured (%s).\n' "$IP" "$mode" ;;
+    *) printf 'SSH access for rea@%s is pending.\n' "$IP" ;;
+  esac
+  printf 'To set up or change access, run as root in the container: configure-ssh-access rea\n'
+  printf 'Verify the SSH host key from the container console before trusting it on the client:\n'
+  printf '  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\n'
+  printf '  cat /etc/ssh/ssh_host_ed25519_key.pub\n'
+  printf 'Copy the key type and blob from that trusted console. Before connecting, add this line to the client\x27s ~/.ssh/known_hosts:\n'
+  printf '  %s ssh-ed25519 <public-key-blob>\n' "$IP"
+  case "$mode" in
+    key | password | both) printf 'CLI: ssh -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea --help\n' "$IP" ;;
+  esac
+  case "$mode" in
+    key | both) printf 'MCP over SSH: ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea mcp\n' "$IP" ;;
+    *) printf 'Choose key or both for unattended MCP; its SSH client cannot prompt for a password.\n' ;;
+  esac
 }
+
+# Defined only for explicit source setup, not in a frozen update bundle.
+if [[ ${REA_INSTALL_SSH_SETUP:-0} == 1 ]]; then
+  function ssh_access_setup_script() {
+    if [[ ! -f /usr/local/lib/rea-deploy.sh ]]; then
+      msg_error "REA installation recipe not found; install REA first"
+      return 1
+    fi
+    if [[ ! -f /srv/rea/environment.sh ]] || ! id rea > /dev/null 2>&1; then
+      msg_error "REA installation is missing its operator environment or account"
+      return 1
+    fi
+    # This source-only path has no install.func package context.
+    $STD apt install -y whiptail || return "$?"
+  }
+fi
 
 function update_script() {
   if [[ "$OS_TYPE" != debian || "${OS_VERSION%%.*}" != 13 || "$(get_system_arch)" != amd64 || "$(uname -m)" != x86_64 ]]; then

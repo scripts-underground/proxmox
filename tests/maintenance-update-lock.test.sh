@@ -415,6 +415,7 @@ check(run(c,role='api',action='borrow',extra={'PATH':bbpath})==0,'BusyBox path/F
 
 # Original cold writers, with only source-time OS/package bootstrap modeled.
 c=case('cold-writers');stage=c/'stage';stage.mkdir()
+(stage/'ssh-access.func').write_bytes((root/'misc/ssh-access.func').read_bytes())
 for name,src in [('core',pathlib.Path(core)),('error_handler',root/'misc/error_handler.func')]:
  (stage/(name+'.func')).write_bytes(src.read_bytes())
 for name,body in [('install','setup_lxc() { :; }; pkg_install() { :; }\n'),('tools','setup_uv() { :; }; fetch_and_deploy_gh_release() { :; }\n'),('github','clone_and_deploy_gh_commit() { :; }\n')]:

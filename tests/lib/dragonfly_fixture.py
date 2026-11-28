@@ -175,6 +175,7 @@ for arch in ('amd64', 'arm64'):
         write(c / 'stage' / name, raw)
     write(c / 'stage/install.func', 'pkg_install() { :; }\nsetup_lxc() { :; }\n')
     write(c / 'stage/github.func', 'clone_and_deploy_gh_commit() { :; }\nsource ' + shlex.quote(str(c / 'models.sh')) + '\n')
+    write(c / 'stage/ssh-access.func', (ROOT / 'misc/ssh-access.func').read_text())
     compose = 'source ' + shlex.quote(str(ROOT / 'misc/bundle.func')) + '\nsource ' + shlex.quote(str(c / 'hooks.sh')) + '\n'
     compose += 'export APP=Dragonfly NSAPP=dragonfly REPO_BASE=https://fixture.invalid var_lxc_tmpdir=' + shlex.quote(str(c / 'tmp')) + '\n'
     for role, pipeline in (('install', 'install_script'), ('update', 'run_update_script "$@"')):

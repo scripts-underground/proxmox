@@ -149,6 +149,7 @@ for app in ('endurain','invidious','keycloak','cronmaster','autocaliweb'):
    write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\nsource '+shlex.quote(str(c/'models.sh'))+'\n')
    write(c/'stage/addon_lxc.func','source '+shlex.quote(str(c/'models.sh'))+'\n')
    kind='addon' if app=='cronmaster' else 'lxc';text=(R/'scripts'/kind/(app+'.sh')).read_text();start=text.index('function update_script() {');end=text.index('\n}\n',start)+3
+   if kind=='lxc':write(c/'stage/ssh-access.func',(R/'misc/ssh-access.func').read_text())
    hook=text[start:end].replace('/opt',str(c/'opt')).replace('/etc/systemd/system',str(c/'systemd')).replace('/etc/autocaliweb/app.db',str(c/'config/app.db')).replace('/usr/bin/kepubify',str(c/'kepubify'))
    write(c/'kepubify','#!/usr/bin/env bash\nprintf v2.0\n',0o755);write(c/'hook.sh',hook)
    compose='source '+shlex.quote(str(R/'misc/bundle.func'))+'\nsource '+shlex.quote(str(R/'misc/addon_lxc.func'))+'\n'

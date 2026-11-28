@@ -121,6 +121,68 @@ fi
 [[ ! -e $work/early-pct.log ]]
 printf 'PASS early host errors preserve keep mode and the original status\n'
 
+# Exercise the plain bootstrap and its real ERR trap with an installed CT
+# represented only by fake pct. No real PVE command is reachable here.
+sed -n '/^_lxc_bootstrap() {/,/^}/p; /^_apply_lxc_ssh_access() {/,/^}/p; /^_finish_container_build() {/,/^}/p' \
+  "$ROOT/misc/build.func" > "$work/finish.sh"
+for finish_case in access broken hook; do
+  for caller in ordinary conditional; do
+    rc=0
+    : > "$work/finish-pct.log"
+    finish_case=$finish_case caller=$caller bash -c '
+      source "$ROOT/misc/error_handler.func"
+      source "$ROOT/misc/core.func"
+      source "$ROOT/misc/ssh-access.func"
+      source "$work/finish.sh"
+      export CTID=9876 SESSION_ID=probe RD= CL= YWB= YW= BL= GN= TAB= DEV_MODE_KEEP=false
+      variables() { :; }; color() { :; }; render_header() { :; }
+      catch_errors() { set -Eeuo pipefail; trap error_handler ERR; }
+      msg_error() { printf "%s\n" "$*"; }; msg_info() { :; }; msg_ok() { :; }
+      pveversion() { :; }
+      pct() { printf "%s\n" "$*" >> "$work/finish-pct.log"; }
+      _lxc_setup() { :; }; _load_ssh_access() { :; }
+      _lxc_script_identity_args() { :; }
+      _collect_lxc_ssh_access() { _lbs_access_mode=key; }
+      _receiving_exec() { cat >/dev/null; [[ $finish_case != access ]] || return 69; }
+      post_build_script() { [[ $finish_case != hook ]] || bash -c "exit 48"; echo HOOK_CONTINUED; }
+      complete_install() { echo COMPLETED; }
+      build_container() {
+        if [[ $finish_case == broken ]]; then return 42; fi
+        _finish_container_build
+      }
+      var_ssh_access_account=rea
+      if [[ $caller == conditional ]]; then _lxc_bootstrap || exit "$?"; else _lxc_bootstrap; fi
+    ' < /dev/null > "$work/finish.log" 2>&1 || rc=$?
+    case "$finish_case:$caller" in
+      access:*)
+        [[ $rc == 69 ]] && grep -Fq 'pct enter 9876' "$work/finish.log" &&
+          ! grep -qE '^(stop|destroy) ' "$work/finish-pct.log" &&
+          ! grep -qE 'COMPLETED|HOOK_CONTINUED' "$work/finish.log" || {
+          printf 'FAIL installed CT access failure (%s, status %s)\n' "$caller" "$rc" >&2
+          cat "$work/finish.log" "$work/finish-pct.log" >&2
+          exit 1
+        }
+        ;;
+      broken:ordinary)
+        if [[ $rc != 42 ]] || ! grep -Fxq 'destroy 9876' "$work/finish-pct.log"; then
+          printf 'FAIL broken install did not preserve status 42 and remove CT (status %s)\n' "$rc" >&2
+          cat "$work/finish.log" "$work/finish-pct.log" >&2
+          exit 1
+        fi
+        ;;
+      broken:conditional) [[ $rc == 42 ]] ;;
+      hook:ordinary)
+        if [[ $rc != 48 ]] || grep -Eq 'HOOK_CONTINUED|COMPLETED' "$work/finish.log"; then
+          printf 'FAIL post-build hook did not stop bootstrap with status 48 (status %s)\n' "$rc" >&2
+          cat "$work/finish.log" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+done
+printf 'PASS post-install access failure preserves the CT and status; broken installs retain cleanup and hooks retain errexit\n'
+
 # Generate and run real bundles using tiny offline framework stubs.
 test_tmp=$TMPDIR
 export FALLBACK_TMP="$work/fallback"
@@ -157,6 +219,7 @@ for host_tmp in "$work/host-only" ''; do
   printf 'setup_lxc() { :; }\n' > "$cache/install.func"
   printf 'setup_uv() { :; }\n' > "$cache/tools.func"
   printf 'clone_and_deploy_gh_commit() { :; }\n' > "$cache/github.func"
+  cp "$ROOT/misc/ssh-access.func" "$cache/"
   _framework_cache_ensure() { :; }
   build_bundle update update_script "$work/bundle.sh" 0700 update_script
   [[ $(bash "$work/bundle.sh") == unset ]]

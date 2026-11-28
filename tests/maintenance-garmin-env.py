@@ -31,6 +31,7 @@ for label, role, initial, answer, expected in (
  write(c/'stage/install.func','setup_lxc() { :; }\n')
  write(c/'stage/tools.func','setup_uv() { :; }\n')
  write(c/'stage/github.func','clone_and_deploy_gh_commit() { :; }\n')
+ write(c/'stage/ssh-access.func',(R/'misc/ssh-access.func').read_text())
  fixture='''STD=\nheader_info() { :; }\ncheck_container_storage() { :; }\ncheck_container_resources() { :; }\nsetup_deb822_repo() { :; }\napt() { :; }\nsystemctl() { :; }\ninflux() { :; }\ngrafana-cli() { :; }\nuv() { :; }\nget_latest_github_release() { printf 1; }\nfetch_and_deploy_from_url() { :; }\nfetch_and_deploy_gh_release() { :; }\ncheck_for_gh_release() { [[ "${UPGRADE:-no}" == yes ]]; }\nmsg_info() { :; }\nmsg_ok() { if [[ "$*" == "Wrote Environment Configuration" ]]; then exit 0; fi; }\nmsg_error() { :; }\n'''
  write(c/'models.sh',fixture)
  # The service model retains its initial process environment until a lifecycle

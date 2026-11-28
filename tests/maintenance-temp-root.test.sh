@@ -51,6 +51,8 @@ source "$subjects/bundle.func"
 source "$subjects/addon_lxc.func"
 source "$subjects/tools.func"
 source "$subjects/core.func"
+lxc_inventory=$(_framework_library_inventory lxc)
+lxc_library_count=$(wc -l <<< "$lxc_inventory")
 failures=0
 check() {
   if [[ "$1" == "$2" ]]; then
@@ -118,6 +120,7 @@ curl() {
       install.func) printf 'setup_lxc() { :; }\n' ;;
       tools.func) printf 'setup_uv() { :; }\n' ;;
       github.func) printf 'clone_and_deploy_gh_commit() { :; }\n' ;;
+      ssh-access.func) cat "$ROOT/misc/ssh-access.func" ;;
       addon_lxc.func) printf 'addon_baseline() { :; }\n' ;;
       *) return 98 ;;
     esac
@@ -183,7 +186,7 @@ for seed in a b; do
   : > "$work/fetches"
   _framework_cache_ensure
   fetch_count=$(wc -l < "$work/fetches")
-  check "$fetch_count" 5 "root-$seed obtains its own five framework files"
+  check "$fetch_count" "$lxc_library_count" "root-$seed obtains its own complete LXC framework inventory"
   cache_path=$(dirname "$(head -n 1 "$work/fetches")")
   check "$(in_selected_root "$cache_path")" yes "root-$seed cache lives below selected TMPDIR"
   build_bundle update update_script "$work/delivered-$seed" 0755 run_update_script

@@ -2,8 +2,8 @@
   "schema_version": 2,
   "slug": "rea",
   "type": "lxc",
-  "total_lines": 242,
-  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/morluto/rea\n\n# shellcheck disable=SC2034 # Used by the bootstrap.\nAPP=\"REA\"\nvar_tags=\"${var_tags:-reverse-engineering;tools}\"\nvar_hostname=\"${var_hostname:-rea}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-64}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\nvar_lxc_rea_commit=\"${var_lxc_rea_commit:-ded199abcde611a0ba4739ecb536e0ede0075670}\"\nvar_lxc_rea_version=\"${var_lxc_rea_version:-6.4.0}\"\nvar_lxc_node_version=\"${var_lxc_node_version:-24.18.0}\"\nvar_lxc_npm_version=\"${var_lxc_npm_version:-11.16.0}\"\nvar_lxc_ghidra_version=\"${var_lxc_ghidra_version:-12.1.4}\"\nvar_lxc_ghidra_date=\"${var_lxc_ghidra_date:-20260921}\"\nvar_lxc_jadx_version=\"${var_lxc_jadx_version:-0.7.1}\"\nvar_lxc_apktool_version=\"${var_lxc_apktool_version:-3.0.3}\"\nvar_lxc_node_sha256=\"${var_lxc_node_sha256:-55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742}\"\nvar_lxc_ghidra_sha256=\"${var_lxc_ghidra_sha256:-ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db}\"\nvar_lxc_jadx_sha256=\"${var_lxc_jadx_sha256:-6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75}\"\nvar_lxc_apktool_sha256=\"${var_lxc_apktool_sha256:-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423}\"\n\nfunction install_script() {\n  if [[ \"$OS_TYPE\" != debian || \"${OS_VERSION%%.*}\" != 13 || \"$(get_system_arch)\" != amd64 || \"$(uname -m)\" != x86_64 ]]; then\n    msg_error \"REA requires Debian 13 on amd64\"\n    return 65\n  fi\n\n  msg_info \"Installing Dependencies\"\n  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server procps python3 file git build-essential || return \"$?\"\n  msg_ok \"Installed Dependencies\"\n\n  if ! id rea \u003e /dev/null 2\u003e\u00261; then\n    useradd --create-home --user-group --shell /bin/bash rea || return \"$?\"\n  fi\n  install -d -m 0755 /srv/rea /usr/local/lib || return \"$?\"\n  install -d -o rea -g rea -m 0750 /srv/rea/jobs /srv/rea/cache /srv/rea/tmp || return \"$?\"\n  install -d -o rea -g rea -m 0700 /home/rea/.ssh || return \"$?\"\n\n  if [[ ! -e /srv/rea/environment.sh \u0026\u0026 ! -L /srv/rea/environment.sh ]]; then\n    cat \u003c\u003c 'ENVIRONMENT' \u003e /srv/rea/environment.sh || return \"$?\"\n# Operator settings; the updater does not replace this file.\nexport GHIDRA_HEADLESS_MAXMEM=1G\nexport REA_JADX_HEAP_MIB=1024\nENVIRONMENT\n  fi\n\n  # The two generated hooks share one application-specific deployment recipe.\n  # The root-installed recipe also identifies an installation independently of\n  # its active generation, which may be missing after an interrupted deploy.\n  cat \u003c\u003c 'DEPLOY' \u003e /usr/local/lib/rea-deploy.sh || return \"$?\"\n# shellcheck shell=bash\n# Sourced by the generated hooks with their framework functions and pins.\nrea_pins() {\n  printf '%s\\n' \"rea=$var_lxc_rea_version\" \"commit=$var_lxc_rea_commit\" \\\n    \"node=$var_lxc_node_version $var_lxc_node_sha256\" \"npm=$var_lxc_npm_version\" \\\n    \"ghidra=$var_lxc_ghidra_version $var_lxc_ghidra_date $var_lxc_ghidra_sha256\" \\\n    \"jadx=$var_lxc_jadx_version $var_lxc_jadx_sha256\" \"apktool=$var_lxc_apktool_version $var_lxc_apktool_sha256\"\n}\n\nrea_download() {\n  local url=$1 path=$2 digest=$3\n  # Release deploy helpers do not accept a required caller checksum before extraction.\n  $STD curl_with_retry \"$url\" \"$path\" '--proto =https --proto-redir =https' || return \"$?\"\n  printf '%s  %s\\n' \"$digest\" \"$path\" | $STD sha256sum --strict --check\n}\n\nrea_deploy() (\n  local stage src node ghidra jadx apktool pin\n  local base=/srv/rea\n  # These guards also apply when a caller (including the quiet wrapper) tests\n  # status in a conditional, where Bash disables errexit inside functions.\n  install -d -m 0755 \"$base/releases\" \"$base/bin\" || return \"$?\"\n  stage=$(mktemp -d \"$base/releases/rea.XXXXXXXX\") || return \"$?\"\n  # Once current points to this directory, cleanup no longer owns it.\n  trap 'if [[ ! \"$base/current\" -ef \"$stage\" ]]; then rm -rf -- \"$stage\"; fi' EXIT\n  chmod 0755 \"$stage\" || return \"$?\"\n  src=\"$stage/source\"\n  node=\"node-v${var_lxc_node_version}-linux-x64\"\n  ghidra=\"ghidra_${var_lxc_ghidra_version}_PUBLIC\"\n  jadx=\"jadx-headless-mcp-${var_lxc_jadx_version}-all.jar\"\n  apktool=\"apktool_${var_lxc_apktool_version}.jar\"\n  install -d \"$stage/bin\" \"$stage/tools\" || return \"$?\"\n  install -d -o rea -g rea \"$src\" \"$stage/runtime\" \"$stage/pack\" || return \"$?\"\n\n  msg_info \"Preparing pinned Node.js and REA source\"\n  rea_download \"https://nodejs.org/dist/v${var_lxc_node_version}/${node}.tar.xz\" \"$stage/node.tar.xz\" \"$var_lxc_node_sha256\" || return \"$?\"\n  $STD tar -xJf \"$stage/node.tar.xz\" -C \"$stage/tools\" || return \"$?\"\n  # Only the fresh private Node prefix can receive the npm install.\n  chown -R rea:rea \"$stage/tools/$node\" || return \"$?\"\n  $STD runuser -u rea -- env PATH=\"$stage/tools/$node/bin:/usr/bin:/bin\" \\\n    TMPDIR=\"$base/tmp\" npm_config_cache=\"$base/cache/npm\" HUSKY=0 \\\n    bash -euc '\n      prefix=$1 src=$2 commit=$3 version=$4 npm_version=$5 node_version=$6 stage=$7\n      [[ $(node --version) == \"v$node_version\" ]]\n      if [[ $(npm --version) != \"$npm_version\" ]]; then\n        npm install --global --ignore-scripts --prefix \"$prefix\" \"npm@$npm_version\"\n      fi\n      [[ $(npm --version) == \"$npm_version\" ]]\n      cd \"$src\"\n      git init --quiet\n      git fetch --quiet --depth=1 https://github.com/morluto/rea.git \"$commit\"\n      git checkout --quiet --detach FETCH_HEAD\n      [[ $(git rev-parse HEAD) == \"$commit\" ]]\n      [[ $(node -p \"require(\\\"./package.json\\\").version\") == \"$version\" ]]\n      printf \"REA source checked: %s; Node=%s; npm=%s\\n\" \"$commit\" \"$node_version\" \"$npm_version\"\n      npm ci\n      npm run build:cached\n      npm pack --ignore-scripts --pack-destination \"$stage/pack\"\n      npm install --prefix \"$stage/runtime\" --omit=dev --ignore-scripts \"$stage/pack/rea-agents-$version.tgz\"\n      [[ $(node -p \"require(process.argv[1]).version\" \"$stage/runtime/node_modules/rea-agents/package.json\") == \"$version\" ]]\n    ' bash \"$stage/tools/$node\" \"$src\" \"$var_lxc_rea_commit\" \"$var_lxc_rea_version\" \"$var_lxc_npm_version\" \"$var_lxc_node_version\" \"$stage\" || return \"$?\"\n  msg_ok \"Built REA $var_lxc_rea_version from the pinned source\"\n\n  msg_info \"Preparing pinned Ghidra, JADX and Apktool\"\n  rea_download \"https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${var_lxc_ghidra_version}_build/${ghidra}_${var_lxc_ghidra_date}.zip\" \"$stage/ghidra.zip\" \"$var_lxc_ghidra_sha256\" || return \"$?\"\n  $STD unzip -q \"$stage/ghidra.zip\" -d \"$stage/tools\" || return \"$?\"\n  rea_download \"https://github.com/1013503897/jadx-headless-mcp/releases/download/v${var_lxc_jadx_version}/$jadx\" \"$stage/tools/$jadx\" \"$var_lxc_jadx_sha256\" || return \"$?\"\n  rea_download \"https://github.com/iBotPeaches/Apktool/releases/download/v${var_lxc_apktool_version}/$apktool\" \"$stage/tools/$apktool\" \"$var_lxc_apktool_sha256\" || return \"$?\"\n\n  cat \u003c\u003cDEFAULTS \u003e \"$stage/defaults.sh\" || return \"$?\"\nexport JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64\nexport GHIDRA_INSTALL_DIR=\"\\$release/tools/$ghidra\"\nexport GHIDRA_HEADLESS_MAXMEM=1G\nexport REA_ANALYSIS_PROVIDER=ghidra\nexport REA_JADX_MCP_JAR=\"\\$release/tools/$jadx\"\nexport REA_JADX_HEAP_MIB=1024\nexport REA_APKTOOL_COMMAND=\"\\$release/bin/apktool\"\nexport REA_ROOT=\"\\$release/runtime/node_modules/rea-agents\"\nexport TMPDIR=/srv/rea/tmp\nexport XDG_CACHE_HOME=/srv/rea/cache\nexport XDG_DATA_HOME=/srv/rea/cache/xdg-data\nexport REA_GHIDRA_STARTUP_TIMEOUT_MS=330000\nexport PATH=\"\\$release/tools/$node/bin:/usr/local/bin:/usr/bin:/bin\"\nDEFAULTS\n  cat \u003c\u003c'LAUNCH_REA' \u003e \"$stage/bin/rea\" || return \"$?\"\n#!/bin/sh\nset -eu\ntest \"$(id -un)\" = rea || { echo 'Run this launcher as rea.' \u003e\u00262; exit 65; }\nrelease=$(dirname \"$(dirname \"$(readlink -f -- \"$0\")\")\")\n. \"$release/defaults.sh\"\n. /srv/rea/environment.sh\nexec node \"$REA_ROOT/scripts/rea.mjs\" \"$@\"\nLAUNCH_REA\n  cat \u003c\u003cLAUNCH_APKTOOL \u003e \"$stage/bin/apktool\" || return \"$?\"\n#!/bin/sh\nset -eu\ntest \"\\$(id -un)\" = rea || { echo 'Run this launcher as rea.' \u003e\u00262; exit 65; }\nrelease=\\$(dirname \"\\$(dirname \"\\$(readlink -f -- \"\\$0\")\")\")\nexport JAVA_HOME=\\${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}\nexec \"\\$JAVA_HOME/bin/java\" -jar \"\\$release/tools/$apktool\" \"\\$@\"\nLAUNCH_APKTOOL\n  chmod 0755 \"$stage/bin/rea\" \"$stage/bin/apktool\" || return \"$?\"\n\n  msg_info \"Checking staged REA and Ghidra as rea\"\n  $STD runuser -u rea -- \"$stage/bin/rea\" --help || return \"$?\"\n  # Preserve JSON even if the CLI reports unrelated unsupported providers.\n  local doctor_status=0\n  runuser -u rea -- \"$stage/bin/rea\" doctor --provider ghidra --json \u003e \"$stage/doctor.json\" || doctor_status=$?\n  if ! jq -e --arg version \"$var_lxc_ghidra_version\" '\n    ([.providerInspections[] | select(.id == \"ghidra\" and .available == true and .providerVersion == $version)] | length == 1)\n    and ([.checks[] | select(.name | startswith(\"ghidra-\"))] as $checks\n      | all([\"ghidra-installation\", \"ghidra-version\", \"ghidra-headless\", \"ghidra-java\"][];\n          . as $name | any($checks[]; .name == $name))\n      and all($checks[]; .ok == true))\n  ' \"$stage/doctor.json\" \u003e/dev/null; then\n    cat \"$stage/doctor.json\" \u003e\u00262\n    msg_error \"Staged Ghidra checks failed (doctor exit $doctor_status)\"\n    return 1\n  fi\n\n  rea_pins \u003e \"$stage/pins\" || return \"$?\"\n  rm -rf -- \"$src\" \"$stage/pack\" || return \"$?\"\n  rm -f -- \"$stage/node.tar.xz\" \"$stage/ghidra.zip\" || return \"$?\"\n  # A single pointer switches the engine/CLI set. Retain previous releases for\n  # sessions that are still using them. Never put user data under releases/.\n  pin=${stage##*/}\n  ln -s \"releases/$pin\" \"$stage/next\" || return \"$?\"\n  ln -sfnT ../current/bin/rea \"$base/bin/rea\" || return \"$?\"\n  ln -sfnT ../current/bin/apktool \"$base/bin/apktool\" || return \"$?\"\n  mv -Tf -- \"$stage/next\" \"$base/current\" || return \"$?\"\n  msg_ok \"Installed REA $var_lxc_rea_version and pinned engines\"\n)\nDEPLOY\n  # shellcheck source=/dev/null\n  source /usr/local/lib/rea-deploy.sh || return \"$?\"\n  rea_deploy || return \"$?\"\n\n  $STD systemctl enable --now ssh\n}\n\nfunction post_install_script() {\n  printf 'Add your SSH public key to /home/rea/.ssh/authorized_keys and verify the container host key.\\n'\n  printf 'MCP over SSH: ssh -T rea@\u003ccontainer-address\u003e /srv/rea/bin/rea mcp\\n'\n}\n\nfunction update_script() {\n  if [[ \"$OS_TYPE\" != debian || \"${OS_VERSION%%.*}\" != 13 || \"$(get_system_arch)\" != amd64 || \"$(uname -m)\" != x86_64 ]]; then\n    msg_error \"REA requires Debian 13 on amd64\"\n    return 65\n  fi\n  if [[ ! -f /usr/local/lib/rea-deploy.sh ]]; then\n    msg_error \"REA installation recipe not found; install REA first\"\n    return 1\n  fi\n  if [[ ! -f /srv/rea/environment.sh ]] || ! id rea \u003e /dev/null 2\u003e\u00261; then\n    msg_error \"REA installation is missing its operator environment or account\"\n    return 1\n  fi\n  # shellcheck source=/dev/null\n  source /usr/local/lib/rea-deploy.sh || return \"$?\"\n  if [[ \"${UPDATE_FORCE:-0}\" != 1 ]]; then\n    if [[ ! -f /srv/rea/current/pins ]]; then\n      msg_error \"REA active generation is incomplete; run update --clean to repair it\"\n      return 1\n    fi\n    local installed selected\n    installed=$(cat /srv/rea/current/pins) || return \"$?\"\n    selected=$(rea_pins) || return \"$?\"\n    if [[ \"$installed\" == \"$selected\" ]]; then\n      $STD runuser -u rea -- /srv/rea/bin/rea --help || return \"$?\"\n      $STD runuser -u rea -- /srv/rea/bin/apktool --version || return \"$?\"\n      msg_ok \"REA $var_lxc_rea_version is already installed at the selected pins\"\n      return 0\n    fi\n  fi\n  check_container_storage || return \"$?\"\n  rea_deploy\n}\n\n# shellcheck source=/dev/null\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id rea -- \"$@\"\n",
+  "total_lines": 277,
+  "source": "#!/usr/bin/env bash\nREPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"\n\n# Copyright (c) 2026 scripts-underground.org\n# Author: Alex Indigo (alexindigo)\n# License: MIT | https://raw.githubusercontent.com/scripts-underground/proxmox/main/LICENSE\n# Source: https://github.com/morluto/rea\n\n# shellcheck disable=SC2034 # Used by the bootstrap.\nAPP=\"REA\"\nvar_tags=\"${var_tags:-reverse-engineering;tools}\"\nvar_hostname=\"${var_hostname:-rea}\"\nvar_cpu=\"${var_cpu:-2}\"\nvar_ram=\"${var_ram:-4096}\"\nvar_disk=\"${var_disk:-64}\"\nvar_os=\"${var_os:-debian}\"\nvar_version=\"${var_version:-13}\"\nvar_unprivileged=\"${var_unprivileged:-1}\"\n# Creator-side SSH setup targets the account created by the install hook.\n# shellcheck disable=SC2034 # Consumed by the bootstrap on the creator only.\nvar_ssh_access_account=rea\nvar_lxc_rea_commit=\"${var_lxc_rea_commit:-ded199abcde611a0ba4739ecb536e0ede0075670}\"\nvar_lxc_rea_version=\"${var_lxc_rea_version:-6.4.0}\"\nvar_lxc_node_version=\"${var_lxc_node_version:-24.18.0}\"\nvar_lxc_npm_version=\"${var_lxc_npm_version:-11.16.0}\"\nvar_lxc_ghidra_version=\"${var_lxc_ghidra_version:-12.1.4}\"\nvar_lxc_ghidra_date=\"${var_lxc_ghidra_date:-20260921}\"\nvar_lxc_jadx_version=\"${var_lxc_jadx_version:-0.7.1}\"\nvar_lxc_apktool_version=\"${var_lxc_apktool_version:-3.0.3}\"\nvar_lxc_node_sha256=\"${var_lxc_node_sha256:-55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742}\"\nvar_lxc_ghidra_sha256=\"${var_lxc_ghidra_sha256:-ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db}\"\nvar_lxc_jadx_sha256=\"${var_lxc_jadx_sha256:-6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75}\"\nvar_lxc_apktool_sha256=\"${var_lxc_apktool_sha256:-dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423}\"\n\nfunction install_script() {\n  if [[ \"$OS_TYPE\" != debian || \"${OS_VERSION%%.*}\" != 13 || \"$(get_system_arch)\" != amd64 || \"$(uname -m)\" != x86_64 ]]; then\n    msg_error \"REA requires Debian 13 on amd64\"\n    return 65\n  fi\n\n  msg_info \"Installing Dependencies\"\n  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server whiptail procps python3 file git build-essential || return \"$?\"\n  msg_ok \"Installed Dependencies\"\n\n  if ! id rea \u003e /dev/null 2\u003e\u00261; then\n    useradd --create-home --user-group --shell /bin/bash rea || return \"$?\"\n  fi\n  install -d -m 0755 /srv/rea /usr/local/lib || return \"$?\"\n  install -d -o rea -g rea -m 0750 /srv/rea/jobs /srv/rea/cache /srv/rea/tmp || return \"$?\"\n  install -d -o rea -g rea -m 0700 /home/rea/.ssh || return \"$?\"\n\n  if [[ ! -e /srv/rea/environment.sh \u0026\u0026 ! -L /srv/rea/environment.sh ]]; then\n    cat \u003c\u003c 'ENVIRONMENT' \u003e /srv/rea/environment.sh || return \"$?\"\n# Operator settings; the updater does not replace this file.\nexport GHIDRA_HEADLESS_MAXMEM=1G\nexport REA_JADX_HEAP_MIB=1024\nENVIRONMENT\n  fi\n\n  # The two generated hooks share one application-specific deployment recipe.\n  # The root-installed recipe also identifies an installation independently of\n  # its active generation, which may be missing after an interrupted deploy.\n  cat \u003c\u003c 'DEPLOY' \u003e /usr/local/lib/rea-deploy.sh || return \"$?\"\n# shellcheck shell=bash\n# Sourced by the generated hooks with their framework functions and pins.\nrea_pins() {\n  printf '%s\\n' \"rea=$var_lxc_rea_version\" \"commit=$var_lxc_rea_commit\" \\\n    \"node=$var_lxc_node_version $var_lxc_node_sha256\" \"npm=$var_lxc_npm_version\" \\\n    \"ghidra=$var_lxc_ghidra_version $var_lxc_ghidra_date $var_lxc_ghidra_sha256\" \\\n    \"jadx=$var_lxc_jadx_version $var_lxc_jadx_sha256\" \"apktool=$var_lxc_apktool_version $var_lxc_apktool_sha256\"\n}\n\nrea_download() {\n  local url=$1 path=$2 digest=$3\n  # Release deploy helpers do not accept a required caller checksum before extraction.\n  $STD curl_with_retry \"$url\" \"$path\" '--proto =https --proto-redir =https' || return \"$?\"\n  printf '%s  %s\\n' \"$digest\" \"$path\" | $STD sha256sum --strict --check\n}\n\nrea_deploy() (\n  local stage src node ghidra jadx apktool pin\n  local base=/srv/rea\n  # These guards also apply when a caller (including the quiet wrapper) tests\n  # status in a conditional, where Bash disables errexit inside functions.\n  install -d -m 0755 \"$base/releases\" \"$base/bin\" || return \"$?\"\n  stage=$(mktemp -d \"$base/releases/rea.XXXXXXXX\") || return \"$?\"\n  # Once current points to this directory, cleanup no longer owns it.\n  trap 'if [[ ! \"$base/current\" -ef \"$stage\" ]]; then rm -rf -- \"$stage\"; fi' EXIT\n  chmod 0755 \"$stage\" || return \"$?\"\n  src=\"$stage/source\"\n  node=\"node-v${var_lxc_node_version}-linux-x64\"\n  ghidra=\"ghidra_${var_lxc_ghidra_version}_PUBLIC\"\n  jadx=\"jadx-headless-mcp-${var_lxc_jadx_version}-all.jar\"\n  apktool=\"apktool_${var_lxc_apktool_version}.jar\"\n  install -d \"$stage/bin\" \"$stage/tools\" || return \"$?\"\n  install -d -o rea -g rea \"$src\" \"$stage/runtime\" \"$stage/pack\" || return \"$?\"\n\n  msg_info \"Preparing pinned Node.js and REA source\"\n  rea_download \"https://nodejs.org/dist/v${var_lxc_node_version}/${node}.tar.xz\" \"$stage/node.tar.xz\" \"$var_lxc_node_sha256\" || return \"$?\"\n  $STD tar -xJf \"$stage/node.tar.xz\" -C \"$stage/tools\" || return \"$?\"\n  # Only the fresh private Node prefix can receive the npm install.\n  chown -R rea:rea \"$stage/tools/$node\" || return \"$?\"\n  $STD runuser -u rea -- env PATH=\"$stage/tools/$node/bin:/usr/bin:/bin\" \\\n    TMPDIR=\"$base/tmp\" npm_config_cache=\"$base/cache/npm\" HUSKY=0 \\\n    bash -euc '\n      prefix=$1 src=$2 commit=$3 version=$4 npm_version=$5 node_version=$6 stage=$7\n      [[ $(node --version) == \"v$node_version\" ]]\n      if [[ $(npm --version) != \"$npm_version\" ]]; then\n        npm install --global --ignore-scripts --prefix \"$prefix\" \"npm@$npm_version\"\n      fi\n      [[ $(npm --version) == \"$npm_version\" ]]\n      cd \"$src\"\n      git init --quiet\n      git fetch --quiet --depth=1 https://github.com/morluto/rea.git \"$commit\"\n      git checkout --quiet --detach FETCH_HEAD\n      [[ $(git rev-parse HEAD) == \"$commit\" ]]\n      [[ $(node -p \"require(\\\"./package.json\\\").version\") == \"$version\" ]]\n      printf \"REA source checked: %s; Node=%s; npm=%s\\n\" \"$commit\" \"$node_version\" \"$npm_version\"\n      npm ci\n      npm run build:cached\n      npm pack --ignore-scripts --pack-destination \"$stage/pack\"\n      npm install --prefix \"$stage/runtime\" --omit=dev --ignore-scripts \"$stage/pack/rea-agents-$version.tgz\"\n      [[ $(node -p \"require(process.argv[1]).version\" \"$stage/runtime/node_modules/rea-agents/package.json\") == \"$version\" ]]\n    ' bash \"$stage/tools/$node\" \"$src\" \"$var_lxc_rea_commit\" \"$var_lxc_rea_version\" \"$var_lxc_npm_version\" \"$var_lxc_node_version\" \"$stage\" || return \"$?\"\n  msg_ok \"Built REA $var_lxc_rea_version from the pinned source\"\n\n  msg_info \"Preparing pinned Ghidra, JADX and Apktool\"\n  rea_download \"https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${var_lxc_ghidra_version}_build/${ghidra}_${var_lxc_ghidra_date}.zip\" \"$stage/ghidra.zip\" \"$var_lxc_ghidra_sha256\" || return \"$?\"\n  $STD unzip -q \"$stage/ghidra.zip\" -d \"$stage/tools\" || return \"$?\"\n  rea_download \"https://github.com/1013503897/jadx-headless-mcp/releases/download/v${var_lxc_jadx_version}/$jadx\" \"$stage/tools/$jadx\" \"$var_lxc_jadx_sha256\" || return \"$?\"\n  rea_download \"https://github.com/iBotPeaches/Apktool/releases/download/v${var_lxc_apktool_version}/$apktool\" \"$stage/tools/$apktool\" \"$var_lxc_apktool_sha256\" || return \"$?\"\n\n  cat \u003c\u003cDEFAULTS \u003e \"$stage/defaults.sh\" || return \"$?\"\nexport JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64\nexport GHIDRA_INSTALL_DIR=\"\\$release/tools/$ghidra\"\nexport GHIDRA_HEADLESS_MAXMEM=1G\nexport REA_ANALYSIS_PROVIDER=ghidra\nexport REA_JADX_MCP_JAR=\"\\$release/tools/$jadx\"\nexport REA_JADX_HEAP_MIB=1024\nexport REA_APKTOOL_COMMAND=\"\\$release/bin/apktool\"\nexport REA_ROOT=\"\\$release/runtime/node_modules/rea-agents\"\nexport TMPDIR=/srv/rea/tmp\nexport XDG_CACHE_HOME=/srv/rea/cache\nexport XDG_DATA_HOME=/srv/rea/cache/xdg-data\nexport REA_GHIDRA_STARTUP_TIMEOUT_MS=330000\nexport PATH=\"\\$release/tools/$node/bin:/usr/local/bin:/usr/bin:/bin\"\nDEFAULTS\n  cat \u003c\u003c'LAUNCH_REA' \u003e \"$stage/bin/rea\" || return \"$?\"\n#!/bin/sh\nset -eu\ntest \"$(id -un)\" = rea || { echo 'Run this launcher as rea.' \u003e\u00262; exit 65; }\nrelease=$(dirname \"$(dirname \"$(readlink -f -- \"$0\")\")\")\n. \"$release/defaults.sh\"\n. /srv/rea/environment.sh\nexec node \"$REA_ROOT/scripts/rea.mjs\" \"$@\"\nLAUNCH_REA\n  cat \u003c\u003cLAUNCH_APKTOOL \u003e \"$stage/bin/apktool\" || return \"$?\"\n#!/bin/sh\nset -eu\ntest \"\\$(id -un)\" = rea || { echo 'Run this launcher as rea.' \u003e\u00262; exit 65; }\nrelease=\\$(dirname \"\\$(dirname \"\\$(readlink -f -- \"\\$0\")\")\")\nexport JAVA_HOME=\\${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}\nexec \"\\$JAVA_HOME/bin/java\" -jar \"\\$release/tools/$apktool\" \"\\$@\"\nLAUNCH_APKTOOL\n  chmod 0755 \"$stage/bin/rea\" \"$stage/bin/apktool\" || return \"$?\"\n\n  msg_info \"Checking staged REA and Ghidra as rea\"\n  $STD runuser -u rea -- \"$stage/bin/rea\" --help || return \"$?\"\n  # Preserve JSON even if the CLI reports unrelated unsupported providers.\n  local doctor_status=0\n  runuser -u rea -- \"$stage/bin/rea\" doctor --provider ghidra --json \u003e \"$stage/doctor.json\" || doctor_status=$?\n  if ! jq -e --arg version \"$var_lxc_ghidra_version\" '\n    ([.providerInspections[] | select(.id == \"ghidra\" and .available == true and .providerVersion == $version)] | length == 1)\n    and ([.checks[] | select(.name | startswith(\"ghidra-\"))] as $checks\n      | all([\"ghidra-installation\", \"ghidra-version\", \"ghidra-headless\", \"ghidra-java\"][];\n          . as $name | any($checks[]; .name == $name))\n      and all($checks[]; .ok == true))\n  ' \"$stage/doctor.json\" \u003e/dev/null; then\n    cat \"$stage/doctor.json\" \u003e\u00262\n    msg_error \"Staged Ghidra checks failed (doctor exit $doctor_status)\"\n    return 1\n  fi\n\n  rea_pins \u003e \"$stage/pins\" || return \"$?\"\n  rm -rf -- \"$src\" \"$stage/pack\" || return \"$?\"\n  rm -f -- \"$stage/node.tar.xz\" \"$stage/ghidra.zip\" || return \"$?\"\n  # A single pointer switches the engine/CLI set. Retain previous releases for\n  # sessions that are still using them. Never put user data under releases/.\n  pin=${stage##*/}\n  ln -s \"releases/$pin\" \"$stage/next\" || return \"$?\"\n  ln -sfnT ../current/bin/rea \"$base/bin/rea\" || return \"$?\"\n  ln -sfnT ../current/bin/apktool \"$base/bin/apktool\" || return \"$?\"\n  mv -Tf -- \"$stage/next\" \"$base/current\" || return \"$?\"\n  msg_ok \"Installed REA $var_lxc_rea_version and pinned engines\"\n)\nDEPLOY\n  # shellcheck source=/dev/null\n  source /usr/local/lib/rea-deploy.sh || return \"$?\"\n  rea_deploy || return \"$?\"\n\n  $STD systemctl enable --now ssh\n}\n\nfunction post_install_script() {\n  local mode=${LXC_SSH_ACCESS_MODE:-pending}\n  case \"$mode\" in\n    key | password | both) printf 'SSH access for rea@%s configured (%s).\\n' \"$IP\" \"$mode\" ;;\n    *) printf 'SSH access for rea@%s is pending.\\n' \"$IP\" ;;\n  esac\n  printf 'To set up or change access, run as root in the container: configure-ssh-access rea\\n'\n  printf 'Verify the SSH host key from the container console before trusting it on the client:\\n'\n  printf '  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\\n'\n  printf '  cat /etc/ssh/ssh_host_ed25519_key.pub\\n'\n  printf 'Copy the key type and blob from that trusted console. Before connecting, add this line to the client\\x27s ~/.ssh/known_hosts:\\n'\n  printf '  %s ssh-ed25519 \u003cpublic-key-blob\u003e\\n' \"$IP\"\n  case \"$mode\" in\n    key | password | both) printf 'CLI: ssh -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea --help\\n' \"$IP\" ;;\n  esac\n  case \"$mode\" in\n    key | both) printf 'MCP over SSH: ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea mcp\\n' \"$IP\" ;;\n    *) printf 'Choose key or both for unattended MCP; its SSH client cannot prompt for a password.\\n' ;;\n  esac\n}\n\n# Defined only for explicit source setup, not in a frozen update bundle.\nif [[ ${REA_INSTALL_SSH_SETUP:-0} == 1 ]]; then\n  function ssh_access_setup_script() {\n    if [[ ! -f /usr/local/lib/rea-deploy.sh ]]; then\n      msg_error \"REA installation recipe not found; install REA first\"\n      return 1\n    fi\n    if [[ ! -f /srv/rea/environment.sh ]] || ! id rea \u003e /dev/null 2\u003e\u00261; then\n      msg_error \"REA installation is missing its operator environment or account\"\n      return 1\n    fi\n    # This source-only path has no install.func package context.\n    $STD apt install -y whiptail || return \"$?\"\n  }\nfi\n\nfunction update_script() {\n  if [[ \"$OS_TYPE\" != debian || \"${OS_VERSION%%.*}\" != 13 || \"$(get_system_arch)\" != amd64 || \"$(uname -m)\" != x86_64 ]]; then\n    msg_error \"REA requires Debian 13 on amd64\"\n    return 65\n  fi\n  if [[ ! -f /usr/local/lib/rea-deploy.sh ]]; then\n    msg_error \"REA installation recipe not found; install REA first\"\n    return 1\n  fi\n  if [[ ! -f /srv/rea/environment.sh ]] || ! id rea \u003e /dev/null 2\u003e\u00261; then\n    msg_error \"REA installation is missing its operator environment or account\"\n    return 1\n  fi\n  # shellcheck source=/dev/null\n  source /usr/local/lib/rea-deploy.sh || return \"$?\"\n  if [[ \"${UPDATE_FORCE:-0}\" != 1 ]]; then\n    if [[ ! -f /srv/rea/current/pins ]]; then\n      msg_error \"REA active generation is incomplete; run update --clean to repair it\"\n      return 1\n    fi\n    local installed selected\n    installed=$(cat /srv/rea/current/pins) || return \"$?\"\n    selected=$(rea_pins) || return \"$?\"\n    if [[ \"$installed\" == \"$selected\" ]]; then\n      $STD runuser -u rea -- /srv/rea/bin/rea --help || return \"$?\"\n      $STD runuser -u rea -- /srv/rea/bin/apktool --version || return \"$?\"\n      msg_ok \"REA $var_lxc_rea_version is already installed at the selected pins\"\n      return 0\n    fi\n  fi\n  check_container_storage || return \"$?\"\n  rea_deploy\n}\n\n# shellcheck source=/dev/null\nsource \u003c(curl -fsSL \"$REPO_BASE/misc/bootstrap/lxc\") --script-id rea -- \"$@\"\n",
   "source_lines": [
     "#!/usr/bin/env bash",
     "REPO_BASE=\"${REPO_BASE:-https://raw.githubusercontent.com/scripts-underground/proxmox/main}\"",
@@ -23,6 +23,9 @@
     "var_os=\"${var_os:-debian}\"",
     "var_version=\"${var_version:-13}\"",
     "var_unprivileged=\"${var_unprivileged:-1}\"",
+    "# Creator-side SSH setup targets the account created by the install hook.",
+    "# shellcheck disable=SC2034 # Consumed by the bootstrap on the creator only.",
+    "var_ssh_access_account=rea",
     "var_lxc_rea_commit=\"${var_lxc_rea_commit:-ded199abcde611a0ba4739ecb536e0ede0075670}\"",
     "var_lxc_rea_version=\"${var_lxc_rea_version:-6.4.0}\"",
     "var_lxc_node_version=\"${var_lxc_node_version:-24.18.0}\"",
@@ -43,7 +46,7 @@
     "  fi",
     "",
     "  msg_info \"Installing Dependencies\"",
-    "  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server procps python3 file git build-essential || return \"$?\"",
+    "  $STD pkg_install openjdk-21-jdk-headless unzip zip xz-utils curl ca-certificates openssh-server whiptail procps python3 file git build-essential || return \"$?\"",
     "  msg_ok \"Installed Dependencies\"",
     "",
     "  if ! id rea \u003e /dev/null 2\u003e\u00261; then",
@@ -206,9 +209,41 @@
     "}",
     "",
     "function post_install_script() {",
-    "  printf 'Add your SSH public key to /home/rea/.ssh/authorized_keys and verify the container host key.\\n'",
-    "  printf 'MCP over SSH: ssh -T rea@\u003ccontainer-address\u003e /srv/rea/bin/rea mcp\\n'",
+    "  local mode=${LXC_SSH_ACCESS_MODE:-pending}",
+    "  case \"$mode\" in",
+    "    key | password | both) printf 'SSH access for rea@%s configured (%s).\\n' \"$IP\" \"$mode\" ;;",
+    "    *) printf 'SSH access for rea@%s is pending.\\n' \"$IP\" ;;",
+    "  esac",
+    "  printf 'To set up or change access, run as root in the container: configure-ssh-access rea\\n'",
+    "  printf 'Verify the SSH host key from the container console before trusting it on the client:\\n'",
+    "  printf '  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\\n'",
+    "  printf '  cat /etc/ssh/ssh_host_ed25519_key.pub\\n'",
+    "  printf 'Copy the key type and blob from that trusted console. Before connecting, add this line to the client\\x27s ~/.ssh/known_hosts:\\n'",
+    "  printf '  %s ssh-ed25519 \u003cpublic-key-blob\u003e\\n' \"$IP\"",
+    "  case \"$mode\" in",
+    "    key | password | both) printf 'CLI: ssh -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea --help\\n' \"$IP\" ;;",
+    "  esac",
+    "  case \"$mode\" in",
+    "    key | both) printf 'MCP over SSH: ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea mcp\\n' \"$IP\" ;;",
+    "    *) printf 'Choose key or both for unattended MCP; its SSH client cannot prompt for a password.\\n' ;;",
+    "  esac",
     "}",
+    "",
+    "# Defined only for explicit source setup, not in a frozen update bundle.",
+    "if [[ ${REA_INSTALL_SSH_SETUP:-0} == 1 ]]; then",
+    "  function ssh_access_setup_script() {",
+    "    if [[ ! -f /usr/local/lib/rea-deploy.sh ]]; then",
+    "      msg_error \"REA installation recipe not found; install REA first\"",
+    "      return 1",
+    "    fi",
+    "    if [[ ! -f /srv/rea/environment.sh ]] || ! id rea \u003e /dev/null 2\u003e\u00261; then",
+    "      msg_error \"REA installation is missing its operator environment or account\"",
+    "      return 1",
+    "    fi",
+    "    # This source-only path has no install.func package context.",
+    "    $STD apt install -y whiptail || return \"$?\"",
+    "  }",
+    "fi",
     "",
     "function update_script() {",
     "  if [[ \"$OS_TYPE\" != debian || \"${OS_VERSION%%.*}\" != 13 || \"$(get_system_arch)\" != amd64 || \"$(uname -m)\" != x86_64 ]]; then",
@@ -251,36 +286,48 @@
   "functions": [
     {
       "name": "install_script",
-      "start_line": 32,
-      "end_line": 199,
+      "start_line": 35,
+      "end_line": 202,
       "name_span": {
-        "start_line": 32,
+        "start_line": 35,
         "start_col": 10,
-        "end_line": 32,
+        "end_line": 35,
         "end_col": 24,
         "kind": ""
       }
     },
     {
       "name": "post_install_script",
-      "start_line": 201,
-      "end_line": 204,
+      "start_line": 204,
+      "end_line": 223,
       "name_span": {
-        "start_line": 201,
+        "start_line": 204,
         "start_col": 10,
-        "end_line": 201,
+        "end_line": 204,
         "end_col": 29,
         "kind": ""
       }
     },
     {
-      "name": "update_script",
-      "start_line": 206,
+      "name": "ssh_access_setup_script",
+      "start_line": 227,
       "end_line": 238,
       "name_span": {
-        "start_line": 206,
+        "start_line": 227,
+        "start_col": 12,
+        "end_line": 227,
+        "end_col": 35,
+        "kind": ""
+      }
+    },
+    {
+      "name": "update_script",
+      "start_line": 241,
+      "end_line": 273,
+      "name_span": {
+        "start_line": 241,
         "start_col": 10,
-        "end_line": 206,
+        "end_line": 241,
         "end_col": 23,
         "kind": ""
       }
@@ -388,8 +435,18 @@
       "value_is_param_default": false
     },
     {
+      "name": "var_ssh_access_account",
+      "line": 21,
+      "start_col": 1,
+      "end_col": 27,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
       "name": "var_lxc_rea_commit",
-      "line": 19,
+      "line": 22,
       "start_col": 1,
       "end_col": 85,
       "value_has_cmdsubst": false,
@@ -399,7 +456,7 @@
     },
     {
       "name": "var_lxc_rea_version",
-      "line": 20,
+      "line": 23,
       "start_col": 1,
       "end_col": 52,
       "value_has_cmdsubst": false,
@@ -409,7 +466,7 @@
     },
     {
       "name": "var_lxc_node_version",
-      "line": 21,
+      "line": 24,
       "start_col": 1,
       "end_col": 56,
       "value_has_cmdsubst": false,
@@ -419,36 +476,6 @@
     },
     {
       "name": "var_lxc_npm_version",
-      "line": 22,
-      "start_col": 1,
-      "end_col": 54,
-      "value_has_cmdsubst": false,
-      "is_repo_base": false,
-      "in_bootstrap_zone": false,
-      "value_is_param_default": false
-    },
-    {
-      "name": "var_lxc_ghidra_version",
-      "line": 23,
-      "start_col": 1,
-      "end_col": 59,
-      "value_has_cmdsubst": false,
-      "is_repo_base": false,
-      "in_bootstrap_zone": false,
-      "value_is_param_default": false
-    },
-    {
-      "name": "var_lxc_ghidra_date",
-      "line": 24,
-      "start_col": 1,
-      "end_col": 55,
-      "value_has_cmdsubst": false,
-      "is_repo_base": false,
-      "in_bootstrap_zone": false,
-      "value_is_param_default": false
-    },
-    {
-      "name": "var_lxc_jadx_version",
       "line": 25,
       "start_col": 1,
       "end_col": 54,
@@ -458,8 +485,38 @@
       "value_is_param_default": false
     },
     {
-      "name": "var_lxc_apktool_version",
+      "name": "var_lxc_ghidra_version",
       "line": 26,
+      "start_col": 1,
+      "end_col": 59,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_lxc_ghidra_date",
+      "line": 27,
+      "start_col": 1,
+      "end_col": 55,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_lxc_jadx_version",
+      "line": 28,
+      "start_col": 1,
+      "end_col": 54,
+      "value_has_cmdsubst": false,
+      "is_repo_base": false,
+      "in_bootstrap_zone": false,
+      "value_is_param_default": false
+    },
+    {
+      "name": "var_lxc_apktool_version",
+      "line": 29,
       "start_col": 1,
       "end_col": 60,
       "value_has_cmdsubst": false,
@@ -469,7 +526,7 @@
     },
     {
       "name": "var_lxc_node_sha256",
-      "line": 27,
+      "line": 30,
       "start_col": 1,
       "end_col": 111,
       "value_has_cmdsubst": false,
@@ -479,7 +536,7 @@
     },
     {
       "name": "var_lxc_ghidra_sha256",
-      "line": 28,
+      "line": 31,
       "start_col": 1,
       "end_col": 115,
       "value_has_cmdsubst": false,
@@ -489,7 +546,7 @@
     },
     {
       "name": "var_lxc_jadx_sha256",
-      "line": 29,
+      "line": 32,
       "start_col": 1,
       "end_col": 111,
       "value_has_cmdsubst": false,
@@ -499,7 +556,7 @@
     },
     {
       "name": "var_lxc_apktool_sha256",
-      "line": 30,
+      "line": 33,
       "start_col": 1,
       "end_col": 117,
       "value_has_cmdsubst": false,
@@ -508,54 +565,59 @@
       "value_is_param_default": false
     }
   ],
-  "global_ranges": [],
+  "global_ranges": [
+    {
+      "start_line": 226,
+      "end_line": 226
+    }
+  ],
   "heredocs": [
     {
       "op": {
-        "line": 50,
+        "line": 53,
         "col": 9,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 50,
+        "line": 53,
         "start_col": 12,
         "end_col": 25,
         "text": "ENVIRONMENT"
       },
       "marker_end": {
-        "line": 54,
+        "line": 57,
         "start_col": 1,
         "end_col": 12,
         "text": "ENVIRONMENT"
       },
       "body": {
-        "start_line": 51,
-        "end_line": 53
+        "start_line": 54,
+        "end_line": 56
       },
       "expand": false,
       "strip_tabs": false
     },
     {
       "op": {
-        "line": 60,
+        "line": 63,
         "col": 7,
         "kind": "\u003c\u003c"
       },
       "marker_start": {
-        "line": 60,
+        "line": 63,
         "start_col": 10,
         "end_col": 18,
         "text": "DEPLOY"
       },
       "marker_end": {
-        "line": 193,
+        "line": 196,
         "start_col": 1,
         "end_col": 7,
         "text": "DEPLOY"
       },
       "body": {
-        "start_line": 61,
-        "end_line": 192
+        "start_line": 64,
+        "end_line": 195
       },
       "expand": false,
       "strip_tabs": false
@@ -891,2350 +953,3133 @@
       "end_col": 41
     },
     {
-      "kind": "var-assign",
-      "op": "=",
+      "kind": "comment",
       "start_line": 19,
       "start_col": 1,
       "end_line": 19,
+      "end_col": 74
+    },
+    {
+      "kind": "comment",
+      "start_line": 20,
+      "start_col": 1,
+      "end_line": 20,
+      "end_col": 77
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 21,
+      "start_col": 1,
+      "end_line": 21,
+      "end_col": 27
+    },
+    {
+      "kind": "var-name",
+      "start_line": 21,
+      "start_col": 1,
+      "end_line": 21,
+      "end_col": 23
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 22,
+      "start_col": 1,
+      "end_line": 22,
       "end_col": 85
     },
     {
       "kind": "var-name",
-      "start_line": 19,
+      "start_line": 22,
       "start_col": 1,
-      "end_line": 19,
+      "end_line": 22,
       "end_col": 19
     },
     {
       "kind": "string-dq",
-      "start_line": 19,
+      "start_line": 22,
       "start_col": 20,
-      "end_line": 19,
+      "end_line": 22,
       "end_col": 85
     },
     {
       "kind": "param-exp",
-      "start_line": 19,
+      "start_line": 22,
       "start_col": 21,
-      "end_line": 19,
+      "end_line": 22,
       "end_col": 84
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 20,
+      "start_line": 23,
       "start_col": 1,
-      "end_line": 20,
+      "end_line": 23,
       "end_col": 52
     },
     {
       "kind": "var-name",
-      "start_line": 20,
+      "start_line": 23,
       "start_col": 1,
-      "end_line": 20,
+      "end_line": 23,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 20,
+      "start_line": 23,
       "start_col": 21,
-      "end_line": 20,
+      "end_line": 23,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 20,
+      "start_line": 23,
       "start_col": 22,
-      "end_line": 20,
+      "end_line": 23,
       "end_col": 51
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 21,
+      "start_line": 24,
       "start_col": 1,
-      "end_line": 21,
+      "end_line": 24,
       "end_col": 56
     },
     {
       "kind": "var-name",
-      "start_line": 21,
+      "start_line": 24,
       "start_col": 1,
-      "end_line": 21,
+      "end_line": 24,
       "end_col": 21
     },
     {
       "kind": "string-dq",
-      "start_line": 21,
+      "start_line": 24,
       "start_col": 22,
-      "end_line": 21,
+      "end_line": 24,
       "end_col": 56
     },
     {
       "kind": "param-exp",
-      "start_line": 21,
+      "start_line": 24,
       "start_col": 23,
-      "end_line": 21,
+      "end_line": 24,
       "end_col": 55
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 22,
+      "start_line": 25,
       "start_col": 1,
-      "end_line": 22,
+      "end_line": 25,
       "end_col": 54
     },
     {
       "kind": "var-name",
-      "start_line": 22,
+      "start_line": 25,
       "start_col": 1,
-      "end_line": 22,
+      "end_line": 25,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 22,
+      "start_line": 25,
       "start_col": 21,
-      "end_line": 22,
+      "end_line": 25,
       "end_col": 54
     },
     {
       "kind": "param-exp",
-      "start_line": 22,
+      "start_line": 25,
       "start_col": 22,
-      "end_line": 22,
+      "end_line": 25,
       "end_col": 53
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 23,
+      "start_line": 26,
       "start_col": 1,
-      "end_line": 23,
+      "end_line": 26,
       "end_col": 59
     },
     {
       "kind": "var-name",
-      "start_line": 23,
+      "start_line": 26,
       "start_col": 1,
-      "end_line": 23,
+      "end_line": 26,
       "end_col": 23
     },
     {
       "kind": "string-dq",
-      "start_line": 23,
+      "start_line": 26,
       "start_col": 24,
-      "end_line": 23,
+      "end_line": 26,
       "end_col": 59
     },
     {
       "kind": "param-exp",
-      "start_line": 23,
+      "start_line": 26,
       "start_col": 25,
-      "end_line": 23,
+      "end_line": 26,
       "end_col": 58
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 24,
+      "start_line": 27,
       "start_col": 1,
-      "end_line": 24,
+      "end_line": 27,
       "end_col": 55
     },
     {
       "kind": "var-name",
-      "start_line": 24,
+      "start_line": 27,
       "start_col": 1,
-      "end_line": 24,
+      "end_line": 27,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 24,
+      "start_line": 27,
       "start_col": 21,
-      "end_line": 24,
+      "end_line": 27,
       "end_col": 55
     },
     {
       "kind": "param-exp",
-      "start_line": 24,
+      "start_line": 27,
       "start_col": 22,
-      "end_line": 24,
+      "end_line": 27,
       "end_col": 54
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 25,
+      "start_line": 28,
       "start_col": 1,
-      "end_line": 25,
+      "end_line": 28,
       "end_col": 54
     },
     {
       "kind": "var-name",
-      "start_line": 25,
+      "start_line": 28,
       "start_col": 1,
-      "end_line": 25,
+      "end_line": 28,
       "end_col": 21
     },
     {
       "kind": "string-dq",
-      "start_line": 25,
+      "start_line": 28,
       "start_col": 22,
-      "end_line": 25,
+      "end_line": 28,
       "end_col": 54
     },
     {
       "kind": "param-exp",
-      "start_line": 25,
+      "start_line": 28,
       "start_col": 23,
-      "end_line": 25,
+      "end_line": 28,
       "end_col": 53
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 26,
+      "start_line": 29,
       "start_col": 1,
-      "end_line": 26,
+      "end_line": 29,
       "end_col": 60
     },
     {
       "kind": "var-name",
-      "start_line": 26,
+      "start_line": 29,
       "start_col": 1,
-      "end_line": 26,
+      "end_line": 29,
       "end_col": 24
     },
     {
       "kind": "string-dq",
-      "start_line": 26,
+      "start_line": 29,
       "start_col": 25,
-      "end_line": 26,
+      "end_line": 29,
       "end_col": 60
     },
     {
       "kind": "param-exp",
-      "start_line": 26,
+      "start_line": 29,
       "start_col": 26,
-      "end_line": 26,
+      "end_line": 29,
       "end_col": 59
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 27,
+      "start_line": 30,
       "start_col": 1,
-      "end_line": 27,
+      "end_line": 30,
       "end_col": 111
     },
     {
       "kind": "var-name",
-      "start_line": 27,
+      "start_line": 30,
       "start_col": 1,
-      "end_line": 27,
+      "end_line": 30,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 27,
+      "start_line": 30,
       "start_col": 21,
-      "end_line": 27,
+      "end_line": 30,
       "end_col": 111
     },
     {
       "kind": "param-exp",
-      "start_line": 27,
+      "start_line": 30,
       "start_col": 22,
-      "end_line": 27,
+      "end_line": 30,
       "end_col": 110
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 28,
+      "start_line": 31,
       "start_col": 1,
-      "end_line": 28,
+      "end_line": 31,
       "end_col": 115
     },
     {
       "kind": "var-name",
-      "start_line": 28,
+      "start_line": 31,
       "start_col": 1,
-      "end_line": 28,
+      "end_line": 31,
       "end_col": 22
     },
     {
       "kind": "string-dq",
-      "start_line": 28,
+      "start_line": 31,
       "start_col": 23,
-      "end_line": 28,
+      "end_line": 31,
       "end_col": 115
     },
     {
       "kind": "param-exp",
-      "start_line": 28,
+      "start_line": 31,
       "start_col": 24,
-      "end_line": 28,
+      "end_line": 31,
       "end_col": 114
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 29,
+      "start_line": 32,
       "start_col": 1,
-      "end_line": 29,
+      "end_line": 32,
       "end_col": 111
     },
     {
       "kind": "var-name",
-      "start_line": 29,
+      "start_line": 32,
       "start_col": 1,
-      "end_line": 29,
+      "end_line": 32,
       "end_col": 20
     },
     {
       "kind": "string-dq",
-      "start_line": 29,
+      "start_line": 32,
       "start_col": 21,
-      "end_line": 29,
+      "end_line": 32,
       "end_col": 111
     },
     {
       "kind": "param-exp",
-      "start_line": 29,
+      "start_line": 32,
       "start_col": 22,
-      "end_line": 29,
+      "end_line": 32,
       "end_col": 110
     },
     {
       "kind": "var-assign",
       "op": "=",
-      "start_line": 30,
+      "start_line": 33,
       "start_col": 1,
-      "end_line": 30,
+      "end_line": 33,
       "end_col": 117
     },
     {
       "kind": "var-name",
-      "start_line": 30,
+      "start_line": 33,
       "start_col": 1,
-      "end_line": 30,
+      "end_line": 33,
       "end_col": 23
     },
     {
       "kind": "string-dq",
-      "start_line": 30,
+      "start_line": 33,
       "start_col": 24,
-      "end_line": 30,
+      "end_line": 33,
       "end_col": 117
     },
     {
       "kind": "param-exp",
-      "start_line": 30,
+      "start_line": 33,
       "start_col": 25,
-      "end_line": 30,
+      "end_line": 33,
       "end_col": 116
     },
     {
       "kind": "keyword",
       "op": "function",
-      "start_line": 32,
+      "start_line": 35,
       "start_col": 1,
-      "end_line": 32,
+      "end_line": 35,
       "end_col": 9
     },
     {
       "kind": "function-name",
-      "start_line": 32,
+      "start_line": 35,
       "start_col": 10,
-      "end_line": 32,
+      "end_line": 35,
       "end_col": 24
     },
     {
       "kind": "operator",
       "op": "{",
-      "start_line": 32,
+      "start_line": 35,
       "start_col": 27,
-      "end_line": 32,
+      "end_line": 35,
       "end_col": 28
     },
     {
       "kind": "keyword",
       "op": "if",
-      "start_line": 33,
-      "start_col": 3,
-      "end_line": 33,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 33,
-      "start_col": 6,
-      "end_line": 33,
-      "end_col": 8
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 33,
-      "start_col": 9,
-      "end_line": 33,
-      "end_col": 19
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 33,
-      "start_col": 10,
-      "end_line": 33,
-      "end_col": 18
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 33,
-      "start_col": 20,
-      "end_line": 33,
-      "end_col": 22
-    },
-    {
-      "kind": "test-operator",
-      "op": "||",
-      "start_line": 33,
-      "start_col": 30,
-      "end_line": 33,
-      "end_col": 32
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 33,
-      "start_col": 33,
-      "end_line": 33,
-      "end_col": 52
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 33,
-      "start_col": 34,
-      "end_line": 33,
-      "end_col": 51
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 33,
-      "start_col": 53,
-      "end_line": 33,
-      "end_col": 55
-    },
-    {
-      "kind": "test-operator",
-      "op": "||",
-      "start_line": 33,
-      "start_col": 59,
-      "end_line": 33,
-      "end_col": 61
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 33,
-      "start_col": 62,
-      "end_line": 33,
-      "end_col": 82
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 33,
-      "start_col": 63,
-      "end_line": 33,
-      "end_col": 81
-    },
-    {
-      "kind": "command",
-      "start_line": 33,
-      "start_col": 65,
-      "end_line": 33,
-      "end_col": 80
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 33,
-      "start_col": 83,
-      "end_line": 33,
-      "end_col": 85
-    },
-    {
-      "kind": "test-operator",
-      "op": "||",
-      "start_line": 33,
-      "start_col": 92,
-      "end_line": 33,
-      "end_col": 94
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 33,
-      "start_col": 95,
-      "end_line": 33,
-      "end_col": 108
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 33,
-      "start_col": 96,
-      "end_line": 33,
-      "end_col": 107
-    },
-    {
-      "kind": "command",
-      "start_line": 33,
-      "start_col": 98,
-      "end_line": 33,
-      "end_col": 103
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 33,
-      "start_col": 109,
-      "end_line": 33,
-      "end_col": 111
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 33,
-      "start_col": 119,
-      "end_line": 33,
-      "end_col": 121
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 33,
-      "start_col": 121,
-      "end_line": 33,
-      "end_col": 122
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 33,
-      "start_col": 123,
-      "end_line": 33,
-      "end_col": 127
-    },
-    {
-      "kind": "command",
-      "start_line": 34,
-      "start_col": 5,
-      "end_line": 34,
-      "end_col": 14
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 34,
-      "start_col": 15,
-      "end_line": 34,
-      "end_col": 48
-    },
-    {
-      "kind": "command",
-      "start_line": 35,
-      "start_col": 5,
-      "end_line": 35,
-      "end_col": 11
-    },
-    {
-      "kind": "keyword",
-      "op": "fi",
       "start_line": 36,
       "start_col": 3,
       "end_line": 36,
       "end_col": 5
     },
     {
-      "kind": "command",
-      "start_line": 38,
-      "start_col": 3,
-      "end_line": 38,
-      "end_col": 11
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 38,
-      "start_col": 12,
-      "end_line": 38,
-      "end_col": 37
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 39,
-      "start_col": 3,
-      "end_line": 39,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 39,
-      "start_col": 8,
-      "end_line": 39,
-      "end_col": 19
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 39,
-      "start_col": 139,
-      "end_line": 39,
-      "end_col": 141
-    },
-    {
-      "kind": "command",
-      "start_line": 39,
-      "start_col": 142,
-      "end_line": 39,
-      "end_col": 148
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 39,
-      "start_col": 149,
-      "end_line": 39,
-      "end_col": 153
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 39,
-      "start_col": 150,
-      "end_line": 39,
-      "end_col": 152
-    },
-    {
-      "kind": "command",
-      "start_line": 40,
-      "start_col": 3,
-      "end_line": 40,
-      "end_col": 9
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 40,
-      "start_col": 10,
-      "end_line": 40,
-      "end_col": 34
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 42,
-      "start_col": 3,
-      "end_line": 42,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "!",
-      "start_line": 42,
-      "start_col": 6,
-      "end_line": 42,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 42,
-      "start_col": 8,
-      "end_line": 42,
-      "end_col": 10
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 42,
-      "start_col": 15,
-      "end_line": 42,
-      "end_col": 16
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e\u0026",
-      "start_line": 42,
-      "start_col": 28,
-      "end_line": 42,
-      "end_col": 30
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 42,
-      "start_col": 31,
-      "end_line": 42,
-      "end_col": 32
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 42,
-      "start_col": 33,
-      "end_line": 42,
-      "end_col": 37
-    },
-    {
-      "kind": "command",
-      "start_line": 43,
-      "start_col": 5,
-      "end_line": 43,
-      "end_col": 12
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 43,
-      "start_col": 62,
-      "end_line": 43,
-      "end_col": 64
-    },
-    {
-      "kind": "command",
-      "start_line": 43,
-      "start_col": 65,
-      "end_line": 43,
-      "end_col": 71
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 43,
-      "start_col": 72,
-      "end_line": 43,
-      "end_col": 76
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 43,
-      "start_col": 73,
-      "end_line": 43,
-      "end_col": 75
-    },
-    {
-      "kind": "keyword",
-      "op": "fi",
-      "start_line": 44,
-      "start_col": 3,
-      "end_line": 44,
-      "end_col": 5
-    },
-    {
-      "kind": "command",
-      "start_line": 45,
-      "start_col": 3,
-      "end_line": 45,
-      "end_col": 10
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 45,
-      "start_col": 46,
-      "end_line": 45,
-      "end_col": 48
-    },
-    {
-      "kind": "command",
-      "start_line": 45,
-      "start_col": 49,
-      "end_line": 45,
-      "end_col": 55
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 45,
-      "start_col": 56,
-      "end_line": 45,
-      "end_col": 60
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 45,
-      "start_col": 57,
-      "end_line": 45,
-      "end_col": 59
-    },
-    {
-      "kind": "command",
-      "start_line": 46,
-      "start_col": 3,
-      "end_line": 46,
-      "end_col": 10
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 46,
-      "start_col": 78,
-      "end_line": 46,
-      "end_col": 80
-    },
-    {
-      "kind": "command",
-      "start_line": 46,
-      "start_col": 81,
-      "end_line": 46,
-      "end_col": 87
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 46,
-      "start_col": 88,
-      "end_line": 46,
-      "end_col": 92
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 46,
-      "start_col": 89,
-      "end_line": 46,
-      "end_col": 91
-    },
-    {
-      "kind": "command",
-      "start_line": 47,
-      "start_col": 3,
-      "end_line": 47,
-      "end_col": 10
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 47,
-      "start_col": 51,
-      "end_line": 47,
-      "end_col": 53
-    },
-    {
-      "kind": "command",
-      "start_line": 47,
-      "start_col": 54,
-      "end_line": 47,
-      "end_col": 60
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 47,
-      "start_col": 61,
-      "end_line": 47,
-      "end_col": 65
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 47,
-      "start_col": 62,
-      "end_line": 47,
-      "end_col": 64
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 49,
-      "start_col": 3,
-      "end_line": 49,
-      "end_col": 5
-    },
-    {
       "kind": "operator",
       "op": "[[",
-      "start_line": 49,
+      "start_line": 36,
       "start_col": 6,
-      "end_line": 49,
-      "end_col": 8
-    },
-    {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 49,
-      "start_col": 9,
-      "end_line": 49,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-e",
-      "start_line": 49,
-      "start_col": 11,
-      "end_line": 49,
-      "end_col": 13
-    },
-    {
-      "kind": "test-operator",
-      "op": "\u0026\u0026",
-      "start_line": 49,
-      "start_col": 38,
-      "end_line": 49,
-      "end_col": 40
-    },
-    {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 49,
-      "start_col": 41,
-      "end_line": 49,
-      "end_col": 42
-    },
-    {
-      "kind": "test-operator",
-      "op": "-L",
-      "start_line": 49,
-      "start_col": 43,
-      "end_line": 49,
-      "end_col": 45
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 49,
-      "start_col": 70,
-      "end_line": 49,
-      "end_col": 72
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 49,
-      "start_col": 72,
-      "end_line": 49,
-      "end_col": 73
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 49,
-      "start_col": 74,
-      "end_line": 49,
-      "end_col": 78
-    },
-    {
-      "kind": "command",
-      "start_line": 50,
-      "start_col": 5,
-      "end_line": 50,
-      "end_col": 8
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 50,
-      "start_col": 9,
-      "end_line": 50,
-      "end_col": 11
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 50,
-      "start_col": 12,
-      "end_line": 50,
-      "end_col": 25
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 50,
-      "start_col": 12,
-      "end_line": 50,
-      "end_col": 25
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 50,
-      "start_col": 26,
-      "end_line": 50,
-      "end_col": 27
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 50,
-      "start_col": 52,
-      "end_line": 50,
-      "end_col": 54
-    },
-    {
-      "kind": "command",
-      "start_line": 50,
-      "start_col": 55,
-      "end_line": 50,
-      "end_col": 61
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 50,
-      "start_col": 62,
-      "end_line": 50,
-      "end_col": 66
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 50,
-      "start_col": 63,
-      "end_line": 50,
-      "end_col": 65
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 54,
-      "start_col": 1,
-      "end_line": 54,
-      "end_col": 12
-    },
-    {
-      "kind": "keyword",
-      "op": "fi",
-      "start_line": 55,
-      "start_col": 3,
-      "end_line": 55,
-      "end_col": 5
-    },
-    {
-      "kind": "comment",
-      "start_line": 57,
-      "start_col": 3,
-      "end_line": 57,
-      "end_col": 78
-    },
-    {
-      "kind": "comment",
-      "start_line": 58,
-      "start_col": 3,
-      "end_line": 58,
-      "end_col": 79
-    },
-    {
-      "kind": "comment",
-      "start_line": 59,
-      "start_col": 3,
-      "end_line": 59,
-      "end_col": 77
-    },
-    {
-      "kind": "command",
-      "start_line": 60,
-      "start_col": 3,
-      "end_line": 60,
-      "end_col": 6
-    },
-    {
-      "kind": "operator",
-      "op": "\u003c\u003c",
-      "start_line": 60,
-      "start_col": 7,
-      "end_line": 60,
-      "end_col": 9
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 60,
-      "start_col": 10,
-      "end_line": 60,
-      "end_col": 18
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 60,
-      "start_col": 10,
-      "end_line": 60,
-      "end_col": 18
-    },
-    {
-      "kind": "operator",
-      "op": "\u003e",
-      "start_line": 60,
-      "start_col": 19,
-      "end_line": 60,
-      "end_col": 20
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 60,
-      "start_col": 50,
-      "end_line": 60,
-      "end_col": 52
-    },
-    {
-      "kind": "command",
-      "start_line": 60,
-      "start_col": 53,
-      "end_line": 60,
-      "end_col": 59
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 60,
-      "start_col": 60,
-      "end_line": 60,
-      "end_col": 64
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 60,
-      "start_col": 61,
-      "end_line": 60,
-      "end_col": 63
-    },
-    {
-      "kind": "heredoc-delim",
-      "start_line": 193,
-      "start_col": 1,
-      "end_line": 193,
-      "end_col": 7
-    },
-    {
-      "kind": "comment",
-      "start_line": 194,
-      "start_col": 3,
-      "end_line": 194,
-      "end_col": 32
-    },
-    {
-      "kind": "command",
-      "start_line": 195,
-      "start_col": 3,
-      "end_line": 195,
-      "end_col": 9
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 195,
-      "start_col": 39,
-      "end_line": 195,
-      "end_col": 41
-    },
-    {
-      "kind": "command",
-      "start_line": 195,
-      "start_col": 42,
-      "end_line": 195,
-      "end_col": 48
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 195,
-      "start_col": 49,
-      "end_line": 195,
-      "end_col": 53
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 195,
-      "start_col": 50,
-      "end_line": 195,
-      "end_col": 52
-    },
-    {
-      "kind": "command",
-      "start_line": 196,
-      "start_col": 3,
-      "end_line": 196,
-      "end_col": 13
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 196,
-      "start_col": 14,
-      "end_line": 196,
-      "end_col": 16
-    },
-    {
-      "kind": "command",
-      "start_line": 196,
-      "start_col": 17,
-      "end_line": 196,
-      "end_col": 23
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 196,
-      "start_col": 24,
-      "end_line": 196,
-      "end_col": 28
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 196,
-      "start_col": 25,
-      "end_line": 196,
-      "end_col": 27
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 198,
-      "start_col": 3,
-      "end_line": 198,
-      "end_col": 7
-    },
-    {
-      "kind": "command",
-      "start_line": 198,
-      "start_col": 8,
-      "end_line": 198,
-      "end_col": 17
-    },
-    {
-      "kind": "operator",
-      "op": "}",
-      "start_line": 199,
-      "start_col": 1,
-      "end_line": 199,
-      "end_col": 2
-    },
-    {
-      "kind": "keyword",
-      "op": "function",
-      "start_line": 201,
-      "start_col": 1,
-      "end_line": 201,
-      "end_col": 9
-    },
-    {
-      "kind": "function-name",
-      "start_line": 201,
-      "start_col": 10,
-      "end_line": 201,
-      "end_col": 29
-    },
-    {
-      "kind": "operator",
-      "op": "{",
-      "start_line": 201,
-      "start_col": 32,
-      "end_line": 201,
-      "end_col": 33
-    },
-    {
-      "kind": "command",
-      "start_line": 202,
-      "start_col": 3,
-      "end_line": 202,
-      "end_col": 9
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 202,
-      "start_col": 10,
-      "end_line": 202,
-      "end_col": 106
-    },
-    {
-      "kind": "command",
-      "start_line": 203,
-      "start_col": 3,
-      "end_line": 203,
-      "end_col": 9
-    },
-    {
-      "kind": "string-sq",
-      "start_line": 203,
-      "start_col": 10,
-      "end_line": 203,
-      "end_col": 79
-    },
-    {
-      "kind": "operator",
-      "op": "}",
-      "start_line": 204,
-      "start_col": 1,
-      "end_line": 204,
-      "end_col": 2
-    },
-    {
-      "kind": "keyword",
-      "op": "function",
-      "start_line": 206,
-      "start_col": 1,
-      "end_line": 206,
-      "end_col": 9
-    },
-    {
-      "kind": "function-name",
-      "start_line": 206,
-      "start_col": 10,
-      "end_line": 206,
-      "end_col": 23
-    },
-    {
-      "kind": "operator",
-      "op": "{",
-      "start_line": 206,
-      "start_col": 26,
-      "end_line": 206,
-      "end_col": 27
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 207,
-      "start_col": 3,
-      "end_line": 207,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 207,
-      "start_col": 6,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 8
     },
     {
       "kind": "string-dq",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 9,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 19
     },
     {
       "kind": "param-exp",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 10,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 18
     },
     {
       "kind": "test-operator",
       "op": "!=",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 20,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 22
     },
     {
       "kind": "test-operator",
       "op": "||",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 30,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 33,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 52
     },
     {
       "kind": "param-exp",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 34,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 51
     },
     {
       "kind": "test-operator",
       "op": "!=",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 53,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 55
     },
     {
       "kind": "test-operator",
       "op": "||",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 59,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 61
     },
     {
       "kind": "string-dq",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 62,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 82
     },
     {
       "kind": "cmd-subst",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 63,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 81
     },
     {
       "kind": "command",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 65,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 80
     },
     {
       "kind": "test-operator",
       "op": "!=",
-      "start_line": 207,
+      "start_line": 36,
       "start_col": 83,
-      "end_line": 207,
+      "end_line": 36,
       "end_col": 85
     },
     {
       "kind": "test-operator",
       "op": "||",
+      "start_line": 36,
+      "start_col": 92,
+      "end_line": 36,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 36,
+      "start_col": 95,
+      "end_line": 36,
+      "end_col": 108
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 36,
+      "start_col": 96,
+      "end_line": 36,
+      "end_col": 107
+    },
+    {
+      "kind": "command",
+      "start_line": 36,
+      "start_col": 98,
+      "end_line": 36,
+      "end_col": 103
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 36,
+      "start_col": 109,
+      "end_line": 36,
+      "end_col": 111
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 36,
+      "start_col": 119,
+      "end_line": 36,
+      "end_col": 121
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 36,
+      "start_col": 121,
+      "end_line": 36,
+      "end_col": 122
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 36,
+      "start_col": 123,
+      "end_line": 36,
+      "end_col": 127
+    },
+    {
+      "kind": "command",
+      "start_line": 37,
+      "start_col": 5,
+      "end_line": 37,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 37,
+      "start_col": 15,
+      "end_line": 37,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 38,
+      "start_col": 5,
+      "end_line": 38,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 39,
+      "start_col": 3,
+      "end_line": 39,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 41,
+      "start_col": 3,
+      "end_line": 41,
+      "end_col": 11
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 41,
+      "start_col": 12,
+      "end_line": 41,
+      "end_col": 37
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 42,
+      "start_col": 3,
+      "end_line": 42,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 42,
+      "start_col": 8,
+      "end_line": 42,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 42,
+      "start_col": 148,
+      "end_line": 42,
+      "end_col": 150
+    },
+    {
+      "kind": "command",
+      "start_line": 42,
+      "start_col": 151,
+      "end_line": 42,
+      "end_col": 157
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 42,
+      "start_col": 158,
+      "end_line": 42,
+      "end_col": 162
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 42,
+      "start_col": 159,
+      "end_line": 42,
+      "end_col": 161
+    },
+    {
+      "kind": "command",
+      "start_line": 43,
+      "start_col": 3,
+      "end_line": 43,
+      "end_col": 9
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 43,
+      "start_col": 10,
+      "end_line": 43,
+      "end_col": 34
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 45,
+      "start_col": 3,
+      "end_line": 45,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 45,
+      "start_col": 6,
+      "end_line": 45,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 45,
+      "start_col": 8,
+      "end_line": 45,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 45,
+      "start_col": 15,
+      "end_line": 45,
+      "end_col": 16
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 45,
+      "start_col": 28,
+      "end_line": 45,
+      "end_col": 30
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 45,
+      "start_col": 31,
+      "end_line": 45,
+      "end_col": 32
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 45,
+      "start_col": 33,
+      "end_line": 45,
+      "end_col": 37
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 5,
+      "end_line": 46,
+      "end_col": 12
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 46,
+      "start_col": 62,
+      "end_line": 46,
+      "end_col": 64
+    },
+    {
+      "kind": "command",
+      "start_line": 46,
+      "start_col": 65,
+      "end_line": 46,
+      "end_col": 71
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 46,
+      "start_col": 72,
+      "end_line": 46,
+      "end_col": 76
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 46,
+      "start_col": 73,
+      "end_line": 46,
+      "end_col": 75
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 47,
+      "start_col": 3,
+      "end_line": 47,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 3,
+      "end_line": 48,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 48,
+      "start_col": 46,
+      "end_line": 48,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 48,
+      "start_col": 49,
+      "end_line": 48,
+      "end_col": 55
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 48,
+      "start_col": 56,
+      "end_line": 48,
+      "end_col": 60
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 48,
+      "start_col": 57,
+      "end_line": 48,
+      "end_col": 59
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 3,
+      "end_line": 49,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 49,
+      "start_col": 78,
+      "end_line": 49,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 49,
+      "start_col": 81,
+      "end_line": 49,
+      "end_col": 87
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 49,
+      "start_col": 88,
+      "end_line": 49,
+      "end_col": 92
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 49,
+      "start_col": 89,
+      "end_line": 49,
+      "end_col": 91
+    },
+    {
+      "kind": "command",
+      "start_line": 50,
+      "start_col": 3,
+      "end_line": 50,
+      "end_col": 10
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 50,
+      "start_col": 51,
+      "end_line": 50,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 50,
+      "start_col": 54,
+      "end_line": 50,
+      "end_col": 60
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 50,
+      "start_col": 61,
+      "end_line": 50,
+      "end_col": 65
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 50,
+      "start_col": 62,
+      "end_line": 50,
+      "end_col": 64
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 52,
+      "start_col": 3,
+      "end_line": 52,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 52,
+      "start_col": 6,
+      "end_line": 52,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 52,
+      "start_col": 9,
+      "end_line": 52,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-e",
+      "start_line": 52,
+      "start_col": 11,
+      "end_line": 52,
+      "end_col": 13
+    },
+    {
+      "kind": "test-operator",
+      "op": "\u0026\u0026",
+      "start_line": 52,
+      "start_col": 38,
+      "end_line": 52,
+      "end_col": 40
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 52,
+      "start_col": 41,
+      "end_line": 52,
+      "end_col": 42
+    },
+    {
+      "kind": "test-operator",
+      "op": "-L",
+      "start_line": 52,
+      "start_col": 43,
+      "end_line": 52,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 52,
+      "start_col": 70,
+      "end_line": 52,
+      "end_col": 72
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 52,
+      "start_col": 72,
+      "end_line": 52,
+      "end_col": 73
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 52,
+      "start_col": 74,
+      "end_line": 52,
+      "end_col": 78
+    },
+    {
+      "kind": "command",
+      "start_line": 53,
+      "start_col": 5,
+      "end_line": 53,
+      "end_col": 8
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 53,
+      "start_col": 9,
+      "end_line": 53,
+      "end_col": 11
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 53,
+      "start_col": 12,
+      "end_line": 53,
+      "end_col": 25
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 53,
+      "start_col": 12,
+      "end_line": 53,
+      "end_col": 25
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 53,
+      "start_col": 26,
+      "end_line": 53,
+      "end_col": 27
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 53,
+      "start_col": 52,
+      "end_line": 53,
+      "end_col": 54
+    },
+    {
+      "kind": "command",
+      "start_line": 53,
+      "start_col": 55,
+      "end_line": 53,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 53,
+      "start_col": 62,
+      "end_line": 53,
+      "end_col": 66
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 53,
+      "start_col": 63,
+      "end_line": 53,
+      "end_col": 65
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 57,
+      "start_col": 1,
+      "end_line": 57,
+      "end_col": 12
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 58,
+      "start_col": 3,
+      "end_line": 58,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 60,
+      "start_col": 3,
+      "end_line": 60,
+      "end_col": 78
+    },
+    {
+      "kind": "comment",
+      "start_line": 61,
+      "start_col": 3,
+      "end_line": 61,
+      "end_col": 79
+    },
+    {
+      "kind": "comment",
+      "start_line": 62,
+      "start_col": 3,
+      "end_line": 62,
+      "end_col": 77
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 3,
+      "end_line": 63,
+      "end_col": 6
+    },
+    {
+      "kind": "operator",
+      "op": "\u003c\u003c",
+      "start_line": 63,
+      "start_col": 7,
+      "end_line": 63,
+      "end_col": 9
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 63,
+      "start_col": 10,
+      "end_line": 63,
+      "end_col": 18
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 63,
+      "start_col": 10,
+      "end_line": 63,
+      "end_col": 18
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 63,
+      "start_col": 19,
+      "end_line": 63,
+      "end_col": 20
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 63,
+      "start_col": 50,
+      "end_line": 63,
+      "end_col": 52
+    },
+    {
+      "kind": "command",
+      "start_line": 63,
+      "start_col": 53,
+      "end_line": 63,
+      "end_col": 59
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 63,
+      "start_col": 60,
+      "end_line": 63,
+      "end_col": 64
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 63,
+      "start_col": 61,
+      "end_line": 63,
+      "end_col": 63
+    },
+    {
+      "kind": "heredoc-delim",
+      "start_line": 196,
+      "start_col": 1,
+      "end_line": 196,
+      "end_col": 7
+    },
+    {
+      "kind": "comment",
+      "start_line": 197,
+      "start_col": 3,
+      "end_line": 197,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 3,
+      "end_line": 198,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 198,
+      "start_col": 39,
+      "end_line": 198,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 198,
+      "start_col": 42,
+      "end_line": 198,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 198,
+      "start_col": 49,
+      "end_line": 198,
+      "end_col": 53
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 198,
+      "start_col": 50,
+      "end_line": 198,
+      "end_col": 52
+    },
+    {
+      "kind": "command",
+      "start_line": 199,
+      "start_col": 3,
+      "end_line": 199,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 199,
+      "start_col": 14,
+      "end_line": 199,
+      "end_col": 16
+    },
+    {
+      "kind": "command",
+      "start_line": 199,
+      "start_col": 17,
+      "end_line": 199,
+      "end_col": 23
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 199,
+      "start_col": 24,
+      "end_line": 199,
+      "end_col": 28
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 199,
+      "start_col": 25,
+      "end_line": 199,
+      "end_col": 27
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 201,
+      "start_col": 3,
+      "end_line": 201,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
+      "start_line": 201,
+      "start_col": 8,
+      "end_line": 201,
+      "end_col": 17
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 202,
+      "start_col": 1,
+      "end_line": 202,
+      "end_col": 2
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 204,
+      "start_col": 1,
+      "end_line": 204,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 204,
+      "start_col": 10,
+      "end_line": 204,
+      "end_col": 29
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 204,
+      "start_col": 32,
+      "end_line": 204,
+      "end_col": 33
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 205,
+      "start_col": 3,
+      "end_line": 205,
+      "end_col": 8
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 205,
+      "start_col": 9,
+      "end_line": 205,
+      "end_col": 45
+    },
+    {
+      "kind": "var-name",
+      "start_line": 205,
+      "start_col": 9,
+      "end_line": 205,
+      "end_col": 13
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 205,
+      "start_col": 14,
+      "end_line": 205,
+      "end_col": 45
+    },
+    {
+      "kind": "keyword",
+      "op": "case",
+      "start_line": 206,
+      "start_col": 3,
+      "end_line": 206,
+      "end_col": 7
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 206,
+      "start_col": 8,
+      "end_line": 206,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 206,
+      "start_col": 9,
+      "end_line": 206,
+      "end_col": 14
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 206,
+      "start_col": 16,
+      "end_line": 206,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 207,
+      "start_col": 28,
+      "end_line": 207,
+      "end_col": 34
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 207,
+      "start_col": 35,
+      "end_line": 207,
+      "end_col": 77
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 207,
+      "start_col": 78,
+      "end_line": 207,
+      "end_col": 83
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 207,
+      "start_col": 79,
+      "end_line": 207,
+      "end_col": 82
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 207,
+      "start_col": 84,
+      "end_line": 207,
+      "end_col": 91
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 207,
+      "start_col": 85,
+      "end_line": 207,
+      "end_col": 90
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
       "start_line": 207,
       "start_col": 92,
       "end_line": 207,
       "end_col": 94
     },
     {
-      "kind": "string-dq",
-      "start_line": 207,
-      "start_col": 95,
-      "end_line": 207,
-      "end_col": 108
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 207,
-      "start_col": 96,
-      "end_line": 207,
-      "end_col": 107
-    },
-    {
-      "kind": "command",
-      "start_line": 207,
-      "start_col": 98,
-      "end_line": 207,
-      "end_col": 103
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 207,
-      "start_col": 109,
-      "end_line": 207,
-      "end_col": 111
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 207,
-      "start_col": 119,
-      "end_line": 207,
-      "end_col": 121
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 207,
-      "start_col": 121,
-      "end_line": 207,
-      "end_col": 122
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 207,
-      "start_col": 123,
-      "end_line": 207,
-      "end_col": 127
-    },
-    {
       "kind": "command",
       "start_line": 208,
-      "start_col": 5,
+      "start_col": 8,
       "end_line": 208,
       "end_col": 14
     },
     {
-      "kind": "string-dq",
+      "kind": "string-sq",
       "start_line": 208,
       "start_col": 15,
       "end_line": 208,
-      "end_col": 48
+      "end_col": 52
     },
     {
-      "kind": "command",
-      "start_line": 209,
-      "start_col": 5,
-      "end_line": 209,
-      "end_col": 11
+      "kind": "string-dq",
+      "start_line": 208,
+      "start_col": 53,
+      "end_line": 208,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 208,
+      "start_col": 54,
+      "end_line": 208,
+      "end_col": 57
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 208,
+      "start_col": 59,
+      "end_line": 208,
+      "end_col": 61
     },
     {
       "kind": "keyword",
-      "op": "fi",
+      "op": "esac",
+      "start_line": 209,
+      "start_col": 3,
+      "end_line": 209,
+      "end_col": 7
+    },
+    {
+      "kind": "command",
       "start_line": 210,
       "start_col": 3,
       "end_line": 210,
-      "end_col": 5
+      "end_col": 9
     },
     {
-      "kind": "keyword",
-      "op": "if",
+      "kind": "string-sq",
+      "start_line": 210,
+      "start_col": 10,
+      "end_line": 210,
+      "end_col": 96
+    },
+    {
+      "kind": "command",
       "start_line": 211,
       "start_col": 3,
       "end_line": 211,
-      "end_col": 5
+      "end_col": 9
     },
     {
-      "kind": "operator",
-      "op": "[[",
+      "kind": "string-sq",
       "start_line": 211,
-      "start_col": 6,
+      "start_col": 10,
       "end_line": 211,
-      "end_col": 8
-    },
-    {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 211,
-      "start_col": 9,
-      "end_line": 211,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-f",
-      "start_line": 211,
-      "start_col": 11,
-      "end_line": 211,
-      "end_col": 13
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 211,
-      "start_col": 43,
-      "end_line": 211,
-      "end_col": 45
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 211,
-      "start_col": 45,
-      "end_line": 211,
-      "end_col": 46
-    },
-    {
-      "kind": "keyword",
-      "op": "then",
-      "start_line": 211,
-      "start_col": 47,
-      "end_line": 211,
-      "end_col": 51
+      "end_col": 98
     },
     {
       "kind": "command",
       "start_line": 212,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 212,
-      "end_col": 14
+      "end_col": 9
     },
     {
-      "kind": "string-dq",
+      "kind": "string-sq",
       "start_line": 212,
-      "start_col": 15,
+      "start_col": 10,
       "end_line": 212,
-      "end_col": 69
+      "end_col": 64
     },
     {
       "kind": "command",
       "start_line": 213,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 213,
-      "end_col": 11
+      "end_col": 9
     },
     {
-      "kind": "keyword",
-      "op": "fi",
+      "kind": "string-sq",
+      "start_line": 213,
+      "start_col": 10,
+      "end_line": 213,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
       "start_line": 214,
       "start_col": 3,
       "end_line": 214,
-      "end_col": 5
+      "end_col": 9
     },
     {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 215,
-      "start_col": 3,
-      "end_line": 215,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 215,
-      "start_col": 6,
-      "end_line": 215,
-      "end_col": 8
-    },
-    {
-      "kind": "test-operator",
-      "op": "!",
-      "start_line": 215,
-      "start_col": 9,
-      "end_line": 215,
-      "end_col": 10
-    },
-    {
-      "kind": "test-operator",
-      "op": "-f",
-      "start_line": 215,
-      "start_col": 11,
-      "end_line": 215,
-      "end_col": 13
-    },
-    {
-      "kind": "operator",
-      "op": "]]",
-      "start_line": 215,
-      "start_col": 38,
-      "end_line": 215,
-      "end_col": 40
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 215,
-      "start_col": 41,
-      "end_line": 215,
-      "end_col": 43
-    },
-    {
-      "kind": "operator",
-      "op": "!",
-      "start_line": 215,
-      "start_col": 44,
-      "end_line": 215,
-      "end_col": 45
+      "kind": "string-sq",
+      "start_line": 214,
+      "start_col": 10,
+      "end_line": 214,
+      "end_col": 139
     },
     {
       "kind": "command",
       "start_line": 215,
-      "start_col": 46,
+      "start_col": 3,
+      "end_line": 215,
+      "end_col": 9
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 215,
+      "start_col": 10,
       "end_line": 215,
       "end_col": 48
     },
     {
-      "kind": "operator",
-      "op": "\u003e",
+      "kind": "string-dq",
       "start_line": 215,
-      "start_col": 53,
+      "start_col": 49,
       "end_line": 215,
       "end_col": 54
     },
     {
-      "kind": "operator",
-      "op": "\u003e\u0026",
+      "kind": "param-exp",
       "start_line": 215,
-      "start_col": 66,
+      "start_col": 50,
       "end_line": 215,
-      "end_col": 68
-    },
-    {
-      "kind": "operator",
-      "op": ";",
-      "start_line": 215,
-      "start_col": 69,
-      "end_line": 215,
-      "end_col": 70
+      "end_col": 53
     },
     {
       "kind": "keyword",
-      "op": "then",
-      "start_line": 215,
-      "start_col": 71,
-      "end_line": 215,
-      "end_col": 75
+      "op": "case",
+      "start_line": 216,
+      "start_col": 3,
+      "end_line": 216,
+      "end_col": 7
     },
     {
-      "kind": "command",
+      "kind": "string-dq",
       "start_line": 216,
-      "start_col": 5,
+      "start_col": 8,
+      "end_line": 216,
+      "end_col": 15
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 216,
+      "start_col": 9,
       "end_line": 216,
       "end_col": 14
     },
     {
-      "kind": "string-dq",
+      "kind": "keyword",
+      "op": "in",
       "start_line": 216,
-      "start_col": 15,
+      "start_col": 16,
       "end_line": 216,
-      "end_col": 80
+      "end_col": 18
     },
     {
       "kind": "command",
       "start_line": 217,
-      "start_col": 5,
+      "start_col": 28,
       "end_line": 217,
-      "end_col": 11
+      "end_col": 34
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 217,
+      "start_col": 35,
+      "end_line": 217,
+      "end_col": 107
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 217,
+      "start_col": 108,
+      "end_line": 217,
+      "end_col": 113
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 217,
+      "start_col": 109,
+      "end_line": 217,
+      "end_col": 112
+    },
+    {
+      "kind": "operator",
+      "op": ";;",
+      "start_line": 217,
+      "start_col": 114,
+      "end_line": 217,
+      "end_col": 116
     },
     {
       "kind": "keyword",
-      "op": "fi",
+      "op": "esac",
       "start_line": 218,
       "start_col": 3,
       "end_line": 218,
-      "end_col": 5
+      "end_col": 7
     },
     {
-      "kind": "comment",
+      "kind": "keyword",
+      "op": "case",
       "start_line": 219,
       "start_col": 3,
       "end_line": 219,
-      "end_col": 32
-    },
-    {
-      "kind": "command",
-      "start_line": 220,
-      "start_col": 3,
-      "end_line": 220,
-      "end_col": 9
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 220,
-      "start_col": 39,
-      "end_line": 220,
-      "end_col": 41
-    },
-    {
-      "kind": "command",
-      "start_line": 220,
-      "start_col": 42,
-      "end_line": 220,
-      "end_col": 48
+      "end_col": 7
     },
     {
       "kind": "string-dq",
-      "start_line": 220,
-      "start_col": 49,
-      "end_line": 220,
-      "end_col": 53
+      "start_line": 219,
+      "start_col": 8,
+      "end_line": 219,
+      "end_col": 15
     },
     {
       "kind": "param-exp",
-      "start_line": 220,
-      "start_col": 50,
-      "end_line": 220,
-      "end_col": 52
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
-      "start_line": 221,
-      "start_col": 3,
-      "end_line": 221,
-      "end_col": 5
-    },
-    {
-      "kind": "operator",
-      "op": "[[",
-      "start_line": 221,
-      "start_col": 6,
-      "end_line": 221,
-      "end_col": 8
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 221,
+      "start_line": 219,
       "start_col": 9,
-      "end_line": 221,
-      "end_col": 29
+      "end_line": 219,
+      "end_col": 14
+    },
+    {
+      "kind": "keyword",
+      "op": "in",
+      "start_line": 219,
+      "start_col": 16,
+      "end_line": 219,
+      "end_col": 18
+    },
+    {
+      "kind": "command",
+      "start_line": 220,
+      "start_col": 17,
+      "end_line": 220,
+      "end_col": 23
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 220,
+      "start_col": 24,
+      "end_line": 220,
+      "end_col": 122
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 220,
+      "start_col": 123,
+      "end_line": 220,
+      "end_col": 128
     },
     {
       "kind": "param-exp",
-      "start_line": 221,
-      "start_col": 10,
-      "end_line": 221,
-      "end_col": 28
-    },
-    {
-      "kind": "test-operator",
-      "op": "!=",
-      "start_line": 221,
-      "start_col": 30,
-      "end_line": 221,
-      "end_col": 32
+      "start_line": 220,
+      "start_col": 124,
+      "end_line": 220,
+      "end_col": 127
     },
     {
       "kind": "operator",
-      "op": "]]",
+      "op": ";;",
+      "start_line": 220,
+      "start_col": 129,
+      "end_line": 220,
+      "end_col": 131
+    },
+    {
+      "kind": "command",
       "start_line": 221,
-      "start_col": 35,
+      "start_col": 8,
       "end_line": 221,
-      "end_col": 37
+      "end_col": 14
+    },
+    {
+      "kind": "string-sq",
+      "start_line": 221,
+      "start_col": 15,
+      "end_line": 221,
+      "end_col": 102
     },
     {
       "kind": "operator",
-      "op": ";",
+      "op": ";;",
       "start_line": 221,
-      "start_col": 37,
+      "start_col": 103,
       "end_line": 221,
-      "end_col": 38
+      "end_col": 105
     },
     {
       "kind": "keyword",
-      "op": "then",
-      "start_line": 221,
-      "start_col": 39,
-      "end_line": 221,
-      "end_col": 43
-    },
-    {
-      "kind": "keyword",
-      "op": "if",
+      "op": "esac",
       "start_line": 222,
-      "start_col": 5,
+      "start_col": 3,
       "end_line": 222,
       "end_col": 7
     },
     {
       "kind": "operator",
+      "op": "}",
+      "start_line": 223,
+      "start_col": 1,
+      "end_line": 223,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 225,
+      "start_col": 1,
+      "end_line": 225,
+      "end_col": 73
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 226,
+      "start_col": 1,
+      "end_line": 226,
+      "end_col": 3
+    },
+    {
+      "kind": "operator",
       "op": "[[",
-      "start_line": 222,
+      "start_line": 226,
+      "start_col": 4,
+      "end_line": 226,
+      "end_col": 6
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 226,
+      "start_col": 7,
+      "end_line": 226,
+      "end_col": 34
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 226,
+      "start_col": 35,
+      "end_line": 226,
+      "end_col": 37
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 226,
+      "start_col": 40,
+      "end_line": 226,
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 226,
+      "start_col": 42,
+      "end_line": 226,
+      "end_col": 43
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 226,
+      "start_col": 44,
+      "end_line": 226,
+      "end_col": 48
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
+      "start_line": 227,
+      "start_col": 3,
+      "end_line": 227,
+      "end_col": 11
+    },
+    {
+      "kind": "function-name",
+      "start_line": 227,
+      "start_col": 12,
+      "end_line": 227,
+      "end_col": 35
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 227,
+      "start_col": 38,
+      "end_line": 227,
+      "end_col": 39
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 228,
+      "start_col": 5,
+      "end_line": 228,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 228,
       "start_col": 8,
-      "end_line": 222,
+      "end_line": 228,
       "end_col": 10
     },
     {
       "kind": "test-operator",
       "op": "!",
-      "start_line": 222,
+      "start_line": 228,
       "start_col": 11,
-      "end_line": 222,
+      "end_line": 228,
       "end_col": 12
     },
     {
       "kind": "test-operator",
       "op": "-f",
-      "start_line": 222,
+      "start_line": 228,
       "start_col": 13,
-      "end_line": 222,
+      "end_line": 228,
       "end_col": 15
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 222,
-      "start_col": 38,
-      "end_line": 222,
-      "end_col": 40
+      "start_line": 228,
+      "start_col": 45,
+      "end_line": 228,
+      "end_col": 47
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 222,
-      "start_col": 40,
-      "end_line": 222,
-      "end_col": 41
+      "start_line": 228,
+      "start_col": 47,
+      "end_line": 228,
+      "end_col": 48
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 222,
-      "start_col": 42,
-      "end_line": 222,
-      "end_col": 46
+      "start_line": 228,
+      "start_col": 49,
+      "end_line": 228,
+      "end_col": 53
     },
     {
       "kind": "command",
-      "start_line": 223,
+      "start_line": 229,
       "start_col": 7,
-      "end_line": 223,
+      "end_line": 229,
       "end_col": 16
     },
     {
       "kind": "string-dq",
-      "start_line": 223,
+      "start_line": 229,
       "start_col": 17,
-      "end_line": 223,
-      "end_col": 87
+      "end_line": 229,
+      "end_col": 71
     },
     {
       "kind": "command",
-      "start_line": 224,
+      "start_line": 230,
       "start_col": 7,
-      "end_line": 224,
+      "end_line": 230,
       "end_col": 13
     },
     {
       "kind": "keyword",
       "op": "fi",
-      "start_line": 225,
+      "start_line": 231,
       "start_col": 5,
-      "end_line": 225,
+      "end_line": 231,
       "end_col": 7
     },
     {
       "kind": "keyword",
-      "op": "local",
-      "start_line": 226,
-      "start_col": 5,
-      "end_line": 226,
-      "end_col": 10
-    },
-    {
-      "kind": "var-name",
-      "start_line": 226,
-      "start_col": 11,
-      "end_line": 226,
-      "end_col": 20
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 226,
-      "start_col": 11,
-      "end_line": 226,
-      "end_col": 20
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 226,
-      "start_col": 21,
-      "end_line": 226,
-      "end_col": 29
-    },
-    {
-      "kind": "var-name",
-      "start_line": 226,
-      "start_col": 21,
-      "end_line": 226,
-      "end_col": 29
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 227,
-      "start_col": 5,
-      "end_line": 227,
-      "end_col": 43
-    },
-    {
-      "kind": "var-name",
-      "start_line": 227,
-      "start_col": 5,
-      "end_line": 227,
-      "end_col": 14
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 227,
-      "start_col": 15,
-      "end_line": 227,
-      "end_col": 43
-    },
-    {
-      "kind": "command",
-      "start_line": 227,
-      "start_col": 17,
-      "end_line": 227,
-      "end_col": 20
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 227,
-      "start_col": 44,
-      "end_line": 227,
-      "end_col": 46
-    },
-    {
-      "kind": "command",
-      "start_line": 227,
-      "start_col": 47,
-      "end_line": 227,
-      "end_col": 53
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 227,
-      "start_col": 54,
-      "end_line": 227,
-      "end_col": 58
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 227,
-      "start_col": 55,
-      "end_line": 227,
-      "end_col": 57
-    },
-    {
-      "kind": "var-assign",
-      "op": "=",
-      "start_line": 228,
-      "start_col": 5,
-      "end_line": 228,
-      "end_col": 25
-    },
-    {
-      "kind": "var-name",
-      "start_line": 228,
-      "start_col": 5,
-      "end_line": 228,
-      "end_col": 13
-    },
-    {
-      "kind": "cmd-subst",
-      "start_line": 228,
-      "start_col": 14,
-      "end_line": 228,
-      "end_col": 25
-    },
-    {
-      "kind": "command",
-      "start_line": 228,
-      "start_col": 16,
-      "end_line": 228,
-      "end_col": 24
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 228,
-      "start_col": 26,
-      "end_line": 228,
-      "end_col": 28
-    },
-    {
-      "kind": "command",
-      "start_line": 228,
-      "start_col": 29,
-      "end_line": 228,
-      "end_col": 35
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 228,
-      "start_col": 36,
-      "end_line": 228,
-      "end_col": 40
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 228,
-      "start_col": 37,
-      "end_line": 228,
-      "end_col": 39
-    },
-    {
-      "kind": "keyword",
       "op": "if",
-      "start_line": 229,
+      "start_line": 232,
       "start_col": 5,
-      "end_line": 229,
+      "end_line": 232,
       "end_col": 7
     },
     {
       "kind": "operator",
       "op": "[[",
-      "start_line": 229,
+      "start_line": 232,
       "start_col": 8,
-      "end_line": 229,
+      "end_line": 232,
       "end_col": 10
     },
     {
-      "kind": "string-dq",
-      "start_line": 229,
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 232,
       "start_col": 11,
-      "end_line": 229,
-      "end_col": 23
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 229,
-      "start_col": 12,
-      "end_line": 229,
-      "end_col": 22
+      "end_line": 232,
+      "end_col": 12
     },
     {
       "kind": "test-operator",
-      "op": "==",
-      "start_line": 229,
-      "start_col": 24,
-      "end_line": 229,
-      "end_col": 26
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 229,
-      "start_col": 27,
-      "end_line": 229,
-      "end_col": 38
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 229,
-      "start_col": 28,
-      "end_line": 229,
-      "end_col": 37
+      "op": "-f",
+      "start_line": 232,
+      "start_col": 13,
+      "end_line": 232,
+      "end_col": 15
     },
     {
       "kind": "operator",
       "op": "]]",
-      "start_line": 229,
-      "start_col": 39,
-      "end_line": 229,
-      "end_col": 41
+      "start_line": 232,
+      "start_col": 40,
+      "end_line": 232,
+      "end_col": 42
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 232,
+      "start_col": 43,
+      "end_line": 232,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 232,
+      "start_col": 46,
+      "end_line": 232,
+      "end_col": 47
+    },
+    {
+      "kind": "command",
+      "start_line": 232,
+      "start_col": 48,
+      "end_line": 232,
+      "end_col": 50
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 232,
+      "start_col": 55,
+      "end_line": 232,
+      "end_col": 56
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 232,
+      "start_col": 68,
+      "end_line": 232,
+      "end_col": 70
     },
     {
       "kind": "operator",
       "op": ";",
-      "start_line": 229,
-      "start_col": 41,
-      "end_line": 229,
-      "end_col": 42
+      "start_line": 232,
+      "start_col": 71,
+      "end_line": 232,
+      "end_col": 72
     },
     {
       "kind": "keyword",
       "op": "then",
-      "start_line": 229,
-      "start_col": 43,
-      "end_line": 229,
-      "end_col": 47
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 230,
-      "start_col": 7,
-      "end_line": 230,
-      "end_col": 11
-    },
-    {
-      "kind": "command",
-      "start_line": 230,
-      "start_col": 12,
-      "end_line": 230,
-      "end_col": 19
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 230,
-      "start_col": 54,
-      "end_line": 230,
-      "end_col": 56
-    },
-    {
-      "kind": "command",
-      "start_line": 230,
-      "start_col": 57,
-      "end_line": 230,
-      "end_col": 63
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 230,
-      "start_col": 64,
-      "end_line": 230,
-      "end_col": 68
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 230,
-      "start_col": 65,
-      "end_line": 230,
-      "end_col": 67
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 231,
-      "start_col": 7,
-      "end_line": 231,
-      "end_col": 11
-    },
-    {
-      "kind": "command",
-      "start_line": 231,
-      "start_col": 12,
-      "end_line": 231,
-      "end_col": 19
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 231,
-      "start_col": 61,
-      "end_line": 231,
-      "end_col": 63
-    },
-    {
-      "kind": "command",
-      "start_line": 231,
-      "start_col": 64,
-      "end_line": 231,
-      "end_col": 70
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 231,
-      "start_col": 71,
-      "end_line": 231,
-      "end_col": 75
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 231,
-      "start_col": 72,
-      "end_line": 231,
-      "end_col": 74
-    },
-    {
-      "kind": "command",
       "start_line": 232,
-      "start_col": 7,
+      "start_col": 73,
       "end_line": 232,
-      "end_col": 13
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 232,
-      "start_col": 14,
-      "end_line": 232,
-      "end_col": 82
-    },
-    {
-      "kind": "param-exp",
-      "start_line": 232,
-      "start_col": 19,
-      "end_line": 232,
-      "end_col": 39
+      "end_col": 77
     },
     {
       "kind": "command",
       "start_line": 233,
       "start_col": 7,
       "end_line": 233,
-      "end_col": 13
+      "end_col": 16
     },
     {
-      "kind": "keyword",
-      "op": "fi",
+      "kind": "string-dq",
+      "start_line": 233,
+      "start_col": 17,
+      "end_line": 233,
+      "end_col": 82
+    },
+    {
+      "kind": "command",
       "start_line": 234,
-      "start_col": 5,
+      "start_col": 7,
       "end_line": 234,
-      "end_col": 7
+      "end_col": 13
     },
     {
       "kind": "keyword",
       "op": "fi",
       "start_line": 235,
-      "start_col": 3,
+      "start_col": 5,
       "end_line": 235,
-      "end_col": 5
+      "end_col": 7
     },
     {
-      "kind": "command",
+      "kind": "comment",
       "start_line": 236,
-      "start_col": 3,
+      "start_col": 5,
       "end_line": 236,
-      "end_col": 26
-    },
-    {
-      "kind": "operator",
-      "op": "||",
-      "start_line": 236,
-      "start_col": 27,
-      "end_line": 236,
-      "end_col": 29
-    },
-    {
-      "kind": "command",
-      "start_line": 236,
-      "start_col": 30,
-      "end_line": 236,
-      "end_col": 36
-    },
-    {
-      "kind": "string-dq",
-      "start_line": 236,
-      "start_col": 37,
-      "end_line": 236,
-      "end_col": 41
+      "end_col": 65
     },
     {
       "kind": "param-exp",
-      "start_line": 236,
-      "start_col": 38,
-      "end_line": 236,
-      "end_col": 40
+      "start_line": 237,
+      "start_col": 5,
+      "end_line": 237,
+      "end_col": 9
     },
     {
       "kind": "command",
       "start_line": 237,
-      "start_col": 3,
+      "start_col": 10,
       "end_line": 237,
       "end_col": 13
     },
     {
       "kind": "operator",
-      "op": "}",
-      "start_line": 238,
-      "start_col": 1,
-      "end_line": 238,
-      "end_col": 2
-    },
-    {
-      "kind": "comment",
-      "start_line": 240,
-      "start_col": 1,
-      "end_line": 240,
-      "end_col": 30
+      "op": "||",
+      "start_line": 237,
+      "start_col": 34,
+      "end_line": 237,
+      "end_col": 36
     },
     {
       "kind": "command",
-      "start_line": 241,
-      "start_col": 1,
-      "end_line": 241,
-      "end_col": 7
-    },
-    {
-      "kind": "proc-subst",
-      "start_line": 241,
-      "start_col": 8,
-      "end_line": 241,
-      "end_col": 53
-    },
-    {
-      "kind": "command",
-      "start_line": 241,
-      "start_col": 10,
-      "end_line": 241,
-      "end_col": 14
+      "start_line": 237,
+      "start_col": 37,
+      "end_line": 237,
+      "end_col": 43
     },
     {
       "kind": "string-dq",
-      "start_line": 241,
-      "start_col": 21,
-      "end_line": 241,
-      "end_col": 52
+      "start_line": 237,
+      "start_col": 44,
+      "end_line": 237,
+      "end_col": 48
     },
     {
       "kind": "param-exp",
+      "start_line": 237,
+      "start_col": 45,
+      "end_line": 237,
+      "end_col": 47
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 238,
+      "start_col": 3,
+      "end_line": 238,
+      "end_col": 4
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 239,
+      "start_col": 1,
+      "end_line": 239,
+      "end_col": 3
+    },
+    {
+      "kind": "keyword",
+      "op": "function",
       "start_line": 241,
-      "start_col": 22,
+      "start_col": 1,
       "end_line": 241,
+      "end_col": 9
+    },
+    {
+      "kind": "function-name",
+      "start_line": 241,
+      "start_col": 10,
+      "end_line": 241,
+      "end_col": 23
+    },
+    {
+      "kind": "operator",
+      "op": "{",
+      "start_line": 241,
+      "start_col": 26,
+      "end_line": 241,
+      "end_col": 27
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 242,
+      "start_col": 3,
+      "end_line": 242,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 242,
+      "start_col": 6,
+      "end_line": 242,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 242,
+      "start_col": 9,
+      "end_line": 242,
+      "end_col": 19
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 242,
+      "start_col": 10,
+      "end_line": 242,
+      "end_col": 18
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 242,
+      "start_col": 20,
+      "end_line": 242,
+      "end_col": 22
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 242,
+      "start_col": 30,
+      "end_line": 242,
       "end_col": 32
     },
     {
       "kind": "string-dq",
-      "start_line": 241,
+      "start_line": 242,
+      "start_col": 33,
+      "end_line": 242,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 242,
+      "start_col": 34,
+      "end_line": 242,
+      "end_col": 51
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 242,
+      "start_col": 53,
+      "end_line": 242,
+      "end_col": 55
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 242,
+      "start_col": 59,
+      "end_line": 242,
+      "end_col": 61
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 242,
+      "start_col": 62,
+      "end_line": 242,
+      "end_col": 82
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 242,
+      "start_col": 63,
+      "end_line": 242,
+      "end_col": 81
+    },
+    {
+      "kind": "command",
+      "start_line": 242,
+      "start_col": 65,
+      "end_line": 242,
+      "end_col": 80
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 242,
+      "start_col": 83,
+      "end_line": 242,
+      "end_col": 85
+    },
+    {
+      "kind": "test-operator",
+      "op": "||",
+      "start_line": 242,
+      "start_col": 92,
+      "end_line": 242,
+      "end_col": 94
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 242,
+      "start_col": 95,
+      "end_line": 242,
+      "end_col": 108
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 242,
+      "start_col": 96,
+      "end_line": 242,
+      "end_col": 107
+    },
+    {
+      "kind": "command",
+      "start_line": 242,
+      "start_col": 98,
+      "end_line": 242,
+      "end_col": 103
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 242,
+      "start_col": 109,
+      "end_line": 242,
+      "end_col": 111
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 242,
+      "start_col": 119,
+      "end_line": 242,
+      "end_col": 121
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 242,
+      "start_col": 121,
+      "end_line": 242,
+      "end_col": 122
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 242,
+      "start_col": 123,
+      "end_line": 242,
+      "end_col": 127
+    },
+    {
+      "kind": "command",
+      "start_line": 243,
+      "start_col": 5,
+      "end_line": 243,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 243,
+      "start_col": 15,
+      "end_line": 243,
+      "end_col": 48
+    },
+    {
+      "kind": "command",
+      "start_line": 244,
+      "start_col": 5,
+      "end_line": 244,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 245,
+      "start_col": 3,
+      "end_line": 245,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 246,
+      "start_col": 3,
+      "end_line": 246,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 246,
+      "start_col": 6,
+      "end_line": 246,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 246,
+      "start_col": 9,
+      "end_line": 246,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 246,
+      "start_col": 11,
+      "end_line": 246,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 246,
+      "start_col": 43,
+      "end_line": 246,
+      "end_col": 45
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 246,
+      "start_col": 45,
+      "end_line": 246,
+      "end_col": 46
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 246,
+      "start_col": 47,
+      "end_line": 246,
+      "end_col": 51
+    },
+    {
+      "kind": "command",
+      "start_line": 247,
+      "start_col": 5,
+      "end_line": 247,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 247,
+      "start_col": 15,
+      "end_line": 247,
+      "end_col": 69
+    },
+    {
+      "kind": "command",
+      "start_line": 248,
+      "start_col": 5,
+      "end_line": 248,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 249,
+      "start_col": 3,
+      "end_line": 249,
+      "end_col": 5
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 250,
+      "start_col": 3,
+      "end_line": 250,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 250,
+      "start_col": 6,
+      "end_line": 250,
+      "end_col": 8
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 250,
+      "start_col": 9,
+      "end_line": 250,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 250,
+      "start_col": 11,
+      "end_line": 250,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 250,
+      "start_col": 38,
+      "end_line": 250,
+      "end_col": 40
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 250,
+      "start_col": 41,
+      "end_line": 250,
+      "end_col": 43
+    },
+    {
+      "kind": "operator",
+      "op": "!",
+      "start_line": 250,
+      "start_col": 44,
+      "end_line": 250,
+      "end_col": 45
+    },
+    {
+      "kind": "command",
+      "start_line": 250,
+      "start_col": 46,
+      "end_line": 250,
+      "end_col": 48
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e",
+      "start_line": 250,
+      "start_col": 53,
+      "end_line": 250,
+      "end_col": 54
+    },
+    {
+      "kind": "operator",
+      "op": "\u003e\u0026",
+      "start_line": 250,
+      "start_col": 66,
+      "end_line": 250,
+      "end_col": 68
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 250,
+      "start_col": 69,
+      "end_line": 250,
+      "end_col": 70
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 250,
+      "start_col": 71,
+      "end_line": 250,
+      "end_col": 75
+    },
+    {
+      "kind": "command",
+      "start_line": 251,
+      "start_col": 5,
+      "end_line": 251,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 251,
+      "start_col": 15,
+      "end_line": 251,
+      "end_col": 80
+    },
+    {
+      "kind": "command",
+      "start_line": 252,
+      "start_col": 5,
+      "end_line": 252,
+      "end_col": 11
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 253,
+      "start_col": 3,
+      "end_line": 253,
+      "end_col": 5
+    },
+    {
+      "kind": "comment",
+      "start_line": 254,
+      "start_col": 3,
+      "end_line": 254,
+      "end_col": 32
+    },
+    {
+      "kind": "command",
+      "start_line": 255,
+      "start_col": 3,
+      "end_line": 255,
+      "end_col": 9
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 255,
+      "start_col": 39,
+      "end_line": 255,
+      "end_col": 41
+    },
+    {
+      "kind": "command",
+      "start_line": 255,
+      "start_col": 42,
+      "end_line": 255,
+      "end_col": 48
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 255,
+      "start_col": 49,
+      "end_line": 255,
+      "end_col": 53
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 255,
+      "start_col": 50,
+      "end_line": 255,
+      "end_col": 52
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 256,
+      "start_col": 3,
+      "end_line": 256,
+      "end_col": 5
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 256,
+      "start_col": 6,
+      "end_line": 256,
+      "end_col": 8
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 256,
+      "start_col": 9,
+      "end_line": 256,
+      "end_col": 29
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 256,
+      "start_col": 10,
+      "end_line": 256,
+      "end_col": 28
+    },
+    {
+      "kind": "test-operator",
+      "op": "!=",
+      "start_line": 256,
+      "start_col": 30,
+      "end_line": 256,
+      "end_col": 32
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 256,
+      "start_col": 35,
+      "end_line": 256,
+      "end_col": 37
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 256,
+      "start_col": 37,
+      "end_line": 256,
+      "end_col": 38
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 256,
+      "start_col": 39,
+      "end_line": 256,
+      "end_col": 43
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 257,
+      "start_col": 5,
+      "end_line": 257,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 257,
+      "start_col": 8,
+      "end_line": 257,
+      "end_col": 10
+    },
+    {
+      "kind": "test-operator",
+      "op": "!",
+      "start_line": 257,
+      "start_col": 11,
+      "end_line": 257,
+      "end_col": 12
+    },
+    {
+      "kind": "test-operator",
+      "op": "-f",
+      "start_line": 257,
+      "start_col": 13,
+      "end_line": 257,
+      "end_col": 15
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 257,
+      "start_col": 38,
+      "end_line": 257,
+      "end_col": 40
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 257,
+      "start_col": 40,
+      "end_line": 257,
+      "end_col": 41
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 257,
+      "start_col": 42,
+      "end_line": 257,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 258,
+      "start_col": 7,
+      "end_line": 258,
+      "end_col": 16
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 258,
+      "start_col": 17,
+      "end_line": 258,
+      "end_col": 87
+    },
+    {
+      "kind": "command",
+      "start_line": 259,
+      "start_col": 7,
+      "end_line": 259,
+      "end_col": 13
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 260,
+      "start_col": 5,
+      "end_line": 260,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "local",
+      "start_line": 261,
+      "start_col": 5,
+      "end_line": 261,
+      "end_col": 10
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 261,
+      "start_col": 11,
+      "end_line": 261,
+      "end_col": 20
+    },
+    {
+      "kind": "var-name",
+      "start_line": 261,
+      "start_col": 11,
+      "end_line": 261,
+      "end_col": 20
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 261,
+      "start_col": 21,
+      "end_line": 261,
+      "end_col": 29
+    },
+    {
+      "kind": "var-name",
+      "start_line": 261,
+      "start_col": 21,
+      "end_line": 261,
+      "end_col": 29
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 262,
+      "start_col": 5,
+      "end_line": 262,
+      "end_col": 43
+    },
+    {
+      "kind": "var-name",
+      "start_line": 262,
+      "start_col": 5,
+      "end_line": 262,
+      "end_col": 14
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 262,
+      "start_col": 15,
+      "end_line": 262,
+      "end_col": 43
+    },
+    {
+      "kind": "command",
+      "start_line": 262,
+      "start_col": 17,
+      "end_line": 262,
+      "end_col": 20
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 262,
+      "start_col": 44,
+      "end_line": 262,
+      "end_col": 46
+    },
+    {
+      "kind": "command",
+      "start_line": 262,
+      "start_col": 47,
+      "end_line": 262,
+      "end_col": 53
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 262,
+      "start_col": 54,
+      "end_line": 262,
+      "end_col": 58
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 262,
+      "start_col": 55,
+      "end_line": 262,
+      "end_col": 57
+    },
+    {
+      "kind": "var-assign",
+      "op": "=",
+      "start_line": 263,
+      "start_col": 5,
+      "end_line": 263,
+      "end_col": 25
+    },
+    {
+      "kind": "var-name",
+      "start_line": 263,
+      "start_col": 5,
+      "end_line": 263,
+      "end_col": 13
+    },
+    {
+      "kind": "cmd-subst",
+      "start_line": 263,
+      "start_col": 14,
+      "end_line": 263,
+      "end_col": 25
+    },
+    {
+      "kind": "command",
+      "start_line": 263,
+      "start_col": 16,
+      "end_line": 263,
+      "end_col": 24
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 263,
+      "start_col": 26,
+      "end_line": 263,
+      "end_col": 28
+    },
+    {
+      "kind": "command",
+      "start_line": 263,
+      "start_col": 29,
+      "end_line": 263,
+      "end_col": 35
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 263,
+      "start_col": 36,
+      "end_line": 263,
+      "end_col": 40
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 263,
+      "start_col": 37,
+      "end_line": 263,
+      "end_col": 39
+    },
+    {
+      "kind": "keyword",
+      "op": "if",
+      "start_line": 264,
+      "start_col": 5,
+      "end_line": 264,
+      "end_col": 7
+    },
+    {
+      "kind": "operator",
+      "op": "[[",
+      "start_line": 264,
+      "start_col": 8,
+      "end_line": 264,
+      "end_col": 10
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 264,
+      "start_col": 11,
+      "end_line": 264,
+      "end_col": 23
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 264,
+      "start_col": 12,
+      "end_line": 264,
+      "end_col": 22
+    },
+    {
+      "kind": "test-operator",
+      "op": "==",
+      "start_line": 264,
+      "start_col": 24,
+      "end_line": 264,
+      "end_col": 26
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 264,
+      "start_col": 27,
+      "end_line": 264,
+      "end_col": 38
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 264,
+      "start_col": 28,
+      "end_line": 264,
+      "end_col": 37
+    },
+    {
+      "kind": "operator",
+      "op": "]]",
+      "start_line": 264,
+      "start_col": 39,
+      "end_line": 264,
+      "end_col": 41
+    },
+    {
+      "kind": "operator",
+      "op": ";",
+      "start_line": 264,
+      "start_col": 41,
+      "end_line": 264,
+      "end_col": 42
+    },
+    {
+      "kind": "keyword",
+      "op": "then",
+      "start_line": 264,
+      "start_col": 43,
+      "end_line": 264,
+      "end_col": 47
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 265,
+      "start_col": 7,
+      "end_line": 265,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 265,
+      "start_col": 12,
+      "end_line": 265,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 265,
+      "start_col": 54,
+      "end_line": 265,
+      "end_col": 56
+    },
+    {
+      "kind": "command",
+      "start_line": 265,
+      "start_col": 57,
+      "end_line": 265,
+      "end_col": 63
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 265,
+      "start_col": 64,
+      "end_line": 265,
+      "end_col": 68
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 265,
+      "start_col": 65,
+      "end_line": 265,
+      "end_col": 67
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 266,
+      "start_col": 7,
+      "end_line": 266,
+      "end_col": 11
+    },
+    {
+      "kind": "command",
+      "start_line": 266,
+      "start_col": 12,
+      "end_line": 266,
+      "end_col": 19
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 266,
+      "start_col": 61,
+      "end_line": 266,
+      "end_col": 63
+    },
+    {
+      "kind": "command",
+      "start_line": 266,
+      "start_col": 64,
+      "end_line": 266,
+      "end_col": 70
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 266,
+      "start_col": 71,
+      "end_line": 266,
+      "end_col": 75
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 266,
+      "start_col": 72,
+      "end_line": 266,
+      "end_col": 74
+    },
+    {
+      "kind": "command",
+      "start_line": 267,
+      "start_col": 7,
+      "end_line": 267,
+      "end_col": 13
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 267,
+      "start_col": 14,
+      "end_line": 267,
+      "end_col": 82
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 267,
+      "start_col": 19,
+      "end_line": 267,
+      "end_col": 39
+    },
+    {
+      "kind": "command",
+      "start_line": 268,
+      "start_col": 7,
+      "end_line": 268,
+      "end_col": 13
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 269,
+      "start_col": 5,
+      "end_line": 269,
+      "end_col": 7
+    },
+    {
+      "kind": "keyword",
+      "op": "fi",
+      "start_line": 270,
+      "start_col": 3,
+      "end_line": 270,
+      "end_col": 5
+    },
+    {
+      "kind": "command",
+      "start_line": 271,
+      "start_col": 3,
+      "end_line": 271,
+      "end_col": 26
+    },
+    {
+      "kind": "operator",
+      "op": "||",
+      "start_line": 271,
+      "start_col": 27,
+      "end_line": 271,
+      "end_col": 29
+    },
+    {
+      "kind": "command",
+      "start_line": 271,
+      "start_col": 30,
+      "end_line": 271,
+      "end_col": 36
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 271,
+      "start_col": 37,
+      "end_line": 271,
+      "end_col": 41
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 271,
+      "start_col": 38,
+      "end_line": 271,
+      "end_col": 40
+    },
+    {
+      "kind": "command",
+      "start_line": 272,
+      "start_col": 3,
+      "end_line": 272,
+      "end_col": 13
+    },
+    {
+      "kind": "operator",
+      "op": "}",
+      "start_line": 273,
+      "start_col": 1,
+      "end_line": 273,
+      "end_col": 2
+    },
+    {
+      "kind": "comment",
+      "start_line": 275,
+      "start_col": 1,
+      "end_line": 275,
+      "end_col": 30
+    },
+    {
+      "kind": "command",
+      "start_line": 276,
+      "start_col": 1,
+      "end_line": 276,
+      "end_col": 7
+    },
+    {
+      "kind": "proc-subst",
+      "start_line": 276,
+      "start_col": 8,
+      "end_line": 276,
+      "end_col": 53
+    },
+    {
+      "kind": "command",
+      "start_line": 276,
+      "start_col": 10,
+      "end_line": 276,
+      "end_col": 14
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 276,
+      "start_col": 21,
+      "end_line": 276,
+      "end_col": 52
+    },
+    {
+      "kind": "param-exp",
+      "start_line": 276,
+      "start_col": 22,
+      "end_line": 276,
+      "end_col": 32
+    },
+    {
+      "kind": "string-dq",
+      "start_line": 276,
       "start_col": 73,
-      "end_line": 241,
+      "end_line": 276,
       "end_col": 77
     },
     {
       "kind": "param-exp",
-      "start_line": 241,
+      "start_line": 276,
       "start_col": 74,
-      "end_line": 241,
+      "end_line": 276,
       "end_col": 76
     }
   ],
-  "bootstrap_line": 241,
+  "bootstrap_line": 276,
   "hooks": {
     "header_info": false,
     "install_script": true,
@@ -3266,7 +4111,7 @@
   "has_piped_download": false,
   "has_external": false,
   "has_eval": false,
-  "has_global": false,
+  "has_global": true,
   "has_bootstrap": true,
   "systemd_services": [],
   "openrc_services": [],
@@ -3275,7 +4120,7 @@
     {
       "name": "rea",
       "source": "useradd",
-      "line": 43
+      "line": 46
     }
   ],
   "interactive_prompts": []
