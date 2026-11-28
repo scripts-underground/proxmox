@@ -16,7 +16,7 @@ ssh_extract_keys_from_file() {
   local f="$1"
   [[ -r "$f" ]] || return 0
   tr -d '\r' < "$f" | awk '
-    BEGIN { type = "(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256))" }
+    BEGIN { type = "(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh[.]com)" }
     /^[[:space:]]*#/ {next}
     /^[[:space:]]*$/ {next}
     $0 ~ ("^[[:space:]]*" type "[[:space:]]+") {
@@ -555,7 +555,7 @@ _ssh_access_include_files() {
 # even if determining the exact intersection of network predicates is hard.
 _ssh_access_check_prefix() {
   local _file=$1 _account=$2 _pub=$3 _pass=$4 _methods=$5 _scope=${6:-global}
-  local _top=${7:-yes} _line _keyword _args _expected _words _selector _files _child
+  local _top=${7:-yes} _line _keyword _args _expected _words _selector _files _child _path
   local _directive=$'^[ \t\r]*("([a-zA-Z][a-zA-Z0-9]*)"|([a-zA-Z][a-zA-Z0-9]*))[ \t\r]*(=[ \t\r]*)?(.*)$'
   [[ -r $_file && -f $_file ]] || return 65
   if IFS= read -r -d '' _ < "$_file"; then return 65; fi
@@ -588,15 +588,24 @@ _ssh_access_check_prefix() {
       passwordauthentication) _expected=$_pass ;;
       kbdinteractiveauthentication | challengeresponseauthentication) _expected=no ;;
       authenticationmethods) _expected=$_methods ;;
+      authorizedkeysfile) [[ $_pub == yes ]] || continue ;;
       *) continue ;;
     esac
     [[ $_scope == possible ]] || continue
     _words=$(_ssh_access_words "$_args") || return 65
-    _words=${_words//$'\n'/ }
-    if [[ $_words != "$_expected" ]]; then
-      _ssh_access_error "Earlier SSH Match may override $_keyword for $_account in $_file"
-      return 65
+    if [[ ${_keyword,,} == authorizedkeysfile ]]; then
+      # The managed key writer uses this file; other files may coexist.
+      while IFS= read -r _path; do
+        if [[ $_path == \"*\" || $_path == \'*\' ]]; then _path=${_path:1:-1}; fi
+        case $_path in
+          .ssh/authorized_keys | %h/.ssh/authorized_keys) continue 2 ;;
+        esac
+      done <<< "$_words"
+    elif [[ ${_words//$'\n'/ } == "$_expected" ]]; then
+      continue
     fi
+    _ssh_access_error "Earlier SSH Match may override $_keyword for $_account in $_file"
+    return 65
   done < "$_file"
 }
 

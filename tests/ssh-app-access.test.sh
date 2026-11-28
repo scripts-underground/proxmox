@@ -118,10 +118,25 @@ review2_preflight() (
     strict) chmod 0775 "$home/.ssh" ;;
     root) printf '%s\n' 'Match User root Address 192.0.2.0/24' '  PasswordAuthentication yes' >> "$live" ;;
     matching) printf '%s\n' 'Match Address 192.0.2.0/24' '  PasswordAuthentication no' >> "$live" ;;
+    keyfiles | keyfiles-both | keyfiles-password)
+      printf '%s\n' 'Match User rea Address 192.0.2.0/24' '  AuthorizedKeysFile /etc/ssh/operator_keys/%u' >> "$live"
+      ;;
+    keyfiles-mixed)
+      printf '%s\n' 'Match User rea Address 192.0.2.0/24' '  AuthorizedKeysFile /etc/ssh/operator_keys/%u "%h/.ssh/authorized_keys" .ssh/authorized_keys2' >> "$live"
+      ;;
+    keyfiles-root)
+      printf '%s\n' 'Match User root Address 192.0.2.0/24' '  AuthorizedKeysFile none' >> "$live"
+      ;;
   esac
   cp "$live" "$work/review2-before"
   local mode=key
-  [[ $scenario != strict ]] || mode=both
+  case $scenario in
+    strict | keyfiles-both) mode=both ;;
+    keyfiles-password)
+      mode=password
+      selected_keys=''
+      ;;
+  esac
   sshd() {
     if [[ $1 == -T ]]; then
       if [[ $* == *user=root,* ]]; then return 0; fi
@@ -129,13 +144,13 @@ review2_preflight() (
         if grep -Fiq 'Match User root'; then printf '%s\n' 'permittty yes'; fi
         return 0
       fi
-      printf '%s\n' 'pubkeyauthentication yes' 'kbdinteractiveauthentication no' \
-        'strictmodes yes' 'authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2'
-      if [[ $mode == key ]]; then
-        printf '%s\n' 'passwordauthentication no' 'authenticationmethods publickey'
-      else
-        printf '%s\n' 'passwordauthentication yes' 'authenticationmethods publickey password'
-      fi
+      printf '%s\n' 'kbdinteractiveauthentication no' 'strictmodes yes' \
+        'authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2'
+      case $mode in
+        key) printf '%s\n' 'pubkeyauthentication yes' 'passwordauthentication no' 'authenticationmethods publickey' ;;
+        both) printf '%s\n' 'pubkeyauthentication yes' 'passwordauthentication yes' 'authenticationmethods publickey password' ;;
+        password) printf '%s\n' 'pubkeyauthentication no' 'passwordauthentication yes' 'authenticationmethods password' ;;
+      esac
     fi
   }
   id() { printf '%s\n' "$EUID"; }
@@ -152,13 +167,23 @@ review2_preflight() (
     peer | strict)
       [[ $rc == 65 && ! -e "$work/review2-writer" && ! -e "$work/review2-password" ]] && cmp -s "$work/review2-before" "$live"
       ;;
-    root | matching) [[ $rc == 0 && -e "$work/review2-writer" && ! -e "$work/review2-password" ]] ;;
+    keyfiles | keyfiles-both)
+      [[ $rc == 65 && ! -e "$work/review2-writer" && ! -e "$work/review2-password" ]] &&
+        cmp -s "$work/review2-before" "$live" && grep -Fq 'Earlier SSH Match may override AuthorizedKeysFile' "$work/log"
+      ;;
+    root | matching | keyfiles-mixed | keyfiles-root) [[ $rc == 0 && -e "$work/review2-writer" && ! -e "$work/review2-password" ]] ;;
+    keyfiles-password) [[ $rc == 0 && ! -e "$work/review2-writer" && -e "$work/review2-password" ]] ;;
   esac
 )
 expect 'earlier peer-specific mode conflict refused before effects' review2_preflight peer
 expect 'strict mode refuses group-writable .ssh before key or password effects' review2_preflight strict
 expect 'earlier root-only methods do not block app access' review2_preflight root
 expect 'compatible peer-specific methods do not block app access' review2_preflight matching
+expect 'peer Match replacing key files is refused before key writes' review2_preflight keyfiles
+expect 'peer Match replacing key files is refused before both credential writes' review2_preflight keyfiles-both
+expect 'peer Match may list additional key files alongside the standard file' review2_preflight keyfiles-mixed
+expect 'excluded root Match key files do not block app access' review2_preflight keyfiles-root
+expect 'password mode ignores peer Match key files' review2_preflight keyfiles-password
 
 # Test against real files; model only daemon, password and service calls.
 publication() (
@@ -369,6 +394,21 @@ cancel_then_retry() (
   [[ $mode == password && -z $keys && $password == "$(cat "$work/password")" ]]
 )
 expect 'cancel after password entry leaves outputs untouched; re-entry collects anew' cancel_then_retry
+
+fido_discovery() (
+  # Public wire-format fixtures built from valid Ed25519 and P-256 public
+  # keys with an SK algorithm and application field; no authenticator needed.
+  local ed='sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIM4WVyzAOloFKtUgTqLSR7XLqUK4fVXnz+NBVKNvweo/AAAAC3NzaDpmaXh0dXJl'
+  local ec='sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBCtE7tGao0Al0RzivXbxRrTDEvm8Aj4YxmdNqMo59AnYKzfZnmWLCm7mjoUuRhj3cluTrYf/2FR2O+HjjwP22lcAAAALc3NoOmZpeHR1cmU='
+  export TMPDIR="$work"
+  _ssh_access_public_key "$ed" > /dev/null && _ssh_access_public_key "$ec" > /dev/null || return $?
+  printf '%s\n' "$ed" "$ec" "restrict $ed" "restrict $ec" > "$work/fido-keys"
+  diff -u <(printf '%s\n' "bare|$ed" "bare|$ec" "prefixed|$ed" "prefixed|$ec") \
+    <(ssh_extract_keys_from_file "$work/fido-keys") || return $?
+  printf '%s\n' "restrict $ed" "restrict $ec" > "$work/fido-prefixed"
+  ssh_build_choices_from_files rea "$work/fido-keys" "$work/fido-prefixed" && [[ $COUNT == 2 ]]
+)
+expect 'full OpenSSH FIDO types discovered; prefixed entries excluded from app selection' fido_discovery
 
 selection_provenance() (
   local scenario=$1 mode='' keys='' password='' rc=0 restricted bare384 bare521
