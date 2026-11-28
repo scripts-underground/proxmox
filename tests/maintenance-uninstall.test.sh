@@ -43,6 +43,7 @@ MODEL
         sed -n '/^function uninstall_script() {/,/^}/p' "$ROOT/scripts/addon/dockge.sh" > "$c/hook.sh"
       else
         cat "$c/model.sh" >> "$c/stage/github.func"
+        cp "$ROOT/misc/ssh-access.func" "$c/stage/"
         cat > "$c/hook.sh" << 'HOOK'
 uninstall_script() {
   msg_info "Stopping fixture app"

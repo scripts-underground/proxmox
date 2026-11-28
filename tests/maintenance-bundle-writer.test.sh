@@ -87,6 +87,17 @@ if [[ "${1:-}" == --child ]]; then
 fi
 work=$(mktemp -d "$TMPDIR/maintenance-writer.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
+source "$ROOT/misc/bundle.func"
+inventory=$(_framework_library_inventory lxc)
+seed_cache() {
+  local lib
+  while read -r lib _; do
+    case "$lib" in
+      ssh-access.func) cp "$ROOT/misc/$lib" "$1/" ;;
+      *) printf '# fixture library\n' > "$1/$lib" ;;
+    esac
+  done <<< "$inventory"
+}
 failures=0
 check() {
   if [[ "$1" == "$2" ]]; then printf 'PASS %s\n' "$3"; else
@@ -98,7 +109,7 @@ for style in conditional plain; do
   for fault in allocate cat missing printf hook write push chmod publish none identity identity-printf identity-invalid requirements requirements-cpu-printf requirements-ram-printf requirements-invalid; do
     c="$work/$style-$fault"
     mkdir -p "$c/tmp/framework-writer"
-    for lib in core error_handler install tools github; do printf '# fixture library\n' > "$c/tmp/framework-writer/$lib.func"; done
+    seed_cache "$c/tmp/framework-writer"
     printf 'previous valid command\n' > "$c/destination"
     cp "$c/destination" "$c/previous"
     rc=0
@@ -145,7 +156,7 @@ done
 for fault in parent-absent parent-failure parent-file; do
   c="$work/$fault"
   mkdir -p "$c/tmp/framework-writer"
-  for lib in core error_handler install tools github; do printf '# fixture library\n' > "$c/tmp/framework-writer/$lib.func"; done
+  seed_cache "$c/tmp/framework-writer"
   [[ "$fault" != parent-file ]] || printf 'operator file\n' > "$c/new parent"
   rc=0
   TMPDIR="$c/tmp" CASE_ROOT="$c" bash "$0" --child "$fault" conditional > "$c/output" 2>&1 || rc=$?

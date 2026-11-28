@@ -74,6 +74,7 @@ try:
                 'network_check', 'update_os', 'motd_ssh', 'cleanup_lxc')) + '\n')
             (c / 'cache/tools.func').write_text('setup_uv() { :; }\n')
             (c / 'cache/github.func').write_text('clone_and_deploy_gh_commit() { :; }\n')
+            (c / 'cache/ssh-access.func').write_bytes((owner / 'misc/ssh-access.func').read_bytes())
             final_creator = creator_end.replace('/etc/pve/lxc/', str(c / 'config') + '/')
             consumer = ''
             postinstall = 'post_install_script() { record postinstall; printf "URL=http://%s:55414\\n" "$IP"; }'
@@ -95,6 +96,7 @@ source {q(owner / 'misc/bundle.func')}
 {bootstrap}
 {function(build, '_prepare_container_bundles')}
 {function(build, '_finish_container_build')}
+{function(build, '_apply_lxc_ssh_access')}
 {function(build, '_wait_for_container_network')}
 {finalization}
 {prefix}

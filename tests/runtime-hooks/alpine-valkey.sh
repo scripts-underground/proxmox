@@ -113,6 +113,7 @@ MODELS
     printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
     printf 'setup_uv() { :; }\n' > "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
+    cp "$ROOT/misc/ssh-access.func" "$c/cache/"
     creator=()
     [[ "$variant" != creator-conflict ]] || creator=(MEMTOTAL_MB=1048576 MAXMEMORY_MB=999999999)
     rc=0

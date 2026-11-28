@@ -32,7 +32,7 @@ def run(name, code, cwd=None):
 
 stage = W / 'framework'
 stage.mkdir()
-for name in ('core', 'error_handler'):
+for name in ('core', 'error_handler', 'ssh-access'):
     (stage / (name + '.func')).write_bytes((S / ('misc/' + name + '.func')).read_bytes())
 for name, body in [('install', 'setup_lxc() { :; }'), ('tools', 'setup_uv() { :; }'),
                    ('github', 'clone_and_deploy_gh_commit() { :; }')]:

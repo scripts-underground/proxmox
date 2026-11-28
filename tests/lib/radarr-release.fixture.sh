@@ -105,6 +105,7 @@ MODELS
       printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
       cp "$ROOT/misc/tools.func" "$c/cache/tools.func"
       printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
+      cp "$ROOT/misc/ssh-access.func" "$c/cache/"
       rc=0
       CASE_ROOT="$c" SLUG="$slug" RELEASE_KEY="$key" RELEASE_VERSION="$version" TEST_ARCH="$arch" ROLE="$role" timeout 30s unshare -mn --propagation private -- bash "$0" --child > "$c/output" 2>&1 || rc=$?
       label="$app $arch $role"

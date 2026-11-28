@@ -199,6 +199,7 @@ printf 'catch_errors() { :; }\n' > "$cache/error_handler.func"
 printf 'setup_lxc() { :; }\n' > "$cache/install.func"
 printf 'setup_uv() { :; }\n' > "$cache/tools.func"
 printf 'clone_and_deploy_gh_commit() { :; }\n' > "$cache/github.func"
+cp "$ROOT/misc/ssh-access.func" "$cache/"
 _framework_cache_ensure() { :; }
 pct() {
   [[ "$2" == 9876 ]] || return 99

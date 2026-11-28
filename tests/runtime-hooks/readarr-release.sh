@@ -124,6 +124,7 @@ MODELS
     printf 'setup_lxc() { :; }\n' > "$c/cache/install.func"
     cp "$ROOT/misc/tools.func" "$c/cache/tools.func"
     printf 'clone_and_deploy_gh_commit() { :; }\n' > "$c/cache/github.func"
+    cp "$ROOT/misc/ssh-access.func" "$c/cache/"
     role=install
     if [[ "$variant" == bundle ]]; then
       role=bundle

@@ -673,7 +673,7 @@ Stages, in order:
 5. Install base packages inside the container via `pct exec`
    (bash, curl, sudo, jq, etc. — distro-dependent).
 6. Build self-contained bundles via `build_bundle()`:
-   - **Install bundle** (default `/tmp/install-bundle.sh`): inlines all 5
+   - **Install bundle** (default `/tmp/install-bundle.sh`): inlines all 6
      framework `.func` files + `install_script` hook + install
      pipeline. Self-destructs on completion via `trap ... EXIT`.
    - **Update bundle** (`/usr/local/sbin/update`): inlines framework
@@ -892,19 +892,21 @@ the framework must transport the function bodies explicitly.
 The `build_bundle()` function in `misc/bundle.func` assembles each bundle:
 
 1. **Cache framework libs on the host** (once per session):
-    `core.func`, `error_handler.func`, `install.func`, `tools.func`, `github.func` are
+    `core.func`, `error_handler.func`, `install.func`, `tools.func`, `github.func`,
+    and `ssh-access.func` are
     fetched from `$REPO_BASE` and verified (size > 100 bytes, sentinel
     functions present).
 
    `bundle.func` owns the ordered library inventory, fetch validation and library
    inlining for both delivery adapters. Its `lxc` profile selects these five files;
-   `addon` extends that same inventory with the repository's `addon_lxc.func`.
+    `addon` uses the five common libraries plus the repository's `addon_lxc.func`,
+    not `ssh-access.func`.
    Invalid profiles fail before fetching or emitting any library content.
 
 2. **Inline everything into a single script**:
     - Shebang, `set -euo pipefail`, minimal PATH and receiving temporary context
     - Baked app/`var_lxc_*` context using `printf %q`
-    - All 5 framework `.func` files, verbatim, between `# ═══` markers
+     - All selected framework `.func` files, verbatim, between `# ═══` markers
    - Sanity checks that the expected sentinel functions loaded
    - `load_functions`, `catch_errors`, `color`
    - `declare -f <hook>` — the function body extracted via `declare -f`
@@ -942,6 +944,44 @@ self-contained once it leaves the host.
 APIs and fetches only missing libraries. Connected and offline bundles therefore
 retain the same inlined error/cleanup generation instead of replacing it with
 the currently published library while loading.
+
+##### Opt-in application SSH access
+
+`ssh-access.func` is definition-only and owns the shared key picker, credential
+validation, account-specific policy, and checked standalone command emitter.
+The root setup is a compatibility caller of the picker; selecting an app key
+does not alter root selections. Reuse of selected public keys is explicit.
+
+An LXC source can declare the non-secret `var_ssh_access_account`. On the creator,
+bootstrap collects access after ordinary settings and before creation. Explicit
+`SSH_ACCESS_KEY_FILE` or `SSH_ACCESS_PASSWORD_FD` (FD above 2) supplies unattended
+input; no input without a terminal or in silent mode defers access. The installed
+root-run `configure-ssh-access ACCOUNT` is emitted without credentials and installed
+through the opt-in install pipeline after app setup. Normal updates do not apply
+access policy. No opt-in means no app dialogs, command installation or policy effects.
+
+Access application runs after a successful install, before the post-build hook.
+At that boundary the creator disarms broken-install CT removal. Access failure
+retains the CT and native status, reports console recovery, and skips completion.
+Two NUL-terminated stdin fields carry public keys and the password through the
+existing receiving execution path. Credential bytes stay in non-exported,
+trace-disabled processing and do not enter defaults, bundle context or argv.
+The receiving helper validates the account and checked `sshd -t`/effective policy
+before credential effects, including checking that the actual listener uses the
+validated configuration without command-line overrides. Socket restart also
+checks the loaded start recipe and configuration inputs. The helper publishes an
+account-specific `Match` block rather than rewriting global settings. Activation checks the listener after reload, or
+after restarting only `ssh.service` on a positively identified session-preserving
+socket topology. Unsupported policy/topology and partial failures are reported
+as failures, not as ready access or a rollback. Effective policy is sampled locally;
+it is not a guarantee about independently edited or address-specific policy.
+
+An opted-in source can define `ssh_access_setup_script` only for its explicit
+existing-CT setup action. The framework owns dispatch, the same fresh app
+maintenance lock used by updates, and command publication. The source hook admits
+its existing app and prepares dependencies; it is not baked into frozen bundles.
+This route does not enter software-update admission, pending/force handling, or
+successful-update cleanup, and it does not apply credentials.
 
 #### 4.1.6 In-container execution and exit-flag check
 
@@ -1158,7 +1198,7 @@ split (bake-in vs. re-curl) is eliminated — everything is baked in.
 #### In-container environment
 
 When `install_script()` runs inside the LXC, it executes inside a bash
-process that has already sourced all 5 inlined framework libraries (the
+process that has already sourced all 6 inlined framework libraries (the
 bundle's preamble). All standard helpers are available: `$STD`,
 `msg_info`, `msg_ok`, `msg_error`, `catch_errors`, `color`, and more.
 
@@ -1755,6 +1795,7 @@ each variant before creation/download; a blocked variant stays explicitly unveri
 - `misc/bootstrap/pve` — PVE entry-point shim
 - `misc/bootstrap/vm` — VM entry-point shim
 - `misc/bundle.func` — Self-contained bundle assembler (`build_bundle`, `_framework_cache_ensure`)
+- `misc/ssh-access.func` - Shared key selection and opt-in app-account SSH access
 - `misc/build.func` — LXC framework (orchestration, container creation)
 - `misc/core.func` — common helpers (`msg_info`, `$STD`, `color`)
 - `misc/install.func` — in-container install helpers

@@ -290,7 +290,7 @@ APP=Globnotes NSAPP=globnotes REPO_BASE=offline SESSION_ID=globnotes-proof
 var_lxc_tmpdir=/work/tmp
 var_lxc_globnotes_index_path=$(cat /fixture/index-input)
 mkdir -p /fixture/libs
-cp /source/misc/{core,error_handler,install,tools,github}.func /fixture/libs/
+cp /source/misc/{core,error_handler,install,tools,github,ssh-access}.func /fixture/libs/
 # Only hook execution, never the node's full container setup pipeline.
 role=$(cat /fixture/role)
 if [[ "$role" == update ]]; then

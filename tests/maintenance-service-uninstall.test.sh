@@ -193,6 +193,7 @@ for app in actual-budget-prometheus-exporter adguardhome-sync phpmyadmin netviso
             source "$c/owner.func"
             _addon_bundle_write uninstall uninstall_script "$c/stage"
           else
+            cp "$ROOT/misc/ssh-access.func" "$c/stage/"
             sed -e "s|/usr/local/sbin|$c/sbin|g" -e "s|/usr/bin|$c/bin|g" "$ROOT/misc/bundle.func" > "$c/owner.func"
             source "$c/owner.func"
             _framework_cache_ensure() { :; }
