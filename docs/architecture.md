@@ -950,7 +950,9 @@ the currently published library while loading.
 `ssh-access.func` is definition-only and owns the shared key picker, credential
 validation, account-specific policy, and checked standalone command emitter.
 The root setup is a compatibility caller of the picker; selecting an app key
-does not alter root selections. Reuse of selected public keys is explicit.
+does not alter root selections. Only originally bare public keys can be selected
+or explicitly reused for app access. The legacy root installation output is not
+evidence of bare provenance because it strips options from discovered entries.
 
 An LXC source can declare the non-secret `var_ssh_access_account`. On the creator,
 bootstrap collects access after ordinary settings and before creation. Explicit
@@ -969,12 +971,17 @@ retains the CT and native status, reports console recovery, and skips completion
 Two NUL-terminated stdin fields carry public keys and the password through the
 existing receiving execution path. Credential bytes stay in non-exported,
 trace-disabled processing and do not enter defaults, bundle context or argv.
-The receiving helper validates the account and checked `sshd -t`/effective policy
+The receiving helper takes a nonblocking exclusive lock on the root-owned SSH
+configuration directory and holds it through activation. This serializes setup
+commands targeting the same config, across accounts, not independent editors;
+it is separate from the app maintenance lock used for updates. The helper
+validates the account and checks `sshd -t`/effective policy
 before credential effects, including checking that the actual listener uses the
 validated configuration without command-line overrides. Socket restart also
 checks the loaded start recipe and configuration inputs. The helper publishes an
-account-specific `Match` block rather than rewriting global settings. Activation checks the listener after reload, or
-after restarting only `ssh.service` on a positively identified session-preserving
+account-specific `Match` block rather than rewriting global settings. Activation
+requires replacement listeners for all previous endpoints after reload, or
+checks their continued ownership after restarting only `ssh.service` on a positively identified session-preserving
 socket topology. Unsupported policy/topology and partial failures are reported
 as failures, not as ready access or a rollback. Effective policy is sampled locally;
 it is not a guarantee about independently edited or address-specific policy.

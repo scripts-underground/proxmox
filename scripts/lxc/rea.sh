@@ -210,6 +210,9 @@ function post_install_script() {
   printf 'To set up or change access, run as root in the container: configure-ssh-access rea\n'
   printf 'Verify the SSH host key from the container console before trusting it on the client:\n'
   printf '  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\n'
+  printf '  cat /etc/ssh/ssh_host_ed25519_key.pub\n'
+  printf 'Copy the key type and blob from that trusted console. Before connecting, add this line to the client\x27s ~/.ssh/known_hosts:\n'
+  printf '  %s ssh-ed25519 <public-key-blob>\n' "$IP"
   case "$mode" in
     key | password | both) printf 'CLI: ssh -o StrictHostKeyChecking=yes rea@%s /srv/rea/bin/rea --help\n' "$IP" ;;
   esac

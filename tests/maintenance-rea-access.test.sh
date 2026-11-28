@@ -37,9 +37,10 @@ completion() (
   local LXC_SSH_ACCESS_MODE=$1 IP=2001:db8::123 output
   output=$(post_install_script)
   [[ $output == *'rea@2001:db8::123'* && $output == *'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub'* && $output == *'configure-ssh-access rea'* ]] || return 1
+  [[ $output == *'cat /etc/ssh/ssh_host_ed25519_key.pub'*'~/.ssh/known_hosts'*'2001:db8::123 ssh-ed25519 <public-key-blob>'* ]] || return 1
   case "$1" in
-    key | both) [[ $output == *"($1)"* && $output == *'ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@2001:db8::123 /srv/rea/bin/rea mcp'* ]] ;;
-    password) [[ $output == *'(password)'* && $output == *'ssh -o StrictHostKeyChecking=yes rea@2001:db8::123'* && $output != *'BatchMode=yes'* ]] ;;
+    key | both) [[ $output == *"($1)"* && $output == *'~/.ssh/known_hosts'*'ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes rea@2001:db8::123 /srv/rea/bin/rea mcp'* ]] ;;
+    password) [[ $output == *'(password)'* && $output == *'~/.ssh/known_hosts'*'ssh -o StrictHostKeyChecking=yes rea@2001:db8::123'* && $output != *'BatchMode=yes'* ]] ;;
     pending) [[ $output == *pending* && $output != *'configured'* && $output != *'BatchMode=yes'* ]] ;;
   esac
 )

@@ -64,7 +64,7 @@ rea_source=$(curl -fsSL https://raw.githubusercontent.com/scripts-underground/pr
   configure-ssh-access rea
 ```
 
-Before connecting, verify the SSH host key fingerprint from the container console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). Pin the matching public host key in your client's `known_hosts` for the address you use. Replace `rea.example.net` below with your container's address. For a manual CLI session:
+Before connecting, verify the SSH host key fingerprint from the trusted container console (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). Copy the key type and blob from `cat /etc/ssh/ssh_host_ed25519_key.pub` at that console. Add `rea.example.net ssh-ed25519 <public-key-blob>` to the client's `~/.ssh/known_hosts`, replacing `rea.example.net` with the exact address you will connect to and the placeholder with the copied blob. For a manual CLI session:
 
 ```sh
 ssh -o StrictHostKeyChecking=yes rea@rea.example.net

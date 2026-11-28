@@ -164,11 +164,19 @@ for finish_case in access broken hook; do
         }
         ;;
       broken:ordinary)
-        [[ $rc == 42 ]] && grep -Fxq 'destroy 9876' "$work/finish-pct.log"
+        if [[ $rc != 42 ]] || ! grep -Fxq 'destroy 9876' "$work/finish-pct.log"; then
+          printf 'FAIL broken install did not preserve status 42 and remove CT (status %s)\n' "$rc" >&2
+          cat "$work/finish.log" "$work/finish-pct.log" >&2
+          exit 1
+        fi
         ;;
       broken:conditional) [[ $rc == 42 ]] ;;
       hook:ordinary)
-        [[ $rc == 48 ]] && ! grep -Eq 'HOOK_CONTINUED|COMPLETED' "$work/finish.log"
+        if [[ $rc != 48 ]] || grep -Eq 'HOOK_CONTINUED|COMPLETED' "$work/finish.log"; then
+          printf 'FAIL post-build hook did not stop bootstrap with status 48 (status %s)\n' "$rc" >&2
+          cat "$work/finish.log" >&2
+          exit 1
+        fi
         ;;
     esac
   done

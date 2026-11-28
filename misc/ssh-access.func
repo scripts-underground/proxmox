@@ -9,21 +9,24 @@
 # ------------------------------------------------------------------------------
 # ssh_extract_keys_from_file()
 #
-# - Extracts valid SSH public keys from given file
-# - Supports RSA, Ed25519, ECDSA and filters out comments/invalid lines
+# - Emits provenance|key records, retaining the legacy stripped key for root.
+# - Only an original bare line is eligible for application-account selection.
 # ------------------------------------------------------------------------------
 ssh_extract_keys_from_file() {
   local f="$1"
   [[ -r "$f" ]] || return 0
   tr -d '\r' < "$f" | awk '
+    BEGIN { type = "(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256))" }
     /^[[:space:]]*#/ {next}
     /^[[:space:]]*$/ {next}
-    # bare format: type base64 [comment]
-    /^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp256|sk-(ssh-ed25519|ecdsa-sha2-nistp256))[[:space:]]+/ {print; next}
-    # with options: find from first key-type onward
+    $0 ~ ("^[[:space:]]*" type "[[:space:]]+") {
+      sub(/^[[:space:]]*/, "")
+      print "bare|" $0
+      next
+    }
+    # Unparsed prefix: keep the historical root-picker output, never reuse it.
     {
-      match($0, /(ssh-(rsa|ed25519)|ecdsa-sha2-nistp256|sk-(ssh-ed25519|ecdsa-sha2-nistp256))[[:space:]]+/)
-      if (RSTART>0) { print substr($0, RSTART) }
+      if (match($0, type "[[:space:]]+")) print "prefixed|" substr($0, RSTART)
     }
   '
 }
@@ -35,12 +38,14 @@ ssh_extract_keys_from_file() {
 # - Generates fingerprint, type and comment for each key
 # ------------------------------------------------------------------------------
 ssh_build_choices_from_files() {
+  local _account=$1
+  shift
   local -a files=("$@")
   CHOICES=()
   COUNT=0
   # global: configure_ssh_settings reads the id|key map written here
   SSH_MAP_FILE="$(mktemp)" || return $?
-  local f id key typ fp cmt base _typ _b64 _cmt
+  local f id key provenance typ fp cmt base _typ _b64 _cmt
 
   for f in "${files[@]}"; do
     [[ -f "$f" && -r "$f" ]] || continue
@@ -51,18 +56,21 @@ ssh_build_choices_from_files() {
     esac
 
     # map every key in file
-    while IFS= read -r key; do
+    while IFS='|' read -r provenance key; do
       [[ -n "$key" ]] || continue
 
       typ=""
       fp=""
       cmt=""
-      # Only the pure key part (without options) is already included in ‘key’.
       read -r _typ _b64 _cmt <<< "$key"
       typ="${_typ:-key}"
       cmt="${_cmt:-}"
       # Fingerprint via ssh-keygen (if available)
-      if command -v ssh-keygen > /dev/null 2>&1; then
+      if [[ $_account != root ]]; then
+        [[ $provenance == bare ]] || continue
+        fp=$(_ssh_access_public_key "$key") || continue
+        read -r _ fp _ <<< "$fp"
+      elif command -v ssh-keygen > /dev/null 2>&1; then
         fp="$(printf '%s\n' "$key" | ssh-keygen -lf - 2> /dev/null | awk '{print $2}')" || fp=''
       fi
       # Label shorten
@@ -70,7 +78,7 @@ ssh_build_choices_from_files() {
 
       COUNT=$((COUNT + 1))
       id="K${COUNT}"
-      printf '%s\n' "${id}|${key}" >> "$SSH_MAP_FILE" || return $?
+      printf '%s\n' "${id}|${provenance}|${key}" >> "$SSH_MAP_FILE" || return $?
       CHOICES+=("$id" "[$typ] ${fp:+$fp }${cmt:+$cmt }— ${base}" "OFF")
     done < <(ssh_extract_keys_from_file "$f")
   done
@@ -128,15 +136,38 @@ _ssh_access_scan_files() (
   fi
 )
 
+# The legacy root installation consumes SSH_KEYS_FILE, but the app collector
+# can only reuse root selections whose original line was already bare.
+_ssh_access_record_key_selection() {
+  local _account=$1 _provenance=$2 _key=$3
+  [[ -n $_key ]] || return 0
+  printf '%s\n' "$_key" >> "$SSH_KEYS_FILE" || return $?
+  if [[ $_account == root && $_provenance == bare ]] && _ssh_access_public_key "$_key" > /dev/null; then
+    SSH_REUSABLE_KEYS+="$_key"$'\n'
+  fi
+}
+
+_ssh_access_record_key_tags() {
+  local _account=$1 _selection=$2 _tag _record _provenance _key
+  for _tag in $_selection; do
+    _tag=${_tag%\"}
+    _tag=${_tag#\"}
+    [[ $_tag =~ ^K[0-9]+$ ]] || continue
+    _record=$(grep -m1 "^${_tag}|" "$SSH_MAP_FILE") || return $?
+    IFS='|' read -r _ _provenance _key <<< "$_record"
+    _ssh_access_record_key_selection "$_account" "$_provenance" "$_key" || return $?
+  done
+}
+
 ssh_access_pick_keys() {
   local backtitle=$1 _picker_account=$2
   local -a _def_files _scan_files
-  local tag
 
   SSH_KEYS_FILE="$(mktemp)" || return $?
+  SSH_REUSABLE_KEYS=''
 
   mapfile -d '' -t _def_files < <(ssh_discover_default_files)
-  ssh_build_choices_from_files "${_def_files[@]}" || return $?
+  ssh_build_choices_from_files "$_picker_account" "${_def_files[@]}" || return $?
   local default_key_count="$COUNT"
 
   local ssh_key_mode
@@ -165,18 +196,13 @@ ssh_access_pick_keys() {
       local selection
       selection=$(_ssh_access_dialog --backtitle "$backtitle" --title "SELECT HOST KEYS" \
         --checklist "Select one or more keys to import:" 20 140 10 "${CHOICES[@]}" 3>&1 1>&2 2>&3) || return $?
-      for tag in $selection; do
-        tag="${tag%\"}"
-        tag="${tag#\"}"
-        local line
-        line=$(grep -E "^${tag}\|" "$SSH_MAP_FILE" | head -n1 | cut -d'|' -f2-)
-        if [[ -n "$line" ]]; then printf '%s\n' "$line" >> "$SSH_KEYS_FILE" || return $?; fi
-      done
+      _ssh_access_record_key_tags "$_picker_account" "$selection" || return $?
       ;;
     manual)
       SSH_AUTHORIZED_KEY="$(_ssh_access_dialog --backtitle "$backtitle" \
         --inputbox "Paste one SSH public key line (ssh-ed25519/ssh-rsa/...)" 10 72 --title "SSH Public Key" 3>&1 1>&2 2>&3)" || return $?
-      if [[ -n "$SSH_AUTHORIZED_KEY" ]]; then printf '%s\n' "$SSH_AUTHORIZED_KEY" >> "$SSH_KEYS_FILE" || return $?; fi
+      # A pasted root line has no transformation; validate it before reuse.
+      _ssh_access_record_key_selection "$_picker_account" bare "$SSH_AUTHORIZED_KEY" || return $?
       ;;
     folder)
       local glob_path
@@ -186,18 +212,12 @@ ssh_access_pick_keys() {
         mapfile -d '' -t _scan_files < <(_ssh_access_scan_files "$glob_path")
         if [[ "${#_scan_files[@]}" -gt 0 ]]; then
           rm -f -- "$SSH_MAP_FILE" || return $?
-          ssh_build_choices_from_files "${_scan_files[@]}" || return $?
+          ssh_build_choices_from_files "$_picker_account" "${_scan_files[@]}" || return $?
           if [[ "$COUNT" -gt 0 ]]; then
             local folder_selection
             folder_selection=$(_ssh_access_dialog --backtitle "$backtitle" --title "SELECT FOLDER KEYS" \
               --checklist "Select key(s) to import:" 20 78 10 "${CHOICES[@]}" 3>&1 1>&2 2>&3) || return $?
-            for tag in $folder_selection; do
-              tag="${tag%\"}"
-              tag="${tag#\"}"
-              local line
-              line=$(grep -E "^${tag}\|" "$SSH_MAP_FILE" | head -n1 | cut -d'|' -f2-)
-              if [[ -n "$line" ]]; then printf '%s\n' "$line" >> "$SSH_KEYS_FILE" || return $?; fi
-            done
+            _ssh_access_record_key_tags "$_picker_account" "$folder_selection" || return $?
           else
             whiptail --backtitle "$backtitle" --msgbox "No keys found in: $glob_path" 8 60
           fi
@@ -225,7 +245,7 @@ ssh_access_validate_account() {
 
 _ssh_access_pick_app_keys() (
   local _target=$1 _reuse=$2 _selection _scratch _rc=0
-  local SSH_KEYS_FILE='' SSH_AUTHORIZED_KEY='' SSH_MAP_FILE='' COUNT=0
+  local SSH_KEYS_FILE='' SSH_AUTHORIZED_KEY='' SSH_MAP_FILE='' SSH_REUSABLE_KEYS='' COUNT=0
   local -a CHOICES=()
   if [[ -n "$_reuse" ]]; then
     _selection=$(_ssh_access_dialog --title 'SSH PUBLIC KEY' --menu \
@@ -265,6 +285,17 @@ _ssh_access_public_key() {
   # Require a bare public key, not an options line, private key or certificate.
   [[ "$_type" != *-cert-v01@openssh.com ]] || return 65
   printf '%s %s\n' "$_type" "$_blob" | ssh-keygen -lf - 2> /dev/null
+}
+
+# An explicit root picker outcome (even No keys) supersedes saved defaults.
+# Never reconstruct provenance from the already normalized installation file.
+ssh_access_root_reuse() {
+  local _selection_file=$1 _proven=$2 _default=$3
+  if [[ -n $_selection_file ]]; then
+    if [[ -s $_selection_file && -n $_proven ]]; then printf '%s' "$_proven"; fi
+  elif [[ -n $_default ]] && _ssh_access_public_key "$_default" > /dev/null; then
+    printf '%s\n' "$_default"
+  fi
 }
 
 _ssh_access_key_lines() {
@@ -656,18 +687,39 @@ _ssh_access_policy_unchanged() {
 
 # Only listeners owned by the actual sshd main PID count. A listener also
 # held by systemd is inherited, not a successful standalone rebind.
-_ssh_access_listener_state() {
+_ssh_access_listener_state() (
   local -
   set -o pipefail
-  LC_ALL=C ss -H -ltnpe | LC_ALL=C awk -v pid="$1" '
-    index($0, "(\"sshd\",pid=" pid ",fd=") {
-      owner = index($0, "(\"systemd\",pid=1,fd=") ? "socket" : "service"
-      for (i = 1; i <= NF; i++)
-        if ($i ~ /^ino:[1-9][0-9]*$/) { print owner, $i; seen++; break }
-      if (i > NF) exit 69
-    }
-    END { if (!seen) exit 69 }
-  ' | LC_ALL=C sort -u
+  local _family _records _endpoints
+  # Query by address family: ss can print a dual-stack IPv6 wildcard as *:PORT.
+  _endpoints=$(
+    for _family in 4 6; do
+      _records=$(LC_ALL=C ss -H -ltnpe "-$_family") || exit $?
+      LC_ALL=C awk -v pid="$1" -v family="$_family" '
+        index($0, "(\"sshd\",pid=" pid ",fd=") {
+          owner = index($0, "(\"systemd\",pid=1,fd=") ? "socket" : "service"
+          inode = ""; v6 = ""
+          for (i = 6; i <= NF; i++) {
+            if ($i ~ /^ino:[1-9][0-9]*$/) inode = $i
+            if ($i ~ /^v6only:[01]$/) v6 = "/" $i
+          }
+          if (inode == "" || $4 !~ /:[0-9]+$/) exit 69
+          print owner, inode, family "/" $4 v6
+        }
+      ' <<< "$_records" || exit $?
+    done | LC_ALL=C sort -u
+  ) || return $?
+  [[ -n $_endpoints ]] || return 69
+  printf '%s\n' "$_endpoints"
+)
+
+_ssh_access_rebound_listeners() {
+  LC_ALL=C awk '
+    FNR == NR { previous_inode[$2] = 1; required_endpoint[$3] = 1; next }
+    $2 in previous_inode { exit 69 }
+    { delete required_endpoint[$3] }
+    END { for (endpoint in required_endpoint) exit 69 }
+  ' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
 # sshd.c: prepare_proctitle and server_accept_loop render the saved startup
@@ -766,7 +818,7 @@ _ssh_access_activate() {
       if [[ $_operation == restart && $_new_operation == restart && $_new_pid != "$_pid" &&
         $_new_invocation != "$_invocation" && $_new_listeners == "$_listeners" ]]; then return 0; fi
       if [[ $_operation == reload && $_new_operation == reload && $_new_pid == "$_pid" &&
-        $_new_invocation == "$_invocation" ]] && ! grep -Fxf <(printf '%s\n' "$_listeners") <<< "$_new_listeners" > /dev/null; then return 0; fi
+        $_new_invocation == "$_invocation" ]] && _ssh_access_rebound_listeners "$_listeners" "$_new_listeners"; then return 0; fi
     fi
     sleep 0.1 || break
   done
@@ -892,9 +944,28 @@ ssh_access_apply() (
   set +x +a
   set -o pipefail
   local _sa_account=${1-} _sa_mode=${2-} _sa_keys='' _sa_password='' _extra=''
-  local _entry _name _uid _home _shell _stage _status=0
+  local _entry _name _uid _home _shell _stage _status=0 _lock_fd _lock_dir _lock_owner _lock_mode
   local _config=/etc/ssh/sshd_config
   [[ $# == 2 && $EUID == 0 ]] && ssh_access_validate_account "$_sa_account" || return 65
+  # Lock the root-owned directory, not sshd_config (which we atomically replace)
+  # or an app-specific lock. The transaction subshell owns the FD until exit.
+  _lock_dir=${_config%/*}
+  if [[ ! -d $_lock_dir || -L $_lock_dir ]] || ! exec {_lock_fd}< "$_lock_dir" ||
+    [[ ! $_lock_dir -ef /proc/self/fd/$_lock_fd ]] ||
+    ! read -r _lock_owner _lock_mode < <(stat -Lc '%u %a' -- "/proc/self/fd/$_lock_fd") ||
+    [[ $_lock_owner != 0 || ! $_lock_mode =~ ^[0-7]{3,4}$ ]] || ((8#$_lock_mode & 0022)); then
+    _ssh_access_error 'Cannot lock a non-private SSH configuration directory; nothing applied'
+    return 69
+  fi
+  if flock -n -E 75 "$_lock_fd"; then :; else
+    _status=$?
+    if [[ $_status == 75 ]]; then
+      _ssh_access_error 'Another SSH access setup is active; nothing applied, retry after it finishes'
+    else
+      _ssh_access_error 'Cannot lock the SSH configuration directory; nothing applied'
+    fi
+    return "$_status"
+  fi
   export -n _sa_keys _sa_password _extra || return $?
   if ! IFS= read -r -d '' _sa_keys || ! IFS= read -r -d '' _sa_password || IFS= read -r -d '' _extra || [[ -n "$_extra" ]]; then
     _ssh_access_error 'Invalid credential stream; nothing applied'
@@ -974,17 +1045,17 @@ _ssh_access_command() (
 _ssh_access_command_functions() {
   declare -f ssh_access_validate_account _ssh_access_error _ssh_access_public_key \
     ssh_extract_keys_from_file ssh_build_choices_from_files ssh_discover_default_files \
-    _ssh_access_dialog _ssh_access_scan_files ssh_access_pick_keys _ssh_access_pick_app_keys \
+    _ssh_access_dialog _ssh_access_scan_files _ssh_access_record_key_selection _ssh_access_record_key_tags ssh_access_pick_keys _ssh_access_pick_app_keys \
     _ssh_access_key_lines ssh_access_collect _ssh_access_policy_block _ssh_access_candidate \
     _ssh_access_effective _ssh_access_words _ssh_access_match_excludes _ssh_access_include_files _ssh_access_check_prefix \
     _ssh_access_private_key_group _ssh_access_strict_key_path _ssh_access_append_keys _ssh_access_policy_identity _ssh_access_policy_unchanged \
-    _ssh_access_listener_state _ssh_access_daemon_uses_policy _ssh_access_restart_uses_policy \
+    _ssh_access_listener_state _ssh_access_rebound_listeners _ssh_access_daemon_uses_policy _ssh_access_restart_uses_policy \
     _ssh_access_activation_state _ssh_access_activate _ssh_access_apply_candidate ssh_access_apply \
     ssh_access_send _ssh_access_command
 }
 
 ssh_access_host_api() {
-  declare -F ssh_access_collect_inputs ssh_access_command_contents ssh_access_install_command _ssh_access_install_alias > /dev/null || return $?
+  declare -F ssh_access_collect_inputs ssh_access_root_reuse ssh_access_command_contents ssh_access_install_command _ssh_access_install_alias > /dev/null || return $?
   _ssh_access_command_functions > /dev/null
 }
 
